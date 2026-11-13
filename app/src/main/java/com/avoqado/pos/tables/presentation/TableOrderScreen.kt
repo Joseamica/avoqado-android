@@ -288,15 +288,21 @@ fun TableOrderScreen(
     var showMerge by remember { mutableStateOf(false) }
     // Pago dedicado (Square): el flujo de pago se presenta AQUÍ, sin brincar al
     // register de retail. Mismo PaymentFlowViewModel, solo cambia el cascarón.
-    var showPayment by remember { mutableStateOf(false) }
-    var paymentSeedCents by remember { mutableStateOf(0) }
-    var pendingSplitConfig by remember { mutableStateOf(com.avoqado.pos.payment.presentation.SplitConfig()) }
-    var committedPaymentCompletion by remember {
-        mutableStateOf<com.avoqado.pos.payment.presentation.PaymentCompletion?>(null)
-    }
-    var showSplitImporte by remember { mutableStateOf(false) }
+    //
+    // 🔴 D61 (13-nov): TODO el estado del cobro de la mesa vive en el ViewModel de la mesa ([CobroDeLaMesa]), no en un
+    // `remember`. Girar el aparato, cambiar el tema o el tamaño de letra recrea la Activity: la pantalla de cobro DESAPARECÍA
+    // mientras su `PaymentFlowViewModel` seguía cobrando, y «Pagar» abría OTRO cobro de la misma mesa. `rememberSaveable` no
+    // basta: en la N86 girar cambia el árbol de teléfono por el de tableta (Codex r1 #1). Al volver, la pantalla de cobro
+    // recibe la MISMA apertura (`cobroDeLaMesa.apertura`) y sigue el mismo cobro. Se abre sólo con `cobroDeLaMesa.abrir()`.
+    val cobroDeLaMesa = viewModel.cobroDeLaMesa
+    var showPayment by cobroDeLaMesa::abierto
+    var paymentSeedCents by cobroDeLaMesa::semillaCents
+    var pendingSplitConfig by cobroDeLaMesa::reparto
+    var restanteConfirmado by cobroDeLaMesa::restanteConfirmado
+    var showSplitImporte by cobroDeLaMesa::dividiendo
     // I-1 (re-revisión): el «SÍ pasó» de la orden de esta mesa se pinta aquí y se reconoce; antes el flujo se cerraba callado.
-    var previousChargeNotice by remember { mutableStateOf<String?>(null) }
+    // D61: también sobrevive al giro: si se perdía, nadie lo reconocía.
+    var previousChargeNotice by cobroDeLaMesa::avisoCobroAnterior
     val tablesViewModel: TablesViewModel = androidx.hilt.navigation.compose.hiltViewModel()
     var unknownBarcode by remember { mutableStateOf<String?>(null) }
     // Menú … por tiempo (¡Listo!/Repetir). Par (curso, abierto).
@@ -403,16 +409,41 @@ fun TableOrderScreen(
         }
     }
 
+    val pantallaViva = remember { java.util.concurrent.atomic.AtomicBoolean(true) }
+    DisposableEffect(Unit) { onDispose { pantallaViva.set(false) } }
+
+    /**
+     * La ÚNICA salida del cobro de la mesa hacia la cuenta (cancelar, cerrar «Dividir importe», «Venta nueva» con resto o sin
+     * cobro confirmado, cobro anterior resuelto). 🔴 La sesión NO puede quedarse en PAYING (auditoría; D61): el tab Cobrar la
+     * detectaría y sembraría el register con esta mesa —una venta retail acabaría registrada contra la orden de la mesa—,
+     * `requiereRevisarSaldo` se la saltaría y `PaymentFlowViewModel.mesaDelCobro` la tomaría.
+     *
+     * Sólo la pantalla VIVA cierra: un aviso tardío de la composición que se fue al girar (p. ej. la X de «Dividir importe» a
+     * media animación, que avisa al cancelarse) regresaría la sesión a ORDERING debajo del cobro que la pantalla nueva
+     * restauró, y ese cobro ya no pagaría la orden de la mesa.
+     */
+    fun cerrarCobro() {
+        if (!pantallaViva.get()) return
+        showPayment = false
+        showSplitImporte = false
+        pendingSplitConfig = com.avoqado.pos.payment.presentation.SplitConfig()
+        restanteConfirmado = null
+        viewModel.tableSession.current()?.let { s ->
+            viewModel.tableSession.start(s.copy(mode = com.avoqado.pos.tables.data.TableSession.Mode.ORDERING))
+        }
+        viewModel.loadCheck()
+    }
+
     fun firePagar() {
         if (blockIfCannotPay()) return
         prepararPago {
             paymentSeedCents = viewModel.tableSession.current()?.totalCents ?: 0
             if (paymentSeedCents <= 0) paymentSeedCents = viewModel.payableTotalCents
             pendingSplitConfig = com.avoqado.pos.payment.presentation.SplitConfig()
-            committedPaymentCompletion = null
+            restanteConfirmado = null
             // Al abrirse el cobro la cámara se cierra: no queda leyendo debajo del importe congelado.
             showBarcodeScanner = false
-            showPayment = true
+            cobroDeLaMesa.abrir()
         }
         // El motivo lo pone `preparePagar()`, que es quien SABE por qué no se
         // puede: sin cargos, ya pagada, o cuenta ajena. Antes se ponía aquí un
@@ -1028,12 +1059,13 @@ fun TableOrderScreen(
                     unitPrice = paymentSeedCents,
                 ),
             ),
-            onDismiss = { showSplitImporte = false },
+            // D61: cerrar «Dividir importe» sin elegir es salir del cobro: la mesa regresa a ORDERING (antes se quedaba en PAYING).
+            onDismiss = { cerrarCobro() },
             onConfirm = { config ->
                 showSplitImporte = false
                 pendingSplitConfig = config
-                committedPaymentCompletion = null
-                showPayment = true
+                restanteConfirmado = null
+                cobroDeLaMesa.abrir()
             },
         )
     }
@@ -1082,18 +1114,6 @@ fun TableOrderScreen(
                 },
             )
         }
-        val cerrarCobro = {
-            showPayment = false
-            pendingSplitConfig = com.avoqado.pos.payment.presentation.SplitConfig()
-            committedPaymentCompletion = null
-            // 🔴 La sesión NO puede quedarse en PAYING (auditoría): el tab
-            // Cobrar la detectaría y sembraría el register con esta mesa —
-            // una venta retail acabaría registrada contra la orden de la mesa.
-            viewModel.tableSession.current()?.let { s ->
-                viewModel.tableSession.start(s.copy(mode = com.avoqado.pos.tables.data.TableSession.Mode.ORDERING))
-            }
-            viewModel.loadCheck()
-        }
         androidx.compose.ui.window.Dialog(
             onDismissRequest = { /* la X del flujo cierra; el back no lo tumba a medias */ },
             properties = androidx.compose.ui.window.DialogProperties(
@@ -1122,6 +1142,9 @@ fun TableOrderScreen(
                 com.avoqado.pos.payment.presentation.PaymentFlowScreen(
                     cartState = paymentCart,
                     splitConfig = pendingSplitConfig,
+                    // D61: la apertura del ViewModel de la mesa: tras girar (también de teléfono a tableta) es la MISMA y el
+                    // flujo sigue el cobro en vuelo en vez de arrancar otro.
+                    apertura = cobroDeLaMesa.apertura,
                     // El cheque ya trae su cliente asignado; el recibo lo
                     // muestra en vez de pedirlo otra vez al cerrar la mesa.
                     preselectedCustomerId = check?.customerId,
@@ -1131,7 +1154,7 @@ fun TableOrderScreen(
                         showSplitImporte = true
                     },
                     onPaymentCommitted = { completion ->
-                        committedPaymentCompletion = completion
+                        restanteConfirmado = completion.remainingBalanceCents
                         if (completion.remainingBalanceCents > 0) {
                             // Pago parcial (split): la sesión ya debe SOLO el resto.
                             // No cambiamos todavía el seed visible: hacerlo aquí
@@ -1145,11 +1168,10 @@ fun TableOrderScreen(
                         }
                     },
                     onDone = {
-                        val completion = committedPaymentCompletion
-                        committedPaymentCompletion = null
-                        when {
-                            completion == null -> showPayment = false
-                            completion.remainingBalanceCents == 0 -> {
+                        val salida = salidaTrasElRecibo(restanteConfirmado)
+                        restanteConfirmado = null
+                        when (salida) {
+                            SalidaTrasElRecibo.SALIR_AL_PLANO -> {
                                 showPayment = false
                                 pendingSplitConfig = com.avoqado.pos.payment.presentation.SplitConfig()
                                 // Square: efectivo exacto → después del recibo regresa
@@ -1160,7 +1182,8 @@ fun TableOrderScreen(
                             // el resto se cobra con «Pagar», que revisa el saldo como cualquier cobro (también sin red). Re-sembrar
                             // ESTE cobro no arrancaba otro: la pantalla conserva su apertura (29-sep), el recibo se quedaba y el
                             // segundo toque lo cerraba con la mesa todavía en PAYING.
-                            else -> cerrarCobro()
+                            // D61: sin cobro confirmado también sale por aquí (antes sólo bajaba la bandera y dejaba PAYING).
+                            SalidaTrasElRecibo.CERRAR_COBRO -> cerrarCobro()
                         }
                     },
                     onCancel = { cerrarCobro() },
