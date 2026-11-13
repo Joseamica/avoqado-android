@@ -329,7 +329,8 @@ class MoreMenuViewModel @Inject constructor(
      */
     suspend fun switchUser(pin: String): SwitchUserResult {
         val currentVenueId = secureStorage.venueId
-        val blocking = paymentSyncService.sinEnviarCount() +
+        // D53: los cobros que esperan a una persona («Ya pagó de otra forma» a medias) no frenan: no salen solos y el gerente entra a resolverlos.
+        val blocking = paymentSyncService.sinEnviarParaElRelevo() +
             (currentVenueId?.let { syncOutbox.sinEnviarCount(it) } ?: 0) +
             secureStorage.areaTicketRecoveryCount(currentVenueId) +
             // Codex r3 #12: el replay del cajón usa la sesión vigente; con un retiro sin subir, saldría a nombre de quien entra.

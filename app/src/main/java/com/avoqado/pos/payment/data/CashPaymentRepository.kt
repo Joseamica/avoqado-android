@@ -311,18 +311,41 @@ class CashPaymentRepository @Inject constructor(
     suspend fun darPorCobradasLasAbandonadas(): Int {
         val venueId = secureStorage.venueId?.takeIf { it.isNotBlank() } ?: return 0
         return pendingPaymentDao.enVueloDelVenue(venueId).count { fila ->
-            fila.id !in reservasDeEsteProceso && fila.q15Reason == null &&
-                fila.method == "CASH" && fila.tenderTypeId == null &&
-                // 🔴 Sólo lo que apartó la app nueva: las «sin confirmar» que dejó la de antes se quedan como hoy.
-                ConciliacionDelCobro.leerCaptura(fila.q15CaptureJson, venueId, fila.id)?.daPorCobradaAlAbandonar == true &&
+            fila.id !in reservasDeEsteProceso && seDaPorCobrada(fila, venueId) &&
                 // Rediseño r9: pasar a la cola y anotar su venta en el cajón son UNA escritura ([SalidaDelApartado]).
                 pasarALaCola(fila.id, conDosXx = false, delFlujo = false)
         }
     }
 
-    suspend fun enVueloQueSeResuelveSolo(): Int = 0
+    /**
+     * La regla del barrido, sin mirar si la fila es de un flujo vivo: efectivo PURO, sin motivo Q15 y con la marca de la app nueva.
+     * 🔴 «Ya pagó de otra forma» NO entra, por dinero (D53 lo comprobó): su apartado nunca lo borra la cajera; tras un rechazo, o si
+     * cobró esa venta de otra forma, se SUELTA sin borrarse, y desde aquí es idéntico al que dejó una app muerta. Darlo por cobrado
+     * podría cobrar la venta dos veces.
+     */
+    private fun seDaPorCobrada(fila: PendingPaymentEntity, venueId: String): Boolean =
+        fila.q15Reason == null && fila.method == "CASH" && fila.tenderTypeId == null &&
+            // 🔴 Sólo lo que apartó la app nueva: las «sin confirmar» que dejó la de antes se quedan como hoy.
+            ConciliacionDelCobro.leerCaptura(fila.q15CaptureJson, venueId, fila.id)?.daPorCobradaAlAbandonar == true
 
-    suspend fun enVueloPorRevisar(): Int = 0
+    /**
+     * D53: los apartados `EN_VUELO` del local actual que se resuelven SOLOS: los de un flujo vivo de este proceso (su cobro va en camino
+     * y la venta en pantalla decide) y los que el barrido da por cobrados ([seDaPorCobrada]). Éstos sí frenan «Cambiar usuario» (D28).
+     */
+    suspend fun enVueloQueSeResuelveSolo(): Int {
+        val venueId = secureStorage.venueId?.takeIf { it.isNotBlank() } ?: return 0
+        return pendingPaymentDao.enVueloDelVenue(venueId).count { it.id in reservasDeEsteProceso || seDaPorCobrada(it, venueId) }
+    }
+
+    /**
+     * D53: los del local actual que esperan a una PERSONA («Cobro sin confirmar» en «Operaciones por revisar»: «Ya pagó de otra forma»
+     * a medias, los de la app de antes, los que tienen motivo Q15). No salen solos: no frenan «Cambiar usuario» —el gerente tiene que
+     * poder entrar a resolverlos— y el aviso de cerrar sesión los cuenta como «por revisar». Conservan el `staffId` de quien cobró.
+     */
+    suspend fun enVueloPorRevisar(): Int {
+        val venueId = secureStorage.venueId?.takeIf { it.isNotBlank() } ?: return 0
+        return pendingPaymentDao.enVueloDelVenue(venueId).count { it.id !in reservasDeEsteProceso && !seDaPorCobrada(it, venueId) }
+    }
 
     /**
      * Una fila que no se pudo pasar a la cola NO se calla: queda en el log y se queda `EN_VUELO` para la siguiente vuelta (también

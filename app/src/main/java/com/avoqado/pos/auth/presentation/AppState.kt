@@ -636,7 +636,9 @@ internal suspend fun rechazadasPorRevisar(
     if (venueId == null) return Rechazadas(aqui = 0, deOtraSucursal = pagos.porRevisarCount())
     val cobros = pagos.porRevisarPorSucursal(venueId)
     val paquetesAqui = paquetes?.filas?.value?.count { it.venueId == venueId && it.porRevisar } ?: 0
-    return Rechazadas(aqui = cobros.aqui + cola.rechazadasCount(venueId) + paquetesAqui, deOtraSucursal = cobros.deOtraSucursal)
+    // D53: los cobros «sin confirmar» que esperan a una persona también los resuelve el gerente en la misma hoja.
+    val sinConfirmar = pagos.sinConfirmarPorRevisar()
+    return Rechazadas(aqui = cobros.aqui + sinConfirmar + cola.rechazadasCount(venueId) + paquetesAqui, deOtraSucursal = cobros.deOtraSucursal)
 }
 
 /**
@@ -648,7 +650,8 @@ internal suspend fun rechazadasPorRevisar(
 internal fun textoDelFrenoConRechazos(total: Int, rechazadas: Int, puedeResolver: Boolean, antesDe: String, deOtraSucursal: Int = 0): String {
     val sinEnviar = (total - rechazadas).coerceAtLeast(0)
     val una = rechazadas == 1
-    val rechazo = if (una) "1 operación rechazada por revisar" else "$rechazadas operaciones rechazadas por revisar"
+    // D53: no todo lo que espera a un gerente fue rechazado (un cobro «sin confirmar»): se dice «por revisar», como la hoja.
+    val rechazo = if (una) "1 operación por revisar" else "$rechazadas operaciones por revisar"
     // Dónde, para quien puede (Codex r3): un cobro fallido de OTRA sucursal sólo se ve con esa sucursal abierta.
     val donde = when {
         deOtraSucursal <= 0 -> "en $DONDE_SE_RESUELVE antes de $antesDe"
