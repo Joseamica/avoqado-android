@@ -459,66 +459,44 @@ class MesaSinRedTrasReinicioTest {
         } finally { b.viewModelScope.cancel() }
     }
 
-    /** La apertura se confirma A MEDIA ronda: el acuse recarga el borrador y su recuperación vuelve a encolar la misma ronda. */
-    private fun TestScope.aperturaConfirmadaAMediaRonda(recuperacionEscribe: Boolean): CompletableDeferred<Unit> {
-        coEvery { repository.getOrderDetail(any(), any()) } returns Result.failure(java.io.IOException("sin red"))
-        val recuperando = CompletableDeferred<Unit>()
-        val compuerta = CompletableDeferred<Unit>()
-        var llamadas = 0
-        coEvery { outbox.enqueue(any(), any(), any(), any(), any(), any()) } coAnswers {
-            val id = arg<String>(3)
-            if (llamadas++ == 0) {
-                drafts.promote("v-b2a", "local-1", "real-1") // el replay guarda la promoción ANTES de avisar
-                acks.emit(SyncAck("open", "ACKED", result = kotlinx.serialization.json.buildJsonObject {
-                    put("localOrderId", kotlinx.serialization.json.JsonPrimitive("local-1"))
-                    put("orderId", kotlinx.serialization.json.JsonPrimitive("real-1"))
-                }))
-                recuperando.await()
-                error("disco") // la escritura de «Enviar» falla
-            }
-            recuperando.complete(Unit)
-            compuerta.await()
-            if (!recuperacionEscribe) error("disco")
-            id.also { cola += FilaDeLaOrden(it, arg(1), "PENDING", null) }
-        }
-        return compuerta
+    /** El replay confirma la apertura A MEDIA ronda: guarda la promoción en disco y avisa; la pantalla recarga el borrador. */
+    private suspend fun TestScope.aperturaConfirmada() {
+        drafts.promote("v-b2a", "local-1", "real-1")
+        acks.emit(SyncAck("open", "ACKED", result = kotlinx.serialization.json.buildJsonObject {
+            put("localOrderId", kotlinx.serialization.json.JsonPrimitive("local-1"))
+            put("orderId", kotlinx.serialization.json.JsonPrimitive("real-1"))
+        }))
+        runCurrent()
     }
 
-    /** Codex r1 #1: «no está en la cola» no basta si la recuperación de la recarga la está escribiendo en ese momento. */
-    @Test fun `D16 si la recarga del borrador encola la ronda mientras la primera escritura falla queda una sola`() = runTest {
+    /**
+     * Codex r0 #1, r1 #1 (misma familia: dos escritores de la misma ronda): la recarga del borrador NO le quita a «Enviar» la ronda
+     * que está guardando: ni sus productos de la pantalla, ni la recupera por su cuenta. Si la escritura falla, vuelven a «por enviar».
+     */
+    @Test fun `D16 la apertura confirmada a media ronda no le quita la ronda a Enviar`() = runTest {
         val subject = vm()
         try {
-            val compuerta = aperturaConfirmadaAMediaRonda(recuperacionEscribe = true)
+            coEvery { repository.getOrderDetail(any(), any()) } returns Result.failure(java.io.IOException("sin red"))
+            coEvery { repository.addRound(any(), any(), any(), any()) } returns Result.failure(java.io.IOException("sin red"))
+            val falla = CompletableDeferred<Unit>()
+            var llamadas = 0
+            coEvery { outbox.enqueue(any(), any(), any(), any(), any(), any()) } coAnswers {
+                if (llamadas++ == 0) { falla.await(); error("disco") } // la escritura de «Enviar» tarda y falla sin dejar fila
+                arg<String>(3).also { cola += FilaDeLaOrden(it, arg(1), "PENDING", null) }
+            }
             var texto: String? = null
             cafe(subject); subject.sendRound { _, t -> texto = t }; runCurrent()
-            assertNotNull(texto)
-            assertFalse("no pide reenviar: $texto", texto!!.contains("intenta de nuevo"))
-            compuerta.complete(Unit); advanceUntilIdle()
-            assertTrue(subject.pending.value.isEmpty())
+            aperturaConfirmada()
+            assertEquals("la recarga no le quita los productos a «Enviar»", 1, subject.pending.value.size)
+            assertTrue("ni los pinta como «Por sincronizar»", subject.queued.value.isEmpty())
+            assertEquals("ni la recupera por su cuenta", 0, rondasEnCola().size)
+            falla.complete(Unit); advanceUntilIdle()
+            assertEquals("no entró: vuelve a «por enviar»", 1, subject.pending.value.size)
+            assertTrue("$texto", texto!!.contains("intenta de nuevo"))
             subject.sendRound(); advanceUntilIdle()
             assertEquals("una sola ronda", 1, rondasEnCola().size)
             verify(exactly = 1) { despachador.despacharEnFondo(any(), any(), any(), any(), any(), any(), any()) }
         } finally { subject.viewModelScope.cancel() }
-    }
-
-    /** Codex r0 #1: si la recuperación también falla, la ronda no se pierde: sigue en el borrador y sube al reabrir la mesa. */
-    @Test fun `D16 si tambien falla la recuperacion la ronda sigue en el borrador y sube al reabrir`() = runTest {
-        val subject = vm()
-        val compuerta = aperturaConfirmadaAMediaRonda(recuperacionEscribe = false)
-        cafe(subject); subject.sendRound(); runCurrent()
-        compuerta.complete(Unit); advanceUntilIdle()
-        assertTrue(subject.pending.value.isEmpty())
-        assertEquals(0, rondasEnCola().size)
-        assertEquals("la ronda sigue guardada en el borrador", 1, drafts.load("v-b2a", "real-1").rounds.size)
-        coEvery { outbox.enqueue(any(), any(), any(), any(), any(), any()) } answers {
-            arg<String>(3).also { cola += FilaDeLaOrden(it, arg(1), "PENDING", null) }
-        }
-        val b = reiniciar(subject)
-        try {
-            b.loadCheck(); advanceUntilIdle()
-            assertEquals("sube una vez, con su llave", 1, rondasEnCola().size)
-            assertTrue(b.pending.value.isEmpty())
-        } finally { b.viewModelScope.cancel() }
     }
 
     /** Codex r2 #1: el acuse de la apertura llega MIENTRAS «Enviar» pregunta a la cola si su ronda entró. */
@@ -526,6 +504,7 @@ class MesaSinRedTrasReinicioTest {
         val subject = vm()
         try {
             coEvery { repository.getOrderDetail(any(), any()) } returns Result.failure(java.io.IOException("sin red"))
+            coEvery { repository.addRound(any(), any(), any(), any()) } returns Result.failure(java.io.IOException("sin red"))
             var llamadas = 0
             coEvery { outbox.enqueue(any(), any(), any(), any(), any(), any()) } answers {
                 if (llamadas++ == 0) error("disco") // la escritura de «Enviar» falla sin dejar fila
@@ -538,17 +517,36 @@ class MesaSinRedTrasReinicioTest {
             }
             var texto: String? = null
             cafe(subject); subject.sendRound { _, t -> texto = t }; runCurrent() // «Enviar» espera la respuesta de la cola
-            drafts.promote("v-b2a", "local-1", "real-1")
-            acks.emit(SyncAck("open", "ACKED", result = kotlinx.serialization.json.buildJsonObject {
-                put("localOrderId", kotlinx.serialization.json.JsonPrimitive("local-1"))
-                put("orderId", kotlinx.serialization.json.JsonPrimitive("real-1"))
-            }))
-            runCurrent() // la recarga del borrador: su recuperación también pregunta por la ronda
+            aperturaConfirmada()
             consulta.complete(Unit); advanceUntilIdle()
-            assertFalse("no pide reenviar: $texto", texto.orEmpty().contains("intenta de nuevo"))
-            assertEquals("la recuperación la encoló con su llave", 1, rondasEnCola().size)
-            assertTrue(subject.pending.value.isEmpty())
+            assertEquals("no entró: vuelve a «por enviar», no se pierde", 1, subject.pending.value.size)
+            assertTrue("$texto", texto!!.contains("intenta de nuevo"))
+            assertEquals(0, rondasEnCola().size)
+            subject.sendRound(); advanceUntilIdle()
+            assertEquals("una sola ronda", 1, rondasEnCola().size)
             verify(exactly = 1) { despachador.despacharEnFondo(any(), any(), any(), any(), any(), any(), any()) }
+        } finally { subject.viewModelScope.cancel() }
+    }
+
+    /** Codex r3 #1: la ronda entró, el SERVIDOR la rechazó y el gerente la marcó resuelta mientras «Enviar» seguía: sin comanda. */
+    @Test fun `D16 la ronda rechazada y marcada resuelta a media escritura no imprime comanda`() = runTest {
+        val subject = vm()
+        try {
+            coEvery { repository.getOrderDetail(any(), any()) } returns Result.failure(java.io.IOException("sin red"))
+            val sigue = CompletableDeferred<Unit>()
+            coEvery { outbox.enqueue(any(), any(), any(), any(), any(), any()) } coAnswers {
+                cola += FilaDeLaOrden(arg(3), arg(1), "PENDING", null)
+                sigue.await(); error("refreshCounts") // algo después del INSERT falla
+            }
+            var texto: String? = null
+            cafe(subject); subject.sendRound { _, t -> texto = t }; runCurrent()
+            aperturaConfirmada()
+            val llave = rondasEnCola().single().id
+            cola.removeAll { it.id == llave } // rechazada por el SERVIDOR y «Marcar resuelta» (D29): fuera del borrador y de la cola
+            drafts.descartarRonda("v-b2a", "real-1", llave)
+            sigue.complete(Unit); advanceUntilIdle()
+            verify(exactly = 0) { despachador.despacharEnFondo(any(), any(), any(), any(), any(), any(), any()) }
+            assertTrue("$texto", texto!!.contains("intenta de nuevo"))
         } finally { subject.viewModelScope.cancel() }
     }
 

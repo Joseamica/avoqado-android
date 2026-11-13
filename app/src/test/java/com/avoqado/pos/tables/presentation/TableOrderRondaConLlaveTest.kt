@@ -674,4 +674,31 @@ class TableOrderRondaConLlaveTest {
             } finally { vm.viewModelScope.cancel() }
         } finally { root.setWritable(true); root.deleteRecursively() }
     }
+
+    /**
+     * Codex r3 #2: mientras la ronda viaja, un acuse viejo de esta cuenta (nació sin red) recarga el borrador; después el SERVIDOR la
+     * rechaza. Los productos vuelven a «por enviar»: la recarga no se los quitó a «Enviar».
+     */
+    @Test
+    fun `D16 la recarga durante el envio no se lleva los productos de una ronda rechazada`() = runTest {
+        val root = java.nio.file.Files.createTempDirectory("d16-rechazada").toFile()
+        try {
+            val store = com.avoqado.pos.tables.data.TableRoundDraftStore(root)
+            val vm = vm(draftStore = store)
+            try {
+                tableSession.start(tableSession.current()!!.copy(localOrderId = "local-0"))
+                @Suppress("UNCHECKED_CAST") val acks = syncOutbox.acks as MutableSharedFlow<com.avoqado.pos.core.data.sync.SyncAck>
+                coEvery { repository.addRound(any(), any(), any(), any()) } coAnswers {
+                    acks.emit(com.avoqado.pos.core.data.sync.SyncAck(id = "ronda-vieja", status = "ACKED", result = kotlinx.serialization.json.buildJsonObject {
+                        put("localOrderId", kotlinx.serialization.json.JsonPrimitive("local-0")); put("orderId", kotlinx.serialization.json.JsonPrimitive("o1"))
+                    }))
+                    Result.failure(HttpException(Response.error<Any>(422, "{}".toResponseBody(null))))
+                }
+                vm.sendRound()
+                advanceUntilIdle()
+                assertEquals("el rechazo devuelve los productos", listOf("Pan", "Café"), vm.pending.value.map { it.item.name })
+                assertEquals("y la ronda sale del borrador", 0, store.load("venue-1", "o1").rounds.size)
+            } finally { vm.viewModelScope.cancel() }
+        } finally { root.deleteRecursively() }
+    }
 }

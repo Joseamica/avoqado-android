@@ -224,8 +224,11 @@ class TableOrderViewModel @Inject constructor(
     private var draftRounds: Map<String, List<PendingLine>> = emptyMap()
     private var draftDates: Map<String, Long> = emptyMap()
     private var draftRecoveryFailed = false
-    /** D16 (Codex r1 #1): cuántas veces se recargó el borrador de disco. Una recarga a media ronda le pasa la ronda a su recuperación. */
-    private var recargasDelBorrador = 0L
+    /**
+     * D16 (Codex r0-r3, misma familia: dos escritores de la misma ronda): la ronda que «Enviar» está guardando. Mientras viaja, su
+     * único dueño es «Enviar»: una recarga del borrador (acuse de la apertura) no la recupera ni le quita sus productos a la pantalla.
+     */
+    private var rondaEnVuelo: String? = null
     private var checkLoadGeneration = 0L
 
     private val contextoDeSesion = tableSession.contextoActual()
@@ -627,23 +630,20 @@ class TableOrderViewModel @Inject constructor(
     }
 
     /**
-     * D16: ¿la ronda ya no se puede deshacer? Se pregunta tras un error o una cancelación, sin cancelarse. No se deshace si:
-     * - la cola ya la tiene (o ni eso se puede leer: reintentar con otra llave sería la ronda doble);
-     * - el borrador se recargó desde que se guardó (Codex r0 #1 y r1 #1): la recarga ya la quitó de «por enviar» y su recuperación la
-     *   encola con SU llave, ahora o al reabrir. Deshacerla le devolvería los productos al mesero mientras esa recuperación escribe.
-     * En los dos casos el borrador la conserva, así que nunca se pierde.
+     * D16: ¿la ronda va a subir? Se le pregunta a la cola tras un error o una cancelación, sin cancelarse. Sí, si su fila está viva
+     * (o ni eso se puede leer: reintentar con otra llave sería la ronda doble, y el borrador la encola con SU llave al reabrir). No, si
+     * no hay fila o el SERVIDOR ya la rechazó (una fila rechazada nunca sube): entonces se deshace y el mesero puede volver a enviar.
+     * Nadie más escribe esta ronda mientras viaja ([rondaEnVuelo]), así que la respuesta no cambia antes de actuar.
      */
-    private suspend fun rondaYaGuardada(key: String, recargas: Long): Boolean = withContext(NonCancellable) {
-        val enLaCola = try { syncOutbox.observarEstado(key).first() != null } catch (_: Exception) { true }
-        // El contador se lee DESPUÉS de la consulta (Codex r2 #1): una recarga pudo llegar mientras se esperaba. De aquí a deshacer
-        // ya no hay espera, así que ninguna otra recarga se cuela.
-        enLaCola || recargasDelBorrador != recargas
+    private suspend fun rondaVaASubir(key: String): Boolean = withContext(NonCancellable) {
+        try { syncOutbox.observarEstado(key).first().let { it != null && it != com.avoqado.pos.core.data.local.database.SyncIntentEntity.STATUS_REJECTED } }
+        catch (_: Exception) { true }
     }
 
-    /** D16: se cerró la pantalla a media escritura. Si la ronda ya está guardada su comanda sale igual; si no, vuelve a «por enviar». */
-    private suspend fun alCancelarLaRonda(vId: String, session: TableSession.Active, lines: List<PendingLine>, key: String, recargas: Long) =
+    /** D16: se cerró la pantalla a media escritura. Si la ronda va a subir su comanda sale igual; si no, vuelve a «por enviar». */
+    private suspend fun alCancelarLaRonda(vId: String, session: TableSession.Active, lines: List<PendingLine>, key: String) =
         withContext(NonCancellable) {
-            if (rondaYaGuardada(key, recargas)) printRoundComandas(vId, session, lines, refreshFloor = false, servidorLaTiene = false, roundKey = key)
+            if (rondaVaASubir(key)) printRoundComandas(vId, session, lines, refreshFloor = false, servidorLaTiene = false, roundKey = key)
             else finishDraftRound(key, keepPending = true)
         }
     private fun restoreDraft(vId: String, session: TableSession.Active, force: Boolean = false) {
@@ -658,12 +658,15 @@ class TableOrderViewModel @Inject constructor(
             val restoredSession = tableSession.current() ?: session
             draftRecoveryFailed = false
             draftScope = scope; draftRounds = snapshot.rounds; draftDates = snapshot.createdAtLocal
-            recargasDelBorrador++
             draftRouting = snapshot.preparationRouting
             _check.value = snapshot.cachedCheck?.takeIf { it.id == canonicalId }
-            _pending.value = snapshot.pending
+            // D16: la ronda que «Enviar» está guardando es SUYA (ver [rondaEnVuelo]): sus productos siguen en pantalla hasta su desenlace,
+            // ni se pinta «Por sincronizar» ni se recupera aquí. Su desenlace la encola o la deshace.
+            val enVuelo = rondaEnVuelo?.takeIf { it in snapshot.rounds }
+            val idsEnVuelo = enVuelo?.let { k -> snapshot.rounds.getValue(k).map { it.item.id }.toSet() }.orEmpty()
+            _pending.value = _pending.value.filter { it.item.id in idsEnVuelo } + snapshot.pending
             _check.value?.let { reconcileDraftRounds(it) }
-            val ordered = draftRounds.entries.sortedBy { snapshot.createdAtLocal[it.key] ?: 0L }
+            val ordered = draftRounds.entries.filter { it.key != enVuelo }.sortedBy { snapshot.createdAtLocal[it.key] ?: 0L }
             _queued.value = ordered.flatMap { com.avoqado.pos.tables.data.stampTableRoundLines(it.value, it.key) }
             // D5 · B2b (r4 #3): mientras se re-encola el borrador, el saldo sin red queda en gris y no se toma foto.
             recuperandoBorrador++
@@ -1035,98 +1038,106 @@ class TableOrderViewModel @Inject constructor(
                 return@launch
             }
             val roundKey = java.util.UUID.randomUUID().toString()
-            try { stageDraftRound(vId, session.orderId, roundKey, lines) }
-            catch (_: Exception) { _isSending.value = false; onDone(false, "No se pudo guardar la ronda — intenta de nuevo"); return@launch }
-            val recargas = recargasDelBorrador
-            // Offline-first Corte B: una sesión PROVISIONAL (mesa abierta sin
-            // red) nunca toca el server directo — su orden aún no existe allá.
-            if (session.isProvisional) {
-                // Offline-first: la ronda se escribe como intent ADD_ITEMS (write-ahead) y se marca «Por sincronizar». El reducer le
-                // pone a cada renglón `sync:<intentId>:<idx>`.
-                try {
-                    syncOutbox.enqueue(vId, com.avoqado.pos.core.data.sync.SyncIntentTypes.ADD_ITEMS,
-                        payloadDeRonda(session, RondaConLlave.conLlaves(requests, roundKey)), id = roundKey, createdAtLocal = draftDates[roundKey])
-                } catch (e: CancellationException) { alCancelarLaRonda(vId, session, lines, roundKey, recargas); throw e }
-                catch (_: Exception) {
-                    // D16: sólo vuelve a «por enviar» si NADIE más la tiene; si no, es una ronda encolada más.
-                    if (!rondaYaGuardada(roundKey, recargas)) {
-                        // D5 · B2a (Codex b2a-r1 #2): el saldo en memoria ya no se asegura; el siguiente «Pagar» lo rearma de disco.
-                        tableSession.marcarSaldoDesconocido(vId, session.idsDeLaOrden, contextoDeSesion)
-                        val deshecha = finishDraftRound(roundKey, keepPending = true); _isSending.value = false
-                        onDone(false, if (deshecha) "No se pudo guardar la ronda sin conexión — intenta de nuevo" else RONDA_SE_RECUPERA_AL_REABRIR)
-                        return@launch
-                    }
-                }
-                marcarRondaEncolada(vId, session, lines, roundKey, onDone)
-                return@launch
-            }
+            rondaEnVuelo = roundKey
+            try { enviarRondaGuardada(vId, session, lines, requests, roundKey, onDone) }
+            finally { if (rondaEnVuelo == roundKey) rondaEnVuelo = null }
+        }
+    }
 
-            // Etapa 3 del KDS (spec §5): cada renglón lleva su llave y la red de seguridad se escribe RETENIDA antes de
-            // la red. Si la respuesta se pierde, el replay lleva las MISMAS llaves y el servidor deduplica.
-            val conLlaves = RondaConLlave.conLlaves(requests, roundKey)
-            // Task 7 review (2026-09-28): `addItemsToOrder` no es transaccional y hace el CAS de versión AL FINAL
-            // — un 409 (perdió el CAS) o un 5xx a medio POST pueden dejar filas YA escritas. Se necesita saber cuál
-            // fue el último error para decidir el mensaje del desenlace `Encolada` (¿de verdad no hay red, o SÍ hay
-            // red pero no se pudo confirmar?).
-            var ultimoErrorEnLinea: Throwable? = null
-            val desenlace = try {
-                RondaConLlave.enviar(
-                    guardarRetenido = {
-                        bloqueoDeSaldo(vId, session, revisarSaldo = false)?.let { throw IllegalStateException(it) }
-                        syncOutbox.enqueue(
-                            vId,
-                            com.avoqado.pos.core.data.sync.SyncIntentTypes.ADD_ITEMS,
-                            payloadDeRonda(session, conLlaves),
-                            id = roundKey,
-                            retenido = true,
-                            createdAtLocal = draftDates[roundKey],
-                        )
-                    },
-                    enLinea = {
-                        enviarRondaEnLinea(vId, session, conLlaves).onFailure { ultimoErrorEnLinea = it }
-                    },
-                    soltar = { syncOutbox.soltar(vId, roundKey) },
-                    descartar = { syncOutbox.descartar(vId, roundKey) },
-                    esErrorDeRed = { !esRechazoDefinitivoDeRonda(it) },
-                )
-            } catch (e: CancellationException) { alCancelarLaRonda(vId, session, lines, roundKey, recargas); throw e } // D16 (Codex r0 #2)
-            when (desenlace) {
-                is RondaConLlave.Desenlace.Enviada -> {
-                    // Saved — hand control back IMMEDIATELY; printing and the floor refresh are slow network hops.
-                    tableSession.updateVersion(desenlace.valor.version)
-                    rondasConfirmadas += roundKey
-                    _queued.value += com.avoqado.pos.tables.data.stampTableRoundLines(lines, roundKey)
-                    sacarDePendientes(lines) // D16: ya está en el servidor, aunque el disco no deje guardar
+    /** El cuerpo de [sendRound] desde que la ronda se guarda en el borrador; [rondaEnVuelo] es suya mientras corre. */
+    private suspend fun enviarRondaGuardada(vId: String, session: TableSession.Active, lines: List<PendingLine>,
+        requests: List<AddOrderItemRequest>, roundKey: String, onDone: (Boolean, String) -> Unit) {
+        try { stageDraftRound(vId, session.orderId, roundKey, lines) }
+        catch (_: Exception) { _isSending.value = false; onDone(false, "No se pudo guardar la ronda — intenta de nuevo"); return }
+        // Offline-first Corte B: una sesión PROVISIONAL (mesa abierta sin
+        // red) nunca toca el server directo — su orden aún no existe allá.
+        if (session.isProvisional) {
+            // Offline-first: la ronda se escribe como intent ADD_ITEMS (write-ahead) y se marca «Por sincronizar». El reducer le
+            // pone a cada renglón `sync:<intentId>:<idx>`.
+            try {
+                syncOutbox.enqueue(vId, com.avoqado.pos.core.data.sync.SyncIntentTypes.ADD_ITEMS,
+                    payloadDeRonda(session, RondaConLlave.conLlaves(requests, roundKey)), id = roundKey, createdAtLocal = draftDates[roundKey])
+            } catch (e: CancellationException) { alCancelarLaRonda(vId, session, lines, roundKey); throw e }
+            catch (_: Exception) {
+                // D16: sólo vuelve a «por enviar» si la cola dice que no va a subir; si va a subir, es una ronda encolada más.
+                if (!rondaVaASubir(roundKey)) {
+                    // D5 · B2a (Codex b2a-r1 #2): el saldo en memoria ya no se asegura; el siguiente «Pagar» lo rearma de disco.
+                    tableSession.marcarSaldoDesconocido(vId, session.idsDeLaOrden, contextoDeSesion)
+                    val deshecha = finishDraftRound(roundKey, keepPending = true); _isSending.value = false
+                    onDone(false, if (deshecha) "No se pudo guardar la ronda sin conexión — intenta de nuevo" else RONDA_SE_RECUPERA_AL_REABRIR)
+                    return
+                }
+            }
+            marcarRondaEncolada(vId, session, lines, roundKey, onDone)
+            return
+        }
+
+        // Etapa 3 del KDS (spec §5): cada renglón lleva su llave y la red de seguridad se escribe RETENIDA antes de
+        // la red. Si la respuesta se pierde, el replay lleva las MISMAS llaves y el servidor deduplica.
+        val conLlaves = RondaConLlave.conLlaves(requests, roundKey)
+        // Task 7 review (2026-09-28): `addItemsToOrder` no es transaccional y hace el CAS de versión AL FINAL
+        // — un 409 (perdió el CAS) o un 5xx a medio POST pueden dejar filas YA escritas. Se necesita saber cuál
+        // fue el último error para decidir el mensaje del desenlace `Encolada` (¿de verdad no hay red, o SÍ hay
+        // red pero no se pudo confirmar?).
+        var ultimoErrorEnLinea: Throwable? = null
+        val desenlace = try {
+            RondaConLlave.enviar(
+                guardarRetenido = {
+                    bloqueoDeSaldo(vId, session, revisarSaldo = false)?.let { throw IllegalStateException(it) }
+                    syncOutbox.enqueue(
+                        vId,
+                        com.avoqado.pos.core.data.sync.SyncIntentTypes.ADD_ITEMS,
+                        payloadDeRonda(session, conLlaves),
+                        id = roundKey,
+                        retenido = true,
+                        createdAtLocal = draftDates[roundKey],
+                    )
+                },
+                enLinea = {
+                    enviarRondaEnLinea(vId, session, conLlaves).onFailure { ultimoErrorEnLinea = it }
+                },
+                soltar = { syncOutbox.soltar(vId, roundKey) },
+                descartar = { syncOutbox.descartar(vId, roundKey) },
+                esErrorDeRed = { !esRechazoDefinitivoDeRonda(it) },
+            )
+        } catch (e: CancellationException) { alCancelarLaRonda(vId, session, lines, roundKey); throw e } // D16 (Codex r0 #2)
+        when (desenlace) {
+            is RondaConLlave.Desenlace.Enviada -> {
+                // Saved — hand control back IMMEDIATELY; printing and the floor refresh are slow network hops.
+                tableSession.updateVersion(desenlace.valor.version)
+                rondasConfirmadas += roundKey
+                _queued.value += com.avoqado.pos.tables.data.stampTableRoundLines(lines, roundKey)
+                sacarDePendientes(lines) // D16: ya está en el servidor, aunque el disco no deje guardar
+                _isSending.value = false
+                onDone(true, if (lines.any { it.item.serviceCourse?.preparationVersion == 1 })
+                    "Comanda registrada — Mesa ${session.tableNumber}" else "Ronda enviada a cocina — Mesa ${session.tableNumber}")
+                loadCheck()
+                printRoundComandas(vId, session, lines, refreshFloor = true, servidorLaTiene = true, roundKey = roundKey)
+            }
+            RondaConLlave.Desenlace.Encolada -> {
+                // La MISMA red de seguridad quedó suelta en la cola (misma llave); el replay la reproduce y el
+                // reducer deduplica por (orderId, externalId). El mensaje SÍ importa: "Sin conexión" sólo si de
+                // verdad no hay red — un 409/5xx con red viva es un caso distinto (ver constantes arriba).
+                val motivo = ultimoErrorEnLinea?.let { if (isNetworkError(it)) MENSAJE_RONDA_SIN_CONEXION else MENSAJE_RONDA_INCIERTA }
+                    ?: MENSAJE_RONDA_SIN_CONEXION
+                marcarRondaEncolada(vId, session, lines, roundKey, onDone, motivo)
+            }
+            is RondaConLlave.Desenlace.Rechazada -> {
+                finishDraftRound(roundKey, keepPending = true)
+                _isSending.value = false
+                repository.refresh(vId)
+                onDone(false, textoDeRondaRechazada(desenlace.error))
+            }
+            is RondaConLlave.Desenlace.NoSeGuardo -> {
+                // D16: si la fila quedó (no se pudo borrar), al arrancar se suelta y sube: es una ronda encolada, no un reintento. Se
+                // suelta ANTES de preguntar (Codex r3 #1): de la respuesta a la comanda ya no hay espera.
+                withContext(NonCancellable) { runCatching { syncOutbox.soltar(vId, roundKey) } } // sin fila no hace nada
+                if (rondaVaASubir(roundKey)) {
+                    marcarRondaEncolada(vId, session, lines, roundKey, onDone, MENSAJE_RONDA_INCIERTA)
+                } else {
+                    val deshecha = finishDraftRound(roundKey, keepPending = true)
                     _isSending.value = false
-                    onDone(true, if (lines.any { it.item.serviceCourse?.preparationVersion == 1 })
-                        "Comanda registrada — Mesa ${session.tableNumber}" else "Ronda enviada a cocina — Mesa ${session.tableNumber}")
-                    loadCheck()
-                    printRoundComandas(vId, session, lines, refreshFloor = true, servidorLaTiene = true, roundKey = roundKey)
-                }
-                RondaConLlave.Desenlace.Encolada -> {
-                    // La MISMA red de seguridad quedó suelta en la cola (misma llave); el replay la reproduce y el
-                    // reducer deduplica por (orderId, externalId). El mensaje SÍ importa: "Sin conexión" sólo si de
-                    // verdad no hay red — un 409/5xx con red viva es un caso distinto (ver constantes arriba).
-                    val motivo = ultimoErrorEnLinea?.let { if (isNetworkError(it)) MENSAJE_RONDA_SIN_CONEXION else MENSAJE_RONDA_INCIERTA }
-                        ?: MENSAJE_RONDA_SIN_CONEXION
-                    marcarRondaEncolada(vId, session, lines, roundKey, onDone, motivo)
-                }
-                is RondaConLlave.Desenlace.Rechazada -> {
-                    finishDraftRound(roundKey, keepPending = true)
-                    _isSending.value = false
-                    repository.refresh(vId)
-                    onDone(false, textoDeRondaRechazada(desenlace.error))
-                }
-                is RondaConLlave.Desenlace.NoSeGuardo -> {
-                    // D16: si la fila quedó (no se pudo borrar), al arrancar se suelta y sube: es una ronda encolada, no un reintento.
-                    if (rondaYaGuardada(roundKey, recargas)) {
-                        withContext(NonCancellable) { runCatching { syncOutbox.soltar(vId, roundKey) } } // si falla, se suelta al arrancar
-                        marcarRondaEncolada(vId, session, lines, roundKey, onDone, MENSAJE_RONDA_INCIERTA)
-                    } else {
-                        val deshecha = finishDraftRound(roundKey, keepPending = true)
-                        _isSending.value = false
-                        onDone(false, if (deshecha) "No se pudo guardar la ronda — intenta de nuevo" else RONDA_SE_RECUPERA_AL_REABRIR)
-                    }
+                    onDone(false, if (deshecha) "No se pudo guardar la ronda — intenta de nuevo" else RONDA_SE_RECUPERA_AL_REABRIR)
                 }
             }
         }
