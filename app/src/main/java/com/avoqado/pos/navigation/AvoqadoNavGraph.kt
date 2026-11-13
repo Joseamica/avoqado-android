@@ -121,6 +121,7 @@ interface FormatterEntryPoint {
     fun resolutorDeTarjetas(): com.avoqado.pos.giftcards.data.ResolutorDeSolicitudesDeTarjeta
     fun secureStorage(): com.avoqado.pos.core.data.local.SecureStorage
     fun vigilanteDePedidosEnLinea(): com.avoqado.pos.onlineorders.data.VigilanteDePedidosEnLinea
+    fun vigilanteDeReparto(): com.avoqado.pos.kds.data.VigilanteDeReparto
 }
 
 @Composable
@@ -402,6 +403,8 @@ private fun MainScaffold(
     }
 
     val vigilanteDePedidos = remember { entryPoint.vigilanteDePedidosEnLinea() }
+    // Rappi/Uber: la franja «Nuevo pedido de Rappi #folio» en cualquier pantalla (12-nov-2026).
+    val vigilanteDeReparto = remember { entryPoint.vigilanteDeReparto() }
     // Los rechazos por permiso (403) eran invisibles: el botón simplemente no
     // hacía nada. Se taparon con un Toast, que en la Sunmi con pantalla de cliente
     // vuelve a ser invisible — el mismo agujero, otra forma.
@@ -523,6 +526,7 @@ private fun MainScaffold(
                         avisoDeRacha = avisoDeRacha,
                     )
                     com.avoqado.pos.onlineorders.presentation.BannerDePedidoEnLinea(vigilanteDePedidos)
+                    com.avoqado.pos.kds.presentation.BannerDeReparto(vigilanteDeReparto)
                     com.avoqado.pos.sync.presentation.QuarantineBanner(count=salesBannerCount,
                         historyAvailable=salesSummary==null && roleManager.canResolveQuarantine,historyUnavailable=q15HistoryUnavailable,
                         actionLabel=salesBannerActionLabel) {
@@ -824,6 +828,7 @@ private fun MainScaffold(
                         avisoDeRacha = avisoDeRacha,
                     )
                     com.avoqado.pos.onlineorders.presentation.BannerDePedidoEnLinea(vigilanteDePedidos)
+                    com.avoqado.pos.kds.presentation.BannerDeReparto(vigilanteDeReparto)
                     com.avoqado.pos.sync.presentation.QuarantineBanner(count=salesBannerCount,
                         historyAvailable=salesSummary==null && roleManager.canResolveQuarantine,historyUnavailable=q15HistoryUnavailable,
                         actionLabel=salesBannerActionLabel) {
