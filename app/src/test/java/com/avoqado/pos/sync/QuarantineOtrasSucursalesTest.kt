@@ -56,7 +56,7 @@ class QuarantineOtrasSucursalesTest {
             textoDeCobroDeOtraSucursal("Sucursal A"),
         )
         assertEquals(
-            "Es de otra sucursal. Que entre alguien con acceso a esa sucursal para resolverla (Más › Cambiar usuario).",
+            "Es de otra sucursal a la que esta sesión no tiene acceso: avisa a un gerente de esa sucursal.",
             textoDeCobroDeOtraSucursal(null),
         )
     }

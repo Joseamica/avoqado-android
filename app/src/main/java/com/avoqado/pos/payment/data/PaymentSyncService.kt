@@ -1280,23 +1280,29 @@ class PaymentSyncService @Inject constructor(
 
     /**
      * D52: las MISMAS filas que cuenta [blockingWorkCount] (la cola PENDING/SYNCING, los `EN_VUELO` sin la cortesía ya revisada y los
-     * FAILED sin revisar), con su sucursal. `""` = filas viejas sin sucursal: salen con la que esté abierta.
+     * FAILED sin revisar), con su sucursal. `""` = filas viejas sin sucursal: salen con la que esté abierta. Codex D52 r1 #3: una fila que
+     * cambia de estado entre dos lecturas no se cuenta dos veces.
      */
     private suspend fun filasQueFrenan(): List<PendingPaymentEntity> =
-        dao.getUnsyncedPayments() + dao.enVueloDeTodas().filterNot(RevisionCanceladoCero::revisado) +
-            dao.getFailedPayments().filterNot(RevisionCanceladoCero::revisado)
+        (dao.getUnsyncedPayments() + dao.enVueloDeTodas().filterNot(RevisionCanceladoCero::revisado) +
+            dao.getFailedPayments().filterNot(RevisionCanceladoCero::revisado)).distinctBy { it.id }
+
+    /** D52: lo que frena, de UNA foto: lo de [deAqui] (la sucursal abierta y lo viejo sin sucursal) y lo de otras, por sucursal. */
+    data class FrenoPorSucursal(val deAqui: Int, val deOtras: Map<String, Int>)
+
+    /** D52: [blockingWorkCount] partido por sucursal en UNA foto (Codex r1 #4: restar dos lecturas inventaba trabajo de aquí). */
+    suspend fun frenoPorSucursal(venueId: String): FrenoPorSucursal {
+        val (aqui, otras) = filasQueFrenan().partition { it.venueId == venueId || it.venueId.isBlank() }
+        return FrenoPorSucursal(aqui.size, otras.groupingBy { it.venueId }.eachCount())
+    }
 
     /**
      * D52: lo que frena DEJAR la sucursal [venueId] (cambiar de sucursal): lo suyo y lo viejo sin sucursal. Lo de otra sucursal ya espera
      * a la suya; ir hacia ella es justo la salida.
      */
-    suspend fun bloqueantesDeLaSucursal(venueId: String): Int = filasQueFrenan().count { it.venueId == venueId || it.venueId.isBlank() }
+    suspend fun bloqueantesDeLaSucursal(venueId: String): Int = frenoPorSucursal(venueId).deAqui
 
-    /** D52: lo que frena cerrar sesión y es de OTRA sucursal (sólo se ve y se resuelve con ella abierta), por sucursal. */
-    suspend fun bloqueantesDeOtrasSucursales(venueId: String): Map<String, Int> =
-        pendientesDeOtrasSucursales(venueId).groupingBy { it.venueId }.eachCount()
-
-    /** D52: esas filas, para que «Operaciones por revisar» las enseñe con el nombre de su sucursal (sin acciones). */
+    /** D52: las filas de otras sucursales, para que «Operaciones por revisar» las enseñe con su nombre (sin acciones). */
     suspend fun pendientesDeOtrasSucursales(venueId: String): List<PendingPaymentEntity> =
         filasQueFrenan().filter { it.venueId != venueId && it.venueId.isNotBlank() }
 
@@ -1313,12 +1319,9 @@ class PaymentSyncService @Inject constructor(
      * app de antes) ya no lo frena: no sale solo y el gerente tiene que poder entrar a resolverlo; conserva su `staffId`. «Cerrar sesión» y
      * cambiar de sucursal siguen contándolos todos ([blockingWorkCount]).
      */
-    suspend fun sinEnviarParaElRelevo(): Int {
-        // D52: la cola de OTRA sucursal sólo sale con su sucursal abierta (y conserva su `staffId`): no frena el relevo de ésta.
-        val sucursal = secureStorage.venueId.orEmpty()
-        return dao.getUnsyncedPayments().count { it.venueId == sucursal || it.venueId.isBlank() } +
-            cashPaymentRepository.enVueloQueSeResuelveSolo()
-    }
+    // ponytail (Codex D52 r1 #1): la cola de OTRA sucursal también frena el relevo. La cola la manda con la sesión vigente, y si quien
+    // entra no tiene esa sucursal el servidor contesta 403 y el cobro queda FAILED (anotado como AJENO en la deuda).
+    suspend fun sinEnviarParaElRelevo(): Int = dao.getUnsyncedPayments().size + cashPaymentRepository.enVueloQueSeResuelveSolo()
 
     /** D53: los apartados del local que esperan a una persona ([CashPaymentRepository.enVueloPorRevisar]); el aviso los cuenta «por revisar». */
     suspend fun sinConfirmarPorRevisar(): Int = cashPaymentRepository.enVueloPorRevisar()

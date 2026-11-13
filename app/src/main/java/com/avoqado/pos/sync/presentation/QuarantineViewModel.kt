@@ -612,4 +612,4 @@ data class CobroDeOtraSucursal(val cobro: PendingPaymentEntity, val sucursal: St
 /** D52: qué hacer con un cobro de otra sucursal. Sin botones: los permisos son por sucursal. PURA. */
 fun textoDeCobroDeOtraSucursal(sucursal: String?): String =
     if (sucursal != null) "Es de $sucursal. Cambia a $sucursal para resolverla (Más › Cambiar de establecimiento)."
-    else "Es de otra sucursal. Que entre alguien con acceso a esa sucursal para resolverla (Más › Cambiar usuario)."
+    else "Es de otra sucursal a la que esta sesión no tiene acceso: avisa a un gerente de esa sucursal."

@@ -574,7 +574,7 @@ class AppStateVenueRecoveryTest {
             coEvery { blockingWorkCount() } returns cobrosRechazados + deOtrasSucursales.values.sum()
             coEvery { porRevisarCount() } returns cobrosRechazados
             coEvery { porRevisarDeLaSucursal(any()) } returns cobrosRechazados
-            coEvery { bloqueantesDeOtrasSucursales(any()) } returns deOtrasSucursales
+            coEvery { frenoPorSucursal(any()) } returns PaymentSyncService.FrenoPorSucursal(cobrosRechazados, deOtrasSucursales)
             coEvery { sinEnviarCount() } returns 0
         }
         val syncOutbox = mockk<SyncOutbox>(relaxed = true) {

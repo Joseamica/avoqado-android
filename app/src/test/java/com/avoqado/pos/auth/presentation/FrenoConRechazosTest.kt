@@ -106,11 +106,13 @@ class FrenoConRechazosTest {
         assertEquals(null, textoDeLoDeOtrasSucursales(emptyMap(), nombres))
     }
 
-    /** D52: una sucursal a la que esta persona no tiene acceso: que entre alguien que sí. */
-    @Test fun `P1 D52 lo de una sucursal sin acceso pide que entre alguien que la tenga`() {
+    /**
+     * D52: una sucursal a la que esta sesión no tiene acceso. Codex r1 #2: «Cambiar usuario» no lleva a otra sucursal (el PIN es de la
+     * abierta), así que no se promete ese camino: sólo a quién avisar.
+     */
+    @Test fun `P1 D52 lo de una sucursal sin acceso no promete un camino que no existe`() {
         assertEquals(
-            "Hay 1 operación pendiente de otra sucursal: pídele a alguien con acceso a esa sucursal que entre y la resuelva " +
-                "(Más › Cambiar usuario).",
+            "Hay 1 operación pendiente de otra sucursal a la que esta sesión no tiene acceso: avisa a un gerente de esa sucursal.",
             textoDeLoDeOtrasSucursales(mapOf("v-ajena" to 1), mapOf("v-centro" to "Sucursal Centro")),
         )
     }

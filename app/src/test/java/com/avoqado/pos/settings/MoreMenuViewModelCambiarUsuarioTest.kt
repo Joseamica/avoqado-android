@@ -219,9 +219,12 @@ class MoreMenuViewModelCambiarUsuarioTest {
         }
     }
 
-    /** D52: un cobro por enviar de OTRA sucursal sólo sale con su sucursal abierta: no frena el relevo de ésta. */
+    /**
+     * Codex D52 r1 #1: un cobro por enviar de OTRA sucursal SÍ sigue frenando el relevo: la cola lo manda con la sesión vigente y, si quien
+     * entra no tiene esa sucursal, el servidor contesta 403 y el cobro queda FAILED.
+     */
     @Test
-    fun `P1 D52 un cobro por enviar de otra sucursal no frena cambiar de usuario`() = runTest {
+    fun `P1 D52 un cobro por enviar de otra sucursal sigue frenando cambiar de usuario`() = runTest {
         Q16PrecioCapturadoTest.Fixture().use { f ->
             cobrosSinNada(f)
             coEvery { f.dao.getUnsyncedPayments() } returns listOf(cobroFallido().copy(id = "por-enviar", venueId = "otra-sucursal", syncStatus = "PENDING"))
@@ -229,7 +232,7 @@ class MoreMenuViewModelCambiarUsuarioTest {
 
             vm.switchUser("1234")
 
-            coVerify(exactly = 1) { auth.switchUser("1234") }
+            coVerify(exactly = 0) { auth.switchUser(any()) }
         }
     }
 

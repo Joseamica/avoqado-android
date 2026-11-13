@@ -558,7 +558,10 @@ class AppState @Inject constructor(
         val sello = secureStorage.generacion
         viewModelScope.launch {
             val venueId = secureStorage.venueId
-            val blocking = paymentSyncService.blockingWorkCount() +
+            // D52 (Codex r1 #4): los cobros de aquí y los de otras sucursales salen de UNA foto, no de restar dos lecturas.
+            val cobros = venueId?.let { paymentSyncService.frenoPorSucursal(it) }
+            val deOtras = cobros?.deOtras.orEmpty()
+            val deAqui = (cobros?.deAqui ?: paymentSyncService.blockingWorkCount()) +
                 (venueId?.let { syncOutbox.blockingWorkCount(it) } ?: 0) +
                 secureStorage.areaTicketRecoveryCount() +
                 // Las llegadas del kiosco sólo se mandan con SU sucursal activa: entrar a otra las dejaría varadas.
@@ -567,10 +570,9 @@ class AppState @Inject constructor(
                 (pendingGrantQueue?.bloqueantes(venueId) ?: 0) +
                 // Retiro con gerente (Codex r3 #12): la cola del cajón se manda con la sesión que esté; no se cierra encima.
                 (venueId?.let { cashDrawerRepository.movimientosSinSubir(it) } ?: 0)
+            val blocking = deAqui + deOtras.values.sum()
             if (blocking > 0) {
                 // D52: lo de OTRA sucursal se dice aparte, con su nombre (sólo se ve y se resuelve con ella abierta).
-                val deOtras = venueId?.let { paymentSyncService.bloqueantesDeOtrasSucursales(it) }.orEmpty()
-                val deAqui = (blocking - deOtras.values.sum()).coerceAtLeast(0)
                 // D34: lo rechazado frena igual, pero el texto dice qué hacer según quién puede resolverlo.
                 val conRechazo = if (deAqui > 0) {
                     rechazadasPorRevisar(paymentSyncService, syncOutbox, pendingGrantQueue, venueId).coerceAtMost(deAqui)
@@ -641,7 +643,7 @@ internal suspend fun rechazadasPorRevisar(
 
 /**
  * D52: el aviso de lo que frena y es de OTRAS sucursales: de cuál es y cómo llegar. Si esta persona tiene esa sucursal, que cambie a
- * ella; si no (no está en su lista), que entre alguien que sí. PURA. [nombres]: las sucursales de esta persona (`venuesList`).
+ * ella; si no (no está en su lista), sólo se dice a quién avisar. PURA. [nombres]: las sucursales de esta persona (`venuesList`).
  */
 internal fun textoDeLoDeOtrasSucursales(porSucursal: Map<String, Int>, nombres: Map<String, String>): String? {
     val total = porSucursal.values.sum()
@@ -650,8 +652,8 @@ internal fun textoDeLoDeOtrasSucursales(porSucursal: Map<String, Int>, nombres: 
     val cuantas = if (una) "Hay 1 operación pendiente" else "Hay $total operaciones pendientes"
     val conocidas = porSucursal.keys.mapNotNull { nombres[it] }
     if (conocidas.size < porSucursal.size) {
-        return "$cuantas de otra sucursal: pídele a alguien con acceso a esa sucursal que entre y ${if (una) "la" else "las"} resuelva " +
-            "(Más › Cambiar usuario)."
+        // Codex D52 r1 #2: «Cambiar usuario» no lleva a otra sucursal (el PIN es de la abierta): no se promete ese camino.
+        return "$cuantas de otra sucursal a la que esta sesión no tiene acceso: avisa a un gerente de esa sucursal."
     }
     val cuales = if (conocidas.size == 1) conocidas.single() else conocidas.dropLast(1).joinToString(", ") + " y " + conocidas.last()
     val como = if (conocidas.size == 1) "cambia a esa sucursal" else "cambia a cada sucursal"
