@@ -174,6 +174,9 @@ class PaymentSyncService @Inject constructor(
              */
             cajaParaElServidor: String? = null,
         ): String = buildJsonObject {
+            // La hora de la PRIMERA captura (Q15); fila heredada sin ella: el `createdAt`. Un «Reintentar» reescribe `createdAt`, no la captura.
+            val horaDeLaVenta = ConciliacionDelCobro.leerCaptura(payment.q15CaptureJson, payment.venueId, payment.id)
+                ?.primeraCapturaEn ?: payment.createdAt
             put("venueId", venueId)
             put("amount", payment.amountCents)
             put("tip", payment.tipCents)
@@ -216,7 +219,7 @@ class PaymentSyncService @Inject constructor(
                 // La hora de la venta, sólo en EFECTIVO (sin tipo del catálogo): el SERVIDOR fecha la lealtad con ella (promoción
                 // vigente y tope diario de sellos) en vez de con la hora del reenvío. Es la de la fila (se guarda ANTES de la red), así
                 // que cada reintento manda la misma. Tarjeta y demás: sin campo, como hoy. Un SERVIDOR viejo lo ignora.
-                if (tenderId == null && payment.method == "CASH") put("createdAtLocal", payment.createdAt)
+                if (tenderId == null && payment.method == "CASH") put("createdAtLocal", horaDeLaVenta)
             }
             // 🔴 LA CAJA DE LA VENTA (efectivo sin red en el turno correcto): el servidor saca de ahí el turno de la venta, y una
             // venta cuyo turno ya cerró queda aparte con aviso en vez de caer en el turno nuevo. Sólo cuenta con
@@ -230,8 +233,7 @@ class PaymentSyncService @Inject constructor(
                 // folio cobrado antes de vencer revive con su comanda, y el sello cae en el día de la venta. Como la TPV. Producción la
                 // acepta y la ignora (`/pay` no tiene esquema). Codex r1: la PRIMERA captura (la de la captura Q15, que manda); el
                 // `createdAt` de la fila es la del último intento con la misma llave. Fila heredada sin esa hora: el `createdAt`.
-                put("createdAtLocal", ConciliacionDelCobro.leerCaptura(payment.q15CaptureJson, payment.venueId, payment.id)
-                    ?.primeraCapturaEn ?: payment.createdAt)
+                put("createdAtLocal", horaDeLaVenta)
                 payment.lineasDelTicketJson
                     ?.let { runCatching { RESPONSE_JSON.parseToJsonElement(it) as? kotlinx.serialization.json.JsonObject }.getOrNull() }
                     ?.let { put("lineasDelTicket", it) }

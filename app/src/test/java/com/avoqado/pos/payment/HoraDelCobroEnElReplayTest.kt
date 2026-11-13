@@ -22,7 +22,7 @@ import org.junit.Test
  * Regla C del folio revivido (founder, 10-nov): el reenvío sin red de un cobro de ORDEN (`POST /orders/:id/pay` de la cola) manda la
  * hora en que el cajero cobró, `createdAtLocal`, en epoch ms (número): el SERVIDOR la lee con `horaDeLaVenta` (sólo número o texto de
  * dígitos; un ISO lo tomaría como ilegible) y la guarda en `Order.loyaltySaleAt`. Es la hora de la PRIMERA captura (la de la fila), no
- * la del reenvío. La venta rápida (`/fast`) no la manda: queda como hoy.
+ * la del reenvío. La venta rápida (`/fast`) en EFECTIVO también la manda (misma regla); con tarjeta u otro método, no.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class HoraDelCobroEnElReplayTest {
@@ -72,6 +72,14 @@ class HoraDelCobroEnElReplayTest {
             assertEquals(cobradoA, hora.long)
             assertEquals(true, (cuerpo["isOfflineReplay"] as JsonPrimitive).content.toBoolean())
         }
+    }
+
+    @Test fun `la venta rapida en efectivo tras reintentar manda la hora de la PRIMERA captura`() {
+        val captura = ConciliacionDelCobro.guardarCaptura(CapturaDelCobro(venueId = "venue-1", key = "llave-1",
+            amountCents = 13400, tipCents = 0, method = "CASH", primeraCapturaEn = cobradoA))
+        val fila = fila("FAST").copy(createdAt = cobradoA + 45 * 60_000L, q15CaptureJson = captura)
+        val cuerpo = Json.parseToJsonElement(PaymentSyncService.buildReplayBody(fila, "venue-1", esCobroDeOrden = false)).jsonObject
+        assertEquals(cobradoA, (cuerpo["createdAtLocal"] as JsonPrimitive).long)
     }
 
     @Test fun `la venta rapida con tarjeta u otro metodo no la manda`() {
