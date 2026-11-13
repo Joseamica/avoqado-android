@@ -249,6 +249,84 @@ class ModoCompatibleTest {
         assertEquals(listOf("m14" to "A"), x.deQuien())
     }
 
+    @Test
+    fun `p12d - una vuelta que ya ve a Y antes de que suba la época no usa los permisos de X`() = runTest {
+        val x = arbitro("X")
+        val y = arbitro("Y")
+        val red = red(mapOf("X" to x, "Y" to y))
+        val mesas = caja()
+        entra("m5")
+        coordinador(red, mesas).start()
+        runCurrent()
+        assertEquals(listOf("m5" to "A"), x.deQuien())
+
+        // El acquire de m6 a X: justo entonces la elección cambia a Y y X no contesta. La vuelta devuelve 0 y la siguiente sale sin
+        // pausa, ANTES de que el colector de peers suba la época: ya ve a Y con la época de X.
+        red.fija = {
+            discovery.peers.value = listOf(yo, viejoY)
+            red.fija = null
+            null
+        }
+        val desde = red.recibidos.size
+        mesas.abrirApertura("m6", "s1", "Ana", v)
+        runCurrent()
+
+        assertEquals(
+            "m5 se pide otra vez a Y: lo retenido era de X",
+            listOf(OP_ACQUIRE to "m6", OP_ACQUIRE to "m5", OP_ACQUIRE to "m6"),
+            red.ops(desde).take(3),
+        )
+        assertEquals(listOf("m5" to "A", "m6" to "A"), y.deQuien())
+    }
+
+    // MARK: - release sin respuesta y renew negado
+
+    @Test
+    fun `release sin respuesta - la mesa que ya no se desea sale de retenidas y no se vuelve a soltar`() = runTest {
+        val x = arbitro("X")
+        val red = red(mapOf("X" to x))
+        entra("m5")
+        coordinador(red, caja()).start()
+        runCurrent()
+        assertEquals(listOf("m5" to "A"), x.deQuien())
+
+        red.fija = { null } // X deja de contestar justo cuando A sale
+        sale()
+        runCurrent()
+        red.fija = null
+        advanceTimeBy(45_000)
+
+        assertEquals("un solo release", 1, red.ops().count { it == OP_RELEASE to "m5" })
+        assertTrue("ni se renueva", red.ops().drop(2).none { it.second == "m5" })
+        assertTrue("sin renovar, vence sola", x.activeLeases().isEmpty())
+    }
+
+    @Test
+    fun `renew negado - la mesa sale de retenidas y la apertura de esa vuelta da Taken`() = runTest {
+        val arbitros = mutableMapOf("X" to arbitro("X"))
+        val red = red(arbitros)
+        val mesas = caja()
+        entra("m5")
+        coordinador(red, mesas).start()
+        runCurrent()
+        // X se reinicia y B (app vieja) toma m5 antes de que A la renueve.
+        arbitros["X"] = arbitro("X").also { it.tomaB("m5") }
+        val desde = red.recibidos.size
+
+        advanceTimeBy(10_000)
+        val apertura = mesas.abrirApertura("m5", "s1", "Ana", v) // va en la misma vuelta que el renew
+        runCurrent()
+        assertEquals(LeaseProtocol.STATUS_DENIED, red.respuestaA(red.recibidos[desde])?.status)
+        assertEquals(LeaseOutcome.Taken("Beto"), mesas.esperar(apertura) { true })
+
+        advanceTimeBy(10_000)
+        runCurrent()
+        val ops = red.ops(desde)
+        assertEquals(OP_RENEW to "m5", ops.first())
+        assertEquals("salió de retenidas: nunca se vuelve a renovar", 1, ops.count { it == OP_RENEW to "m5" })
+        assertEquals("a los 20 s se pide de nuevo (el denied no se recuerda)", OP_ACQUIRE to "m5", ops.last())
+    }
+
     // MARK: - p12e (Codex plan r1 #3)
 
     @Test

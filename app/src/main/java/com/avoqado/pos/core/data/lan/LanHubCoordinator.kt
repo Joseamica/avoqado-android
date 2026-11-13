@@ -206,9 +206,13 @@ class LanHubCoordinator(
     }
 
     // ── Modo compatible (spec §3.5): con un árbitro VIEJO (sin `pm=1`) la declaración se traduce a permisos viejos ──────────────
-    /** Su único estado: mesa → época de cada permiso concedido, válido sólo en [epocaDeRetenidas]. Lo toca sólo el reconciliador. */
+    /**
+     * Su único estado: mesa → época de cada permiso concedido, válido sólo con [arbitroDeRetenidas] en [epocaDeRetenidas] (también el
+     * árbitro: una vuelta puede ver al nuevo antes de que el colector de peers suba la época). Lo toca sólo el reconciliador.
+     */
     private val retenidas = HashMap<String, Long>()
     private var epocaDeRetenidas = -1L
+    private var arbitroDeRetenidas: String? = null
     private var ultimaRenovacionMs = 0L
 
     /**
@@ -217,9 +221,10 @@ class LanHubCoordinator(
      * (Codex plan r1 #2); si no, la vuelta se abandona sin aplicar esa respuesta (0). Un `denied` sólo vale en ESTA vuelta (r1 #3).
      */
     private suspend fun vueltaCompat(arbitro: LanPeer, epoca: Long, d: MesasDeEstaCaja.Declaracion): Long {
-        if (epoca != epocaDeRetenidas) {
+        if (epoca != epocaDeRetenidas || arbitro.deviceId != arbitroDeRetenidas) {
             retenidas.clear() // lo concedido por el árbitro anterior vence solo a los 30 s
             epocaDeRetenidas = epoca
+            arbitroDeRetenidas = arbitro.deviceId
         }
         fun sigue() = mesas.epoca() == epoca && ArbiterElection.pick(discovery.peers.value)?.deviceId == arbitro.deviceId
         val deseadas = d.mesas + d.aperturas.map { it.tableId }

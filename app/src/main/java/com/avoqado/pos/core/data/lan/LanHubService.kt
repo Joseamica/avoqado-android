@@ -2,6 +2,9 @@ package com.avoqado.pos.core.data.lan
 
 import android.util.Log
 import com.avoqado.pos.core.data.local.SecureStorage
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -37,6 +40,9 @@ class LanHubService @Inject constructor(
     private var coordinator: LanHubCoordinator? = null
     private var venueActivo: String? = null
 
+    /** Sólo pruebas: el scope (y con él el reloj virtual) del coordinador que arma [start]. null = IO, como siempre. */
+    internal var scopeDePrueba: CoroutineScope? = null
+
     private val _enabled = MutableStateFlow(false)
     /** ¿El hub está corriendo? Falso = el POS trabaja como isla. */
     val enabled: StateFlow<Boolean> = _enabled.asStateFlow()
@@ -65,6 +71,7 @@ class LanHubService @Inject constructor(
             deviceId = transporte.deviceId,
             venueId = venueId,
             nombre = { secureStorage.selectedStaffNameForCurrentVenue ?: secureStorage.userFirstName.orEmpty() },
+            scope = scopeDePrueba ?: CoroutineScope(Dispatchers.IO + SupervisorJob()),
         )
         coordinator = hub
         venueActivo = venueId

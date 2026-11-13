@@ -7,10 +7,10 @@ import io.mockk.just
 import io.mockk.mockk
 import io.mockk.slot
 import io.mockk.verify
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.flowOf
-import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.test.advanceTimeBy
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -136,10 +136,10 @@ class LanHubServiceTest {
     }
 
     @Test
-    fun `D3 - release despierta al reconciliador - la mesa que dejó sale de su declaración enseguida, no al latido de 10 s`() = runBlocking {
+    fun `D3 - release despierta al reconciliador - la mesa que dejó sale de su declaración enseguida, no al latido de 10 s`() = runTest {
         var actual: String? = "m5"
         // La mesa actual cambia SIN avisar (flujo fijo): lo único que despierta al reconciliador es `release`.
-        val m = MesasDeEstaCaja({ actual }, flowOf(null), ContadorDeVidas({ 0L }, { true })) { System.nanoTime() / 1_000_000 }
+        val m = MesasDeEstaCaja({ actual }, flowOf(null), ContadorDeVidas({ 0L }, { true })) { testScheduler.currentTime }
         val arbitro = slot<(String) -> LeaseResponse>()
         val t = mockk<TransporteLan>(relaxed = true) {
             every { deviceId } returns "tablet-1"
@@ -147,28 +147,21 @@ class LanHubServiceTest {
             every { conectarHub(capture(arbitro)) } just Runs
         }
         every { secure.selectedStaffNameForCurrentVenue } returns "Juan"
-        val h = LanHubService(secure, t, mesas = m)
+        val h = LanHubService(secure, t, mesas = m).also { it.scopeDePrueba = backgroundScope }
         fun ocupadas() = arbitro.captured(LeaseProtocol.encode(LeaseRequest(op = LeaseProtocol.OP_LIST))).leases.orEmpty().map { it.tableId }
-        suspend fun hasta(cond: () -> Boolean) {
-            val fin = System.nanoTime() / 1_000_000 + 5_000 // holgura para una máquina cargada; el latido llegaría a los 10 s
-            while (!cond() && System.nanoTime() / 1_000_000 < fin) delay(20)
-        }
 
         h.start()
-        try {
-            hasta { ocupadas() == listOf("m5") }
-            delay(500) // que terminen las vueltas del arranque (la elección y la primera declaración despiertan en hilos de IO)
-            assertEquals("esta caja (el árbitro) declara m5", listOf("m5"), ocupadas())
-            actual = null
-            delay(300)
-            assertEquals("nada la despertó todavía", listOf("m5"), ocupadas())
+        runCurrent()
+        assertEquals("esta caja (el árbitro) declara m5", listOf("m5"), ocupadas())
+        actual = null
+        advanceTimeBy(5_000)
+        assertEquals("nada la despertó todavía", listOf("m5"), ocupadas())
 
-            h.release("m5")
-            hasta { ocupadas().isEmpty() }
+        h.release("m5")
+        runCurrent()
 
-            assertEquals(emptyList<String>(), ocupadas())
-        } finally {
-            h.stop()
-        }
+        assertEquals("salió un estado nuevo, sin esperar el latido", emptyList<String>(), ocupadas())
+        assertEquals(5_000L, testScheduler.currentTime)
+        h.stop()
     }
 }
