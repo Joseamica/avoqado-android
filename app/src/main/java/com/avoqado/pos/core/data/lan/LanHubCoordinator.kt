@@ -90,7 +90,9 @@ class LanHubCoordinator(
                     val arbitro = ArbiterElection.pick(peers)?.deviceId
                     if (arbitro != elegido) {
                         elegido = arbitro
-                        mesas.nuevaEpoca() // lo que conteste el árbitro anterior ya no vale (también X→Y→X)
+                        // Lo que conteste el árbitro anterior ya no vale. Un X→Y→X que este colector no alcanza a ver (el StateFlow sólo
+                        // le entrega el final) lo cubre `cambiosDeArbitro` en `sigueElegido` (Codex código r2 H2).
+                        mesas.nuevaEpoca()
                         if (arbitro == deviceId) {
                             server.asumirArbitraje(peers.filter { it.presencia && it.sirveLeases }.map { it.deviceId }.toSet() + deviceId)
                         } else {
@@ -156,19 +158,26 @@ class LanHubCoordinator(
      * siguiente vuelta. El orden importa (Codex plan r1 #7): el contexto local se revisa ANTES de mirar qué volvió.
      */
     internal suspend fun reconciliarUnaVez(): Long {
+        // 0. Lo que valida esta vuelta, ANTES de leer nada más (Codex código r2 H1 y H2): la época y cuántas veces cambió el árbitro.
+        val epoca = mesas.epoca()
+        val cambios = discovery.cambiosDeArbitro
+
         // 1. Sin número de vida o sin árbitro: isla. La PRIMERA lectura de `gen` (disco + commit) cae aquí, en el scope de IO.
         val gen = mesas.gen
         val arbitro = ArbiterElection.pick(discovery.peers.value)
-        if (gen == null || arbitro == null) return enIsla()
+        if (gen == null || arbitro == null) {
+            // Codex código r2 H1: «sin Hub» se aplica bajo el candado de la época y mirando los peers de AHORA. Si mientras tanto llegó
+            // un árbitro (o subió la época), una apertura pedida después no sale en isla: la siguiente vuelta se la pregunta.
+            return mesas.aplicarSiVigente(epoca, { gen == null || ArbiterElection.pick(discovery.peers.value) == null }) { enIsla() } ?: 0
+        }
 
-        // 2. Lo que valida la respuesta, capturado al mandar.
-        val epoca = mesas.epoca()
+        // 2. Lo que se manda.
         val seq = mesas.siguienteSeq()
         val declaracion = mesas.declaracion(venueId)
         val soyYo = arbitro.deviceId == deviceId
 
         // 3. Árbitro viejo (sin `pm=1`): el modo compatible traduce la declaración a permisos viejos, con lo capturado.
-        if (!soyYo && !arbitro.presencia) return vueltaCompat(arbitro, epoca, declaracion)
+        if (!soyYo && !arbitro.presencia) return vueltaCompat(arbitro, epoca, cambios, declaracion)
 
         // 4. Yo soy el árbitro: en local, sin dar la vuelta por la red.
         val pedido = pedido(gen, seq, declaracion)
@@ -177,7 +186,7 @@ class LanHubCoordinator(
         // 5. Primero el contexto local: si cambió la época o el árbitro elegido, nada de lo que volvió vale (ni null, ni stale, ni
         //    error). Es un mensaje nuevo para otro árbitro, no un reintento al mismo. Revisar y aplicar son UNA operación (Codex código
         //    r1 #3): una época nueva de otro hilo espera a que esto termine o lo encuentra ya invalidado.
-        return mesas.aplicarSiVigente(epoca, { sigueElegido(arbitro) }) {
+        return mesas.aplicarSiVigente(epoca, { sigueElegido(arbitro, cambios) }) {
             trasValidar()
             aplicarRespuesta(resp, arbitro, declaracion)
         } ?: 0
@@ -215,8 +224,12 @@ class LanHubCoordinator(
         return minOf(LATIDO_MS, esperar ?: LATIDO_MS).coerceAtLeast(1)
     }
 
-    /** ¿[arbitro] sigue siendo el elegido? (la época la revisa quien llama). */
-    private fun sigueElegido(arbitro: LanPeer) = ArbiterElection.pick(discovery.peers.value)?.deviceId == arbitro.deviceId
+    /**
+     * ¿[arbitro] sigue siendo el elegido, sin otra elección entre medias? La identidad sola no basta: tras X → Y → X vuelve a ser X
+     * (Codex código r2 H2); [cambios] es `cambiosDeArbitro` capturado con la época. La época la revisa quien llama.
+     */
+    private fun sigueElegido(arbitro: LanPeer, cambios: Long) =
+        discovery.cambiosDeArbitro == cambios && ArbiterElection.pick(discovery.peers.value)?.deviceId == arbitro.deviceId
 
     // ── Modo compatible (spec §3.5): con un árbitro VIEJO (sin `pm=1`) la declaración se traduce a permisos viejos ──────────────
     /**
@@ -233,13 +246,13 @@ class LanHubCoordinator(
      * ese orden y un mensaje a la vez. Después de CADA espera de red se revisa que la época y el árbitro sigan siendo los capturados
      * (Codex plan r1 #2); si no, la vuelta se abandona sin aplicar esa respuesta (0). Un `denied` sólo vale en ESTA vuelta (r1 #3).
      */
-    private suspend fun vueltaCompat(arbitro: LanPeer, epoca: Long, d: MesasDeEstaCaja.Declaracion): Long {
+    private suspend fun vueltaCompat(arbitro: LanPeer, epoca: Long, cambios: Long, d: MesasDeEstaCaja.Declaracion): Long {
         if (epoca != epocaDeRetenidas || arbitro.deviceId != arbitroDeRetenidas) {
             retenidas.clear() // lo concedido por el árbitro anterior vence solo a los 30 s
             epocaDeRetenidas = epoca
             arbitroDeRetenidas = arbitro.deviceId
         }
-        fun sigue() = mesas.epoca() == epoca && sigueElegido(arbitro)
+        fun sigue() = mesas.epoca() == epoca && sigueElegido(arbitro, cambios)
         val deseadas = d.mesas + d.aperturas.map { it.tableId }
         val ocupadas = HashMap<String, String>() // mesa → quién la tiene, sólo en esta vuelta
 
@@ -275,7 +288,7 @@ class LanHubCoordinator(
         }
 
         // Revisar y aplicar, UNA operación (Codex código r1 #3): sin esto, una época nueva podía caer entre el último `sigue()` y aquí.
-        return mesas.aplicarSiVigente(epoca, { sigueElegido(arbitro) }) {
+        return mesas.aplicarSiVigente(epoca, { sigueElegido(arbitro, cambios) }) {
             trasValidar()
             d.aperturas.forEach { a ->
                 if (a.tableId in retenidas) mesas.resolver(a.id, LeaseOutcome.Granted)

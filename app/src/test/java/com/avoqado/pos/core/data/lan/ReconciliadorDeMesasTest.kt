@@ -13,6 +13,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
@@ -640,6 +642,64 @@ class ReconciliadorDeMesasTest {
         assertEquals("X la resolvió antes de la época nueva", LeaseOutcome.Taken("Beto"), mesas.esperar(apertura) { false })
     }
 
+    // MARK: - Codex código r2 H1: un «sin Hub» visto ANTES de que llegue un árbitro no resuelve una apertura posterior
+
+    private fun islaVieja(elColectorYaLoVio: Boolean) = runTest {
+        val x = arbitro("X")
+        x.declara("B", "m14")
+        val mesas = caja()
+        val transporte = LecturaVieja(emptyList()) // sin árbitro
+        val c = LanHubCoordinator(
+            discovery = transporte, mesas = mesas, deviceId = "A", venueId = v, nombre = { "Ana" }, client = red(x).client,
+            relojMs = { testScheduler.currentTime }, scope = backgroundScope,
+        ) // sin start(): la vuelta se corre a mano
+        lateinit var nueva: Apertura
+        transporte.despues = {
+            transporte.flujo.value = listOf(yo, peerX) // llega X
+            if (elColectorYaLoVio) mesas.nuevaEpoca()
+            nueva = mesas.abrirApertura("m14", "s1", "Ana", v)
+        }
+
+        c.reconciliarUnaVez() // vio «sin árbitro» y siguió después de todo eso
+
+        assertTrue("la vuelta vieja resolvió NoHub la apertura nueva", mesas.hayPendientes(v))
+        c.reconciliarUnaVez()
+        assertEquals("la decide X", LeaseOutcome.Taken("Beto"), mesas.esperar(nueva) { false })
+    }
+
+    @Test
+    fun `r2-H1 - sin árbitro, llega X, sube la época y se pide una mesa - la vuelta vieja no la resuelve NoHub`() = islaVieja(true)
+
+    @Test
+    fun `r2-H1 - sin árbitro, llega X (el colector aún no corre) y se pide una mesa - la vuelta vieja no la resuelve NoHub`() =
+        islaVieja(false)
+
+    // MARK: - Codex código r2 H2: X → Y → X sin que el colector corra entre las dos publicaciones
+
+    @Test
+    fun `r2-H2 - X a Y a X sin correr el colector entre las dos - la respuesta de la primera X se descarta y se vuelve a preguntar`() = runTest {
+        val x = arbitro("X")
+        val y = arbitro("Y")
+        val red = red(x, y)
+        val mesas = caja()
+        x.declara("B", "m14")
+        coordinador(red, mesas).start()
+        runCurrent()
+
+        red.retener = Red.Retener.VUELTA
+        val apertura = mesas.abrirApertura("m14", "s1", "Ana", v)
+        runCurrent()
+        assertEquals(APERTURA_OCUPADA, red.respuestaA(red.retenidos.single().pedido)?.aperturas?.single()?.resultado)
+        x.declara("B") // B sale mientras la respuesta «ocupada» viaja
+        discovery.publicar(listOf(yo, peerY))
+        discovery.publicar(listOf(yo, peerX)) // sin runCurrent: el colector de un StateFlow sólo ve el final (y es igual al de antes)
+        red.retener = Red.Retener.NADA
+        red.soltarTodo()
+        runCurrent()
+
+        assertEquals(LeaseOutcome.Granted, mesas.esperar(apertura) { true })
+    }
+
     // MARK: - Spec 14: el plazo TOTAL por mensaje
     // Codex código r1 #5: el plazo exacto (3 s) lo fija la vuelta con tiempo virtual (`p14a`); las de socket real sólo acreditan lo que
     // necesita un socket (que se cierra y que la llamada termina), con un presupuesto amplio contra un goteo que sin el vigía duraría 40 s.
@@ -863,4 +923,21 @@ private class Goteo : AutoCloseable {
     }
 
     override fun close() = ss.close()
+}
+
+/**
+ * Codex código r2 H1: la PRIMERA lectura de [peers] entrega la foto de ese momento y, justo después de tomarla, corre [despues] (llega
+ * un árbitro, sube la época, se pide una mesa): la vuelta sigue con su foto vieja, como si la hubieran interrumpido ahí.
+ */
+private class LecturaVieja(peers: List<LanPeer>) : LanDiscoveryPort {
+    val flujo = MutableStateFlow(peers)
+    var despues: (() -> Unit)? = null
+    override val peers: StateFlow<List<LanPeer>>
+        get() {
+            val f = despues ?: return flujo
+            despues = null
+            return MutableStateFlow(flujo.value).also { f() }
+        }
+    override fun conectarHub(respondTo: (String) -> LeaseResponse) {}
+    override fun desconectarHub() {}
 }

@@ -115,6 +115,14 @@ class LanHubCoordinatorTest {
 /** Transporte de mentira: entrega una lista de peers que la prueba cambia, y acepta el enganche del hub sin abrir nada. */
 internal class FakeDiscovery(peers: List<LanPeer>) : LanDiscoveryPort {
     override val peers = MutableStateFlow(peers)
+    override var cambiosDeArbitro = 0L
+        private set
     override fun conectarHub(respondTo: (String) -> LeaseResponse) {}
     override fun desconectarHub() {}
+
+    /** Como `TransporteLan.publicarPeers` (Codex código r2 H2): cuenta el cambio de elección ANTES de publicar. */
+    fun publicar(lista: List<LanPeer>) {
+        if (ArbiterElection.cambiaElArbitro(peers.value, lista)) cambiosDeArbitro++
+        peers.value = lista
+    }
 }

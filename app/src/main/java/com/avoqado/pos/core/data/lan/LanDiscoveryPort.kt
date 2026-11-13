@@ -10,6 +10,12 @@ import kotlinx.coroutines.flow.StateFlow
 interface LanDiscoveryPort {
     val peers: StateFlow<List<LanPeer>>
 
+    /**
+     * Cuántas veces cambió el árbitro elegido en [peers] (Codex código r2 H2). Sube en CADA publicación que cambia la elección, antes
+     * de publicarla, aunque un colector lento sólo vea el último valor (X → Y → X): así una respuesta de la primera X ya no vale.
+     */
+    val cambiosDeArbitro: Long get() = 0L
+
     /** Desde aquí el TXT dice `hub=1` y las ops de lease se contestan con [respondTo] (el `LeaseServer` puro). */
     fun conectarHub(respondTo: (String) -> LeaseResponse)
 
