@@ -375,6 +375,24 @@ class AppStateVenueRecoveryTest {
         org.junit.Assert.assertTrue("esperaba el aviso de pendientes, llegó «$aviso»", aviso.contains("Hay 1 operación offline"))
     }
 
+    @Test
+    fun `cerrar sesion se bloquea con llegadas del kiosco pendientes`() = runTest {
+        var cerro = false
+        val appState = createAppState(
+            true, {}, {}, {}, onOutboxStart = {},
+            configurarSesion = { every { clearSession() } answers { cerro = true } },
+            llegadasDelKiosco = 1,
+        )
+        advanceUntilIdle()
+
+        appState.onLogout()
+        advanceUntilIdle()
+
+        org.junit.Assert.assertFalse(cerro)
+        val aviso = appState.sessionGuardMessage.value.orEmpty()
+        org.junit.Assert.assertTrue("esperaba el aviso de pendientes, llegó «$aviso»", aviso.contains("1 operación offline"))
+    }
+
     /** D34: el freno se queda, pero a un mesero no se le dice «resuélvela»: no puede «Marcar resuelta». */
     @Test
     fun `P1 un mesero con un cobro rechazado no cierra sesion y el aviso le dice que entre un gerente`() = runTest {
@@ -408,24 +426,6 @@ class AppStateVenueRecoveryTest {
             "Hay 1 operación rechazada por revisar. Resuélvela en Ventas › Pendientes › «Otras operaciones y revisiones anteriores» antes de cerrar sesión.",
             appState.sessionGuardMessage.value,
         )
-    }
-
-    @Test
-    fun `cerrar sesion se bloquea con llegadas del kiosco pendientes`() = runTest {
-        var cerro = false
-        val appState = createAppState(
-            true, {}, {}, {}, onOutboxStart = {},
-            configurarSesion = { every { clearSession() } answers { cerro = true } },
-            llegadasDelKiosco = 1,
-        )
-        advanceUntilIdle()
-
-        appState.onLogout()
-        advanceUntilIdle()
-
-        org.junit.Assert.assertFalse(cerro)
-        val aviso = appState.sessionGuardMessage.value.orEmpty()
-        org.junit.Assert.assertTrue("esperaba el aviso de pendientes, llegó «$aviso»", aviso.contains("1 operación offline"))
     }
 
     @Test
@@ -516,13 +516,13 @@ class AppStateVenueRecoveryTest {
         resolverReal: com.avoqado.pos.giftcards.data.ResolutorDeSolicitudesDeTarjeta? = null,
         llegadasDelKiosco: Int = 0,
         movimientosDeCaja: Int = 0,
+        savedCartsRepository: com.avoqado.pos.pos.data.SavedCartsRepository? = null,
+        modo: MutableStateFlow<PosMode> = MutableStateFlow(PosMode.RETAIL),
+        planManager: PlanManager = mockk(relaxed = true),
         /** D34: cobros fallidos sin revisar (lo que `blockingWorkCount` suma y `sinEnviarCount` no). */
         cobrosRechazados: Int = 0,
         /** D34: ¿quien está puede «Marcar resuelta»? */
         puedeResolver: Boolean = false,
-        savedCartsRepository: com.avoqado.pos.pos.data.SavedCartsRepository? = null,
-        modo: MutableStateFlow<PosMode> = MutableStateFlow(PosMode.RETAIL),
-        planManager: PlanManager = mockk(relaxed = true),
     ): AppState {
         val secureStorage = storageReal ?: mockk<SecureStorage>(relaxed = true) {
             every { isLoggedIn } returns true
