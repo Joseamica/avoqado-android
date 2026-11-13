@@ -89,40 +89,40 @@ class FrenoConRechazosTest {
         )
     }
 
-    // MARK: - D52: lo de otras sucursales se dice con su nombre
+    // MARK: - D52 (a): lo de otras sucursales no frena; al salir se dice que queda y cómo se resuelve
 
-    /** D52: lo de otra sucursal sólo se ve y se resuelve con ella abierta: el aviso dice cuál y cómo llegar. */
-    @Test fun `P1 D52 lo pendiente de otra sucursal dice cual y como llegar`() {
+    /** D52 (a): lo de otra sucursal se queda en el aparato (cerrar sesión no lo borra): el aviso lo dice con su nombre. */
+    @Test fun `P1 D52 lo que queda de otra sucursal se dice con su nombre`() {
         val nombres = mapOf("v-centro" to "Sucursal Centro", "v-norte" to "Sucursal Norte")
         assertEquals(
-            "Hay 1 operación pendiente de Sucursal Centro: cambia a esa sucursal para resolverla (Más › Cambiar de establecimiento).",
-            textoDeLoDeOtrasSucursales(mapOf("v-centro" to 1), nombres),
+            "Queda 1 operación de Sucursal Centro en este aparato: se resuelve al entrar con un usuario de Sucursal Centro.",
+            textoDeLoQueQuedaDeOtrasSucursales(mapOf("v-centro" to 1), nombres),
         )
         assertEquals(
-            "Hay 3 operaciones pendientes de Sucursal Centro y Sucursal Norte: cambia a cada sucursal para resolverlas " +
-                "(Más › Cambiar de establecimiento).",
-            textoDeLoDeOtrasSucursales(mapOf("v-centro" to 2, "v-norte" to 1), nombres),
+            "Quedan 3 operaciones de Sucursal Centro y Sucursal Norte en este aparato: se resuelven al entrar con un usuario de cada sucursal.",
+            textoDeLoQueQuedaDeOtrasSucursales(mapOf("v-centro" to 2, "v-norte" to 1), nombres),
         )
-        assertEquals(null, textoDeLoDeOtrasSucursales(emptyMap(), nombres))
+        assertEquals(null, textoDeLoQueQuedaDeOtrasSucursales(emptyMap(), nombres))
     }
 
-    /**
-     * D52: una sucursal a la que esta sesión no tiene acceso. Codex r1 #2: «Cambiar usuario» no lleva a otra sucursal (el PIN es de la
-     * abierta), así que no se promete ese camino: sólo a quién avisar.
-     */
-    @Test fun `P1 D52 lo de una sucursal sin acceso no promete un camino que no existe`() {
+    /** D52 (a): una sucursal que esta sesión no tiene se dice sin nombre (no lo conocemos). */
+    @Test fun `P1 D52 lo que queda de una sucursal sin acceso se dice sin nombre`() {
         assertEquals(
-            "Hay 1 operación pendiente de otra sucursal a la que esta sesión no tiene acceso: avisa a un gerente de esa sucursal.",
-            textoDeLoDeOtrasSucursales(mapOf("v-ajena" to 1), mapOf("v-centro" to "Sucursal Centro")),
+            "Queda 1 operación de otra sucursal en este aparato: se resuelve al entrar con un usuario de esa sucursal.",
+            textoDeLoQueQuedaDeOtrasSucursales(mapOf("v-ajena" to 1), mapOf("v-centro" to "Sucursal Centro")),
+        )
+        assertEquals(
+            "Quedan 2 operaciones de otras sucursales en este aparato: se resuelven al entrar con un usuario de cada sucursal.",
+            textoDeLoQueQuedaDeOtrasSucursales(mapOf("v-ajena" to 1, "v-otra" to 1), emptyMap()),
         )
     }
 
-    /** Codex D52 r2: una sucursal sin acceso no le quita a las conocidas su nombre ni su camino. */
-    @Test fun `P1 D52 lo de una sucursal conocida y lo de una sin acceso se dicen por separado`() {
+    /** Codex D52 r2: una sucursal sin acceso no le quita a las conocidas su nombre. */
+    @Test fun `P1 D52 lo que queda de una sucursal conocida y de una sin acceso se dice por separado`() {
         assertEquals(
-            "Hay 1 operación pendiente de Sucursal Centro: cambia a esa sucursal para resolverla (Más › Cambiar de establecimiento). " +
-                "Hay 1 operación pendiente de otra sucursal a la que esta sesión no tiene acceso: avisa a un gerente de esa sucursal.",
-            textoDeLoDeOtrasSucursales(mapOf("v-centro" to 1, "v-ajena" to 1), mapOf("v-centro" to "Sucursal Centro")),
+            "Queda 1 operación de Sucursal Centro en este aparato: se resuelve al entrar con un usuario de Sucursal Centro. " +
+                "Queda 1 operación de otra sucursal en este aparato: se resuelve al entrar con un usuario de esa sucursal.",
+            textoDeLoQueQuedaDeOtrasSucursales(mapOf("v-centro" to 1, "v-ajena" to 1), mapOf("v-centro" to "Sucursal Centro")),
         )
     }
 
