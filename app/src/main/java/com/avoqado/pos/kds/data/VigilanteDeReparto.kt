@@ -15,19 +15,18 @@ import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
-import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
@@ -44,7 +43,8 @@ private const val TAG = "🛵 VigilanteReparto"
  *   abierto: en este dominio el fail-safe no puede ser no imprimir).
  * - Lo que no sacó NI UNA hoja lo suelta [ImpresionDeComandasDeReparto] y lo reintenta el siguiente sondeo (de éste o de
  *   otro aparato). Lo PARCIAL no se reintenta solo: la franja ofrece «Reimprimir lo que faltó» ([reimprimir]).
- * - Los avisos llegan por `impresas`: los de este vigilante y los de «Pantalla de cocina» del mismo aparato.
+ * - Los avisos viven en la pizarra [AvisosDeReparto] (los apunta la impresión, de este vigilante o de «Pantalla de
+ *   cocina»): se conservan aunque la app pase a segundo plano a media impresión.
  * - Los pedidos MANUAL (`needsAcceptance`) no se tocan: se aceptan y se imprimen en «Pantalla de cocina», como hoy.
  * - Sin red el sondeo falla en silencio y los avisos se quedan: el pedido vive en el servidor y sale al volver la red.
  */
@@ -54,8 +54,8 @@ class VigilanteDeReparto internal constructor(
     private val leerCanales: suspend () -> Result<List<CanalReparto>>,
     private val leerComandas: suspend () -> Result<List<KDSOrder>>,
     private val imprimir: suspend (List<KDSOrder>) -> Unit,
-    private val reintentar: suspend (ComandaImpresa) -> ComandaImpresa,
-    private val impresas: Flow<ComandaImpresa>,
+    private val reimprimirLoQueFalto: suspend (String) -> Unit,
+    private val pizarra: AvisosDeReparto,
     private val sonar: () -> Unit,
     private val scope: CoroutineScope,
     /** La sucursal de ahora: lo de una sucursal anterior no se queda ni en la franja ni en el sonido. */
@@ -67,6 +67,7 @@ class VigilanteDeReparto internal constructor(
     constructor(
         kdsRepository: KDSRepository,
         impresion: ImpresionDeComandasDeReparto,
+        avisos: AvisosDeReparto,
         roleManager: RoleManager,
         planManager: PlanManager,
         secureStorage: SecureStorage,
@@ -79,17 +80,25 @@ class VigilanteDeReparto internal constructor(
         leerCanales = { kdsRepository.leerCanalesParaImprimir() },
         leerComandas = { kdsRepository.fetchLasMasNuevas() },
         imprimir = { impresion.imprimirPendientes(it) },
-        reintentar = { impresion.reimprimirLoQueFalto(it) },
-        impresas = impresion.impresas,
+        reimprimirLoQueFalto = { impresion.reimprimirLoQueFalto(it) },
+        pizarra = avisos,
         sonar = { sonarAviso(contexto) },
         scope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
         venueActual = { secureStorage.venueId },
     )
 
-    private val _avisos = MutableStateFlow<List<ComandaImpresa>>(emptyList())
+    /**
+     * Los pedidos que ESTE aparato sacó (o intentó sacar) en la sucursal de ahora y nadie ha reconocido con «Entendido».
+     * Filtrado aquí y no sólo al cambiar de sucursal: un resultado de la anterior que llega tarde no se ve ni suena.
+     */
+    val avisos: StateFlow<List<ComandaImpresa>> = pizarra.avisos
+        .map { lista -> deEstaSucursal(lista) }
+        .stateIn(scope, SharingStarted.Eagerly, emptyList())
 
-    /** Los pedidos que ESTE aparato sacó (o intentó sacar) y nadie ha reconocido con «Entendido». */
-    val avisos: StateFlow<List<ComandaImpresa>> = _avisos.asStateFlow()
+    private fun deEstaSucursal(lista: List<ComandaImpresa>): List<ComandaImpresa> {
+        val v = venueActual()
+        return lista.filter { it.venueId == null || it.venueId == v }
+    }
 
     private val _proveedor = MutableStateFlow(nombreDelProveedor(emptyList()))
 
@@ -101,31 +110,28 @@ class VigilanteDeReparto internal constructor(
     @Volatile private var canalesLeidosEn: Long? = null
     @Volatile private var venueDeLosDatos: String? = null
 
-    /** Un «Reimprimir» en curso por pedido: un segundo toque mientras corre el primero no manda otra copia. */
-    private val reimprimiendo = mutableSetOf<String>()
-
     private var ciclo: Job? = null
     private var sonido: Job? = null
-    private var escucha: Job? = null
 
     /** Calla y descarta todos los avisos, también lo que faltó: lo decidió una persona. */
     fun entendido() {
-        _avisos.value = emptyList()
+        pizarra.descartar()
     }
 
-    /** «Reimprimir lo que faltó»: manda sólo los trabajos congelados del aviso; el resultado llega por `impresas`. */
+    /**
+     * «Reimprimir lo que faltó»: manda sólo los trabajos congelados del aviso y apunta el resultado en la pizarra. Un
+     * segundo toque mientras corre el primero no manda otra copia (lo aparta la pizarra).
+     */
     fun reimprimir(kdsId: String) {
-        val aviso = _avisos.value.firstOrNull { it.kdsId == kdsId && it.porReimprimir.isNotEmpty() } ?: return
-        synchronized(reimprimiendo) { if (!reimprimiendo.add(kdsId)) return }
+        // Sólo lo de la sucursal de ahora: nunca mandar a las impresoras de aquí el trabajo de otra.
+        if (avisos.value.none { it.kdsId == kdsId }) return
         scope.launch {
             try {
-                reintentar(aviso)
+                reimprimirLoQueFalto(kdsId)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                Log.w(TAG, "No se pudo reimprimir lo que faltó de ${aviso.orderNumber}: ${e.message}")
-            } finally {
-                synchronized(reimprimiendo) { reimprimiendo.remove(kdsId) }
+                Log.w(TAG, "No se pudo reimprimir lo que faltó de $kdsId: ${e.message}")
             }
         }
     }
@@ -134,14 +140,8 @@ class VigilanteDeReparto internal constructor(
     override fun onStart(owner: LifecycleOwner) {
         ciclo?.cancel()
         sonido?.cancel()
-        escucha?.cancel()
-        // UNDISPATCHED: suscrito ANTES del primer sondeo. `impresas` no guarda nada para quien todavía no escucha, y un
-        // papel que sale sin su aviso es justo lo que este vigilante existe para evitar.
-        escucha = scope.launch(start = CoroutineStart.UNDISPATCHED) {
-            impresas.collect { c -> _avisos.update { lista -> lista.filterNot { it.kdsId == c.kdsId } + c } }
-        }
         sonido = scope.launch {
-            _avisos.map { lista -> lista.map { it.kdsId }.toSet() }
+            avisos.map { lista -> lista.map { it.kdsId }.toSet() }
                 // Sólo un pedido NUEVO reinicia el timbre; que cambie uno que ya sonaba (reimpreso) no da un timbre extra.
                 .distinctUntilChanged()
                 .collectLatest { ids ->
@@ -168,11 +168,15 @@ class VigilanteDeReparto internal constructor(
     override fun onStop(owner: LifecycleOwner) {
         ciclo?.cancel(); ciclo = null
         sonido?.cancel(); sonido = null
-        escucha?.cancel(); escucha = null
     }
 
+    /** Sin sesión, permiso o plan: nada se queda (avisos y lo que siga en vuelo para ellos), ni canales ni proveedor. */
     private fun olvidar() {
-        _avisos.value = emptyList()
+        pizarra.descartar()
+        olvidarCanales()
+    }
+
+    private fun olvidarCanales() {
         canales = null
         canalesLeidosEn = null
         _proveedor.value = nombreDelProveedor(emptyList())
@@ -180,13 +184,19 @@ class VigilanteDeReparto internal constructor(
 
     private suspend fun sondeo() {
         if (!puedeImprimir()) {
-            olvidar()
+            // Sin sesión, permiso o plan: nada se queda. Sólo se descarta si hay algo (no cada 15 s en un negocio sin plan).
+            if (venueDeLosDatos != null || pizarra.avisos.value.isNotEmpty()) olvidar()
             venueDeLosDatos = null
             return
         }
         val venue = venueActual()
         if (venueDeLosDatos != venue) {
-            olvidar()
+            // La primera vez (al arrancar) no hay nada que olvidar: invalidar ahí tiraba una impresión válida en curso
+            // (Codex c2 #1). Al CAMBIAR de sucursal se quita lo de la anterior y se releen sus canales; nada se invalida.
+            if (venueDeLosDatos != null) {
+                pizarra.retirarDeOtrasSucursales(venue)
+                olvidarCanales()
+            }
             venueDeLosDatos = venue
         }
 
@@ -211,14 +221,9 @@ class VigilanteDeReparto internal constructor(
         if (pendientes.isNotEmpty()) imprimir(pendientes)
     }
 
-    /**
-     * Un aviso cuya comanda ya no viene (Rappi la canceló, o alguien la terminó) se retira — pero sólo si DEBERÍA venir:
-     * la lista son las 100 más nuevas, y la ausencia de una más vieja que todas no prueba nada.
-     */
+    /** Quita los avisos cuya comanda ya no viene y debería venir (ver [AvisosDeReparto.retirarAusentes]). */
     private fun retirarLosQueYaNoVienen(lista: List<KDSOrder>) {
-        val ids = lista.map { it.id }.toSet()
-        val masVieja = lista.minOfOrNull { it.createdAt }
-        _avisos.update { avisos -> avisos.filter { it.kdsId in ids || (masVieja != null && it.createdAt < masVieja) } }
+        pizarra.retirarAusentes(lista.map { it.id }.toSet(), lista.minOfOrNull { it.createdAt })
     }
 
     private fun conectados(canales: List<CanalReparto>) = canales.filter { it.estado == "ACTIVE" || it.estado == "PAUSED" }

@@ -10,9 +10,6 @@ import com.avoqado.pos.printing.routing.ConsolidatedLine
 import com.avoqado.pos.printing.routing.PrintConfigRepository
 import com.avoqado.pos.printing.routing.RoutableItem
 import com.avoqado.pos.printing.routing.TicketPlan
-import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.flow.SharedFlow
-import kotlinx.coroutines.flow.asSharedFlow
 import javax.inject.Inject
 import javax.inject.Provider
 import javax.inject.Singleton
@@ -36,11 +33,13 @@ data class ComandaImpresa(
     val faltaron: List<String> = emptyList(),
     val porReimprimir: List<TrabajoPendiente> = emptyList(),
     val sinReimprimir: List<String> = emptyList(),
+    /** La sucursal del aparato al imprimir: la franja sólo enseña los de la sucursal de ahora. */
+    val venueId: String? = null,
 )
 
 /**
  * Saca en papel las comandas de Rappi/Uber que llegaron SOLAS, desde cualquier pantalla (la de cocina, o un vigilante
- * de todo el proceso) y publica cada resultado en [impresas].
+ * de todo el proceso) y apunta cada resultado en la pizarra [AvisosDeReparto], que es lo que enseña la franja.
  */
 @Singleton
 class ImpresionDeComandasDeReparto @Inject constructor(
@@ -49,10 +48,8 @@ class ImpresionDeComandasDeReparto @Inject constructor(
     private val printConfigRepository: PrintConfigRepository,
     // El deviceId del outbox, NO uno nuevo (regla de offline-first).
     private val syncOutbox: Provider<SyncOutbox>,
+    private val avisos: AvisosDeReparto,
 ) {
-    private val _impresas = MutableSharedFlow<ComandaImpresa>(extraBufferCapacity = 64)
-    val impresas: SharedFlow<ComandaImpresa> = _impresas.asSharedFlow()
-
     /**
      * Saca en papel las comandas que llegaron SOLAS y que nadie ha impreso.
      *
@@ -65,7 +62,7 @@ class ImpresionDeComandasDeReparto @Inject constructor(
      * sin enterarse del pedido.
      *
      * 🔴 Si salió una PARTE (Cocina sí, Barra no) se CONFIRMA: soltarla haría que el siguiente sondeo reimprimiera
-     * TODO, y la cocina recibiría dos veces lo que ya salió. Lo que faltó se publica en [impresas] para que una
+     * TODO, y la cocina recibiría dos veces lo que ya salió. Lo que faltó se apunta en [avisos] para que una
      * persona lo reimprima con [reimprimirLoQueFalto], que manda sólo eso.
      */
     suspend fun imprimirPendientes(pedidos: List<KDSOrder>) {
@@ -76,6 +73,9 @@ class ImpresionDeComandasDeReparto @Inject constructor(
         val venueId = kdsRepository.venueIdActual()
 
         for (pedido in pendientes) {
+            // La época se toma ANTES de imprimir: si alguien toca «Entendido» o cambia de sucursal a media impresión,
+            // este resultado ya no se apunta.
+            val epoca = avisos.epoca()
             if (!kdsRepository.reclamarImpresion(pedido.id, deviceId)) continue
 
             val lineas = pedido.items.map { item ->
@@ -122,11 +122,13 @@ class ImpresionDeComandasDeReparto @Inject constructor(
                 // Nada salió: se suelta SIN tocar el empaque (sería el único papel de un pedido que la cocina no tiene).
                 kdsRepository.marcarImpresion(pedido.id, deviceId, "release-print")
                 Log.e(TAG, "No se pudo imprimir la comanda ${pedido.orderNumber}; soltada para que otro aparato lo intente")
-                _impresas.tryEmit(
+                avisos.publicar(
                     ComandaImpresa(
                         kdsId = pedido.id, orderNumber = pedido.orderNumber, createdAt = pedido.createdAt, salioEnPapel = false,
                         faltaron = (estado as? EstadoDeComanda.NoSalio)?.estaciones.orEmpty(),
+                        venueId = venueId,
                     ),
+                    epoca,
                 )
                 continue
             }
@@ -150,52 +152,60 @@ class ImpresionDeComandasDeReparto @Inject constructor(
             imprimirTicketDeEmpaque(pedido, lineas, venueId, faltaron, porReimprimir, sinReimprimir)
 
             kdsRepository.marcarImpresion(pedido.id, deviceId, "confirm-print")
-            _impresas.tryEmit(
+            avisos.publicar(
                 ComandaImpresa(
                     kdsId = pedido.id, orderNumber = pedido.orderNumber, createdAt = pedido.createdAt,
                     salioEnPapel = faltaron.isEmpty(),
                     faltaron = faltaron.distinct(),
                     porReimprimir = porReimprimir,
                     sinReimprimir = sinReimprimir.distinct(),
+                    venueId = venueId,
                 ),
+                epoca,
             )
         }
     }
 
     /**
-     * Manda otra vez SÓLO lo que faltó: cada [TrabajoPendiente] congelado (con sus copias pendientes) por `reintentar`,
-     * nunca `dispatch` — que volvería a rutear el pedido entero y repetiría lo que ya salió. Publica y devuelve la versión
-     * nueva, con lo que siga faltando.
+     * «Reimprimir lo que faltó» del pedido [kdsId]: manda otra vez SÓLO cada [TrabajoPendiente] congelado (con sus copias
+     * pendientes) por `reintentar`, nunca `dispatch` — que volvería a rutear el pedido entero y repetiría lo que ya salió.
+     * Apunta la versión nueva ANTES de soltar el pedido, y la devuelve; `null` si no había nada que mandar o ya había un
+     * «Reimprimir» en curso para ese pedido (el segundo toque no manda otra copia).
      */
-    suspend fun reimprimirLoQueFalto(c: ComandaImpresa): ComandaImpresa {
-        // Lo que no tiene impresora sigue faltando pase lo que pase: reimprimir el empaque no lo borra.
-        val faltaron = c.sinReimprimir.toMutableList()
-        val porReimprimir = mutableListOf<TrabajoPendiente>()
-        val sinReimprimir = c.sinReimprimir.toMutableList()
-        for (trabajo in c.porReimprimir) {
-            val estado = runCatching { comandaDispatcher.reintentar(trabajo) }.getOrNull()
-            when {
-                estado is EstadoDeComanda.NoSalio -> {
-                    faltaron += estado.estaciones
-                    if (estado.trabajo != null) porReimprimir += estado.trabajo else sinReimprimir += estado.estaciones
-                }
-                // Salio / SinComanda: este trabajo ya no falta.
-                estado is EstadoDeComanda.Salio || estado is EstadoDeComanda.SinComanda -> Unit
-                // Excepción u otro estado: no se sabe qué salió, se conserva el trabajo tal cual para otro intento.
-                else -> {
-                    faltaron += trabajo.planes.mapNotNull { it.stationId }
-                    porReimprimir += trabajo
+    suspend fun reimprimirLoQueFalto(kdsId: String): ComandaImpresa? {
+        val (c, epoca) = avisos.tomarParaReimprimir(kdsId) ?: return null
+        try {
+            // Lo que no tiene impresora sigue faltando pase lo que pase: reimprimir el empaque no lo borra.
+            val faltaron = c.sinReimprimir.toMutableList()
+            val porReimprimir = mutableListOf<TrabajoPendiente>()
+            val sinReimprimir = c.sinReimprimir.toMutableList()
+            for (trabajo in c.porReimprimir) {
+                val estado = runCatching { comandaDispatcher.reintentar(trabajo) }.getOrNull()
+                when {
+                    estado is EstadoDeComanda.NoSalio -> {
+                        faltaron += estado.estaciones
+                        if (estado.trabajo != null) porReimprimir += estado.trabajo else sinReimprimir += estado.estaciones
+                    }
+                    // Salio / SinComanda: este trabajo ya no falta.
+                    estado is EstadoDeComanda.Salio || estado is EstadoDeComanda.SinComanda -> Unit
+                    // Excepción u otro estado: no se sabe qué salió, se conserva el trabajo tal cual para otro intento.
+                    else -> {
+                        faltaron += trabajo.planes.mapNotNull { it.stationId }
+                        porReimprimir += trabajo
+                    }
                 }
             }
+            val nueva = c.copy(
+                salioEnPapel = faltaron.isEmpty(),
+                faltaron = faltaron.distinct(),
+                porReimprimir = porReimprimir,
+                sinReimprimir = sinReimprimir.distinct(),
+            )
+            avisos.publicar(nueva, epoca)
+            return nueva
+        } finally {
+            avisos.soltarReimpresion(kdsId)
         }
-        val nueva = c.copy(
-            salioEnPapel = faltaron.isEmpty(),
-            faltaron = faltaron.distinct(),
-            porReimprimir = porReimprimir,
-            sinReimprimir = sinReimprimir.distinct(),
-        )
-        _impresas.tryEmit(nueva)
-        return nueva
     }
 
     /** Sale por el MISMO camino que «Reimprimir» ([TrabajoPendiente]) para que sus copias queden contadas. */

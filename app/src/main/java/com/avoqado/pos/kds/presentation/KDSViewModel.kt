@@ -103,7 +103,7 @@ class KDSViewModel @Inject constructor(
 ) : ViewModel() {
 
     private val impresion = impresionCompartida ?: com.avoqado.pos.kds.data.ImpresionDeComandasDeReparto(
-        kdsRepository, comandaDispatcher, printConfigRepository, syncOutbox,
+        kdsRepository, comandaDispatcher, printConfigRepository, syncOutbox, com.avoqado.pos.kds.data.AvisosDeReparto(),
     )
 
     data class BoardPaging(val offset: Int = 0, val total: Int? = null, val nextOffset: Int? = null, val loading: Boolean = false, val count: Int = 0)
