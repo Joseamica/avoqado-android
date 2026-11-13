@@ -109,16 +109,6 @@ class LanHubService @Inject constructor(
     /** Idempotente, por id: nunca por nombre de mesa. */
     fun terminarApertura(ticket: Apertura) = mesas.terminarApertura(ticket)
 
-    /** ADAPTADOR TEMPORAL sólo para `TablesViewModel` (abrir → esperar → terminar); la Task 7 lo borra. */
-    suspend fun acquire(tableId: String, staffId: String, staffName: String): LeaseOutcome {
-        val ticket = abrirApertura(tableId, staffId, staffName)
-        return try {
-            esperarApertura(ticket)
-        } finally {
-            terminarApertura(ticket)
-        }
-    }
-
     /** Misma firma de siempre (cuatro llamadores y las pruebas de D12). Lo declarado sale de la sesión de mesa: sólo despierta al reconciliador. */
     @Suppress("UNUSED_PARAMETER")
     suspend fun release(tableId: String) {

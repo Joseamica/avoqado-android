@@ -2,6 +2,8 @@ package com.avoqado.pos.tables.presentation
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.avoqado.pos.core.data.lan.Apertura
+import com.avoqado.pos.core.data.lan.LeaseOutcome
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.printing.data.PrinterService
 import com.avoqado.pos.printing.data.model.PrinterRole
@@ -23,6 +25,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.isActive
@@ -218,7 +221,17 @@ class TablesViewModel @Inject constructor(
     private val _actionState = MutableStateFlow<TableActionState>(TableActionState.Idle)
     val actionState: StateFlow<TableActionState> = _actionState.asStateFlow()
 
+    private val _revisandoConCajas = MutableStateFlow(false)
+    /** Hub D3: el árbitro pidió esperar mientras se abre una mesa libre (el botón dice «Revisando con las otras cajas…»). */
+    val revisandoConCajas: StateFlow<Boolean> = _revisandoConCajas.asStateFlow()
+
     private var aperturaGeneration = 0L
+
+    /**
+     * Hub D3 (spec §3.1): el intento de abrir una mesa LIBRE que sigue en curso, con su generación y su ticket del Hub. Este VM es el
+     * único dueño del ticket y lo termina por id, nunca por mesa. Sólo se toca en Main.
+     */
+    private var aperturaEnCurso: Pair<Long, Apertura>? = null
     private var pollJob: Job? = null
 
     private val venueId: String? get() = secureStorage.venueId
@@ -260,7 +273,25 @@ class TablesViewModel @Inject constructor(
 
     fun selectTable(tableId: String?) {
         _selectedTableId.value = tableId
+        // La hoja sigue mostrando la mesa que se está abriendo: el intento sigue («Abriendo...»).
+        if (tableId != null && tableId == aperturaEnCurso?.second?.tableId) return
+        abandonarApertura() // cerrar la hoja (`selectTable(null)`) u otra mesa
         _actionState.value = TableActionState.Idle
+    }
+
+    /**
+     * Hub D3 (Codex plan r1 #4 y r2 R2-3): la hoja ya no muestra el intento de abrir (se cerró, se eligió otra mesa o la mesa salió del
+     * plano). Se abandona EN EL ACTO, en este orden: el botón vuelve a «Abrir mesa y ordenar» (sin `desistir()`, que exige la misma
+     * generación), deja de decir «Revisando…», sube la generación (un éxito o fallo tardío de `openTable` o de la apertura sin red ya
+     * no activa sesión) y el ticket se termina por id. No espera a `openTable` ni cancela su corrutina: cortarla a media apertura sin
+     * red partiría su escritura. Su `finally` repite el `terminarApertura` sin efecto.
+     */
+    private fun abandonarApertura() {
+        if (_actionState.value is TableActionState.Working) _actionState.value = TableActionState.Idle
+        _revisandoConCajas.value = false
+        aperturaGeneration++
+        aperturaEnCurso?.let { lanHub.terminarApertura(it.second) }
+        aperturaEnCurso = null
     }
 
     fun selectedTable(): DiningTable? = tables.value.firstOrNull { it.id == _selectedTableId.value }
@@ -292,70 +323,92 @@ class TablesViewModel @Inject constructor(
         _actionState.value = TableActionState.Working
         viewModelScope.launch {
             if (!vigente(original)) { desistir(); return@launch }
-            // 🛰️ Hub LAN: pedir la mesa ANTES de abrirla. Sin internet esto es
-            // lo único que impide que dos meseros abran la misma mesa a la vez
-            // — el server no se entera hasta el replay. Si no hay hub (isla),
-            // se sigue igual que siempre: el hub PREVIENE conflictos, no
+            // 🛰️ Hub D3: pedir la mesa ANTES de abrirla. Sin internet esto es lo único que impide que dos meseros abran la misma
+            // mesa a la vez — el server no se entera hasta el replay. El ticket de ESTE intento se pide antes de esperar y se termina
+            // en TODA salida (el `finally`). Si no hay hub (isla), se sigue igual que siempre: el hub PREVIENE conflictos, no
             // autoriza ventas, así que jamás puede frenar un cobro.
-            val lease = lanHub.acquire(
+            val ticket = lanHub.abrirApertura(
                 tableId = table.id,
                 staffId = secureStorage.selectedStaffIdForCurrentVenue.orEmpty(),
                 staffName = secureStorage.selectedStaffNameForCurrentVenue
                     ?: secureStorage.userFirstName.orEmpty(),
             )
-            if (!vigente(original)) { desistir(); return@launch }
-            if (lease is com.avoqado.pos.core.data.lan.LeaseOutcome.Taken) {
-                _actionState.value = TableActionState.Error(
-                    "${lease.holderName} está atendiendo esta mesa en otro dispositivo",
-                )
-                return@launch
+            aperturaEnCurso = apertura to ticket
+            // La hoja deja de dibujarse si la mesa sale del plano: se abandona. Una lista vacía es «cargando» y no cuenta.
+            val vigilante = launch {
+                tables.first { lista -> lista.isNotEmpty() && lista.none { it.id == table.id } }
+                if (aperturaEnCurso?.second?.id == ticket.id) abandonarApertura()
             }
-
-            mutar { repository.openTable(vId, table.id, covers) }.fold(
-                onSuccess = { order ->
-                    if (!vigente(original)) { desistir(); return@launch }
-                    val opened = TableSession.Active(
-                            tableId = table.id,
-                            tableNumber = table.number,
-                            areaName = table.areaName,
-                            orderId = order.id,
-                            orderNumber = order.orderNumber ?: order.id.takeLast(4),
-                            version = order.version,
-                            totalCents = 0,
-                            mode = TableSession.Mode.ORDERING,
+            try {
+                val lease = try {
+                    lanHub.esperarApertura(ticket, alEsperar = {
+                        if (apertura == aperturaGeneration) _revisandoConCajas.value = true
+                    }) { vigente(original) }
+                } catch (e: kotlinx.coroutines.CancellationException) { throw e
+                } catch (e: Exception) {
+                    android.util.Log.w("TablesViewModel", "🏝️ El hub falló al esperar la mesa: se abre como isla", e)
+                    LeaseOutcome.NoHub // ante la duda, isla
+                }
+                if (apertura == aperturaGeneration) _revisandoConCajas.value = false // ya contestó: ahora «Abriendo...»
+                if (!vigente(original)) { desistir(); return@launch }
+                if (lease is LeaseOutcome.Taken) {
+                    _actionState.value = TableActionState.Error(
+                        "${lease.holderName} está atendiendo esta mesa en otro dispositivo",
                     )
-                    if (!tableSession.startIfCurrent(opened, original, vId, sessionEpoch)) { desistir(); return@launch }
-                    repository.refresh(vId)
-                    if (!vigenteAbierta(opened)) { desistir(); return@launch }
-                    _actionState.value = TableActionState.Idle
-                    _selectedTableId.value = null
-                    onReady()
-                },
-                onFailure = { e ->
-                    if (!vigente(original)) { desistir(); return@launch }
-                    // Offline-first Corte B: sin red la mesa se abre PROVISIONAL —
-                    // intent al outbox (write-ahead), folio particionado, sesión
-                    // con UUID local que el ack promoverá al id del server.
-                    // Errores de NEGOCIO (403/409/4xx) NO abren offline.
-                    if (isNetworkError(e)) {
-                        var aperturaLocal: TableSession.Active? = null
-                        try {
-                            val opened = openTableOffline(vId, table, covers, original, sessionEpoch,
-                                onActivated = { aperturaLocal = it }, sigueOriginal = { vigente(original) })
-                            if (opened == null || !vigenteAbierta(opened)) { desistir(); return@launch }
-                            _actionState.value = TableActionState.Idle
-                            _selectedTableId.value = null
-                            onReady()
-                        } catch (e: kotlinx.coroutines.CancellationException) { throw e
-                        } catch (_: Exception) {
-                            if (!vigente(original) && aperturaLocal?.let { vigenteAbierta(it) } != true) { desistir(); return@launch }
-                            _actionState.value = TableActionState.Error("No se pudo guardar la mesa en este aparato. Libera espacio e inténtalo de nuevo.")
+                    return@launch
+                }
+
+                mutar { repository.openTable(vId, table.id, covers) }.fold(
+                    onSuccess = { order ->
+                        if (!vigente(original)) { desistir(); return@launch }
+                        val opened = TableSession.Active(
+                                tableId = table.id,
+                                tableNumber = table.number,
+                                areaName = table.areaName,
+                                orderId = order.id,
+                                orderNumber = order.orderNumber ?: order.id.takeLast(4),
+                                version = order.version,
+                                totalCents = 0,
+                                mode = TableSession.Mode.ORDERING,
+                        )
+                        if (!tableSession.startIfCurrent(opened, original, vId, sessionEpoch)) { desistir(); return@launch }
+                        repository.refresh(vId)
+                        if (!vigenteAbierta(opened)) { desistir(); return@launch }
+                        _actionState.value = TableActionState.Idle
+                        _selectedTableId.value = null
+                        onReady()
+                    },
+                    onFailure = { e ->
+                        if (!vigente(original)) { desistir(); return@launch }
+                        // Offline-first Corte B: sin red la mesa se abre PROVISIONAL —
+                        // intent al outbox (write-ahead), folio particionado, sesión
+                        // con UUID local que el ack promoverá al id del server.
+                        // Errores de NEGOCIO (403/409/4xx) NO abren offline.
+                        if (isNetworkError(e)) {
+                            var aperturaLocal: TableSession.Active? = null
+                            try {
+                                val opened = openTableOffline(vId, table, covers, original, sessionEpoch,
+                                    onActivated = { aperturaLocal = it }, sigueOriginal = { vigente(original) })
+                                if (opened == null || !vigenteAbierta(opened)) { desistir(); return@launch }
+                                _actionState.value = TableActionState.Idle
+                                _selectedTableId.value = null
+                                onReady()
+                            } catch (e: kotlinx.coroutines.CancellationException) { throw e
+                            } catch (_: Exception) {
+                                if (!vigente(original) && aperturaLocal?.let { vigenteAbierta(it) } != true) { desistir(); return@launch }
+                                _actionState.value = TableActionState.Error("No se pudo guardar la mesa en este aparato. Libera espacio e inténtalo de nuevo.")
+                            }
+                        } else {
+                            _actionState.value = TableActionState.Error(friendlyTableError(e, "No se pudo abrir la mesa"))
                         }
-                    } else {
-                        _actionState.value = TableActionState.Error(friendlyTableError(e, "No se pudo abrir la mesa"))
-                    }
-                },
-            )
+                    },
+                )
+            } finally {
+                vigilante.cancel()
+                if (aperturaEnCurso?.second?.id == ticket.id) { aperturaEnCurso = null; _revisandoConCajas.value = false }
+                // En el éxito `startIfCurrent` ya corrió arriba: la sesión declara la mesa ANTES de que el ticket termine (sin hueco).
+                lanHub.terminarApertura(ticket)
+            }
         }
     }
 

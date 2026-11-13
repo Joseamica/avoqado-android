@@ -698,6 +698,7 @@ private fun TableCheckSheet(
     onOpenTableOrder: () -> Unit,
 ) {
     val actionState by viewModel.actionState.collectAsState()
+    val revisandoConCajas by viewModel.revisandoConCajas.collectAsState()
     var covers by remember { mutableIntStateOf(2) }
 
     Column(
@@ -752,7 +753,7 @@ private fun TableCheckSheet(
                     IconButton(onClick = { covers++ }) { Icon(Icons.Filled.Add, null) }
                 }
                 PrimaryButton(
-                    text = if (actionState is TableActionState.Working) "Abriendo..." else "Abrir mesa y ordenar",
+                    text = textoAbrirMesa(actionState, revisandoConCajas),
                     onClick = { viewModel.openTableAndStartOrdering(table, covers, onReady = onOpenTableOrder) },
                     enabled = actionState !is TableActionState.Working,
                     fullWidth = true,
@@ -1043,3 +1044,10 @@ private fun StatusLine(message: String, color: Color) {
 }
 
 internal fun textoCuentaEnPlano(check:com.avoqado.pos.tables.data.OpenCheckSummary):String = if(check.isProvisional) "Por sincronizar" else check.totalDisplay
+
+/** El botón de una mesa libre. Hub D3: mientras el árbitro pide esperar, «Revisando con las otras cajas…». */
+internal fun textoAbrirMesa(estado: TableActionState, revisandoConCajas: Boolean): String = when {
+    estado !is TableActionState.Working -> "Abrir mesa y ordenar"
+    revisandoConCajas -> "Revisando con las otras cajas…"
+    else -> "Abriendo..."
+}

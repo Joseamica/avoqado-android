@@ -2,6 +2,7 @@ package com.avoqado.pos.tables.presentation
 
 import androidx.lifecycle.viewModelScope
 import com.avoqado.pos.MainDispatcherRule
+import com.avoqado.pos.core.data.lan.Apertura
 import com.avoqado.pos.core.data.lan.LanHubService
 import com.avoqado.pos.core.data.lan.LeaseOutcome
 import com.avoqado.pos.core.data.local.SecureStorage
@@ -120,7 +121,8 @@ class TablePagarProvisionalTest {
         every { outbox.nextLocalFolio(venue) } returns "LOCAL-001"
         coEvery { outbox.enqueue(any(), any(), capture(payloads), any(), any(), isNull()) } answers { arg<String>(3) }
         val hub = mockk<LanHubService>(relaxed = true)
-        coEvery { hub.acquire(any(), any(), any()) } returns LeaseOutcome.NoHub
+        every { hub.abrirApertura(any(), any(), any()) } answers { Apertura("ap-1", firstArg(), secondArg(), thirdArg(), venue, 0L) }
+        coEvery { hub.esperarApertura(any(), any(), any()) } returns LeaseOutcome.NoHub
         val vm = TablesViewModel(repository, mockk(relaxed = true), session, mockk(relaxed = true), storage, outbox, hub, com.avoqado.pos.tables.data.FloorPlanRepository(io.mockk.mockk(relaxed = true), io.mockk.mockk(relaxed = true)), io.mockk.mockk(relaxed = true), io.mockk.mockk<com.avoqado.pos.tables.data.ApiFuenteDeVersiones>(relaxed = true), io.mockk.mockk(relaxed = true))
         var ready = 0
         try {

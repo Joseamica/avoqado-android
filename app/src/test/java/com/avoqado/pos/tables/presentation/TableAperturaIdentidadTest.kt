@@ -2,6 +2,7 @@ package com.avoqado.pos.tables.presentation
 
 import androidx.lifecycle.viewModelScope
 import com.avoqado.pos.MainDispatcherRule
+import com.avoqado.pos.core.data.lan.Apertura
 import com.avoqado.pos.core.data.lan.LanHubService
 import com.avoqado.pos.core.data.lan.LeaseOutcome
 import com.avoqado.pos.core.data.local.SecureStorage
@@ -33,7 +34,8 @@ class TableAperturaIdentidadTest {
         coEvery { repository.refresh(any()) } returns Result.success(emptyList())
         every { storage.venueId } answers { venue }
         session.sincronizarContexto("actor",venue)
-        coEvery { hub.acquire(any(),any(),any()) } returns LeaseOutcome.NoHub
+        every { hub.abrirApertura(any(),any(),any()) } answers { Apertura("ap-1",firstArg(),secondArg(),thirdArg(),venue,0L) }
+        coEvery { hub.esperarApertura(any(),any(),any()) } returns LeaseOutcome.NoHub
         return TablesViewModel(repository=repository,planManager=mockk(relaxed=true),tableSession=session,
             printerService=mockk(relaxed=true),secureStorage=storage,syncOutbox=outbox,lanHub=hub,floorPlanRepository=com.avoqado.pos.tables.data.FloorPlanRepository(io.mockk.mockk(relaxed=true),io.mockk.mockk(relaxed=true)),roleManager=io.mockk.mockk(relaxed=true),versionSource=io.mockk.mockk<com.avoqado.pos.tables.data.ApiFuenteDeVersiones>(relaxed=true),cashDrawerRepository=cajon)
     }
@@ -94,7 +96,7 @@ class TableAperturaIdentidadTest {
     }
     @Test fun lease_pendiente_no_abre_B_despues_de_activar_A()=runTest {
         val lease=CompletableDeferred<LeaseOutcome>()
-        val subject=vm();coEvery {hub.acquire(any(),any(),any())} coAnswers {lease.await()}
+        val subject=vm();coEvery {hub.esperarApertura(any(),any(),any())} coAnswers {lease.await()}
         var navigation=0
         try {
             subject.openTableAndStartOrdering(target,2){navigation++};runCurrent()
@@ -146,7 +148,8 @@ class TableAperturaIdentidadTest {
             subject.openTableAndStartOrdering(target,2){navigation++}
             venue="FULLTEST-context-C";session.clear();session.sincronizarContexto("otro",venue)
             val c=active("C");session.start(c,venue);advanceUntilIdle()
-            coVerify(exactly=0){hub.acquire(any(),any(),any())}
+            coVerify(exactly=0){hub.abrirApertura(any(),any(),any())}
+            coVerify(exactly=0){hub.esperarApertura(any(),any(),any())}
             coVerify(exactly=0){repository.openTable(any(),any(),any())}
             coVerify(exactly=0){outbox.enqueue(any(),any(),any(),any(),any(),any(),any(),any())}
             assertEquals(c,session.current());assertEquals(0,navigation)
