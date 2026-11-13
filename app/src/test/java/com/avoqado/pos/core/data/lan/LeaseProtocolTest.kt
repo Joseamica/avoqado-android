@@ -96,6 +96,39 @@ class LeaseProtocolTest {
 
         assertEquals(original, roundTripped)
     }
+
+    // ── Hub D3: el cable EXACTO de `estado` (lo copia la ficha de iOS en docs/proyectos/ios-por-hacer.md) ──────────
+
+    @Test
+    fun `p03b una petición estado sale por el cable exactamente así`() {
+        assertEquals(
+            """{"v":1,"op":"estado","tableId":"","deviceId":"A","staffId":"","staffName":"Ana","epoch":0,"intento":"","caja":"","enLinea":false,"subida":false,"venueId":"","conAbono":null,"gen":3,"seq":7,"mesas":["m13"],"aperturas":[{"id":"u1","tableId":"m14"}]}""",
+            LeaseProtocol.encode(
+                LeaseRequest(
+                    op = "estado", deviceId = "A", staffName = "Ana", gen = 3, seq = 7,
+                    mesas = listOf("m13"), aperturas = listOf(WireApertura("u1", "m14")),
+                ),
+            ),
+        )
+    }
+
+    @Test
+    fun `p03b la respuesta a estado sale por el cable exactamente así`() {
+        assertEquals(
+            """{"v":1,"status":"ok","lease":null,"holder":null,"currentEpoch":null,"leases":null,"message":null,"quien":null,"caja":null,"faltaSubirla":null,"txt":null,"arbitro":"X","aperturas":[{"id":"u1","resultado":"concedida","quien":null,"esperarMs":null},{"id":"u2","resultado":"ocupada","quien":"Beto","esperarMs":null},{"id":"u3","resultado":"esperar","quien":null,"esperarMs":4000}]}""",
+            LeaseProtocol.encode(
+                LeaseResponse(
+                    status = "ok",
+                    arbitro = "X",
+                    aperturas = listOf(
+                        WireResultadoApertura("u1", "concedida"),
+                        WireResultadoApertura("u2", "ocupada", quien = "Beto"),
+                        WireResultadoApertura("u3", "esperar", esperarMs = 4000),
+                    ),
+                ),
+            ),
+        )
+    }
 }
 
 class LeaseServerTest {
