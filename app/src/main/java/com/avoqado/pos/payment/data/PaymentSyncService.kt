@@ -1288,6 +1288,17 @@ class PaymentSyncService @Inject constructor(
      */
     suspend fun sinEnviarCount(): Int = dao.getUnsyncedPayments().size + dao.enVueloCount()
 
+    /**
+     * D53: lo que frena el cambio de usuario por PIN: la cola ([sinEnviarCount] sin los `EN_VUELO`) y los apartados que se resuelven SOLOS
+     * ([CashPaymentRepository.enVueloQueSeResuelveSolo]). Un apartado que espera a una persona («Ya pagó de otra forma» a medias, uno de la
+     * app de antes) ya no lo frena: no sale solo y el gerente tiene que poder entrar a resolverlo; conserva su `staffId`. «Cerrar sesión» y
+     * cambiar de sucursal siguen contándolos todos ([blockingWorkCount]).
+     */
+    suspend fun sinEnviarParaElRelevo(): Int = dao.getUnsyncedPayments().size + cashPaymentRepository.enVueloQueSeResuelveSolo()
+
+    /** D53: los apartados del local que esperan a una persona ([CashPaymentRepository.enVueloPorRevisar]); el aviso los cuenta «por revisar». */
+    suspend fun sinConfirmarPorRevisar(): Int = cashPaymentRepository.enVueloPorRevisar()
+
     private fun calculateBackoff(retryCount: Int): Long {
         return minOf(
             (Math.pow(2.0, retryCount.toDouble()) * INITIAL_BACKOFF_MS).toLong(),

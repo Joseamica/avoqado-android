@@ -38,6 +38,8 @@ class Q16PrecioCapturadoTest {
         val storage = mockk<SecureStorage>(relaxed = true)
         val drawer = mockk<CashDrawerRepository>(relaxed = true)
         val outbox = mockk<SyncOutbox>(relaxed = true)
+        /** D53: la caja de los apartados (relajada: ningún apartado se resuelve solo ni espera a nadie, salvo que la prueba diga). */
+        val cash = mockk<com.avoqado.pos.payment.data.CashPaymentRepository>(relaxed = true)
         val service: PaymentSyncService
         val client: OkHttpClient
         var response = """{"error":"owned-no-effect"}"""
@@ -82,7 +84,7 @@ class Q16PrecioCapturadoTest {
                 val sent = chain.request()
                 chain.proceed(sent.newBuilder().url(server.url(sent.url.encodedPath)).build())
             }.build()
-            service = PaymentSyncService(dao,storage,client,network,drawer,outbox,io.mockk.mockk<com.avoqado.pos.payment.data.CashPaymentRepository>(relaxed = true))
+            service = PaymentSyncService(dao,storage,client,network,drawer,outbox,cash)
         }
         fun realWriters() {
             coEvery { dao.findByIdQ15(any()) } answers {

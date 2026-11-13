@@ -223,7 +223,7 @@ fun QuarantineSheet(
                         items(cobrosInterrumpidos, key = { "interrumpido-${it.id}" }) { cobro ->
                             var abierto by rememberSaveable("interrumpido-${cobro.id}") { mutableStateOf(false) }
                             Column(Modifier.fillMaxWidth().padding(vertical = AvoqadoTheme.spacing.md), verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
-                                Text("Cobro en efectivo", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                                Text(tituloDelCobroInterrumpido(cobro.method, cobro.tenderTypeId), style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
                                 Text(formatMoney(cobro.amountCents), style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold)
                                 ReferenciaDeRevision("Folio ${cobro.id.take(8)}", formatTime(cobro.createdAt), abierto, { abierto = !abierto })
                                 Text("La app se cerró mientras registraba este cobro.", style = MaterialTheme.typography.bodyMedium)
@@ -604,4 +604,14 @@ private fun DecisionesDelCobro(onConservar: () -> Unit, onConfirmar: () -> Unit)
             }
         }
     }
+}
+
+/**
+ * D53 (Codex r1 #3): el título de un cobro interrumpido dice CÓMO se cobró. Antes decía «Cobro en efectivo» siempre, también con una
+ * transferencia o una tarjeta de otra terminal, y el gerente decidía «¿el cliente pagó?» con el dato equivocado. PURA.
+ */
+internal fun tituloDelCobroInterrumpido(metodo: String, tipoDelCatalogo: String?): String {
+    if (tipoDelCatalogo != null) return "Cobro con otro tipo de pago"
+    val manual = runCatching { com.avoqado.pos.payment.domain.ManualPaymentMethod.valueOf(metodo) }.getOrNull()
+    return if (manual != null) "Cobro con ${manual.label.lowercase()}" else "Cobro en efectivo"
 }
