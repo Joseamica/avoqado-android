@@ -92,6 +92,35 @@ class ReintentoDeComandaTest {
     }
 
     @Test
+    fun `algoSalio con una copia de dos`() = runTest {
+        // Cocina sale en el primer intento; Barra truena las seis veces. El último resultado sólo lleva Barra (printed=0),
+        // pero lo de Cocina ya está en papel: soltar la comanda repetiría Cocina.
+        val parcial = ComandaPrinter.Result(
+            attempted = 2, printed = 1, hojas = 1, skippedNoPrinter = 0, lastError = "sin papel",
+            failedStations = listOf("Barra"), failedPlans = listOf(planBarra),
+        )
+        val soloBarra = fallo("Barra", causa = "sin papel", planesQueFallaron = listOf(planBarra))
+        val printer = ComandaPrinterFalso(resultados = listOf(parcial) + List(5) { soloBarra })
+        val sut = ReintentoDeComanda(printer.comandaPrinter, esperar = { }, reporteDeComandas = reporteDeComandasFalso())
+
+        val estado = sut.insistir(planes, config, "ORD-1", "En tienda", null, emptyMap())
+
+        val noSalio = estado as EstadoDeComanda.NoSalio
+        assertTrue(noSalio.algoSalio)
+        assertEquals(listOf(planBarra), noSalio.trabajo?.planes)
+    }
+
+    @Test
+    fun `algoSalio es falso si ninguna hoja salio`() = runTest {
+        val printer = ComandaPrinterFalso(resultados = List(6) { fallo("Cocina", causa = "timeout") })
+        val sut = ReintentoDeComanda(printer.comandaPrinter, esperar = { }, reporteDeComandas = reporteDeComandasFalso())
+
+        val estado = sut.insistir(planes, config, "ORD-1", "En tienda", null, emptyMap())
+
+        assertEquals(false, (estado as EstadoDeComanda.NoSalio).algoSalio)
+    }
+
+    @Test
     fun `se rinde tras seis intentos y reporta la causa REAL del ultimo`() = runTest {
         val printer = ComandaPrinterFalso(resultados = List(6) { fallo("Cocina", causa = "timeout 192.168.1.141:9100") })
         val sut = ReintentoDeComanda(printer.comandaPrinter, esperar = { }, reporteDeComandas = reporteDeComandasFalso())
@@ -179,7 +208,7 @@ class ReintentoDeComandaTest {
                 // aviso cambian de verdad, sin fabricar un estado imposible (un intento no puede
                 // reportar como fallido un plan que no recibió; el helper ahora lo exige).
                 ComandaPrinter.Result(
-                    attempted = 2, printed = 1, skippedNoPrinter = 0, lastError = "sin papel",
+                    attempted = 2, printed = 1, hojas = 1, skippedNoPrinter = 0, lastError = "sin papel",
                     failedStations = listOf("Barra"),
                     failedPlans = listOf(planBarra),
                 ),
@@ -427,7 +456,7 @@ class ReintentoDeComandaRondaDeArregloTest {
     @Test
     fun `P1 NoSalio lleva SOLO los planes que faltaron, nunca los que si salieron`() = runTest {
         val soloBarraFalla = ComandaPrinter.Result(
-            attempted = 2, printed = 1, skippedNoPrinter = 0, lastError = "sin papel",
+            attempted = 2, printed = 1, hojas = 1, skippedNoPrinter = 0, lastError = "sin papel",
             failedStations = listOf("Barra"), failedPlans = listOf(planBarra),
         )
         val printer = ComandaPrinterFalso(List(PoliticaDeReintento.INTENTOS_MAXIMOS) { soloBarraFalla })
@@ -449,7 +478,7 @@ class ReintentoDeComandaRondaDeArregloTest {
     @Test
     fun `P1 reintentar manda EXACTAMENTE los planes pendientes, no el lote entero`() = runTest {
         val soloBarraFalla = ComandaPrinter.Result(
-            attempted = 2, printed = 1, skippedNoPrinter = 0, lastError = "sin papel",
+            attempted = 2, printed = 1, hojas = 1, skippedNoPrinter = 0, lastError = "sin papel",
             failedStations = listOf("Barra"), failedPlans = listOf(planBarra),
         )
         val printer = ComandaPrinterFalso(List(PoliticaDeReintento.INTENTOS_MAXIMOS + 1) { soloBarraFalla })

@@ -66,6 +66,34 @@ class KDSRepositoryTest {
         assertEquals("1", url.queryParameter("urgencyVersion")); assertEquals("100", url.queryParameter("offset"))
     }
     @Test
+    fun `la lista del vigilante pide las mas nuevas sin estacion ni urgencia`() = runTest {
+        server.enqueue(MockResponse().setBody(lista(comanda(extraJson = ",\"needsPrint\":true"))))
+
+        val c = repo.fetchLasMasNuevas().getOrThrow().single()
+
+        val url = server.takeRequest(1, TimeUnit.SECONDS)!!.requestUrl!!
+        assertEquals("/api/v1/mobile/venues/v1/kds/orders", url.encodedPath)
+        assertEquals("NEW,PREPARING,READY", url.queryParameter("status"))
+        assertNull(url.queryParameter("urgencyVersion"))
+        assertNull(url.queryParameter("stationId"))
+        assertTrue(c.needsPrint)
+    }
+
+    @Test
+    fun `canales para imprimir falla con un 403 y lee el estado de cada canal`() = runTest {
+        server.enqueue(MockResponse().setResponseCode(403).setBody("""{"message":"sin permiso"}"""))
+        server.enqueue(MockResponse().setBody("""{"channels":[{"id":"l1","provider":"RAPPI","status":"PAUSED","snoozedUntil":null}]}"""))
+
+        assertTrue(repo.leerCanalesParaImprimir().isFailure)
+        val primera = server.takeRequest(1, TimeUnit.SECONDS)!!
+        assertEquals("/api/v1/mobile/venues/v1/delivery/channels", primera.requestUrl!!.encodedPath)
+        assertEquals("1", primera.getHeader(ForbiddenInterceptor.BACKGROUND_HEADER))
+        val canal = repo.leerCanalesParaImprimir().getOrThrow().single()
+        assertEquals("RAPPI", canal.proveedor)
+        assertEquals("PAUSED", canal.estado)
+    }
+
+    @Test
     fun `el tablero pide SU estacion y lee el folio y la estacion de cada comanda`() = runTest {
         server.enqueue(MockResponse().setBody(lista(comanda("sale:ext-1:st-barra", "st-barra"))))
 

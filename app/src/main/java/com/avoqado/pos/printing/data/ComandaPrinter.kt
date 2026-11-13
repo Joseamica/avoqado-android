@@ -154,6 +154,11 @@ class ComandaPrinter @Inject constructor(
          * `copiasPendientes`.
          */
         val copiasPendientes: Map<String?, Int> = emptyMap(),
+        /**
+         * Hojas (copias) que SÍ salieron en esta llamada, contando las de un plan que tronó a media copia (salió la 1 de 2).
+         * `printed` cuenta planes completos y por eso no basta para saber si ya hay papel en la cocina.
+         */
+        val hojas: Int = 0,
     ) {
         val nothingPrinted: Boolean get() = printed == 0
         val partial: Boolean get() = printed in 1 until attempted
@@ -206,6 +211,7 @@ class ComandaPrinter @Inject constructor(
         )
 
         var printed = 0
+        var hojas = 0
         var lastError: String? = null
         val failedStations = mutableListOf<String>()
         val skippedStations = mutableListOf<String>()
@@ -240,6 +246,7 @@ class ComandaPrinter @Inject constructor(
                     repeat(aEntregar) {
                         printerService.printKitchenTicket(resolved.ticket, printer)
                         entregadas++
+                        hojas++
                     }
                 } catch (e: Exception) {
                     copiasQueFaltan[plan.stationId] = (aEntregar - entregadas).coerceAtLeast(1)
@@ -273,6 +280,7 @@ class ComandaPrinter @Inject constructor(
             skippedStations = skippedStations,
             failedPlans = failedPlans,
             copiasPendientes = copiasQueFaltan,
+            hojas = hojas,
         )
     }
 
