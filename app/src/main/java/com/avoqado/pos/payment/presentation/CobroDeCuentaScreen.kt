@@ -157,6 +157,12 @@ class CobroDeCuentaViewModel @Inject constructor(
     private var pedidoEnVuelo: Pair<String, Deferred<DecisionSinRed>>? = null
     /** La revalidación previa al efectivo dijo que no: al volver, la cuenta se queda con ese gris (no se vuelve a ofrecer en el acto). */
     private var rechazadoAntesDelEfectivo = false
+    /**
+     * D5 (hz:619db22d, medido en la SAMSUNG el 12-nov): el gris que dio la puerta o la revalidación justo antes del efectivo («Se perdió el
+     * contacto… No recibas el efectivo»). Se queda mientras la causa siga siendo la misma (la caja que la abrió no se ve): la vuelta de cada
+     * 10 s ([consultarSinRed]) lo tapaba con «no la encuentro». Con cualquier otra decisión (se puede cobrar, o un motivo nuevo) se olvida.
+     */
+    private var grisDeLaPuerta: String? = null
 
     /** Lo que decide: la copia VIGENTE de la sucursal ACTUAL (vencida u otra sucursal = sin cuenta) y lo local; leer mal = gris. */
     private suspend fun datosSinRed(orderId: String): DatosDelCobroSinRed {
@@ -195,7 +201,14 @@ class CobroDeCuentaViewModel @Inject constructor(
     /** Sin permiso todavía: lo que la cuenta ofrece antes del toque. Con un toque en curso no se pinta encima (lo publica él). */
     suspend fun consultarSinRed(orderId: String) {
         if (pedidoEnVuelo?.second?.isActive == true) return
-        val d = decidirCobroSinRed(datosSinRed(orderId), permiso = null)
+        val datos = datosSinRed(orderId)
+        val nueva = decidirCobroSinRed(datos, permiso = null)
+        // Sólo tapa la MISMA causa: el aviso guardado es de contacto perdido Y la caja que la abrió sigue sin verse. Un motivo nuevo, o un
+        // aviso guardado por otra causa (el saldo cambió), deja ver lo vigente (Codex r1 y r2 sobre la D5).
+        val avisosDeContacto = setOfNotNull(datos.cajaQueLaAbrio?.let { TextosDeCuentaSinRed.sePerdioElContacto(it) }, TextosDeCuentaSinRed.SE_ABRIO_EN_OTRA_CAJA)
+        val mismaCausa = grisDeLaPuerta in avisosDeContacto &&
+            nueva == DecisionSinRed.Gris(TextosDeCuentaSinRed.noLaEncuentro(datos.cajaQueLaAbrio))
+        val d = grisDeLaPuerta?.takeIf { mismaCausa }?.let { DecisionSinRed.Gris(it) } ?: nueva.also { grisDeLaPuerta = null }
         if (pedidoEnVuelo?.second?.isActive != true) decisionSinRed.value = d
     }
 
@@ -313,6 +326,7 @@ class CobroDeCuentaViewModel @Inject constructor(
     /** La puerta del cobro dijo que no (Opción D): la cuenta se queda con ese gris al volver. */
     fun alNoPasarLaPuerta(texto: String) {
         rechazadoAntesDelEfectivo = true
+        grisDeLaPuerta = texto
         decisionSinRed.value = DecisionSinRed.Gris(texto)
     }
 

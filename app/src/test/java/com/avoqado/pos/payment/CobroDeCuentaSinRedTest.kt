@@ -338,6 +338,69 @@ class CobroDeCuentaSinRedTest {
         assertEquals(Gris(TextosDeCuentaSinRed.sePerdioElContacto("Sunmi D3")), m.sinRed.value)
     }
 
+    /**
+     * D5 (hz:619db22d, medido en la SAMSUNG el 12-nov a las 17:11): la revalidación sí dice «Se perdió el contacto…», pero al volver a la
+     * cuenta su vuelta de cada 10 s (`CobrarCuentaSinRed` → [CobroDeCuentaViewModel.consultarSinRed]) lo tapaba con «no la encuentro».
+     * El gris de la puerta se queda mientras la cuenta siga sin poderse cobrar; si la dueña vuelve a verse, se ofrece otra vez.
+     */
+    @Test fun `el no recibas el efectivo se queda al volver aunque la cuenta se vuelva a consultar`() = runTest {
+        enLaCopia(cuenta())
+        otraCajaPremium()
+        coEvery { entre.cajaQueLaAbrio("v1", "o1") } returns "Sunmi D3"
+        respuestaDelDueno = { CuentasEntreCajas.DelDueno(Respuesta.Concedida, "d3", "Sunmi D3", 0L) }
+        val m = vm()
+        assertEquals(Cobrar(6000), m.pedirCobroSinRed("o1"))
+        otraCaja = false
+        val texto = TextosDeCuentaSinRed.sePerdioElContacto("Sunmi D3")
+        assertEquals(texto, m.revalidarCobroSinRed("o1", 6000))
+        assertEquals(false, m.alVolverDelCobroSinRed("o1"))
+        m.consultarSinRed("o1") // la vuelta de cada 10 s
+        assertEquals(Gris(texto), m.sinRed.value)
+
+        otraCaja = true // la dueña vuelve a verse: se ofrece otra vez
+        m.consultarSinRed("o1")
+        assertEquals(Cobrar(6000), m.sinRed.value)
+        otraCaja = false // y un gris nuevo ya es el de siempre
+        m.consultarSinRed("o1")
+        assertEquals(Gris(TextosDeCuentaSinRed.noLaEncuentro("Sunmi D3")), m.sinRed.value)
+    }
+
+    /**
+     * Codex sobre la D5 (12-nov): el aviso guardado sólo tapa el «no la encuentro» (la MISMA causa). Un motivo nuevo y más importante
+     * (aquí, un cobro de esta cuenta que quedó en la cola; igual «Cobrada en <caja>») se ve en cuanto aparece.
+     */
+    @Test fun `el aviso guardado no tapa un motivo nuevo`() = runTest {
+        enLaCopia(cuenta())
+        otraCajaPremium()
+        coEvery { entre.cajaQueLaAbrio("v1", "o1") } returns "Sunmi D3"
+        respuestaDelDueno = { CuentasEntreCajas.DelDueno(Respuesta.Concedida, "d3", "Sunmi D3", 0L) }
+        val m = vm()
+        assertEquals(Cobrar(6000), m.pedirCobroSinRed("o1"))
+        otraCaja = false
+        assertEquals(TextosDeCuentaSinRed.sePerdioElContacto("Sunmi D3"), m.revalidarCobroSinRed("o1", 6000))
+        assertEquals(false, m.alVolverDelCobroSinRed("o1"))
+
+        coEvery { locales.hayPendiente(any(), any()) } returns true
+        m.consultarSinRed("o1")
+        assertEquals(Gris(TextosDeTarjetas.COBRO_SIN_SINCRONIZAR), m.sinRed.value)
+    }
+
+    /** Codex r2 sobre la D5: un aviso guardado por OTRA causa (el saldo cambió) no tapa el «no la encuentro» que llega después. */
+    @Test fun `el aviso de saldo cambiado no tapa que despues se perdio el contacto`() = runTest {
+        enLaCopia(cuenta())
+        otraCajaPremium()
+        coEvery { entre.cajaQueLaAbrio("v1", "o1") } returns "Sunmi D3"
+        respuestaDelDueno = { CuentasEntreCajas.DelDueno(Respuesta.Concedida, "d3", "Sunmi D3", 0L) }
+        val m = vm()
+        assertEquals(Cobrar(6000), m.pedirCobroSinRed("o1"))
+        assertEquals(TextosDeCuentaSinRed.saldoCambio(6000), m.revalidarCobroSinRed("o1", 5000))
+        assertEquals(false, m.alVolverDelCobroSinRed("o1"))
+
+        otraCaja = false
+        m.consultarSinRed("o1")
+        assertEquals(Gris(TextosDeCuentaSinRed.noLaEncuentro("Sunmi D3")), m.sinRed.value)
+    }
+
     /** Caso 4, el otro lado: sin apartado vivo con la dueña (nunca se pidió, o ya se soltó) sigue el texto de «no la encuentro». */
     @Test fun `sin apartado con la duena la revalidacion sigue diciendo que no la encuentra`() = runTest {
         enLaCopia(cuenta())
