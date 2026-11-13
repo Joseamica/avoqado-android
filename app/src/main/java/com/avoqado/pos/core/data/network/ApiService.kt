@@ -307,6 +307,8 @@ interface ApiService {
     @GET("mobile/venues/{venueId}/floor-plan")
     suspend fun getFloorPlan(@Path("venueId") venueId: String): com.avoqado.pos.tables.data.FloorPlanResponse
 
+    /** D12: plazo corto y directo a la apertura sin red si nadie contesta (`RendirseRapido`); antes congelaba ~35 s. */
+    @Headers("${RendirseRapido.HEADER}: 1")
     @POST("mobile/venues/{venueId}/tables/{tableId}/open")
     suspend fun openTable(
         @Path("venueId") venueId: String,

@@ -101,6 +101,9 @@ el mismo POS se ve como dos peers y la elección de árbitro deja de ser estable
   seguía "bien" pero sin internet. NO aplicar al resto: la terminal espera 310 s
   a propósito (alguien tiene que pasar la tarjeta) y el catálogo en red lenta sí
   tarda y no tiene cola que lo salve.
+  Android (D12, 12-nov): abrir mesa también, y `RendirseRapido` recuerda que la
+  última marcada se quedó SIN respuesta: con el servidor sin contestar, la siguiente
+  no toca la red y sale como `ConnectException` (directo a la cola, con su llave).
 - La creación EN LÍNEA también viaja con `externalId` (Android
   `sessionIdempotencyKey()`, iOS `sessionOrderExternalId()`): si el intento
   lento SÍ aterrizó, el reintento — vivo o del outbox — deduplica en vez de

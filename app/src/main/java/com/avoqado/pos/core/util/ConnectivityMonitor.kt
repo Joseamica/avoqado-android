@@ -76,6 +76,31 @@ class ConnectivityMonitor @Inject constructor(
     private val _sinRespuesta = MutableStateFlow(false)
     val sinRespuesta: StateFlow<Boolean> = _sinRespuesta.asStateFlow()
 
+    /**
+     * D12 · `RendirseRapido` (Codex r1 #2): cuándo contestó el servidor por última vez, con CUALQUIER código (ping, salud o una respuesta
+     * HTTP del cliente principal), en reloj monotónico (ms). Sólo se escribe; no cambia [sinRespuesta] ni [isServerReachable]. Sirve
+     * para que el recuerdo de «la última marcada se quedó sin respuesta» caduque en cuanto alguien contesta.
+     */
+    @Volatile var ultimaRespuestaMs: Long = Long.MIN_VALUE
+        private set
+
+    /** Alguien contestó (cualquier código). Ver [ultimaRespuestaMs]. */
+    fun anotarRespuesta() {
+        ultimaRespuestaMs = System.nanoTime() / 1_000_000
+    }
+
+    /**
+     * D12 · `RendirseRapido` (Codex r2 #1): cuándo se quedó SIN respuesta el último ping o la última consulta de la salud (los mismos
+     * casos que ponen [sinRespuesta]). Comparado con [ultimaRespuestaMs] dice qué pasó DESPUÉS: una respuesta de cualquier pantalla,
+     * aunque sea un 5xx, gana a un ping sin respuesta anterior. Sólo se escribe; no cambia [sinRespuesta].
+     */
+    @Volatile var ultimaSinRespuestaMs: Long = Long.MIN_VALUE
+        private set
+
+    private fun anotarSinRespuesta() {
+        ultimaSinRespuestaMs = System.nanoTime() / 1_000_000
+    }
+
     /** Seam de pruebas: la URL del servidor para el ping y la salud. En producción, [ApiConstants.BASE_URL]. */
     @androidx.annotation.VisibleForTesting
     internal var urlBase: String = ApiConstants.BASE_URL
@@ -126,6 +151,7 @@ class ConnectivityMonitor @Inject constructor(
     }
 
     fun reportServerSuccess() {
+        anotarRespuesta()
         _sinRespuesta.value = false
         if (!_isServerReachable.value) {
             _isServerReachable.value = true
@@ -198,6 +224,7 @@ class ConnectivityMonitor @Inject constructor(
     private suspend fun consultarSalud(plazo: PlazoDeLaSalud? = null): Boolean? = kotlinx.coroutines.withContext(Dispatchers.IO) {
         if (!_isConnected.value) return@withContext null
         var connection: HttpURLConnection? = null
+        var contesto = false // Codex D12 r4 #2: ya llegó un código; si después falla el cuerpo, eso no es «nadie contestó»
         try {
             val url = java.net.URI(urlBase).resolve("/api/public/healthcheck").toURL()
             connection = (url.openConnection() as HttpURLConnection).apply {
@@ -212,6 +239,8 @@ class ConnectivityMonitor @Inject constructor(
             }
             plazo?.revisar() // la consulta tardó en arrancar y el plazo ya venció: no se conecta
             val code = connection.responseCode
+            contesto = true
+            anotarRespuesta()
             _sinRespuesta.value = false // alguien contestó, aunque sea mal
             val cuerpo = if (code == 200) leerCuerpo(connection, plazo) else null
             val ok = saludContesta(code, connection.contentType, cuerpo)
@@ -219,7 +248,10 @@ class ConnectivityMonitor @Inject constructor(
             ok
         } catch (e: java.io.IOException) {
             Log.d("📡", "Salud del servidor sin respuesta: ${e.message}")
-            if (plazo == null) _sinRespuesta.value = true // familia C: lo que no alcanza a contestar en el plazo propio no es «nadie contesta»
+            if (plazo == null) {
+                if (!contesto) anotarSinRespuesta()
+                _sinRespuesta.value = true // familia C: lo que no alcanza a contestar en el plazo propio no es «nadie contesta»
+            }
             null
         } catch (e: Exception) {
             Log.d("📡", "Salud del servidor sin respuesta: ${e.message}")
@@ -254,6 +286,7 @@ class ConnectivityMonitor @Inject constructor(
                 instanceFollowRedirects = true
             }
             val code = connection.responseCode
+            anotarRespuesta()
             _sinRespuesta.value = false // R2-2: alguien contestó (también un 5xx)
             val ngrokError = connection.getHeaderField("ngrok-error-code")
             // Matches iOS: any 200–499 means the server (or its proxy) is answering.
@@ -265,6 +298,7 @@ class ConnectivityMonitor @Inject constructor(
             }
         } catch (e: java.io.IOException) {
             Log.d("📡", "Ping sin respuesta: ${e.message}")
+            anotarSinRespuesta()
             _sinRespuesta.value = true // R2-2: nadie contestó
         } catch (e: Exception) {
             Log.d("📡", "Ping failed: ${e.message}")
