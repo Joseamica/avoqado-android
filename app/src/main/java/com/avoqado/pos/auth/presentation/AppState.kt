@@ -634,9 +634,9 @@ internal suspend fun rechazadasPorRevisar(
     venueId: String?,
 ): Rechazadas {
     if (venueId == null) return Rechazadas(aqui = 0, deOtraSucursal = pagos.porRevisarCount())
-    val (cobrosAqui, cobrosDeOtra) = pagos.porRevisarPorSucursal(venueId)
+    val cobros = pagos.porRevisarPorSucursal(venueId)
     val paquetesAqui = paquetes?.filas?.value?.count { it.venueId == venueId && it.porRevisar } ?: 0
-    return Rechazadas(aqui = cobrosAqui + cola.rechazadasCount(venueId) + paquetesAqui, deOtraSucursal = cobrosDeOtra)
+    return Rechazadas(aqui = cobros.aqui + cola.rechazadasCount(venueId) + paquetesAqui, deOtraSucursal = cobros.deOtraSucursal)
 }
 
 /**

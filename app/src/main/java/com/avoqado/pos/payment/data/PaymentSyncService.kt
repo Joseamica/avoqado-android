@@ -1266,11 +1266,14 @@ class PaymentSyncService @Inject constructor(
      * D34 (Codex r2 #2 y r3): [porRevisarCount] partido, en UNA lectura, en los de [venueId] (los que «Operaciones por revisar» le enseña)
      * y los de otras sucursales (sólo se ven con esa sucursal abierta).
      */
-    suspend fun porRevisarPorSucursal(venueId: String): Pair<Int, Int> {
+    suspend fun porRevisarPorSucursal(venueId: String): PorRevisar {
         val filas = dao.getFailedPayments().filterNot(RevisionCanceladoCero::revisado)
         val aqui = filas.count { it.venueId == venueId }
-        return aqui to filas.size - aqui
+        return PorRevisar(aqui = aqui, deOtraSucursal = filas.size - aqui)
     }
+
+    /** Ver [porRevisarPorSucursal]. */
+    data class PorRevisar(val aqui: Int, val deOtraSucursal: Int)
 
     /**
      * Lo que todavía va a salir: la cola y un cobro interrumpido (la app murió a media petición), que tampoco puede irse con la

@@ -57,7 +57,7 @@ class FrenoConRechazosTest {
     // MARK: - Qué cuenta como rechazado (Codex r1)
 
     private fun pagos(porRevisar: Int, bloqueantes: Int = porRevisar, sinEnviar: Int = 0, deOtra: Int = 0) = mockk<PaymentSyncService> {
-        coEvery { porRevisarPorSucursal("v-1") } returns (porRevisar to deOtra)
+        coEvery { porRevisarPorSucursal("v-1") } returns PaymentSyncService.PorRevisar(porRevisar, deOtra)
         coEvery { blockingWorkCount() } returns bloqueantes
         coEvery { sinEnviarCount() } returns sinEnviar
     }
