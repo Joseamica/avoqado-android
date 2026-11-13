@@ -516,6 +516,22 @@ class ComandaPrinterTest {
         assertEquals("falta UNA copia, no el plan entero", mapOf<String?, Int>("st_cocina" to 1), resultado.copiasPendientes)
     }
 
+    @Test
+    fun `hojas cuenta la copia que salio aunque la segunda truene`() = runTest {
+        var copiasIntentadas = 0
+        coEvery { printerService.printKitchenTicket(any(), any()) } coAnswers {
+            copiasIntentadas++
+            if (copiasIntentadas == 2) throw RuntimeException("sin papel")
+        }
+
+        val resultado = comandaPrinter.printComandas(
+            listOf(plan("st_cocina", listOf(tacoLine))), cocinaDosCopias, "1234",
+        )
+
+        assertEquals("el plan no se completo", 0, resultado.printed)
+        assertEquals("pero ya hay una hoja en la cocina", 1, resultado.hojas)
+    }
+
     /**
      * Y el reintento las honra: pasando «falta 1», se imprime UNA sola — no las dos de la
      * configuración. Sin esto, el arreglo de arriba sería un dato que nadie usa.

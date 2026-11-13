@@ -70,6 +70,8 @@ object Arranque {
         ciclo.addObserver(inyector.getInstance(RefrescoDelCatalogo::class.java))
         // «Pedidos en línea»: el vigilante global (insignia, banner y sonido que insiste), espejo de AvoqadoApp.onCreate.
         ciclo.addObserver(inyector.getInstance(VigilanteDePedidosEnLinea::class.java))
+        // Rappi/Uber: imprime solo y avisa el pedido de reparto desde cualquier pantalla, espejo de AvoqadoApp.onCreate.
+        ciclo.addObserver(inyector.getInstance(com.avoqado.pos.kds.data.VigilanteDeReparto::class.java))
         VenueTimeZone.set(inyector.getInstance(SecureStorage::class.java).venueTimezone)
         inyector.getInstance(ReservationActionsRetrier::class.java).start(appScope)
         inyector.getInstance(CancelacionDeCobroCoordinator::class.java).start()
