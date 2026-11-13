@@ -228,10 +228,12 @@ class TablesViewModel @Inject constructor(
     private var aperturaGeneration = 0L
 
     /**
-     * Hub D3 (spec §3.1): el intento de abrir una mesa LIBRE que sigue en curso, con su generación y su ticket del Hub. Este VM es el
-     * único dueño del ticket y lo termina por id, nunca por mesa. Sólo se toca en Main.
+     * Hub D3 (spec §3.1): el intento de abrir una mesa LIBRE que sigue en curso y su ticket del Hub. Este VM es el único dueño del
+     * ticket y lo termina por id, nunca por mesa. [comprometida]: ya activó su sesión o empezó a escribir la apertura sin red; desde
+     * ahí abandonarlo dejaría la mesa sin quién la declare o una sesión viva sin navegar, así que termina como siempre. Sólo en Main.
      */
-    private var aperturaEnCurso: Pair<Long, Apertura>? = null
+    private class AperturaEnCurso(val ticket: Apertura) { var comprometida = false }
+    private var aperturaEnCurso: AperturaEnCurso? = null
     private var pollJob: Job? = null
 
     private val venueId: String? get() = secureStorage.venueId
@@ -273,8 +275,9 @@ class TablesViewModel @Inject constructor(
 
     fun selectTable(tableId: String?) {
         _selectedTableId.value = tableId
-        // La hoja sigue mostrando la mesa que se está abriendo: el intento sigue («Abriendo...»).
-        if (tableId != null && tableId == aperturaEnCurso?.second?.tableId) return
+        // La hoja sigue mostrando la mesa que se está abriendo, o el intento ya está comprometido: sigue («Abriendo...»).
+        val enCurso = aperturaEnCurso
+        if (enCurso != null && (tableId == enCurso.ticket.tableId || enCurso.comprometida)) return
         abandonarApertura() // cerrar la hoja (`selectTable(null)`) u otra mesa
         _actionState.value = TableActionState.Idle
     }
@@ -287,10 +290,12 @@ class TablesViewModel @Inject constructor(
      * red partiría su escritura. Su `finally` repite el `terminarApertura` sin efecto.
      */
     private fun abandonarApertura() {
+        // Comprometido: no se toca (termina, navega y su `finally` cierra el ticket con la sesión ya declarando la mesa).
+        if (aperturaEnCurso?.comprometida == true) return
         if (_actionState.value is TableActionState.Working) _actionState.value = TableActionState.Idle
         _revisandoConCajas.value = false
         aperturaGeneration++
-        aperturaEnCurso?.let { lanHub.terminarApertura(it.second) }
+        aperturaEnCurso?.let { lanHub.terminarApertura(it.ticket) }
         aperturaEnCurso = null
     }
 
@@ -333,11 +338,11 @@ class TablesViewModel @Inject constructor(
                 staffName = secureStorage.selectedStaffNameForCurrentVenue
                     ?: secureStorage.userFirstName.orEmpty(),
             )
-            aperturaEnCurso = apertura to ticket
+            val enCurso = AperturaEnCurso(ticket).also { aperturaEnCurso = it }
             // La hoja deja de dibujarse si la mesa sale del plano: se abandona. Una lista vacía es «cargando» y no cuenta.
             val vigilante = launch {
                 tables.first { lista -> lista.isNotEmpty() && lista.none { it.id == table.id } }
-                if (aperturaEnCurso?.second?.id == ticket.id) abandonarApertura()
+                if (aperturaEnCurso === enCurso) abandonarApertura()
             }
             try {
                 val lease = try {
@@ -372,6 +377,7 @@ class TablesViewModel @Inject constructor(
                                 mode = TableSession.Mode.ORDERING,
                         )
                         if (!tableSession.startIfCurrent(opened, original, vId, sessionEpoch)) { desistir(); return@launch }
+                        enCurso.comprometida = true // la sesión ya declara la mesa: cerrar la hoja ya no la suelta
                         repository.refresh(vId)
                         if (!vigenteAbierta(opened)) { desistir(); return@launch }
                         _actionState.value = TableActionState.Idle
@@ -388,7 +394,8 @@ class TablesViewModel @Inject constructor(
                             var aperturaLocal: TableSession.Active? = null
                             try {
                                 val opened = openTableOffline(vId, table, covers, original, sessionEpoch,
-                                    onActivated = { aperturaLocal = it }, sigueOriginal = { vigente(original) })
+                                    onActivated = { aperturaLocal = it }, sigueOriginal = { vigente(original) },
+                                    alComprometer = { enCurso.comprometida = true })
                                 if (opened == null || !vigenteAbierta(opened)) { desistir(); return@launch }
                                 _actionState.value = TableActionState.Idle
                                 _selectedTableId.value = null
@@ -405,7 +412,7 @@ class TablesViewModel @Inject constructor(
                 )
             } finally {
                 vigilante.cancel()
-                if (aperturaEnCurso?.second?.id == ticket.id) { aperturaEnCurso = null; _revisandoConCajas.value = false }
+                if (aperturaEnCurso === enCurso) { aperturaEnCurso = null; _revisandoConCajas.value = false }
                 // En el éxito `startIfCurrent` ya corrió arriba: la sesión declara la mesa ANTES de que el ticket termine (sin hueco).
                 lanHub.terminarApertura(ticket)
             }
@@ -415,7 +422,7 @@ class TablesViewModel @Inject constructor(
     /** Apertura provisional sin red (el server la confirma en el replay). */
     private suspend fun openTableOffline(vId: String, table: DiningTable, covers: Int,
         original: TableSession.Active?, sessionEpoch: Long,
-        onActivated: (TableSession.Active) -> Unit, sigueOriginal: () -> Boolean): TableSession.Active? {
+        onActivated: (TableSession.Active) -> Unit, sigueOriginal: () -> Boolean, alComprometer: () -> Unit): TableSession.Active? {
         val localOrderId = java.util.UUID.randomUUID().toString()
         // 🔴 La caja abierta AHORA va en el `OPEN_TABLE` (efectivo sin red en el turno correcto, Codex r4 #1): la cuenta nace en
         // el turno de esa caja aunque suba tarde. Leerla no puede impedir abrir la mesa: si falla, sale sin caja, como hoy.
@@ -424,6 +431,7 @@ class TablesViewModel @Inject constructor(
         } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (_: Exception) { null }
         val folio = syncOutbox.nextLocalFolio(vId)
         if (!sigueOriginal()) return null
+        alComprometer() // a partir de la escritura, partirla dejaría la mesa a medias: el intento ya no se abandona
         syncOutbox.enqueue(
             vId,
             com.avoqado.pos.core.data.sync.SyncIntentTypes.OPEN_TABLE,

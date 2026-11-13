@@ -266,6 +266,72 @@ class AperturaDeMesaConElHubTest {
         } finally { subject.viewModelScope.cancel() }
     }
 
+    @Test fun `p20 cerrar la hoja mientras dice Revisando - deja de decirlo en el acto`() = runTest {
+        esperar = { a, alEsperar, sigue -> alEsperar(); while (sigue() && a.id in vivos) delay(250); LeaseOutcome.NoHub }
+        val subject = vm()
+        try {
+            subject.selectTable(mesaB.id)
+            subject.openTableAndStartOrdering(mesaB, 2) {}; runCurrent()
+            assertTrue(subject.revisandoConCajas.value)
+
+            subject.selectTable(null)
+            assertEquals(false, subject.revisandoConCajas.value)
+            assertTrue(vivos.isEmpty())
+        } finally { subject.viewModelScope.cancel() }
+    }
+
+    // MARK: - Intento comprometido: ya activa su sesión (o escribe sin red): cerrar la hoja ya no lo abandona
+
+    @Test fun `comprometida sin red - cerrar la hoja durante la escritura no la abandona - abre, navega y el ticket termina despues`() = runTest {
+        coEvery { repository.openTable(any(), any(), any()) } returns Result.failure(java.io.IOException("sin red"))
+        val escritura = CompletableDeferred<String>()
+        coEvery { outbox.enqueue(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any()) } coAnswers {
+            escritura.await()
+        }
+        val subject = vm()
+        var navego = 0
+        try {
+            subject.selectTable(mesaB.id)
+            subject.openTableAndStartOrdering(mesaB, 2) { navego++ }; runCurrent()
+            coVerify(exactly = 1) { outbox.enqueue(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any()) }
+
+            subject.selectTable(null)
+            assertEquals("la mesa sigue declarada por su ticket mientras se escribe", 1, vivos.size)
+
+            escritura.complete("intent-B"); advanceUntilIdle()
+            assertEquals("t-B", session.current()?.tableId)
+            assertTrue(session.current()?.isProvisional == true)
+            assertEquals(1, navego)
+            coVerify(exactly = 1) { repository.markTableOccupiedLocally("t-B", 2, venue) }
+            unTicketTerminadoUnaVez()
+            assertEquals("terminó con la sesión ya declarando t-B", "t-B", mesaAlTerminar[tickets.single().id])
+            assertEquals(TableActionState.Idle, subject.actionState.value)
+        } finally { subject.viewModelScope.cancel() }
+    }
+
+    @Test fun `comprometida con red - cerrar la hoja con el refresco en vuelo tras startIfCurrent no la abandona - navega y el ticket termina una vez`() = runTest {
+        coEvery { repository.openTable(any(), any(), any()) } returns Result.success(OpenedOrder("o-B", "B"))
+        val subject = vm()
+        val refresco = CompletableDeferred<Result<List<DiningTable>>>()
+        coEvery { repository.refresh(any()) } coAnswers { refresco.await() }
+        var navego = 0
+        try {
+            subject.selectTable(mesaB.id)
+            subject.openTableAndStartOrdering(mesaB, 2) { navego++ }; runCurrent()
+            assertEquals("startIfCurrent ya corrió", "t-B", session.current()?.tableId)
+
+            subject.selectTable(null)
+            assertEquals(1, vivos.size)
+
+            refresco.complete(Result.success(emptyList())); advanceUntilIdle()
+            assertEquals("t-B", session.current()?.tableId)
+            assertEquals(1, navego)
+            unTicketTerminadoUnaVez()
+            assertEquals("t-B", mesaAlTerminar[tickets.single().id])
+            assertEquals(TableActionState.Idle, subject.actionState.value)
+        } finally { subject.viewModelScope.cancel() }
+    }
+
     // MARK: - p20b (Codex plan r1 #4): cerrar la hoja después de Granted, con openTable retenido
 
     @Test fun `p20b cerrar la hoja con openTable retenido termina el ticket en ese momento y el exito tardio no abre`() = runTest {
