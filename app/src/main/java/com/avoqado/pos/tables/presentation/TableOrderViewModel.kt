@@ -257,6 +257,12 @@ class TableOrderViewModel @Inject constructor(
      * único dueño es «Enviar»: una recarga del borrador (acuse de la apertura) no la recupera ni le quita sus productos a la pantalla.
      */
     private var rondaEnVuelo: String? = null
+    /** D55: los renglones que «Enviar» capturó. Mientras se envía son de esa ronda (D16) y su desenlace los quita por id. */
+    private var renglonesEnVuelo: Set<String> = emptySet()
+    private fun vaEnLaRonda(lineItemId: String) = _isSending.value && lineItemId in renglonesEnVuelo
+    /** D55: lo que ya se está mandando no se quita ni se cambia (se perdería o la ronda iría distinta de lo que se ve); lo dice. */
+    private fun renglonEnVuelo(ids: Collection<String>): Boolean =
+        ids.any(::vaEnLaRonda).also { if (it) showBlockedReason(RENGLON_EN_VUELO) }
     private var checkLoadGeneration = 0L
 
     private val contextoDeSesion = tableSession.contextoActual()
@@ -606,6 +612,9 @@ class TableOrderViewModel @Inject constructor(
         /** D16: la ronda YA está en la cola, pero la mesa cambió a media escritura (su saldo queda en gris). Nunca «intenta de nuevo». */
         const val RONDA_GUARDADA_MESA_CAMBIO = "Ronda guardada, pero la mesa cambió mientras se guardaba. Revisa la cuenta antes de cobrar."
 
+        /** D55: un renglón que «Enviar» ya está mandando no se quita ni se cambia hasta que termine (D16: sólo «Enviar» decide). */
+        const val RENGLON_EN_VUELO = "Ya se está enviando a cocina. Espera a que termine para cambiarlo."
+
         /** D16: la ronda no entró a la cola y el disco no dejó deshacerla: sigue en el borrador y se manda sola al reabrir. */
         const val RONDA_SE_RECUPERA_AL_REABRIR = "No se pudo terminar de guardar la ronda. No la vuelvas a enviar: se manda sola al reabrir la cuenta."
 
@@ -859,7 +868,8 @@ class TableOrderViewModel @Inject constructor(
         }
         val course = _selectedCourse.value
         val existing = _pending.value.firstOrNull { line ->
-            line.course == course &&
+            // D55: sumarle al renglón que ya va en la ronda en vuelo perdía la unidad (el desenlace lo quita por id).
+            !vaEnLaRonda(line.item.id) && line.course == course &&
                 (line.item.type as? CartItemType.ProductItem)?.productId == product.id &&
                 line.item.selectedModifiers.isEmpty() && line.item.promotionInstanceId == null && line.item.serviceCourse == selectedSnapshot() &&
                 // Una línea anotada («sin aceite») es de UN platillo: el siguiente toque va en su propia línea.
@@ -920,6 +930,7 @@ class TableOrderViewModel @Inject constructor(
 
     /** Asiento de una línea pendiente: cicla — → A1 → ... → Amax → —. */
     fun cyclePendingSeat(lineItemId: String, maxSeats: Int) {
+        if (renglonEnVuelo(listOf(lineItemId))) return
         pendingLines = _pending.value.map { line ->
             if (line.item.id != lineItemId) line
             else {
@@ -945,13 +956,18 @@ class TableOrderViewModel @Inject constructor(
 
     fun removePending(lineItemId: String) {
         val instance = _pending.value.firstOrNull { it.item.id == lineItemId }?.item?.promotionInstanceId
-        pendingLines = _pending.value.filterNot { it.item.id == lineItemId || instance != null && it.item.promotionInstanceId == instance }
+        val (fuera, quedan) = _pending.value.partition { it.item.id == lineItemId || instance != null && it.item.promotionInstanceId == instance }
+        if (renglonEnVuelo(fuera.map { it.item.id })) return
+        pendingLines = quedan
     }
 
     /** "Borrar nuevos artículos" (Acciones): drops every unsent line. */
     fun clearPending() {
-        pendingLines = emptyList()
-        _actionMessage.value = "Artículos sin enviar borrados"
+        // D55: lo que se está mandando lo decide «Enviar»; se borra sólo lo demás y se dice qué quedó (Codex r1 #1).
+        val (enVuelo, nuevos) = _pending.value.partition { vaEnLaRonda(it.item.id) }
+        pendingLines = enVuelo
+        if (nuevos.isNotEmpty() || enVuelo.isEmpty()) _actionMessage.value = "Artículos sin enviar borrados"
+        if (enVuelo.isNotEmpty()) showBlockedReason(RENGLON_EN_VUELO)
     }
 
     /** Criterios de "Ordenar carrito" (Square). */
@@ -1038,6 +1054,7 @@ class TableOrderViewModel @Inject constructor(
     fun updatePendingQuantity(lineItemId: String, quantity: Int) {
         if (quantity < 1) return removePending(lineItemId)
         if (_pending.value.any { it.item.id == lineItemId && it.item.promotionInstanceId != null }) return
+        if (renglonEnVuelo(listOf(lineItemId))) return
         pendingLines = _pending.value.map { line ->
             if (line.item.id == lineItemId) line.copy(item = line.item.copy(quantity = quantity)) else line
         }
@@ -1078,6 +1095,7 @@ class TableOrderViewModel @Inject constructor(
             } catch (_: ArithmeticException) { onDone(false, IMPORTE_RONDA_FUERA_DE_LIMITE); return }
               catch (_: IllegalStateException) { onDone(false, IMPORTE_RONDA_FUERA_DE_LIMITE); return }
         }
+        renglonesEnVuelo = lines.map { it.item.id }.toSet()
         _isSending.value = true
         viewModelScope.launch {
             bloqueoDeSaldo(vId, session, revisarSaldo = false)?.let { _isSending.value = false; onDone(false, it); return@launch }
@@ -1285,6 +1303,11 @@ class TableOrderViewModel @Inject constructor(
      * segundos y en plena comida nadie alcanza a leer.
      */
     val blockedNotice: StateFlow<String?> = _blockedNotice.asStateFlow()
+
+    init {
+        // D55 (Codex r1 #2): «Ya se está enviando…» describe el envío; al terminar deja de ser cierto y se quita (sólo ESE aviso).
+        viewModelScope.launch { _isSending.collect { if (!it && _blockedNotice.value == RENGLON_EN_VUELO) invalidateBlockedNotice() } }
+    }
 
     /**
      * Aviso para el mesero: sale por el Snackbar de la pantalla.
