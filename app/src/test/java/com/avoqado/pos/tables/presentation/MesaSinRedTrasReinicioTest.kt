@@ -521,6 +521,37 @@ class MesaSinRedTrasReinicioTest {
         } finally { b.viewModelScope.cancel() }
     }
 
+    /** Codex r2 #1: el acuse de la apertura llega MIENTRAS «Enviar» pregunta a la cola si su ronda entró. */
+    @Test fun `D16 la recarga que llega mientras se pregunta a la cola no deja perder la ronda`() = runTest {
+        val subject = vm()
+        try {
+            coEvery { repository.getOrderDetail(any(), any()) } returns Result.failure(java.io.IOException("sin red"))
+            var llamadas = 0
+            coEvery { outbox.enqueue(any(), any(), any(), any(), any(), any()) } answers {
+                if (llamadas++ == 0) error("disco") // la escritura de «Enviar» falla sin dejar fila
+                arg<String>(3).also { cola += FilaDeLaOrden(it, arg(1), "PENDING", null) }
+            }
+            val consulta = CompletableDeferred<Unit>()
+            every { outbox.observarEstado(any()) } answers {
+                val id = firstArg<String>()
+                kotlinx.coroutines.flow.flow { consulta.await(); emit(cola.firstOrNull { it.id == id }?.estado) }
+            }
+            var texto: String? = null
+            cafe(subject); subject.sendRound { _, t -> texto = t }; runCurrent() // «Enviar» espera la respuesta de la cola
+            drafts.promote("v-b2a", "local-1", "real-1")
+            acks.emit(SyncAck("open", "ACKED", result = kotlinx.serialization.json.buildJsonObject {
+                put("localOrderId", kotlinx.serialization.json.JsonPrimitive("local-1"))
+                put("orderId", kotlinx.serialization.json.JsonPrimitive("real-1"))
+            }))
+            runCurrent() // la recarga del borrador: su recuperación también pregunta por la ronda
+            consulta.complete(Unit); advanceUntilIdle()
+            assertFalse("no pide reenviar: $texto", texto.orEmpty().contains("intenta de nuevo"))
+            assertEquals("la recuperación la encoló con su llave", 1, rondasEnCola().size)
+            assertTrue(subject.pending.value.isEmpty())
+            verify(exactly = 1) { despachador.despacharEnFondo(any(), any(), any(), any(), any(), any(), any()) }
+        } finally { subject.viewModelScope.cancel() }
+    }
+
     @Test fun `D16 si falla descontar el stock local la ronda sigue guardada`() = runTest {
         val subject = vm()
         try {

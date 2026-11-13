@@ -634,7 +634,10 @@ class TableOrderViewModel @Inject constructor(
      * En los dos casos el borrador la conserva, así que nunca se pierde.
      */
     private suspend fun rondaYaGuardada(key: String, recargas: Long): Boolean = withContext(NonCancellable) {
-        recargasDelBorrador != recargas || try { syncOutbox.observarEstado(key).first() != null } catch (_: Exception) { true }
+        val enLaCola = try { syncOutbox.observarEstado(key).first() != null } catch (_: Exception) { true }
+        // El contador se lee DESPUÉS de la consulta (Codex r2 #1): una recarga pudo llegar mientras se esperaba. De aquí a deshacer
+        // ya no hay espera, así que ninguna otra recarga se cuela.
+        enLaCola || recargasDelBorrador != recargas
     }
 
     /** D16: se cerró la pantalla a media escritura. Si la ronda ya está guardada su comanda sale igual; si no, vuelve a «por enviar». */
