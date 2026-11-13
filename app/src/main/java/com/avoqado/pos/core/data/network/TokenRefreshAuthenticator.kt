@@ -186,9 +186,11 @@ class TokenRefreshAuthenticator @Inject constructor(
         if (requestPath.contains("/mobile/venues/") && requestPath.contains("/time-clock/")) {
             return null
         }
-        // Cambiar usuario: lo de arriba, salvo que el 401 sea del TOKEN y no del PIN (el SERVIDOR lo dice con `error: Unauthorized`).
-        // Con la sesión vencida, un PIN correcto se leía como «PIN incorrecto». Se renueva y se reintenta una sola vez.
-        if (requestPath.contains("/mobile/venues/") && requestPath.contains("/auth/switch-user") &&
+        // Cambiar usuario y el PIN del gerente (D16): lo de arriba, salvo que el 401 sea del TOKEN y no del PIN (el SERVIDOR
+        // lo dice con `error: Unauthorized`). Con la sesión vencida, un PIN correcto se leía como «PIN incorrecto» o «Tu
+        // sesión expiró». Se renueva y se reintenta una sola vez; el 401 del reintento es del PIN y no cierra la sesión.
+        if (requestPath.contains("/mobile/venues/") &&
+            (requestPath.contains("/auth/switch-user") || requestPath.endsWith("/permission-overrides")) &&
             (response.request.header("X-Retry-After-Refresh") != null || !esRechazoDelToken(response))
         ) {
             return null
