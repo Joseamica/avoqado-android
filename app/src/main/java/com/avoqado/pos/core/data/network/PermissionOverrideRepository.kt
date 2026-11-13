@@ -54,6 +54,10 @@ private data class OverrideErrorBody(val code: String? = null, val message: Stri
  * ciclo en Hilt. Es el mismo recurso que ya usa `TokenRefreshAuthenticator`
  * para refrescar el token.
  *
+ * Pero sí lleva el MISMO `TokenRefreshAuthenticator` que el principal (D16, 13-nov): con la sesión de la cajera
+ * vencida, el 401 del token se renueva y el PIN se reintenta una vez, en vez de dejar el teclado en «Tu sesión
+ * expiró» mientras la app renovaba por otro lado. El 401 de un PIN equivocado no se renueva (exención del autenticador).
+ *
  * El PIN viaja una sola vez, sobre TLS, y NUNCA se guarda en el dispositivo.
  */
 @Singleton
@@ -62,15 +66,17 @@ open class PermissionOverrideRepository internal constructor(
     /** 🔴 Se llama `client` a propósito: escritorio (`Inyector`) le pone su guarda por reflexión a este campo. */
     private val client: OkHttpClient,
 ) {
-    @Inject constructor(secureStorage: SecureStorage) : this(secureStorage, OkHttpClient())
+    @Inject constructor(secureStorage: SecureStorage, autenticador: TokenRefreshAuthenticator) :
+        this(secureStorage, OkHttpClient.Builder().authenticator(autenticador).build())
 
     private val json = Json { ignoreUnknownKeys = true }
 
     /** [operationKey]: la autorización sólo servirá para esa operación (el retiro: `llaveDelRetiro`). Sin ella, la suelta de siempre. */
     open suspend fun requestToken(venueId: String, pin: String, permission: String, operationKey: String? = null): OverrideResult =
         withContext(Dispatchers.IO) {
-            val accessToken = secureStorage.accessToken
-                ?: return@withContext OverrideResult.Failed("Tu sesión expiró. Vuelve a entrar.")
+            // Con su sello, como las del principal: si mientras viaja entra otra persona, su 401 no se renueva con la sesión de ella.
+            val (sello, accessToken) = secureStorage.selloYAccess()
+            if (accessToken == null) return@withContext OverrideResult.Failed("Tu sesión expiró. Vuelve a entrar.")
 
             val body = json
                 .encodeToString(OverrideRequestBody.serializer(), OverrideRequestBody(pin, permission, operationKey))
@@ -79,6 +85,7 @@ open class PermissionOverrideRepository internal constructor(
             val request = Request.Builder()
                 .url("${ApiConstants.BASE_URL}/mobile/venues/$venueId/permission-overrides")
                 .addHeader("Authorization", "Bearer $accessToken")
+                .tag(SelloDePeticion::class.java, SelloDePeticion(sello))
                 // El 403 de este endpoint es un rechazo de NEGOCIO ("ese código
                 // tampoco puede"), no falta de permisos del que está en la caja:
                 // se interpreta aquí, no en el diálogo genérico.
@@ -102,12 +109,12 @@ open class PermissionOverrideRepository internal constructor(
                         }
                         // 🔴 Dos 401 distintos llegan por aquí y sólo uno es un
                         // PIN malo: `authenticateTokenMiddleware` corre ANTES y
-                        // también responde 401 cuando el token de sesión caducó
-                        // —y este repositorio usa un cliente propio, sin
-                        // renovación—. Pintarlos igual mandaba al encargado a
-                        // reteclear un código correcto hasta agotar el límite,
-                        // sin decirle nunca que lo que hacía falta era volver a
-                        // entrar. El PIN malo trae `code`; el de sesión, no.
+                        // también responde 401 cuando el token de sesión caducó.
+                        // Ése ya lo intentó renovar el autenticador; si llega aquí
+                        // es que la renovación no se pudo (rechazada, o entró otra
+                        // persona). Pintarlos igual mandaba al encargado a
+                        // reteclear un código correcto hasta agotar el límite.
+                        // El PIN malo trae `code`; el de sesión, no.
                         401 -> {
                             val err = runCatching { json.decodeFromString<OverrideErrorBody>(raw) }.getOrNull()
                             if (err?.code == "OVERRIDE_INVALID_PIN") {
