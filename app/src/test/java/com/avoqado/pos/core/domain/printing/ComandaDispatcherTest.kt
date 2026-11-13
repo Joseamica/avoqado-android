@@ -1443,4 +1443,83 @@ class ComandaDispatcherTest {
         assertEquals(EstadoDeComanda.Salio, estado)
         assertEquals(listOf(listOf("st_barra", "st_tienda"), listOf("st_tienda")), planes.map { p -> p.map { it.stationId } })
     }
+
+    // MARK: - Reparto (Task 7): estación fija, «Sin comanda» sin callar y configFija
+
+    private val conCocinaYBarra = PrintConfig(
+        stations = listOf(
+            StationInfo(id = "cocina", name = "Cocina", printerId = "pr_1", active = true),
+            StationInfo(id = "barra", name = "Barra", printerId = "pr_2", active = true),
+            StationInfo(id = "apagada", name = "Apagada", printerId = "pr_3", active = false),
+        ),
+        productOverrides = listOf(
+            ProductOverride(productId = "prod_taco", printStationId = "cocina"),
+            ProductOverride(productId = "prod_cafe", printStationId = "barra"),
+        ),
+        defaultStationId = "cocina",
+    )
+    private val tacoCocina = RoutableItem(orderItemId = "oi_a", productId = "prod_taco", categoryId = null, productName = "Taco", quantity = 1)
+
+    private suspend fun planesDe(estacionFija: String?): List<List<String>> {
+        every { printConfigRepository.getCurrentConfig() } returns conCocinaYBarra
+        val planes = mutableListOf<List<TicketPlan>>()
+        imprimeTodo(planes, mutableListOf())
+        dispatcher.dispatch(
+            venueId = "venue-1", lines = listOf(tacoCocina, cafe), orderNumber = "1", orderType = "Delivery",
+            estacionFija = estacionFija,
+        )
+        return planes.single().map { p -> listOf(p.stationId ?: "?") + p.lines.map { it.productName } }
+    }
+
+    @Test
+    fun `estacionFija junta todos los renglones en UN plan de esa estacion`() = runTest {
+        assertEquals(listOf(listOf("barra", "Taco", "Café")), planesDe("barra"))
+    }
+
+    @Test
+    fun `estacionFija inexistente o inactiva rutea como hoy`() = runTest {
+        val comoHoy = planesDe(null)
+        assertEquals(2, comoHoy.size)
+        assertEquals(comoHoy, planesDe("inexistente"))
+        assertEquals(comoHoy, planesDe("apagada"))
+    }
+
+    @Test
+    fun `callarSinCocina false no calla el fallo del negocio sin cocina y el default si`() = runTest {
+        val sinCocina = PrintConfig(stations = listOf(tiendaSinComanda, StationInfo(id = "st_off", name = "Off", printerId = null, active = false)))
+        every { printConfigRepository.getCurrentConfig() } returns sinCocina
+        every { printerService.savedPrinters } returns MutableStateFlow(emptyList())
+        coEvery { comandaPrinter.printComandas(any(), any(), any(), any(), any()) } returns
+            ComandaPrinter.Result(attempted = 0, printed = 0, skippedNoPrinter = 1, lastError = null, skippedStations = listOf("SIN ESTACIÓN"))
+        suspend fun estado(callar: Boolean?) = (
+            if (callar == null) {
+                dispatcher.dispatch(venueId = "venue-1", lines = listOf(cafe), orderNumber = "1", orderType = "Delivery", maxIntentos = 1, omitirSinComanda = true)
+            } else {
+                dispatcher.dispatch(venueId = "venue-1", lines = listOf(cafe), orderNumber = "1", orderType = "Delivery", maxIntentos = 1, omitirSinComanda = true, callarSinCocina = callar)
+            }
+            ) as EstadoDeComanda.NoSalio
+
+        assertTrue("default: se calla como hoy", estado(null).sinImpresoraDeCocina)
+        assertFalse("callarSinCocina=false: no se calla", estado(false).sinImpresoraDeCocina)
+    }
+
+    @Test
+    fun `reintentar con configFija imprime con la config de A y sin ella con la vigente B`() = runTest {
+        val a = PrintConfig(stations = listOf(StationInfo(id = "st_a", name = "A", printerId = "pr_a", active = true)))
+        val b = PrintConfig(stations = listOf(StationInfo(id = "st_b", name = "B", printerId = "pr_b", active = true)))
+        every { printConfigRepository.getCurrentConfig() } returns b
+        val configs = mutableListOf<PrintConfig>()
+        imprimeTodo(mutableListOf(), configs)
+        val trabajo = TrabajoPendiente(
+            planes = listOf(TicketPlan("st_a", false, listOf(ConsolidatedLine("Café", 1, emptyList(), null, listOf("oi_2"))))),
+            config = a, orderNumber = "1", orderType = "Delivery", serverName = null, comboNames = emptyMap(),
+            venueId = null, orderId = null,
+        )
+
+        dispatcher.reintentar(trabajo, configFija = a)
+        dispatcher.reintentar(trabajo)
+
+        assertEquals(listOf("st_a"), configs[0].stations.map { it.id })
+        assertEquals(listOf("st_b"), configs[1].stations.map { it.id })
+    }
 }
