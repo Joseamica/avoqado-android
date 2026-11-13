@@ -320,6 +320,10 @@ class CashPaymentRepository @Inject constructor(
         }
     }
 
+    suspend fun enVueloQueSeResuelveSolo(): Int = 0
+
+    suspend fun enVueloPorRevisar(): Int = 0
+
     /**
      * Una fila que no se pudo pasar a la cola NO se calla: queda en el log y se queda `EN_VUELO` para la siguiente vuelta (también
      * si lo que falló fue anotar su venta en el cajón: es la misma transacción).

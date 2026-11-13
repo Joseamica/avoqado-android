@@ -110,6 +110,7 @@ class MoreMenuViewModelCambiarUsuarioTest {
         Q16PrecioCapturadoTest.Fixture().use { f ->
             cobrosSinNada(f)
             coEvery { f.dao.enVueloCount() } returns 1
+            coEvery { f.cash.enVueloQueSeResuelveSolo() } returns 1 // D53: el de un flujo vivo (o que el barrido da por cobrado)
             coEvery { f.dao.getFailedPayments() } returns listOf(cobroFallido())
             val vm = construir(cola(retenidas = 1), f.service)
 
@@ -120,6 +121,26 @@ class MoreMenuViewModelCambiarUsuarioTest {
                 "Hay 2 operaciones sin enviar. Espera a que se sincronicen antes de cambiar de usuario.",
                 (resultado as? SwitchUserResult.Error)?.message,
             )
+        }
+    }
+
+    /**
+     * D53: un «Ya pagó de otra forma» que quedó a medias (la app murió con el POST en vuelo) espera a una PERSONA: el barrido no lo da por
+     * cobrado (podría ser una venta que la cajera ya cobró de otra forma). No sale solo, así que no frena el relevo: el gerente tiene que
+     * poder entrar a resolverlo. Cerrar sesión sí lo sigue contando.
+     */
+    @Test
+    fun `P1 D53 un cobro de otra forma a medias no frena el cambio de usuario`() = runTest {
+        Q16PrecioCapturadoTest.Fixture().use { f ->
+            cobrosSinNada(f)
+            coEvery { f.dao.enVueloCount() } returns 1
+            coEvery { f.cash.enVueloQueSeResuelveSolo() } returns 0
+            val vm = construir(cola(), f.service)
+
+            vm.switchUser("1234")
+
+            coVerify(exactly = 1) { auth.switchUser("1234") }
+            assertEquals("cerrar sesión lo sigue contando", 1, f.service.blockingWorkCount())
         }
     }
 
@@ -135,7 +156,7 @@ class MoreMenuViewModelCambiarUsuarioTest {
             coVerify(exactly = 0) { auth.switchVenue(any()) }
             // D34: el freno sigue; el texto ya no le pide «resuélvela» a quien no puede (un mesero, por default).
             assertEquals(
-                "Hay 1 operación rechazada por revisar. Pídele a un gerente que la resuelva: Más › Cambiar usuario.",
+                "Hay 1 operación por revisar. Pídele a un gerente que la resuelva: Más › Cambiar usuario.",
                 vm.sessionGuardMessage.value,
             )
         }
@@ -153,7 +174,7 @@ class MoreMenuViewModelCambiarUsuarioTest {
 
             coVerify(exactly = 0) { auth.switchVenue(any()) }
             assertEquals(
-                "Hay 2 operaciones pendientes: 1 operación rechazada por revisar y 1 más. Sincroniza o resuelve lo demás y " +
+                "Hay 2 operaciones pendientes: 1 operación por revisar y 1 más. Sincroniza o resuelve lo demás y " +
                     "resuelve lo rechazado en Ventas › Pendientes › «Otras operaciones y revisiones anteriores» antes de cambiar de establecimiento.",
                 vm.sessionGuardMessage.value,
             )
@@ -173,14 +194,14 @@ class MoreMenuViewModelCambiarUsuarioTest {
             val mesero = construir(cola(), f.service)
             mesero.switchVenue(StoredVenue(id = "sucursal-centro", name = "Sucursal Centro"))
             assertEquals(
-                "Hay 1 operación rechazada por revisar. Pídele a un gerente que la resuelva: Más › Cambiar usuario.",
+                "Hay 1 operación por revisar. Pídele a un gerente que la resuelva: Más › Cambiar usuario.",
                 mesero.sessionGuardMessage.value,
             )
 
             val gerente = construir(cola(), f.service, puedeResolver = true)
             gerente.switchVenue(StoredVenue(id = "sucursal-centro", name = "Sucursal Centro"))
             assertEquals(
-                "Hay 1 operación rechazada por revisar. Resuélvela con su sucursal abierta, en Ventas › Pendientes › " +
+                "Hay 1 operación por revisar. Resuélvela con su sucursal abierta, en Ventas › Pendientes › " +
                     "«Otras operaciones y revisiones anteriores».",
                 gerente.sessionGuardMessage.value,
             )

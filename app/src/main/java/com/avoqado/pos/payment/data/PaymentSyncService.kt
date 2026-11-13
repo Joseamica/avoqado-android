@@ -1282,6 +1282,10 @@ class PaymentSyncService @Inject constructor(
      */
     suspend fun sinEnviarCount(): Int = dao.getUnsyncedPayments().size + dao.enVueloCount()
 
+    suspend fun sinEnviarParaElRelevo(): Int = sinEnviarCount()
+
+    suspend fun sinConfirmarPorRevisar(): Int = 0
+
     private fun calculateBackoff(retryCount: Int): Long {
         return minOf(
             (Math.pow(2.0, retryCount.toDouble()) * INITIAL_BACKOFF_MS).toLong(),

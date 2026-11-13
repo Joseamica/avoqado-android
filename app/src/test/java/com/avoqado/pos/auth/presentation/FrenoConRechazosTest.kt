@@ -21,21 +21,21 @@ class FrenoConRechazosTest {
 
     @Test fun `P1 un mesero con 1 rechazada sabe que entra un gerente por Cambiar usuario`() {
         assertEquals(
-            "Hay 1 operación rechazada por revisar. Pídele a un gerente que la resuelva: Más › Cambiar usuario.",
+            "Hay 1 operación por revisar. Pídele a un gerente que la resuelva: Más › Cambiar usuario.",
             textoDelFrenoConRechazos(total = 1, rechazadas = 1, puedeResolver = false, antesDe = "cerrar sesión"),
         )
     }
 
     @Test fun `P1 un mesero con 2 rechazadas, en plural`() {
         assertEquals(
-            "Hay 2 operaciones rechazadas por revisar. Pídele a un gerente que las resuelva: Más › Cambiar usuario.",
+            "Hay 2 operaciones por revisar. Pídele a un gerente que las resuelva: Más › Cambiar usuario.",
             textoDelFrenoConRechazos(total = 2, rechazadas = 2, puedeResolver = false, antesDe = "cerrar sesión"),
         )
     }
 
     @Test fun `P1 un gerente con 1 rechazada sabe donde resolverla`() {
         assertEquals(
-            "Hay 1 operación rechazada por revisar. Resuélvela en Ventas › Pendientes › «Otras operaciones y revisiones anteriores» antes de cerrar sesión.",
+            "Hay 1 operación por revisar. Resuélvela en Ventas › Pendientes › «Otras operaciones y revisiones anteriores» antes de cerrar sesión.",
             textoDelFrenoConRechazos(total = 1, rechazadas = 1, puedeResolver = true, antesDe = "cerrar sesión"),
         )
     }
@@ -43,12 +43,12 @@ class FrenoConRechazosTest {
     /** Codex r2 #1: «lo demás» puede no subir solo (un vale por imprimir): no se promete que se sincroniza. */
     @Test fun `P1 con algo mas pendiente, se pide sincronizar o resolverlo y luego el gerente`() {
         assertEquals(
-            "Hay 3 operaciones pendientes: 1 operación rechazada por revisar y 2 más. Sincroniza o resuelve lo demás y " +
+            "Hay 3 operaciones pendientes: 1 operación por revisar y 2 más. Sincroniza o resuelve lo demás y " +
                 "pídele a un gerente que resuelva lo rechazado: Más › Cambiar usuario.",
             textoDelFrenoConRechazos(total = 3, rechazadas = 1, puedeResolver = false, antesDe = "cerrar sesión"),
         )
         assertEquals(
-            "Hay 2 operaciones pendientes: 1 operación rechazada por revisar y 1 más. Sincroniza o resuelve lo demás y " +
+            "Hay 2 operaciones pendientes: 1 operación por revisar y 1 más. Sincroniza o resuelve lo demás y " +
                 "resuelve lo rechazado en Ventas › Pendientes › «Otras operaciones y revisiones anteriores» antes de cambiar de establecimiento.",
             textoDelFrenoConRechazos(total = 2, rechazadas = 1, puedeResolver = true, antesDe = "cambiar de establecimiento"),
         )
@@ -56,8 +56,9 @@ class FrenoConRechazosTest {
 
     // MARK: - Qué cuenta como rechazado (Codex r1)
 
-    private fun pagos(porRevisar: Int, bloqueantes: Int = porRevisar, sinEnviar: Int = 0, deOtra: Int = 0) = mockk<PaymentSyncService> {
+    private fun pagos(porRevisar: Int, bloqueantes: Int = porRevisar, sinEnviar: Int = 0, deOtra: Int = 0, sinConfirmar: Int = 0) = mockk<PaymentSyncService> {
         coEvery { porRevisarPorSucursal("v-1") } returns PaymentSyncService.PorRevisar(porRevisar, deOtra)
+        coEvery { sinConfirmarPorRevisar() } returns sinConfirmar
         coEvery { blockingWorkCount() } returns bloqueantes
         coEvery { sinEnviarCount() } returns sinEnviar
     }
@@ -94,18 +95,26 @@ class FrenoConRechazosTest {
      */
     @Test fun `P1 un cobro rechazado de otra sucursal`() {
         assertEquals(
-            "Hay 1 operación rechazada por revisar. Pídele a un gerente que la resuelva: Más › Cambiar usuario.",
+            "Hay 1 operación por revisar. Pídele a un gerente que la resuelva: Más › Cambiar usuario.",
             textoDelFrenoConRechazos(total = 1, rechazadas = 1, puedeResolver = false, antesDe = "cerrar sesión", deOtraSucursal = 1),
         )
         assertEquals(
-            "Hay 1 operación rechazada por revisar. Resuélvela con su sucursal abierta, en Ventas › Pendientes › " +
+            "Hay 1 operación por revisar. Resuélvela con su sucursal abierta, en Ventas › Pendientes › " +
                 "«Otras operaciones y revisiones anteriores».",
             textoDelFrenoConRechazos(total = 1, rechazadas = 1, puedeResolver = true, antesDe = "cerrar sesión", deOtraSucursal = 1),
         )
         assertEquals(
-            "Hay 2 operaciones rechazadas por revisar. Resuélvelas en Ventas › Pendientes › «Otras operaciones y revisiones " +
+            "Hay 2 operaciones por revisar. Resuélvelas en Ventas › Pendientes › «Otras operaciones y revisiones " +
                 "anteriores» antes de cerrar sesión; la de otra sucursal, con esa sucursal abierta.",
             textoDelFrenoConRechazos(total = 2, rechazadas = 2, puedeResolver = true, antesDe = "cerrar sesión", deOtraSucursal = 1),
         )
+    }
+
+    /**
+     * D53: un cobro «sin confirmar» que espera a una persona (un «Ya pagó de otra forma» a medias) también lo resuelve un gerente en la
+     * misma hoja: cuenta como «por revisar», y desde D53 tampoco frena «Cambiar usuario».
+     */
+    @Test fun `P1 D53 un cobro sin confirmar que espera a una persona cuenta como por revisar`() = runBlocking {
+        assertEquals(Rechazadas(aqui = 1, deOtraSucursal = 0), rechazadasPorRevisar(pagos(porRevisar = 0, sinConfirmar = 1), cola(), null, "v-1"))
     }
 }

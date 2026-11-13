@@ -638,6 +638,52 @@ class CobroRechazadoSinConfirmarTest {
         assertEquals("el barrido no lo toma", 0, caja.darPorCobradasLasAbandonadas())
     }
 
+    // MARK: - D53: lo que espera a una persona no traba el cambio de usuario
+
+    /**
+     * D53: «Ya pagó de otra forma» a medias espera a una PERSONA (el barrido no lo toma: A5, arriba). No cuenta entre lo que se resuelve
+     * solo —así no frena «Cambiar usuario»—, sí entre lo «por revisar», y al resolverlo el gerente sale a nombre de quien lo cobró.
+     */
+    @Test
+    fun `P1 D53 otra forma a medias espera a una persona y sale a nombre de quien la cobro`() = runTest {
+        fastResponde(listOf(rechazo400()))
+        vm.startPaymentFlow(otroImporte())
+        vm.confirmManualChoice(com.avoqado.pos.payment.domain.ManualPaymentChoice.Fixed(com.avoqado.pos.payment.domain.ManualPaymentMethod.TRANSFER))
+        advanceUntilIdle()
+        val llave = enVuelo().single()
+        val autor = disco.filas.getValue(llave).staffId
+        every { secureStorage.venueId } returns VENUE
+
+        assertEquals("no se resuelve solo", 0, caja.enVueloQueSeResuelveSolo())
+        assertEquals("espera a una persona", 1, caja.enVueloPorRevisar())
+
+        // Entra el gerente por «Cambiar usuario» y toca «Sí se cobró».
+        every { secureStorage.userId } returns "gerente-1"
+        every { secureStorage.selectedStaffIdForCurrentVenue } returns "gerente-1"
+        assertTrue(caja.confirmarQueSeCobro(llave))
+
+        val fila = disco.filas.getValue(llave)
+        assertEquals("PENDING", fila.syncStatus)
+        assertEquals("el cobro sigue a nombre de quien lo cobró", autor, fila.staffId)
+        assertTrue("nunca del que entra", fila.staffId != "gerente-1")
+        val cuerpo = kotlinx.serialization.json.Json.parseToJsonElement(PaymentSyncService.buildReplayBody(fila, VENUE, false)) as kotlinx.serialization.json.JsonObject
+        assertEquals("la cola lo manda con su autor", autor, (cuerpo["staffId"] as kotlinx.serialization.json.JsonPrimitive).content)
+    }
+
+    /** D53: el efectivo puro que el barrido da por cobrado, y el de un flujo vivo, sí se resuelven solos. */
+    @Test
+    fun `P1 D53 el efectivo soltado y el de un flujo vivo se resuelven solos`() = runTest {
+        every { secureStorage.venueId } returns VENUE
+        sinDuenio("abandonado", marcada = true)
+        sinDuenio("de-la-app-de-antes", marcada = false)
+        fastResponde(listOf(rechazo400()))
+        vm.startPaymentFlow(otroImporte())
+        cobrarEnEfectivo() // su apartado sigue del flujo vivo
+
+        assertEquals("el marcado y el del flujo vivo", 2, caja.enVueloQueSeResuelveSolo())
+        assertEquals("el de la app de antes espera a una persona", 1, caja.enVueloPorRevisar())
+    }
+
     /** M-1 (espejo de iOS): tras «No se pudo cancelar», «Reintentar» reintenta la CANCELACIÓN, nunca el cobro. */
     @Test
     fun `P1 Reintentar tras No se pudo cancelar reintenta la cancelacion y no vuelve a cobrar`() = runTest {

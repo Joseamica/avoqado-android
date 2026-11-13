@@ -409,7 +409,7 @@ class AppStateVenueRecoveryTest {
 
         org.junit.Assert.assertFalse(cerro)
         org.junit.Assert.assertEquals(
-            "Hay 1 operación rechazada por revisar. Pídele a un gerente que la resuelva: Más › Cambiar usuario.",
+            "Hay 1 operación por revisar. Pídele a un gerente que la resuelva: Más › Cambiar usuario.",
             appState.sessionGuardMessage.value,
         )
     }
@@ -423,7 +423,7 @@ class AppStateVenueRecoveryTest {
         advanceUntilIdle()
 
         org.junit.Assert.assertEquals(
-            "Hay 1 operación rechazada por revisar. Resuélvela en Ventas › Pendientes › «Otras operaciones y revisiones anteriores» antes de cerrar sesión.",
+            "Hay 1 operación por revisar. Resuélvela en Ventas › Pendientes › «Otras operaciones y revisiones anteriores» antes de cerrar sesión.",
             appState.sessionGuardMessage.value,
         )
     }
