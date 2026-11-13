@@ -638,17 +638,18 @@ internal suspend fun rechazadasPorRevisar(
 
 /**
  * D52 (a) de la conversación principal: lo de OTRAS sucursales ya no frena cerrar sesión (no se borra: se queda en el aparato). Al
- * salir se avisa, honesto, qué queda y cómo se resuelve. Codex r4 #1 y r5 #1 (la misma familia dos veces → pasada exhaustiva): si
- * una fila sube sola o espera a un gerente depende de lo que el drenado decida después (sin captura, prueba de precio, resultado sin
- * comprobar, FAILED, `EN_VUELO` manual), así que la frase no adivina: dice las dos salidas, que valen para todo estado. Las sucursales
- * que esta sesión no tiene (no están en [nombres], `venuesList`) se dicen sin nombre. PURA.
+ * salir se avisa, honesto, qué queda y dónde. Codex r4 #1, r5 #1 y r6 #1 (la misma familia tres veces; r6 fue la pasada exhaustiva
+ * por estado): si una fila sube sola, la resuelve un gerente o se queda retenida sin salida (deuda previa) lo decide el drenado
+ * después. Lo único cierto para TODO estado es que no se borra y que, al entrar alguien de su sucursal, se sube o aparece en la hoja;
+ * eso dice, sin prometer quién la resuelve. Las sucursales que esta sesión no tiene (no están en [nombres], `venuesList`) se dicen sin
+ * nombre. PURA.
  */
 internal fun textoDeLoQueQuedaDeOtrasSucursales(porSucursal: Map<String, Int>, nombres: Map<String, String>): String? {
     fun frase(n: Int, de: String, quien: String): String {
-        val (queda, sube, alguna) = if (n == 1) Triple("Queda 1 operación", "se sube", "queda")
-            else Triple("Quedan $n operaciones", "se suben", "alguna queda")
-        return "$queda de $de en este aparato: al entrar alguien de $quien $sube, y si $alguna por revisar, la resuelve un gerente " +
-            "de $quien en $DONDE_SE_RESUELVE."
+        val (queda, borra, sube, alguna) = if (n == 1) listOf("Queda 1 operación", "no se borra", "se sube", "queda")
+            else listOf("Quedan $n operaciones", "no se borran", "se suben", "alguna queda")
+        return "$queda de $de en este aparato ($borra): al entrar alguien de $quien $sube o, si $alguna por revisar, aparece en " +
+            "$DONDE_SE_RESUELVE."
     }
     val (conocidas, sinAcceso) = porSucursal.filterValues { it > 0 }.entries.partition { it.key in nombres }
     val deConocidas = conocidas.takeIf { it.isNotEmpty() }?.let { c ->

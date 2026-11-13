@@ -92,17 +92,17 @@ class FrenoConRechazosTest {
     // MARK: - D52 (a): lo de otras sucursales no frena; al salir se dice que queda y cómo se resuelve
 
     /**
-     * D52 (a): lo de otra sucursal se queda en el aparato (cerrar sesión no lo borra). Codex r4 #1 / r5 #1: si sube sola o la revisa
-     * un gerente lo decide el drenado después; la frase dice las dos salidas, ciertas para cualquier estado (un fallido, uno retenido).
+     * D52 (a): lo de otra sucursal se queda en el aparato (cerrar sesión no lo borra). Codex r4-r6: si sube sola, la revisa un gerente o se
+     * queda retenida lo decide el drenado después; la frase sólo dice lo cierto para todo estado: no se borra, se sube o aparece en la hoja.
      */
-    @Test fun `P1 D52 lo que queda de otra sucursal se dice con su nombre y sus dos salidas`() {
+    @Test fun `P1 D52 lo que queda de otra sucursal se dice con su nombre y donde aparece`() {
         val nombres = mapOf("v-centro" to "Sucursal Centro", "v-norte" to "Sucursal Norte")
         assertEquals(
-            "Queda 1 operación de Sucursal Centro en este aparato: al entrar alguien de Sucursal Centro se sube, y si queda por revisar, la resuelve un gerente de Sucursal Centro en Ventas › Pendientes › «Otras operaciones y revisiones anteriores».",
+            "Queda 1 operación de Sucursal Centro en este aparato (no se borra): al entrar alguien de Sucursal Centro se sube o, si queda por revisar, aparece en Ventas › Pendientes › «Otras operaciones y revisiones anteriores».",
             textoDeLoQueQuedaDeOtrasSucursales(mapOf("v-centro" to 1), nombres),
         )
         assertEquals(
-            "Quedan 3 operaciones de Sucursal Centro y Sucursal Norte en este aparato: al entrar alguien de cada sucursal se suben, y si alguna queda por revisar, la resuelve un gerente de cada sucursal en Ventas › Pendientes › «Otras operaciones y revisiones anteriores».",
+            "Quedan 3 operaciones de Sucursal Centro y Sucursal Norte en este aparato (no se borran): al entrar alguien de cada sucursal se suben o, si alguna queda por revisar, aparece en Ventas › Pendientes › «Otras operaciones y revisiones anteriores».",
             textoDeLoQueQuedaDeOtrasSucursales(mapOf("v-centro" to 2, "v-norte" to 1), nombres),
         )
         assertEquals(null, textoDeLoQueQuedaDeOtrasSucursales(emptyMap(), nombres))
@@ -111,16 +111,16 @@ class FrenoConRechazosTest {
     /** D52 (a): una sucursal que esta sesión no tiene se dice sin nombre; las conocidas conservan el suyo (Codex r2). */
     @Test fun `P1 D52 lo que queda de una sucursal sin acceso se dice sin nombre`() {
         assertEquals(
-            "Queda 1 operación de otra sucursal en este aparato: al entrar alguien de esa sucursal se sube, y si queda por revisar, la resuelve un gerente de esa sucursal en Ventas › Pendientes › «Otras operaciones y revisiones anteriores».",
+            "Queda 1 operación de otra sucursal en este aparato (no se borra): al entrar alguien de esa sucursal se sube o, si queda por revisar, aparece en Ventas › Pendientes › «Otras operaciones y revisiones anteriores».",
             textoDeLoQueQuedaDeOtrasSucursales(mapOf("v-ajena" to 1), mapOf("v-centro" to "Sucursal Centro")),
         )
         assertEquals(
-            "Quedan 2 operaciones de otras sucursales en este aparato: al entrar alguien de cada sucursal se suben, y si alguna queda por revisar, la resuelve un gerente de cada sucursal en Ventas › Pendientes › «Otras operaciones y revisiones anteriores».",
+            "Quedan 2 operaciones de otras sucursales en este aparato (no se borran): al entrar alguien de cada sucursal se suben o, si alguna queda por revisar, aparece en Ventas › Pendientes › «Otras operaciones y revisiones anteriores».",
             textoDeLoQueQuedaDeOtrasSucursales(mapOf("v-ajena" to 1, "v-otra" to 1), emptyMap()),
         )
         assertEquals(
-            "Queda 1 operación de Sucursal Centro en este aparato: al entrar alguien de Sucursal Centro se sube, y si queda por revisar, la resuelve un gerente de Sucursal Centro en Ventas › Pendientes › «Otras operaciones y revisiones anteriores». " +
-                "Queda 1 operación de otra sucursal en este aparato: al entrar alguien de esa sucursal se sube, y si queda por revisar, la resuelve un gerente de esa sucursal en Ventas › Pendientes › «Otras operaciones y revisiones anteriores».",
+            "Queda 1 operación de Sucursal Centro en este aparato (no se borra): al entrar alguien de Sucursal Centro se sube o, si queda por revisar, aparece en Ventas › Pendientes › «Otras operaciones y revisiones anteriores». " +
+                "Queda 1 operación de otra sucursal en este aparato (no se borra): al entrar alguien de esa sucursal se sube o, si queda por revisar, aparece en Ventas › Pendientes › «Otras operaciones y revisiones anteriores».",
             textoDeLoQueQuedaDeOtrasSucursales(mapOf("v-centro" to 1, "v-ajena" to 1), mapOf("v-centro" to "Sucursal Centro")),
         )
     }
