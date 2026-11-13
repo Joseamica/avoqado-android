@@ -109,6 +109,26 @@ internal fun motivoParaNoCobrarLaMesa(provisional: Boolean, cheque: OrderDetail?
     else -> null
 }
 
+/**
+ * D45 (12-nov): con la cuenta al día, «Pagar» de una mesa del SERVIDOR leía sólo el cheque y la cola de MESAS. Un abono que ESTE aparato
+ * guardó en la cola de COBROS (su POST no llegó) todavía no está en el cheque, y se cobraba el total. La regla es la de la bandeja
+ * (`CashPaymentRepository.efectivoDelPedido`): en cola o por revisar, no se cobra; sin poder leerla, tampoco (falla cerrado). Y si los
+ * cobros de la cuenta en esa cola cambiaron desde que se pidió la cuenta (uno nuevo, o uno que subió: su [firma]), esa lectura puede no
+ * traerlo y no se usa para cobrar: se vuelve a leer (Codex r1 #1: un cobro que nace y sube DURANTE la lectura). PURA.
+ */
+internal fun motivoPorCobroEnColaDeCobros(efectivo: com.avoqado.pos.payment.data.EfectivoDelPedido?, firma: Set<String>?,
+    firmaDeLaLectura: Set<String>?): String? = when {
+    efectivo == null || firma == null -> MESA_COBROS_SIN_LEER
+    efectivo == com.avoqado.pos.payment.data.EfectivoDelPedido.POR_REVISAR -> MESA_COBRO_POR_REVISAR
+    efectivo == com.avoqado.pos.payment.data.EfectivoDelPedido.EN_COLA -> MESA_COBRO_SIN_SINCRONIZAR
+    // Sin lectura propia de la cuenta (el respaldo del plano) no hay lectura que comparar.
+    firmaDeLaLectura != null && firma != firmaDeLaLectura -> CUENTA_SE_ACTUALIZA
+    else -> null
+}
+
+/** D45: la firma de una lectura cuya cola de COBROS no se pudo leer: nunca coincide con una firma leída (se vuelve a leer). */
+internal const val FIRMA_SIN_LEER = "sin-leer"
+
 /** Por qué no se cobra una cuenta sin artículos a la vista. D3 (11-nov, ensayo 27): sin leer la cuenta al día, este aparato no
  *  sabe qué tiene (la abrió otro y se fue la red); «no tiene cargos» hizo recapturar y el SERVIDOR sumó las dos rondas. */
 internal fun motivoSinArticulos(cuentaCompletaAqui: Boolean, cargando: Boolean): String = when {
@@ -164,6 +184,8 @@ class TableOrderViewModel @Inject constructor(
     private val fotos: com.avoqado.pos.core.data.sync.FotosDeMesas? = null,
     /** D5 · B2b: los cobros de la cuenta que esperan en OTRA cola (cobros, tarjeta, saldo de regalo). */
     private val cobrosLocales: com.avoqado.pos.giftcards.data.CobrosLocalesDeLaCuenta? = null,
+    /** D45: el efectivo de la cuenta en la cola de COBROS de este aparato, con la regla de la bandeja (`efectivoDelPedido`). */
+    private val efectivoEnColaDeCobros: com.avoqado.pos.payment.data.CashPaymentRepository? = null,
 ) : ViewModel() {
 
     /** Json para serializar payloads de intents (mismas opciones que la red). */
@@ -283,6 +305,27 @@ class TableOrderViewModel @Inject constructor(
         revisarSaldo: Boolean = true, bloque: suspend () -> Result<T>): Result<T> {
         bloqueoDeSaldo(vId, session, source, revisarSaldo)?.let { return Result.failure(IllegalStateException(it)) }
         return bloque()
+    }
+
+    /** D45: la firma de los cobros de la cuenta en la cola de COBROS justo ANTES de pedir la última cuenta leída (null = no se leyó la cuenta). */
+    private var firmaDeCobrosDeLaLectura: Set<String>? = null
+
+    /**
+     * D45: los cobros de la cuenta (todas sus llaves) en la cola de COBROS de ESTE aparato: su estado con la regla de la bandeja y su firma
+     * (cada llave y si ya subió). Primero el estado y DESPUÉS la firma: uno que sube entre las dos lecturas cambia la firma (se relee),
+     * nunca la deja igual. null = no se pudo leer.
+     */
+    private suspend fun cobrosEnColaDeCobros(s: TableSession.Active): Pair<com.avoqado.pos.payment.data.EfectivoDelPedido, Set<String>>? {
+        val cola = efectivoEnColaDeCobros ?: return com.avoqado.pos.payment.data.EfectivoDelPedido.NINGUNO to emptySet()
+        return try {
+            val estados = s.idsDeLaOrden.map { cola.efectivoDelPedido(it) }
+            val firma = s.idsDeLaOrden.flatMap { id -> cola.cobrosDelPedido(id, venueId).map { "${it.llave}:${it.confirmado}" } }.toSet()
+            when {
+                com.avoqado.pos.payment.data.EfectivoDelPedido.POR_REVISAR in estados -> com.avoqado.pos.payment.data.EfectivoDelPedido.POR_REVISAR
+                com.avoqado.pos.payment.data.EfectivoDelPedido.EN_COLA in estados -> com.avoqado.pos.payment.data.EfectivoDelPedido.EN_COLA
+                else -> com.avoqado.pos.payment.data.EfectivoDelPedido.NINGUNO
+            } to firma
+        } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (_: Exception) { null }
     }
 
     private suspend fun leerTrabajo(s: TableSession.Active): TrabajoSinResolver? {
@@ -727,6 +770,8 @@ class TableOrderViewModel @Inject constructor(
         val vId = venueId ?: return
         viewModelScope.launch {
             _isLoadingCheck.value = true
+            // D45: cómo estaban los cobros de la cuenta en la cola de COBROS al pedirla; si cambian después, esta lectura no sirve para cobrar.
+            val firmaAlLeer = cobrosEnColaDeCobros(session)?.second
             // D5 · B2b: con el piloto, la lectura se registra antes del GET (sin cobro abierto) y puede volverse foto limpia.
             val pedido = if (pilotoSinRed && session.mode == TableSession.Mode.ORDERING) pedirFoto(vId, session) else null
             try { repository.getOrderDetail(vId, session.orderId).fold(
@@ -740,6 +785,7 @@ class TableOrderViewModel @Inject constructor(
                     }
                     _check.value = detail
                     chequeLeidoEn = vId to detail.id
+                    firmaDeCobrosDeLaLectura = firmaAlLeer ?: setOf(FIRMA_SIN_LEER)
                     _chequeAlDia.value = true
                     // Ya se leyó: «no se puede leer la cuenta» dejó de ser cierto (Codex r2 #3).
                     if (_blockedNotice.value?.startsWith(CUENTA_SIN_LEER) == true) invalidateBlockedNotice()
@@ -2458,6 +2504,7 @@ class TableOrderViewModel @Inject constructor(
         val epoch = generacion
         val read = checkLoadGeneration
         val trabajo = leerTrabajo(session)
+        val cobrosEnCola = if (session.isProvisional) null else cobrosEnColaDeCobros(session)
         if (tableSession.contextoActual() != contextoDeSesion || venueId != vId || tableSession.current() != session || generacion != epoch || checkLoadGeneration != read) {
             showBlockedReason("La cuenta se está actualizando. Intenta en un momento.")
             return false
@@ -2488,6 +2535,13 @@ class TableOrderViewModel @Inject constructor(
                 if (!session.isProvisional && !cuentaAlDiaAqui && !hayMutacionEnVuelo) loadCheck()
                 return false
             }
+        }
+        // D45: con la cuenta al día (no la del piloto), un cobro de esta cuenta en la cola de COBROS todavía no está en ella.
+        if (motivo == null && !session.isProvisional) motivoPorCobroEnColaDeCobros(cobrosEnCola?.first, cobrosEnCola?.second,
+            firmaDeCobrosDeLaLectura)?.let { texto ->
+            showBlockedReason(texto)
+            if (!hayMutacionEnVuelo) loadCheck()
+            return false
         }
         if (session.isProvisional && session.valorRondasSinRedCents < 0) {
             showBlockedReason(IMPORTE_RONDA_FUERA_DE_LIMITE)
