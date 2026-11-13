@@ -2181,10 +2181,42 @@ class CashDrawerRepository @Inject constructor(
     fun retirosRechazados(venueId: String): Set<String> =
         pendientesDe(venueId).filter { it.kind == "PAY_OUT" && it.rechazadaEn != null }.mapNotNull { it.localId }.toSet()
 
-    fun movimientosSinSubir(venueId: String): Int {
-        val cola = pendientesDe(venueId)
+    fun movimientosSinSubir(venueId: String): Int = contarSinSubir(pendientesDe(venueId))
+
+    private fun contarSinSubir(cola: List<PendingDrawerOp>): Int {
         val aperturasRechazadas = cola.filter { it.kind == "OPEN" && it.rechazadaEn != null }.map { it.sessionId }.toSet()
         return cola.count { it.rechazadaEn == null && it.sessionId !in aperturasRechazadas }
+    }
+
+    private val _movimientosPorSubir = MutableStateFlow(0)
+
+    /**
+     * D40: lo mismo que [movimientosSinSubir] para la sucursal de la sesión, como flujo: suma en la banda «N por sincronizar»
+     * (`AppState.offlinePendingCount`). Antes la banda no contaba el cajón y la cajera creía que su ingreso, su retiro o su cierre
+     * sin red ya no estaban pendientes. Se recuenta con cada escritura de la cola y al cambiar la sesión ([recontarMovimientosPorSubir]).
+     */
+    val movimientosPorSubir: StateFlow<Int> = _movimientosPorSubir.asStateFlow()
+
+    /**
+     * `AppState` la llama al cambiar la sesión (arrancar, entrar, salir, cambiar de sucursal). Bajo el candado de la cola (Codex D40 r1
+     * #1): leer y publicar no se puede intercalar con una escritura, o un recuento viejo pisaría al bueno. Si la cola no se puede leer,
+     * se queda el número anterior (r1 #2): una lectura fallida no es una cola vacía, y contar nunca tumba la escritura que lo pidió.
+     */
+    fun recontarMovimientosPorSubir() = synchronized(candadoDeLaCola) {
+        _movimientosPorSubir.value = try {
+            val sucursal = venueId
+            if (sucursal.isBlank()) {
+                0
+            } else {
+                contarSinSubir(
+                    secureStorage.pendingDrawerOpsJson(sucursal)
+                        ?.let { json.decodeFromString(ListSerializer(PendingDrawerOp.serializer()), it) } ?: emptyList(),
+                )
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "No se pudo contar la cola del cajón para la banda: ${e.message}")
+            _movimientosPorSubir.value
+        }
     }
 
     /**
@@ -2329,6 +2361,8 @@ class CashDrawerRepository @Inject constructor(
 
     private fun guardarPendientes(lista: List<PendingDrawerOp>, sucursal: String = venueId) {
         secureStorage.setPendingDrawerOpsJson(sucursal, if (lista.isEmpty()) null else json.encodeToString(ListSerializer(PendingDrawerOp.serializer()), lista))
+        // D40: la banda «N por sincronizar» sigue a la cola (es el único escritor de la cola).
+        recontarMovimientosPorSubir()
     }
 
     /**

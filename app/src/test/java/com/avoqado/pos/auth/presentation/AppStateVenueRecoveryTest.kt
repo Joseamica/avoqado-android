@@ -375,6 +375,22 @@ class AppStateVenueRecoveryTest {
         org.junit.Assert.assertTrue("esperaba el aviso de pendientes, llegó «$aviso»", aviso.contains("Hay 1 operación offline"))
     }
 
+    /** D40: «N por sincronizar» cuenta también el ingreso, el retiro y el cierre de caja hechos sin red. */
+    @Test
+    fun `P1 la banda por sincronizar suma los movimientos de caja sin subir`() {
+        val recuentos = java.util.concurrent.atomic.AtomicInteger()
+        val appState = createAppState(
+            true, {}, {}, {}, onOutboxStart = {}, movimientosDeCaja = 2, alRecontarCaja = { recuentos.incrementAndGet() },
+        )
+        val antes = recuentos.get()
+
+        // Con tope, como la de la banda de cocina: si la cuenta nunca llega a 2, falla en vez de colgar la corrida.
+        val cuenta = runBlocking { withTimeout(10_000) { appState.offlinePendingCount.first { it == 2 } } }
+
+        org.junit.Assert.assertEquals("la banda suma los 2 movimientos de caja", 2, cuenta)
+        org.junit.Assert.assertTrue("al suscribirse la banda recuenta la cola guardada (${recuentos.get()} vs $antes)", recuentos.get() > antes)
+    }
+
     @Test
     fun `cerrar sesion se bloquea con llegadas del kiosco pendientes`() = runTest {
         var cerro = false
@@ -481,6 +497,8 @@ class AppStateVenueRecoveryTest {
         resolverReal: com.avoqado.pos.giftcards.data.ResolutorDeSolicitudesDeTarjeta? = null,
         llegadasDelKiosco: Int = 0,
         movimientosDeCaja: Int = 0,
+        /** D40: se llama cada vez que `AppState` pide recontar la cola del cajón. */
+        alRecontarCaja: () -> Unit = {},
         savedCartsRepository: com.avoqado.pos.pos.data.SavedCartsRepository? = null,
         modo: MutableStateFlow<PosMode> = MutableStateFlow(PosMode.RETAIL),
         planManager: PlanManager = mockk(relaxed = true),
@@ -555,6 +573,8 @@ class AppStateVenueRecoveryTest {
                 )
                 every { cierreEsperaVentas } returns MutableStateFlow(0)
                 every { movimientosSinSubir(any()) } returns movimientosDeCaja
+                every { movimientosPorSubir } returns MutableStateFlow(movimientosDeCaja)
+                every { recontarMovimientosPorSubir() } answers { alRecontarCaja() }
             },
             venueSwitchState = mockk<VenueSwitchState>(relaxed = true),
             connectivityMonitor = connectivityMonitor,
@@ -572,6 +592,7 @@ class AppStateVenueRecoveryTest {
                 ConnectivityMonitor::class.java -> connectivityMonitor
                 com.avoqado.pos.cashdrawer.data.CashDrawerRepository::class.java -> mockk<com.avoqado.pos.cashdrawer.data.CashDrawerRepository>(relaxed = true) {
                     every { estadoDeLosCobros } returns MutableStateFlow(com.avoqado.pos.cashdrawer.data.EstadoDeLosCobros.LIBRES)
+                    every { movimientosPorSubir } returns MutableStateFlow(0)
                 }
                 else -> AppState::class.java.declaredFields.firstOrNull { it.type == tipo }
                     ?.let { runCatching { it.isAccessible = true; it.get(plantilla) }.getOrNull() }
