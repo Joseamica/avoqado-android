@@ -1,35 +1,43 @@
 package com.avoqado.pos.tables.presentation
 
-import androidx.compose.runtime.saveable.SaverScope
 import com.avoqado.pos.payment.presentation.SplitConfig
 import com.avoqado.pos.payment.presentation.SplitType
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
 
 /**
- * D61 (13-nov): en una MESA, girar el aparato (o cambiar el tema o el tamaño de letra) recrea la Activity. La bandera del cobro
- * abierto era `remember`: la pantalla de cobro DESAPARECÍA mientras su `PaymentFlowViewModel` (del back stack) seguía cobrando,
- * el cajero veía la cuenta otra vez y «Pagar» abría OTRO cobro de la misma mesa; y la sesión quedaba en PAYING.
+ * D61 (13-nov): en una MESA, girar el aparato (o cambiar el tema o el tamaño de letra) recrea la Activity. El estado del cobro
+ * abierto era `remember`: la pantalla de cobro DESAPARECÍA mientras su `PaymentFlowViewModel` seguía cobrando, el cajero veía la
+ * cuenta otra vez y «Pagar» abría OTRO cobro de la misma mesa; y la sesión quedaba en PAYING. `rememberSaveable` no basta: en la
+ * N86 girar cambia el árbol de teléfono por el de tableta (Codex r1 #1). Ahora vive en el ViewModel de la mesa ([CobroDeLaMesa]).
  *
- * El módulo no tiene Robolectric ni `compose.ui.test` (ver `CobroAnteriorResueltoGuardTest`): aquí se prueba lo puro (el reparto
- * guardado regresa igual; la salida tras el recibo) y, mirando el código fuente, que el estado del cobro de la mesa se guarda con
- * `rememberSaveable` y que ninguna salida del cobro se salta `cerrarCobro()`. Que la pantalla SIGA tras girar se prueba en la N86.
+ * El módulo no tiene Robolectric ni `compose.ui.test` (ver `CobroAnteriorResueltoGuardTest`): aquí se prueba lo puro (la apertura,
+ * la salida tras el recibo) y, mirando el código fuente, que la pantalla toma el cobro del ViewModel, le pasa su apertura al flujo
+ * y que ninguna salida del cobro se salta `cerrarCobro()`. Que la pantalla SIGA tras girar se prueba en el aparato.
  */
 class CobroDeMesaAlGirarTest {
 
-    private val scope = SaverScope { true }
-
     @Test
-    fun `el reparto del cobro regresa igual tras guardarse (girar no lo pierde)`() {
-        val reparto = SplitConfig(type = SplitType.EQUAL_PARTS, selectedItemIds = listOf("a", "b"), numberOfParts = 3,
-            customAmountCents = 4500)
-        val guardado = with(GuardadoDelReparto) { scope.save(reparto) }!!
-        assertEquals(reparto, GuardadoDelReparto.restore(guardado))
-        val porDefecto = SplitConfig()
-        assertEquals(porDefecto, GuardadoDelReparto.restore(with(GuardadoDelReparto) { scope.save(porDefecto) }!!))
+    fun `abrir el cobro da una apertura nueva y la conserva mientras sigue abierto`() {
+        val cobro = CobroDeLaMesa()
+        assertFalse(cobro.abierto)
+        cobro.abrir()
+        val primera = cobro.apertura
+        assertNotNull(primera)
+        assertTrue(cobro.abierto)
+        // Recrear la Activity no toca el ViewModel: la pantalla nueva lee la MISMA apertura y el flujo sigue su cobro.
+        cobro.semillaCents = 4500
+        cobro.reparto = SplitConfig(type = SplitType.EQUAL_PARTS, numberOfParts = 3)
+        assertEquals(primera, cobro.apertura)
+        // Cerrar y volver a abrir es OTRO cobro: apertura nueva (el flujo arranca de cero, como al tocar «Pagar»).
+        cobro.abierto = false
+        cobro.abrir()
+        assertNotEquals(primera, cobro.apertura)
     }
 
     @Test
@@ -44,15 +52,25 @@ class CobroDeMesaAlGirarTest {
     }
 
     @Test
-    fun `el estado del cobro de la mesa sobrevive a recrear la Activity`() {
-        val codigo = sinComentarios(leerFuente(PANTALLA))
-        for (variable in listOf("showPayment", "paymentSeedCents", "showSplitImporte", "pendingSplitConfig", "restanteConfirmado",
-            "previousChargeNotice")) {
-            assertTrue("$variable de la mesa no es rememberSaveable: girar el aparato lo pierde a media venta",
-                Regex("""var\s+$variable\s+by\s+rememberSaveable""").containsMatchIn(codigo))
+    fun `el estado del cobro de la mesa vive en el ViewModel y el flujo recibe su apertura`() {
+        val pantalla = sinComentarios(leerFuente(PANTALLA))
+        val campos = mapOf("showPayment" to "abierto", "paymentSeedCents" to "semillaCents", "pendingSplitConfig" to "reparto",
+            "restanteConfirmado" to "restanteConfirmado", "showSplitImporte" to "dividiendo",
+            "previousChargeNotice" to "avisoCobroAnterior")
+        for ((variable, campo) in campos) {
+            assertTrue("$variable de la mesa no sale del ViewModel: girar el aparato lo pierde a media venta",
+                Regex("""var\s+$variable\s+by\s+cobroDeLaMesa::$campo\b""").containsMatchIn(pantalla))
         }
         assertFalse("la mesa volvió a guardar el cobro confirmado en un remember (girar lo pierde)",
-            codigo.contains("committedPaymentCompletion"))
+            pantalla.contains("committedPaymentCompletion"))
+        val plana = pantalla.replace(Regex("""\s+"""), " ")
+        assertFalse("el cobro se abre sin apertura nueva: usa cobroDeLaMesa.abrir()", plana.contains("showPayment = true"))
+        assertEquals("el cobro se abre en dos lugares («Pagar» y «Dividir importe»)", 2,
+            Regex("""cobroDeLaMesa\.abrir\(\)""").findAll(plana).count())
+        assertTrue("PaymentFlowScreen no recibe la apertura del ViewModel: tras girar arrancaría otro cobro",
+            plana.contains("apertura = cobroDeLaMesa.apertura,"))
+        assertTrue("el ViewModel de la mesa no guarda el cobro",
+            sinComentarios(leerFuente(VIEW_MODEL)).contains("val cobroDeLaMesa = CobroDeLaMesa()"))
     }
 
     @Test
@@ -71,6 +89,7 @@ class CobroDeMesaAlGirarTest {
 
     private companion object {
         const val PANTALLA = "app/src/main/java/com/avoqado/pos/tables/presentation/TableOrderScreen.kt"
+        const val VIEW_MODEL = "app/src/main/java/com/avoqado/pos/tables/presentation/TableOrderViewModel.kt"
     }
 
     private fun sinComentarios(codigo: String): String =

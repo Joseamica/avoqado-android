@@ -68,7 +68,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.lifecycle.repeatOnLifecycle
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -290,21 +289,20 @@ fun TableOrderScreen(
     // Pago dedicado (Square): el flujo de pago se presenta AQUÍ, sin brincar al
     // register de retail. Mismo PaymentFlowViewModel, solo cambia el cascarón.
     //
-    // 🔴 D61 (13-nov): TODO el estado del cobro de la mesa es `rememberSaveable`. Girar el aparato, cambiar el tema o el tamaño
-    // de letra recrea la Activity: con `remember` la pantalla de cobro DESAPARECÍA mientras su `PaymentFlowViewModel` (del back
-    // stack, sobrevive) seguía cobrando; el cajero veía la cuenta y «Pagar» abría OTRO cobro de la misma mesa. Al volver,
-    // `PaymentFlowScreen` reconoce su apertura guardada (`esElCobroEnCurso`) y sigue el MISMO cobro, no arranca otro. Como
-    // `CheckoutScreen.showPaymentFlow` desde el 29-sep. Del cobro confirmado sólo se guarda lo que decide la salida (el resto).
-    var showPayment by rememberSaveable { mutableStateOf(false) }
-    var paymentSeedCents by rememberSaveable { mutableStateOf(0) }
-    var pendingSplitConfig by rememberSaveable(stateSaver = GuardadoDelReparto) {
-        mutableStateOf(com.avoqado.pos.payment.presentation.SplitConfig())
-    }
-    var restanteConfirmado by rememberSaveable { mutableStateOf<Int?>(null) }
-    var showSplitImporte by rememberSaveable { mutableStateOf(false) }
+    // 🔴 D61 (13-nov): TODO el estado del cobro de la mesa vive en el ViewModel de la mesa ([CobroDeLaMesa]), no en un
+    // `remember`. Girar el aparato, cambiar el tema o el tamaño de letra recrea la Activity: la pantalla de cobro DESAPARECÍA
+    // mientras su `PaymentFlowViewModel` seguía cobrando, y «Pagar» abría OTRO cobro de la misma mesa. `rememberSaveable` no
+    // basta: en la N86 girar cambia el árbol de teléfono por el de tableta (Codex r1 #1). Al volver, la pantalla de cobro
+    // recibe la MISMA apertura (`cobroDeLaMesa.apertura`) y sigue el mismo cobro. Se abre sólo con `cobroDeLaMesa.abrir()`.
+    val cobroDeLaMesa = viewModel.cobroDeLaMesa
+    var showPayment by cobroDeLaMesa::abierto
+    var paymentSeedCents by cobroDeLaMesa::semillaCents
+    var pendingSplitConfig by cobroDeLaMesa::reparto
+    var restanteConfirmado by cobroDeLaMesa::restanteConfirmado
+    var showSplitImporte by cobroDeLaMesa::dividiendo
     // I-1 (re-revisión): el «SÍ pasó» de la orden de esta mesa se pinta aquí y se reconoce; antes el flujo se cerraba callado.
-    // D61: sobrevive al giro, como en `CheckoutScreen`: si se perdía, nadie lo reconocía.
-    var previousChargeNotice by rememberSaveable { mutableStateOf<String?>(null) }
+    // D61: también sobrevive al giro: si se perdía, nadie lo reconocía.
+    var previousChargeNotice by cobroDeLaMesa::avisoCobroAnterior
     val tablesViewModel: TablesViewModel = androidx.hilt.navigation.compose.hiltViewModel()
     var unknownBarcode by remember { mutableStateOf<String?>(null) }
     // Menú … por tiempo (¡Listo!/Repetir). Par (curso, abierto).
@@ -445,7 +443,7 @@ fun TableOrderScreen(
             restanteConfirmado = null
             // Al abrirse el cobro la cámara se cierra: no queda leyendo debajo del importe congelado.
             showBarcodeScanner = false
-            showPayment = true
+            cobroDeLaMesa.abrir()
         }
         // El motivo lo pone `preparePagar()`, que es quien SABE por qué no se
         // puede: sin cargos, ya pagada, o cuenta ajena. Antes se ponía aquí un
@@ -1067,7 +1065,7 @@ fun TableOrderScreen(
                 showSplitImporte = false
                 pendingSplitConfig = config
                 restanteConfirmado = null
-                showPayment = true
+                cobroDeLaMesa.abrir()
             },
         )
     }
@@ -1144,6 +1142,9 @@ fun TableOrderScreen(
                 com.avoqado.pos.payment.presentation.PaymentFlowScreen(
                     cartState = paymentCart,
                     splitConfig = pendingSplitConfig,
+                    // D61: la apertura del ViewModel de la mesa: tras girar (también de teléfono a tableta) es la MISMA y el
+                    // flujo sigue el cobro en vuelo en vez de arrancar otro.
+                    apertura = cobroDeLaMesa.apertura,
                     // El cheque ya trae su cliente asignado; el recibo lo
                     // muestra en vez de pedirlo otra vez al cerrar la mesa.
                     preselectedCustomerId = check?.customerId,

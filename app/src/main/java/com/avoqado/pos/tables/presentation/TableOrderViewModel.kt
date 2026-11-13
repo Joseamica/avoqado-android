@@ -188,6 +188,9 @@ class TableOrderViewModel @Inject constructor(
     private val efectivoEnColaDeCobros: com.avoqado.pos.payment.data.CashPaymentRepository? = null,
 ) : ViewModel() {
 
+    /** D61: el cobro de la mesa vive aquí y no en la pantalla: sobrevive a girar el aparato (ver [CobroDeLaMesa]). */
+    internal val cobroDeLaMesa = CobroDeLaMesa()
+
     /** Json para serializar payloads de intents (mismas opciones que la red). */
     private val wireJson = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
 
