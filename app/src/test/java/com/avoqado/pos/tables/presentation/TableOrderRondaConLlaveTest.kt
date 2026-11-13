@@ -36,6 +36,7 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.currentTime
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonArray
@@ -700,5 +701,68 @@ class TableOrderRondaConLlaveTest {
                 assertEquals("y la ronda sale del borrador", 0, store.load("venue-1", "o1").rounds.size)
             } finally { vm.viewModelScope.cancel() }
         } finally { root.deleteRecursively() }
+    }
+
+    // MARK: - D55 (`hz:8024bc1c:D55`): lo que se toca mientras dice «Enviando…» no se pierde ni cambia la ronda en vuelo
+
+    /** El mesero vuelve a tocar Café mientras la ronda (que ya lleva 1 Café) se manda: esa unidad queda por enviar, también en el disco. */
+    @Test
+    fun `D55 tocar otra vez un producto mientras se envia no pierde esa unidad`() = runTest {
+        for (sinRed in listOf(true, false)) {
+            val root = java.nio.file.Files.createTempDirectory("d55-toque").toFile()
+            val rondas = mutableListOf<List<AddOrderItemRequest>>()
+            val puerta = CompletableDeferred<Unit>()
+            coEvery { repository.addRound(any(), any(), capture(rondas), any()) } coAnswers {
+                if (rondas.size == 1) puerta.await()
+                if (sinRed) Result.failure(IOException("sin red")) else Result.success(UpdatedOrder(id = "o1", version = 4 + rondas.size))
+            }
+            val store = com.avoqado.pos.tables.data.TableRoundDraftStore(root)
+            val vm = vm(draftStore = store)
+            try {
+                vm.clearPending(); vm.addProduct(cafe)
+                vm.sendRound()
+                runCurrent()
+                org.junit.Assert.assertTrue("la ronda sigue en vuelo", vm.isSending.value)
+                vm.addProduct(cafe)
+                assertEquals("sinRed=$sinRed: la unidad nueva ya está guardada en el aparato", 1,
+                    store.load("venue-1", "o1").pending.sumOf { it.item.quantity })
+                puerta.complete(Unit)
+                advanceUntilIdle()
+                assertEquals("sinRed=$sinRed: queda 1 Café por enviar", listOf(1), vm.pending.value.map { it.item.quantity })
+                vm.sendRound(); advanceUntilIdle()
+                assertEquals("sinRed=$sinRed: cada ronda llevó 1 Café", listOf(1, 1), rondas.map { r -> r.sumOf { it.quantity } })
+            } finally { vm.viewModelScope.cancel(); root.deleteRecursively() }
+        }
+    }
+
+    /**
+     * Quitar, cambiar de asiento o de cantidad, o «Borrar nuevos artículos» sobre lo que ya se está mandando no lo cambia y dice por
+     * qué (la ronda ya va con lo que capturó «Enviar»); lo agregado durante el envío sí se puede quitar.
+     */
+    @Test
+    fun `D55 quitar o cambiar un renglon que ya se esta enviando no lo cambia y dice por que`() = runTest {
+        val puerta = CompletableDeferred<Unit>()
+        coEvery { repository.addRound(any(), any(), any(), any()) } coAnswers { puerta.await(); Result.failure(http(422)) }
+        val vm = vm()
+        try {
+            val enVuelo = vm.pending.value
+            vm.sendRound()
+            runCurrent()
+            val (pan, cafeLibre) = enVuelo.map { it.item.id }
+            vm.removePending(pan)
+            vm.cyclePendingSeat(cafeLibre, 4)
+            vm.updatePendingQuantity(cafeLibre, 3)
+            assertEquals("lo que va en la ronda no cambia", enVuelo, vm.pending.value)
+            assertEquals(TableOrderViewModel.RENGLON_EN_VUELO, vm.blockedNotice.value)
+            vm.addCustomAmount("Agua", 2000)
+            val agua = vm.pending.value.last().item.id
+            vm.cyclePendingSeat(agua, 4)
+            assertEquals("lo agregado durante el envío sí se cambia", 1, vm.pending.value.last().seat)
+            vm.clearPending()
+            assertEquals("Borrar nuevos artículos deja lo que se está mandando", enVuelo, vm.pending.value)
+            puerta.complete(Unit)
+            advanceUntilIdle()
+            assertEquals("el rechazo devuelve lo que se mandó, sin cambios", enVuelo, vm.pending.value)
+        } finally { vm.viewModelScope.cancel() }
     }
 }
