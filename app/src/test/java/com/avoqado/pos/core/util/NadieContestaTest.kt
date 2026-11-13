@@ -74,6 +74,7 @@ class NadieContestaTest {
         m.pingServer()
         assertTrue("un 503 es una respuesta", m.ultimaRespuestaMs > m.ultimaSinRespuestaMs)
 
+        Thread.sleep(5) // las fechas son en ms: un empate cuenta como «contestó» (lo seguro); aquí queremos ver el orden
         server.shutdown()
         m.pingServer()
         assertTrue("nadie contestó después", m.ultimaSinRespuestaMs > m.ultimaRespuestaMs)
