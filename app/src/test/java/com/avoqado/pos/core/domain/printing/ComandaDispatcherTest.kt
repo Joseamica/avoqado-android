@@ -1522,4 +1522,70 @@ class ComandaDispatcherTest {
         assertEquals(listOf("st_a"), configs[0].stations.map { it.id })
         assertEquals(listOf("st_b"), configs[1].stations.map { it.id })
     }
+
+    @Test
+    fun `estacionFija conserva el orden del carrito`() = runTest {
+        every { printConfigRepository.getCurrentConfig() } returns conCocinaYBarra
+        val planes = mutableListOf<List<TicketPlan>>()
+        imprimeTodo(planes, mutableListOf())
+        val agua = RoutableItem(orderItemId = "oi_w", productId = "prod_agua", categoryId = null, productName = "Agua", quantity = 1)
+        val conAgua = conCocinaYBarra.copy(productOverrides = conCocinaYBarra.productOverrides + ProductOverride(productId = "prod_agua", printStationId = "cocina"))
+        every { printConfigRepository.getCurrentConfig() } returns conAgua
+
+        dispatcher.dispatch(venueId = "venue-1", lines = listOf(tacoCocina, cafe, agua), orderNumber = "1", orderType = "Delivery", estacionFija = "barra")
+
+        assertEquals(listOf("Taco", "Café", "Agua"), planes.single().single().lines.map { it.productName })
+    }
+
+    @Test
+    fun `estacionFija de una estacion Sin comanda se ignora`() = runTest {
+        val config = conCocinaYBarra.copy(stations = conCocinaYBarra.stations + tiendaSinComanda)
+        every { printConfigRepository.getCurrentConfig() } returns config
+        val planes = mutableListOf<List<TicketPlan>>()
+        imprimeTodo(planes, mutableListOf())
+
+        dispatcher.dispatch(venueId = "venue-1", lines = listOf(tacoCocina, cafe), orderNumber = "1", orderType = "Delivery", estacionFija = "st_tienda")
+
+        assertEquals(2, planes.single().size)
+    }
+
+    @Test
+    fun `el plan fusionado que absorbe un renglon sin estacion queda unrouted false`() = runTest {
+        val config = PrintConfig(stations = listOf(StationInfo(id = "barra", name = "Barra", printerId = "pr_2", active = true)))
+        every { printConfigRepository.getCurrentConfig() } returns config
+        val planes = mutableListOf<List<TicketPlan>>()
+        imprimeTodo(planes, mutableListOf())
+
+        dispatcher.dispatch(venueId = "venue-1", lines = listOf(tacoCocina), orderNumber = "1", orderType = "Delivery", estacionFija = "barra")
+
+        val plan = planes.single().single()
+        assertEquals("barra", plan.stationId)
+        assertFalse(plan.unrouted)
+    }
+
+    @Test
+    fun `la validacion de estacionFija usa configDeLaRonda y no el repositorio`() = runTest {
+        every { printConfigRepository.getCurrentConfig() } returns sinEstaciones
+        val planes = mutableListOf<List<TicketPlan>>()
+        imprimeTodo(planes, mutableListOf())
+
+        dispatcher.dispatch(
+            venueId = "venue-1", lines = listOf(tacoCocina, cafe), orderNumber = "1", orderType = "Delivery",
+            configDeLaRonda = conCocinaYBarra, estacionFija = "barra",
+        )
+
+        assertEquals(listOf("barra"), planes.single().map { it.stationId })
+    }
+
+    @Test
+    fun `estacionFija con todo Sin comanda y omitirSinComanda devuelve SinComanda sin imprimir`() = runTest {
+        every { printConfigRepository.getCurrentConfig() } returns conTienda
+        val estado = dispatcher.dispatch(
+            venueId = "venue-1", lines = listOf(takis), orderNumber = "1", orderType = "Delivery",
+            omitirSinComanda = true, estacionFija = "st_barra",
+        )
+
+        assertEquals(EstadoDeComanda.SinComanda, estado)
+        coVerify(exactly = 0) { comandaPrinter.printComandas(any(), any(), any(), any(), any()) }
+    }
 }

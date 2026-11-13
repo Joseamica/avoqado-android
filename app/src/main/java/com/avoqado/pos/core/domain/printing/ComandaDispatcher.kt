@@ -346,9 +346,9 @@ class ComandaDispatcher @Inject constructor(
         estacionFija: String? = null,
         /**
          * `false` = un negocio sin cocina NO calla el «no salió» (el delivery llama `omitirSinComanda = true,
-         * callarSinCocina = false`: quita lo de «Sin comanda» pero no esconde un fallo). Default = [omitirSinComanda], lo de siempre.
+         * callarSinCocina = false`: quita lo de «Sin comanda» pero no esconde un fallo). Default `null` = [omitirSinComanda], lo de siempre (no un default derivado: MockK lo registra como `eq(<azar>)` y vuelve flaky los stubs con `any()`).
          */
-        callarSinCocina: Boolean = omitirSinComanda,
+        callarSinCocina: Boolean? = null,
     ): EstadoDeComanda? {
         // Sin renglones no hay nada que imprimir — y nos ahorramos hasta el refresh, igual que el
         // mostrador, que salía antes de tocar la red. No es un guard de configuración: es que
@@ -397,7 +397,7 @@ class ComandaDispatcher @Inject constructor(
         }
 
         val ruteo = PrintRoutingMapper.rutear(lines, config, omitirSinComanda)
-        val plans = fusionarEnEstacionFija(ruteo.plans, estacionFija, config)
+        val plans = fusionarEnEstacionFija(ruteo.plans, estacionFija, config, lines)
         // «No lleva comanda»: todo era de estaciones sin comanda. No hacía falta papel: ni libreta, ni entregas, ni aviso.
         if (plans.isEmpty() && ruteo.omitidasSinComanda > 0) {
             alCambiarEstado(EstadoDeComanda.SinComanda)
@@ -449,7 +449,7 @@ class ComandaDispatcher @Inject constructor(
                 // D2 con «No lleva comanda» (Codex código r1 #2 y r2): la tienda sin cocina que crea sólo «Sin comanda» ya no
                 // entra al legado; lo que dejó sin asignar cae en «SIN ESTACIÓN» y, sin impresora de cocina, no sale. Es el
                 // negocio sin cocina de D2: ni aviso al cajero ni FAILED al gerente. Con una estación con comanda, sí.
-                negocioSinCocina = { callarSinCocina && sinImpresoraDeCocina(printerService.savedPrinters.value, config) },
+                negocioSinCocina = { (callarSinCocina ?: omitirSinComanda) && sinImpresoraDeCocina(printerService.savedPrinters.value, config) },
                 alCambiarEstado = alCambiarEstado,
                 encabezado = encabezado,
             )
@@ -467,13 +467,16 @@ class ComandaDispatcher @Inject constructor(
         return estado
     }
 
-    /** Junta todos los planes en UNO a [estacionFija] si es una estación activa de [config]; si no, los deja como están. */
-    private fun fusionarEnEstacionFija(plans: List<TicketPlan>, estacionFija: String?, config: PrintConfig): List<TicketPlan> =
-        if (estacionFija == null || plans.isEmpty() || config.stations.none { it.id == estacionFija && it.active }) {
-            plans
-        } else {
-            listOf(TicketPlan(stationId = estacionFija, unrouted = false, lines = plans.flatMap { it.lines }))
-        }
+    /**
+     * Junta todos los planes en UNO a [estacionFija] si es una estación activa que manda comanda de [config]; si no, los deja
+     * como están. Los renglones vuelven al orden del carrito ([lines]), no al agrupado por estación.
+     */
+    private fun fusionarEnEstacionFija(plans: List<TicketPlan>, estacionFija: String?, config: PrintConfig, lines: List<RoutableItem>): List<TicketPlan> {
+        if (estacionFija == null || plans.isEmpty() || config.stations.none { it.id == estacionFija && it.active && it.sendsComanda }) return plans
+        val orden = lines.withIndex().associate { (i, l) -> l.orderItemId to i }
+        val juntas = plans.flatMap { it.lines }.sortedBy { l -> l.orderItemIds.minOfOrNull { orden[it] ?: Int.MAX_VALUE } ?: Int.MAX_VALUE }
+        return listOf(TicketPlan(stationId = estacionFija, unrouted = false, lines = juntas))
+    }
 
     /** El despacho no llegó a decidir el papel (truena o se cancela): todas sus filas guardadas sin acuse se sueltan. */
     private suspend fun soltarSinPapel(entregas: List<EntregaKds>, acusadas: Set<String>) {
