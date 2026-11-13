@@ -86,7 +86,7 @@ class PresenciaYPermisosViejosTest {
 
         val tarde = viejo(OP_ACQUIRE, "A", "m13")
         assertEquals(LeaseProtocol.STATUS_ERROR, tarde.status)
-        assertEquals("en presencia", tarde.message)
+        assertEquals(LeaseProtocol.ERROR_EN_PRESENCIA, tarde.message)
         assertEquals(APERTURA_CONCEDIDA, abre("B", 1, 1, "b1", "m13").resultado)
 
         assertEquals(LeaseProtocol.STATUS_ERROR, viejo(OP_RENEW, "A", "m13", epoch = 1).status)
@@ -98,6 +98,20 @@ class PresenciaYPermisosViejosTest {
         assertEquals(LeaseProtocol.STATUS_ERROR, viejo(OP_ACQUIRE, "A", "m30").status)
         mono += 1
         assertEquals(LeaseProtocol.STATUS_GRANTED, viejo(OP_ACQUIRE, "A", "m30").status)
+
+        // Si reaparece con un estado (cualquier gen/seq tras el olvido), ese permiso viejo se adopta.
+        assertEquals(LeaseProtocol.STATUS_OK, estado("A", 1, 1).status)
+        assertTrue(lista().none { it.tableId == "m30" })
+    }
+
+    @Test
+    fun `p22b su propio permiso viejo no le ocupa la mesa y su primer estado lo adopta`() {
+        assertEquals(LeaseProtocol.STATUS_GRANTED, viejo(OP_ACQUIRE, "A", "m13").status)
+
+        assertEquals(APERTURA_CONCEDIDA, abre("A", 1, 1, "a1", "m13").resultado)
+        val m13 = lista().single { it.tableId == "m13" }
+        assertEquals("A", m13.holderDeviceId)
+        assertEquals(0L, m13.epoch) // ya es la presencia: el permiso viejo se borró
     }
 
     @Test
@@ -107,8 +121,9 @@ class PresenciaYPermisosViejosTest {
         assertEquals(listOf("m13"), lista().map { it.tableId })
         assertEquals("Ana", abre("B", 1, 1, "b1", "m13").quien) // mientras siga ahí, cuenta como ocupada
 
-        // Un estado repetido (stale) no adopta nada.
+        // Un estado repetido (stale) o inválido (error) no adopta nada.
         assertEquals(LeaseProtocol.STATUS_STALE, estado("A", 1, 1).status)
+        assertEquals(LeaseProtocol.STATUS_ERROR, estado("A", 0, 3).status)
         assertEquals(listOf("m13"), lista().map { it.tableId })
 
         assertEquals(LeaseProtocol.STATUS_OK, estado("A", 1, 2).status)

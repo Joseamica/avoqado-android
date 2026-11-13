@@ -118,6 +118,9 @@ object LeaseProtocol {
 
     /** Rechazo explícito a un peer que habla otra versión del protocolo. */
     const val ERROR_VERSION_MISMATCH = "VERSION_MISMATCH"
+
+    /** Hub D3: acquire/renew/release de un aparato que ya declara su estado (sus permisos viejos se adoptaron). */
+    const val ERROR_EN_PRESENCIA = "en presencia"
 }
 
 /** Lease tal como viaja por el cable (plano, sin lógica). */

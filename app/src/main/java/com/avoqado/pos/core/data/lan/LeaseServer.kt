@@ -66,7 +66,7 @@ class LeaseServer(
             // Adopción (D3): un aparato que ya declara su estado no habla las ops viejas; un acquire suyo que llegue tarde no revive nada.
             val opVieja = request.op == LeaseProtocol.OP_ACQUIRE || request.op == LeaseProtocol.OP_RENEW || request.op == LeaseProtocol.OP_RELEASE
             if (opVieja && presencias.enPresencia(request.deviceId, mono)) {
-                return@synchronized LeaseResponse(status = LeaseProtocol.STATUS_ERROR, message = "en presencia")
+                return@synchronized LeaseResponse(status = LeaseProtocol.STATUS_ERROR, message = LeaseProtocol.ERROR_EN_PRESENCIA)
             }
             when (request.op) {
                 // App vieja: se le niega la mesa que declara una caja nueva viva; si no, el registro de siempre.

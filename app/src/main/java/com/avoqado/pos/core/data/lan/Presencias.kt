@@ -60,7 +60,16 @@ internal class Presencias {
      * `epoch = 0` y vence en hora de pared ([pared]) lo que le quede de sus 30 s.
      */
     fun comoPermiso(mesa: String, salvo: String?, ahora: Long, pared: Long): WireLease? =
-        quienDeclara(mesa, salvo, ahora)?.let { (caja, p) -> WireLease(mesa, caja, "", p.staffName, 0, pared + TTL_MS - (ahora - p.vistoEn)) }
+        quienDeclara(mesa, salvo, ahora)?.let { (caja, p) ->
+            WireLease(
+                tableId = mesa,
+                holderDeviceId = caja,
+                holderStaffId = "",
+                holderName = p.staffName,
+                epoch = 0,
+                expiresAtMillis = pared + TTL_MS - (ahora - p.vistoEn),
+            )
+        }
 
     /** Para `list`: una entrada por mesa que declara alguna presencia viva y no está ya en [yaListadas]. */
     fun comoPermisos(ahora: Long, pared: Long, yaListadas: Set<String>): List<WireLease> =
