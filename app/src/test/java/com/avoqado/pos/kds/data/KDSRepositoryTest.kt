@@ -141,6 +141,13 @@ class KDSRepositoryTest {
     }
 
     @Test
+    fun `impresionReparto sin la llave empaque imprime el empaque (default true)`() = runTest {
+        server.enqueue(MockResponse().setBody(lista(comanda(extraJson = ",\"impresionReparto\":{\"proveedor\":\"RAPPI\",\"estacionUnicaId\":null}"))))
+        val c = repo.fetchOrders("st-barra").getOrThrow().single()
+        assertEquals(com.avoqado.pos.kds.domain.ImpresionReparto("RAPPI", null, true, null), c.impresionReparto)
+    }
+
+    @Test
     fun `impresionReparto con estacionUnicaId null da null y sin la llave da null`() = runTest {
         server.enqueue(MockResponse().setBody(lista(
             comanda(extraJson = ",\"impresionReparto\":{\"proveedor\":\"UBER_EATS\",\"estacionUnicaId\":null,\"empaque\":true,\"empaqueEstacionId\":null}"),

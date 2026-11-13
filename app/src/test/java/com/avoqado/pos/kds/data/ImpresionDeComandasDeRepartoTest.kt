@@ -22,6 +22,8 @@ import io.mockk.mockk
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runTest
@@ -347,6 +349,24 @@ class ImpresionDeComandasDeRepartoTest {
 
         assertEquals(listOf("b"), pizarra.avisos.value.map { it.kdsId })
         assertEquals("v1", pizarra.avisos.value.single().venueId)
+    }
+
+    @Test
+    fun `cancelado a media impresion (salir de la pantalla) el pedido reclamado igual se confirma y no reclama otro`() = runTest {
+        val sut = armar()
+        val sigue = CompletableDeferred<Unit>()
+        coEvery { despacho() } coAnswers { sigue.await(); orden += "comanda"; EstadoDeComanda.Salio }
+
+        val trabajoDeLaPantalla = launch { sut.imprimirPendientes(listOf(pedido("a"), pedido("b"))) }
+        runCurrent()
+        trabajoDeLaPantalla.cancel()
+        sigue.complete(Unit)
+        advanceUntilIdle()
+
+        // Sin esto el confirm salía en una corrutina cancelada, fallaba callado y a los 90 s otra tablet lo reimprimía.
+        coVerify(exactly = 1) { repo.marcarImpresion("a", "dev-1", "confirm-print") }
+        coVerify(exactly = 0) { repo.reclamarImpresion("b", any()) }
+        assertEquals(listOf("comanda"), orden)
     }
 
     @Test

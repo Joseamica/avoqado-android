@@ -14,6 +14,10 @@ import com.avoqado.pos.printing.routing.PrintRoutingMapper
 import com.avoqado.pos.printing.routing.RoutableItem
 import com.avoqado.pos.printing.routing.TicketPlan
 import javax.inject.Inject
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.withContext
 import javax.inject.Provider
 import javax.inject.Singleton
 
@@ -86,80 +90,89 @@ class ImpresionDeComandasDeReparto @Inject constructor(
         val venueId = kdsRepository.venueIdActual()
 
         for (pedido in pendientes) {
+            // Cancelado (salieron de la pantalla de cocina): no se reclama nada nuevo.
+            currentCoroutineContext().ensureActive()
             // La época se toma ANTES de imprimir: si alguien toca «Entendido» o cambia de sucursal a media impresión,
             // este resultado ya no se apunta.
             val epoca = avisos.epoca()
             if (!kdsRepository.reclamarImpresion(pedido.id, deviceId)) continue
+            // 🔴 Ya reclamado, se TERMINA aunque cancelen al llamador (salir de «Pantalla de cocina» corre en su
+            // viewModelScope): cancelado a media impresión, el `confirm`/`release` fallaba callado, la reclamación se
+            // quedaba 90 s y, si ya había salido un papel, otra tablet lo sacaba DOS veces.
+            withContext(NonCancellable) { imprimirReclamado(pedido, deviceId, venueId, epoca) }
+        }
+    }
 
-            // 🔴 UNA config por pedido (Codex p1 #2 y p2 #3): un refresco con tope y con ESA se decide y salen los dos
-            // papeles. Sin esto, «un solo papel» (que no pasa por `dispatch`) salía con la impresora vieja de la caché, y
-            // una descarga tardía entre la comanda y el empaque los mandaba a impresoras distintas.
-            venueId?.let { printConfigRepository.refreshConTope(it) }
-            val config = printConfigRepository.getCurrentConfig()
+    /** Un pedido ya reclamado por este aparato: sus papeles y el `confirm-print` / `release-print` que le toca. */
+    private suspend fun imprimirReclamado(pedido: KDSOrder, deviceId: String, venueId: String?, epoca: Long) {
+        // 🔴 UNA config por pedido (Codex p1 #2 y p2 #3): un refresco con tope y con ESA se decide y salen los dos
+        // papeles. Sin esto, «un solo papel» (que no pasa por `dispatch`) salía con la impresora vieja de la caché, y
+        // una descarga tardía entre la comanda y el empaque los mandaba a impresoras distintas.
+        venueId?.let { printConfigRepository.refreshConTope(it) }
+        val config = printConfigRepository.getCurrentConfig()
 
-            val lineas = pedido.items.map { item ->
-                RoutableItem(
-                    orderItemId = item.id,
-                    productId = item.productId,
-                    categoryId = item.categoryId,
-                    productName = item.productName,
-                    quantity = item.quantity,
-                    modifiers = item.modifiers,
-                    notes = item.notes,
-                )
+        val lineas = pedido.items.map { item ->
+            RoutableItem(
+                orderItemId = item.id,
+                productId = item.productId,
+                categoryId = item.categoryId,
+                productName = item.productName,
+                quantity = item.quantity,
+                modifiers = item.modifiers,
+                notes = item.notes,
+            )
+        }
+        val impresion = pedido.impresionReparto
+        val empaque = estacionDeEmpaque(impresion, config)
+        val estacionFija = impresion?.estacionUnicaId
+        val papel = Papel()
+
+        when {
+            // «Un solo papel» (spec §7.1): todo junto en la misma estación del empaque ⇒ UN ticket con todo el pedido
+            // («EMPAQUE · Delivery»), no dos casi iguales.
+            estacionFija != null && estacionFija == empaque ->
+                imprimirTicketDeEmpaque(pedido, lineas, venueId, config, estacionFija, papel)
+            // 🔴 Lo «Sin comanda» sale de la comanda SÓLO si el empaque, que lo lleva, YA imprimió (Codex p1 #1): por
+            // eso el empaque va primero. Si no salió, la comanda lo conserva, como hoy: nunca un pedido sin su papel.
+            empaque != null && PrintRoutingMapper.rutear(lineas, config, omitirSinComanda = true).omitidasSinComanda > 0 -> {
+                val salioElEmpaque = imprimirTicketDeEmpaque(pedido, lineas, venueId, config, empaque, papel)
+                imprimirComanda(pedido, lineas, venueId, config, estacionFija, omitirSinComanda = salioElEmpaque, papel)
             }
-            val impresion = pedido.impresionReparto
-            val empaque = estacionDeEmpaque(impresion, config)
-            val estacionFija = impresion?.estacionUnicaId
-            val papel = Papel()
-
-            when {
-                // «Un solo papel» (spec §7.1): todo junto en la misma estación del empaque ⇒ UN ticket con todo el pedido
-                // («EMPAQUE · Delivery»), no dos casi iguales.
-                estacionFija != null && estacionFija == empaque ->
-                    imprimirTicketDeEmpaque(pedido, lineas, venueId, config, estacionFija, papel)
-                // 🔴 Lo «Sin comanda» sale de la comanda SÓLO si el empaque, que lo lleva, YA imprimió (Codex p1 #1): por
-                // eso el empaque va primero. Si no salió, la comanda lo conserva, como hoy: nunca un pedido sin su papel.
-                empaque != null && PrintRoutingMapper.rutear(lineas, config, omitirSinComanda = true).omitidasSinComanda > 0 -> {
-                    val salioElEmpaque = imprimirTicketDeEmpaque(pedido, lineas, venueId, config, empaque, papel)
-                    imprimirComanda(pedido, lineas, venueId, config, estacionFija, omitirSinComanda = salioElEmpaque, papel)
-                }
-                // El orden de siempre. Si la comanda no sacó nada, el empaque NO sale: sería el único papel de un pedido que
-                // la cocina no tiene, y se suelta para que otro aparato saque los dos.
-                else -> if (imprimirComanda(pedido, lineas, venueId, config, estacionFija, omitirSinComanda = false, papel) && empaque != null) {
-                    imprimirTicketDeEmpaque(pedido, lineas, venueId, config, empaque, papel)
-                }
+            // El orden de siempre. Si la comanda no sacó nada, el empaque NO sale: sería el único papel de un pedido que
+            // la cocina no tiene, y se suelta para que otro aparato saque los dos.
+            else -> if (imprimirComanda(pedido, lineas, venueId, config, estacionFija, omitirSinComanda = false, papel) && empaque != null) {
+                imprimirTicketDeEmpaque(pedido, lineas, venueId, config, empaque, papel)
             }
+        }
 
-            if (!papel.salio) {
-                kdsRepository.marcarImpresion(pedido.id, deviceId, "release-print")
-                Log.e(TAG, "No salió en papel el pedido ${pedido.orderNumber}; soltado para que otro aparato lo intente")
-                avisos.publicar(
-                    ComandaImpresa(
-                        kdsId = pedido.id, orderNumber = pedido.orderNumber, createdAt = pedido.createdAt, salioEnPapel = false,
-                        faltaron = papel.faltaron.distinct(),
-                        venueId = venueId,
-                        proveedor = impresion?.proveedor,
-                    ),
-                    epoca,
-                )
-                continue
-            }
-
-            kdsRepository.marcarImpresion(pedido.id, deviceId, "confirm-print")
+        if (!papel.salio) {
+            kdsRepository.marcarImpresion(pedido.id, deviceId, "release-print")
+            Log.e(TAG, "No salió en papel el pedido ${pedido.orderNumber}; soltado para que otro aparato lo intente")
             avisos.publicar(
                 ComandaImpresa(
-                    kdsId = pedido.id, orderNumber = pedido.orderNumber, createdAt = pedido.createdAt,
-                    salioEnPapel = papel.faltaron.isEmpty(),
+                    kdsId = pedido.id, orderNumber = pedido.orderNumber, createdAt = pedido.createdAt, salioEnPapel = false,
                     faltaron = papel.faltaron.distinct(),
-                    porReimprimir = papel.porReimprimir,
-                    sinReimprimir = papel.sinReimprimir.distinct(),
                     venueId = venueId,
                     proveedor = impresion?.proveedor,
                 ),
                 epoca,
             )
+            return
         }
+
+        kdsRepository.marcarImpresion(pedido.id, deviceId, "confirm-print")
+        avisos.publicar(
+            ComandaImpresa(
+                kdsId = pedido.id, orderNumber = pedido.orderNumber, createdAt = pedido.createdAt,
+                salioEnPapel = papel.faltaron.isEmpty(),
+                faltaron = papel.faltaron.distinct(),
+                porReimprimir = papel.porReimprimir,
+                sinReimprimir = papel.sinReimprimir.distinct(),
+                venueId = venueId,
+                proveedor = impresion?.proveedor,
+            ),
+            epoca,
+        )
     }
 
     /**
