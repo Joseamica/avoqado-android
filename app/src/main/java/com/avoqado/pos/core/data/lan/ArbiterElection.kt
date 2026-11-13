@@ -47,6 +47,8 @@ data class LanPeer(
     val participaEnD: Boolean = false,
     /** D12 · Opción D: el nombre visible de la caja (TXT `caja`), o null. */
     val nombreCaja: String? = null,
+    /** Hub D3: anuncia `pm=1`, habla `estado` (mesa declarada) en vez de acquire/renew/release. */
+    val presencia: Boolean = false,
 )
 
 object ArbiterElection {
@@ -72,6 +74,9 @@ object ArbiterElection {
                 .thenBy { it.bootedAtMillis }
                 .thenBy { it.deviceId },
         )
+
+    /** ¿Publicar [despues] en lugar de [antes] cambia al árbitro elegido? Lo cuenta quien publica los peers (Codex código r2 H2). */
+    fun cambiaElArbitro(antes: List<LanPeer>, despues: List<LanPeer>): Boolean = pick(antes)?.deviceId != pick(despues)?.deviceId
 
     /** ¿Me toca a mí ser árbitro? */
     fun isArbiter(myDeviceId: String, peers: List<LanPeer>): Boolean = pick(peers)?.deviceId == myDeviceId

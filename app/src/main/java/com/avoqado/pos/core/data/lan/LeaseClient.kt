@@ -2,11 +2,11 @@ package com.avoqado.pos.core.data.lan
 
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.BufferedInputStream
-import java.io.PrintWriter
 import java.net.InetSocketAddress
 import java.net.Socket
 
@@ -23,9 +23,7 @@ private const val TAG = "LeaseClient"
  * exactamente el comportamiento que ya teníamos antes del hub. Nunca se
  * bloquea al mesero por no encontrar el árbitro.
  */
-class LeaseClient(
-    private val connectTimeoutMs: Int = CONNECT_TIMEOUT_MS,
-) {
+class LeaseClient {
 
     suspend fun acquire(
         arbiter: LanPeer,
@@ -51,6 +49,10 @@ class LeaseClient(
         send(arbiter, LeaseRequest(op = LeaseProtocol.OP_RELEASE, tableId = tableId, deviceId = deviceId, epoch = epoch))
 
     suspend fun list(arbiter: LanPeer): LeaseResponse? = send(arbiter, LeaseRequest(op = LeaseProtocol.OP_LIST))
+
+    /** Hub D3: la declaración de esta caja al árbitro, con plazo TOTAL [plazoMs] (conectar, escribir y leer). null = no contestó. */
+    suspend fun estado(arbiter: LanPeer, request: LeaseRequest, plazoMs: Long = PLAZO_HUB_MS): LeaseResponse? =
+        intentoConVigia(arbiter, request, plazoMs)
 
     /**
      * D12 · Opción D (R7): una pregunta `cuenta_*` con plazo ABSOLUTO de [plazoTotalMs] — conectar, escribir, leer y el reintento —. Cada
@@ -78,7 +80,9 @@ class LeaseClient(
 
     private suspend fun intentoConVigia(peer: LanPeer, request: LeaseRequest, plazoMs: Long): LeaseResponse? = withContext(Dispatchers.IO) {
         val socket = Socket()
-        val vigia = launch { delay(plazoMs); runCatching { socket.close() } }
+        // Hub D3 (p14d): el vigía va FUERA del trabajo de quien llama. Si lo cancelan a media lectura, la lectura bloqueante sigue, y un
+        // vigía cancelado con él dejaba el socket abierto mientras el otro lado goteara. Sólo el `finally` normal lo cancela.
+        val vigia = launch(NonCancellable) { delay(plazoMs); runCatching { socket.close() } }
         try {
             runCatching {
                 socket.use { s ->
@@ -87,34 +91,21 @@ class LeaseClient(
                     s.getOutputStream().run { write((LeaseProtocol.encode(request) + "\n").toByteArray(Charsets.UTF_8)); flush() }
                     LineaAcotada.leer(BufferedInputStream(s.getInputStream()))?.let { LeaseProtocol.decodeResponse(it) }
                 }
-            }.onFailure { Log.d(TAG, "📴 ${peer.host}:${peer.port} no contestó la cuenta (${it.message})") }.getOrNull()
+            }.onFailure { Log.d(TAG, "📴 ${peer.host}:${peer.port} no contestó ${request.op} (${it.message}) — modo isla") }.getOrNull()
         } finally {
             vigia.cancel()
         }
     }
 
-    private suspend fun send(arbiter: LanPeer, request: LeaseRequest): LeaseResponse? = withContext(Dispatchers.IO) {
-        runCatching {
-            Socket().use { socket ->
-                socket.connect(InetSocketAddress(arbiter.host, arbiter.port), connectTimeoutMs)
-                socket.soTimeout = READ_TIMEOUT_MS
-                PrintWriter(socket.getOutputStream(), true).println(LeaseProtocol.encode(request))
-                // D3: hasta el salto de línea, acotado a 64 KiB (antes `readLine()` sin tope).
-                LineaAcotada.leer(BufferedInputStream(socket.getInputStream()))?.let { LeaseProtocol.decodeResponse(it) }
-            }
-        }.onFailure {
-            // No es un error de negocio: el árbitro no está. Modo isla.
-            Log.d(TAG, "📴 Árbitro ${arbiter.host}:${arbiter.port} no responde (${it.message}) — modo isla")
-        }.getOrNull()
-    }
+    /** acquire/renew/release/list: el mismo plazo TOTAL que `estado` (Hub D3; antes 1.5 s para conectar y 3 s por cada silencio). */
+    private suspend fun send(arbiter: LanPeer, request: LeaseRequest): LeaseResponse? = intentoConVigia(arbiter, request, PLAZO_HUB_MS)
 
     companion object {
-        /** 1.5s: si el árbitro no contesta en ese tiempo desde la MISMA red
-         *  local, no está. Esperar más solo congela la UI del mesero. */
-        const val CONNECT_TIMEOUT_MS = 1_500
+        /** Hub D3: lo más que dura un mensaje al árbitro, todo junto (conectar, escribir y leer); el socket se cierra al vencer. */
+        const val PLAZO_HUB_MS = 3_000L
 
-        /** Lo que antes era `LeaseServer.SOCKET_TIMEOUT_MS`: 3 s para que el árbitro conteste una petición de lease. */
-        const val READ_TIMEOUT_MS = 3_000
+        /** Hub D3: la despedida de un coordinador que se apaga no espera más que esto. */
+        const val PLAZO_DESPEDIDA_MS = 1_500L
 
         /** D12 · Opción D (R7): «Avisándole a <caja>…» nunca dura más de esto. */
         const val PLAZO_CUENTA_MS = 5_000L

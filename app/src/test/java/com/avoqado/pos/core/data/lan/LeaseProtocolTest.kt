@@ -96,6 +96,39 @@ class LeaseProtocolTest {
 
         assertEquals(original, roundTripped)
     }
+
+    // ── Hub D3: el cable EXACTO de `estado` (lo copia la ficha de iOS en docs/proyectos/ios-por-hacer.md) ──────────
+
+    @Test
+    fun `p03b una petición estado sale por el cable exactamente así`() {
+        assertEquals(
+            """{"v":1,"op":"estado","tableId":"","deviceId":"A","staffId":"","staffName":"Ana","epoch":0,"intento":"","caja":"","enLinea":false,"subida":false,"venueId":"","conAbono":null,"gen":3,"seq":7,"mesas":["m13"],"aperturas":[{"id":"u1","tableId":"m14"}]}""",
+            LeaseProtocol.encode(
+                LeaseRequest(
+                    op = "estado", deviceId = "A", staffName = "Ana", gen = 3, seq = 7,
+                    mesas = listOf("m13"), aperturas = listOf(WireApertura("u1", "m14")),
+                ),
+            ),
+        )
+    }
+
+    @Test
+    fun `p03b la respuesta a estado sale por el cable exactamente así`() {
+        assertEquals(
+            """{"v":1,"status":"ok","lease":null,"holder":null,"currentEpoch":null,"leases":null,"message":null,"quien":null,"caja":null,"faltaSubirla":null,"txt":null,"arbitro":"X","aperturas":[{"id":"u1","resultado":"concedida","quien":null,"esperarMs":null},{"id":"u2","resultado":"ocupada","quien":"Beto","esperarMs":null},{"id":"u3","resultado":"esperar","quien":null,"esperarMs":4000}]}""",
+            LeaseProtocol.encode(
+                LeaseResponse(
+                    status = "ok",
+                    arbitro = "X",
+                    aperturas = listOf(
+                        WireResultadoApertura("u1", "concedida"),
+                        WireResultadoApertura("u2", "ocupada", quien = "Beto"),
+                        WireResultadoApertura("u3", "esperar", esperarMs = 4000),
+                    ),
+                ),
+            ),
+        )
+    }
 }
 
 class LeaseServerTest {
@@ -182,5 +215,40 @@ class LeaseServerTest {
     @Test
     fun `una petición ilegible responde error en vez de tumbar al árbitro`() {
         assertEquals(LeaseProtocol.STATUS_ERROR, server().respondTo("<<basura>>").status)
+    }
+
+    // ── Hub D3 (mesa declarada): el cable de las ops viejas NO cambia ──────────────────────────────────────────────
+
+    @Test
+    fun `p01 un acquire sale por el cable igual que en develop`() {
+        assertEquals(
+            """{"v":1,"op":"acquire","tableId":"m5","deviceId":"d1","staffId":"s1","staffName":"Juan","epoch":0,"intento":"","caja":"","enLinea":false,"subida":false,"venueId":"","conAbono":null}""",
+            LeaseProtocol.encode(LeaseRequest(op = "acquire", tableId = "m5", deviceId = "d1", staffId = "s1", staffName = "Juan")),
+        )
+    }
+
+    @Test
+    fun `p02 una respuesta granted sale igual que en develop`() {
+        assertEquals(
+            """{"v":1,"status":"granted","lease":null,"holder":null,"currentEpoch":null,"leases":null,"message":null,"quien":null,"caja":null,"faltaSubirla":null,"txt":null}""",
+            LeaseProtocol.encode(LeaseResponse(status = "granted")),
+        )
+    }
+
+    @Test
+    fun `p03 estado va y viene por el cable`() {
+        val req = LeaseRequest(
+            op = "estado", deviceId = "A", staffName = "Ana", gen = 3, seq = 7,
+            mesas = listOf("m13"), aperturas = listOf(WireApertura("u1", "m14")),
+        )
+        assertEquals(req, LeaseProtocol.decodeRequest(LeaseProtocol.encode(req)))
+        val resp = LeaseResponse(status = "ok", arbitro = "X", aperturas = listOf(WireResultadoApertura("u1", "esperar", esperarMs = 4000)))
+        assertEquals(resp, LeaseProtocol.decodeResponse(LeaseProtocol.encode(resp)))
+    }
+
+    @Test
+    fun `p04 una app vieja lee una respuesta con campos nuevos`() {
+        assertEquals("granted", LeaseProtocol.decodeResponse("""{"v":1,"status":"granted","arbitro":"X","aperturas":[]}""")!!.status)
+        assertEquals(1, LeaseProtocol.PROTOCOL_VERSION)
     }
 }

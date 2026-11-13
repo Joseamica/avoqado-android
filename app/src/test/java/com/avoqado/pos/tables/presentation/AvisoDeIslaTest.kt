@@ -237,7 +237,7 @@ class AvisoDeIslaTest {
         val repository = mockk<TableServiceRepository>(relaxed = true)
         coEvery { repository.openTable("v1", "t2", 2) } returns Result.success(OpenedOrder("o2", "ORD-2"))
         val hub = mockk<LanHubService>(relaxed = true)
-        coEvery { hub.acquire(any(), any(), any()) } returns LeaseOutcome.NoHub // no ve a nadie: isla
+        coEvery { hub.esperarApertura(any(), any(), any()) } returns LeaseOutcome.NoHub // no ve a nadie: isla (Hub D3: el ticket de la apertura)
         val session = TableSession()
         val vm = vmConLaN86Perdida(listOf(libre), session, MutableStateFlow(listOf(yo)), repository, hub)
         try {

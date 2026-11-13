@@ -64,6 +64,12 @@ class TransporteLan @Inject constructor(
     /** Peers vivos, INCLUIDO este aparato (127.0.0.1): una caja que además es pantalla se empuja a sí misma por loopback. */
     override val peers: StateFlow<List<LanPeer>> = _peers.asStateFlow()
 
+    private val eleccionesPublicadas = java.util.concurrent.atomic.AtomicLong(0)
+    override val cambiosDeArbitro: Long get() = eleccionesPublicadas.get()
+
+    /** El mismo monitor que [publicarPeers] (`@Synchronized`): mientras corre [bloque] no se publica otra elección. */
+    override fun <T> sinCambiarDeArbitro(bloque: () -> T): T = synchronized(this) { bloque() }
+
     private val _estacionesAnunciadas = MutableStateFlow<Set<String>>(emptySet())
     val estacionesAnunciadas: StateFlow<Set<String>> = _estacionesAnunciadas.asStateFlow()
 
@@ -384,15 +390,21 @@ class TransporteLan @Inject constructor(
     }
 
     private fun txt(v: String) = LanTxt.construir(deviceId, v, isWiredConnection(), bootedAtMillis, _estacionesAnunciadas.value, hub != null,
-        if (preparationReceiver != null) 1 else 0, urgencyVersion, cajaConD = nombreCaja?.takeIf { cuentas != null })
+        if (preparationReceiver != null) 1 else 0, urgencyVersion, cajaConD = nombreCaja?.takeIf { cuentas != null }, presencia = hub != null)
 
     @Synchronized
     private fun publicarPeers() {
         val p = puerto
-        if (venueId == null || p <= 0) { _peers.value = emptyList(); return }
+        if (venueId == null || p <= 0) { publicar(emptyList()); return }
         val yo = LanPeer(deviceId, "127.0.0.1", p, isWiredConnection(), bootedAtMillis, _estacionesAnunciadas.value, hub != null,
-            if (preparationReceiver != null) 1 else 0, urgencyVersion)
-        _peers.value = listOf(yo) + ajenos + recordadas?.porTcp(ajenos).orEmpty()
+            if (preparationReceiver != null) 1 else 0, urgencyVersion, presencia = hub != null)
+        publicar(listOf(yo) + ajenos + recordadas?.porTcp(ajenos).orEmpty())
+    }
+
+    /** Sólo desde [publicarPeers] (sincronizado). El contador sube ANTES (Codex código r2 H2): nadie ve la elección nueva con el viejo. */
+    private fun publicar(nueva: List<LanPeer>) {
+        if (ArbiterElection.cambiaElArbitro(_peers.value, nueva)) eleccionesPublicadas.incrementAndGet()
+        _peers.value = nueva
     }
 
     private fun abrirSocket(preferido: Int?): Int? {
