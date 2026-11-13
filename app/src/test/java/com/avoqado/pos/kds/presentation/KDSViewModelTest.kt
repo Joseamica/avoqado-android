@@ -346,6 +346,14 @@ class KDSViewModelTest {
         coVerify(exactly = 1) { repo.reclamarImpresion("k2", any()) }
     }
 
+    /** Bloque 2: un Uber MANUAL sin aceptar no sale en papel desde la pantalla de cocina (sale al aceptarse). */
+    @Test
+    fun `la pantalla de cocina no imprime un pedido que falta aceptar`() = runTest {
+        armar(comandas = listOf(comanda("k1", 1_000, needsAcceptance = true, needsPrint = true)))
+
+        coVerify(exactly = 0) { repo.reclamarImpresion(any(), any()) }
+    }
+
     @Test
     fun `P1 M3 reabrir la pantalla no suena por lo que llego mientras estuvo cerrada`() = runTest {
         mockkStatic(RingtoneManager::class)

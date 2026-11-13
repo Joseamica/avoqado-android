@@ -333,15 +333,18 @@ class ComandaDispatcher @Inject constructor(
         /** Folios cuyo papel de respaldo NO se marca: van en más de un tiempo de la ronda ([despacharEnFondo], Codex 3.6 #1). */
         noMarcar: (String) -> Boolean = { false },
         /**
-         * «No lleva comanda» (10-nov): `true` SÓLO en las ventas del POS. Lo de estaciones creadas sin comanda no se rutea:
+         * «No lleva comanda» (10-nov): `true` en las ventas del POS. Lo de estaciones creadas sin comanda no se rutea:
          * si era todo, devuelve [EstadoDeComanda.SinComanda] sin papel, libreta ni entregas; si era una mezcla, sigue lo de
-         * siempre con lo demás. Uber/Rappi, pedidos en línea y el KDS llaman con `false` y no cambian. Va al final para no
-         * mover los argumentos posicionales de nadie.
+         * siempre con lo demás. Uber/Rappi (Bloque 2, 13-nov) lo prenden SÓLO cuando su ticket de empaque, que lleva esos
+         * renglones, ya imprimió, y siempre con `callarSinCocina = false` ([com.avoqado.pos.kds.data.ImpresionDeComandasDeReparto]).
+         * Pedidos en línea y el papel de la pantalla de cocina llaman con `false` y no cambian. Va al final para no mover los
+         * argumentos posicionales de nadie.
          */
         omitirSinComanda: Boolean = false,
         /**
-         * Reparto (Task 7): si es el id de una estación ACTIVA de la config usada, TODOS los renglones salen en UN solo plan a
-         * esa estación (el pedido de delivery no se reparte). Inexistente o inactiva se ignora y se rutea como siempre.
+         * Reparto (Task 7): si es el id de una estación ACTIVA y con comanda de la config usada, TODOS los renglones salen en
+         * UN solo plan a esa estación (el pedido de delivery no se reparte). Inexistente, inactiva o «Sin comanda» se ignora
+         * y se rutea como siempre.
          */
         estacionFija: String? = null,
         /**
