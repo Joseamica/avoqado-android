@@ -46,7 +46,8 @@ class CobroDeMesaAlGirarTest {
     @Test
     fun `el estado del cobro de la mesa sobrevive a recrear la Activity`() {
         val codigo = sinComentarios(leerFuente(PANTALLA))
-        for (variable in listOf("showPayment", "paymentSeedCents", "showSplitImporte", "pendingSplitConfig", "restanteConfirmado")) {
+        for (variable in listOf("showPayment", "paymentSeedCents", "showSplitImporte", "pendingSplitConfig", "restanteConfirmado",
+            "previousChargeNotice")) {
             assertTrue("$variable de la mesa no es rememberSaveable: girar el aparato lo pierde a media venta",
                 Regex("""var\s+$variable\s+by\s+rememberSaveable""").containsMatchIn(codigo))
         }
@@ -64,6 +65,8 @@ class CobroDeMesaAlGirarTest {
         assertTrue("cancelar «Dividir importe» no regresa la mesa a ORDERING",
             codigo.contains("onDismiss = { cerrarCobro() }"))
         assertTrue("el cobro no usa salidaTrasElRecibo", codigo.contains("salidaTrasElRecibo("))
+        assertTrue("cerrarCobro() de la composición que se fue al girar regresaría la sesión a ORDERING bajo el cobro restaurado",
+            codigo.contains("fun cerrarCobro() { if (!pantallaViva.get()) return"))
     }
 
     private companion object {

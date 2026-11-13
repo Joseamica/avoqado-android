@@ -27,16 +27,10 @@ internal enum class SalidaTrasElRecibo {
     /** Queda resto (pago parcial) o no consta un cobro: regresa a la cuenta por `cerrarCobro()` (ORDERING y relee). */
     CERRAR_COBRO,
 
-    /** Hoy: sólo se baja la bandera del cobro (la sesión se queda como esté). */
-    SOLO_OCULTAR,
-
     /** La mesa quedó pagada (ya se liberó al confirmar): regresa al plano. */
     SALIR_AL_PLANO,
 }
 
 /** `restanteConfirmado`: lo que el cobro confirmado dejó por pagar (null = no consta un cobro confirmado en esta pantalla). */
-internal fun salidaTrasElRecibo(restanteConfirmado: Int?): SalidaTrasElRecibo = when {
-    restanteConfirmado == null -> SalidaTrasElRecibo.SOLO_OCULTAR
-    restanteConfirmado == 0 -> SalidaTrasElRecibo.SALIR_AL_PLANO
-    else -> SalidaTrasElRecibo.CERRAR_COBRO
-}
+internal fun salidaTrasElRecibo(restanteConfirmado: Int?): SalidaTrasElRecibo =
+    if (restanteConfirmado == 0) SalidaTrasElRecibo.SALIR_AL_PLANO else SalidaTrasElRecibo.CERRAR_COBRO
