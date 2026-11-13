@@ -409,6 +409,41 @@ class AppStateVenueRecoveryTest {
         org.junit.Assert.assertTrue("esperaba el aviso de pendientes, llegó «$aviso»", aviso.contains("1 operación offline"))
     }
 
+    /** D34: el freno se queda, pero a un mesero no se le dice «resuélvela»: no puede «Marcar resuelta». */
+    @Test
+    fun `P1 un mesero con un cobro rechazado no cierra sesion y el aviso le dice que entre un gerente`() = runTest {
+        var cerro = false
+        val appState = createAppState(
+            true, {}, {}, {}, onOutboxStart = {},
+            configurarSesion = { every { clearSession() } answers { cerro = true } },
+            cobrosRechazados = 1,
+        )
+        advanceUntilIdle()
+
+        appState.onLogout()
+        advanceUntilIdle()
+
+        org.junit.Assert.assertFalse(cerro)
+        org.junit.Assert.assertEquals(
+            "Hay 1 operación rechazada por revisar. Pídele a un gerente que la resuelva: Más › Cambiar usuario.",
+            appState.sessionGuardMessage.value,
+        )
+    }
+
+    @Test
+    fun `P1 un gerente con un cobro rechazado sabe donde resolverlo`() = runTest {
+        val appState = createAppState(true, {}, {}, {}, onOutboxStart = {}, cobrosRechazados = 1, puedeResolver = true)
+        advanceUntilIdle()
+
+        appState.onLogout()
+        advanceUntilIdle()
+
+        org.junit.Assert.assertEquals(
+            "Hay 1 operación rechazada por revisar. Resuélvela en Ventas › Pendientes › «Otras operaciones y revisiones anteriores» antes de cerrar sesión.",
+            appState.sessionGuardMessage.value,
+        )
+    }
+
     @Test
     fun `onLogout limpia los ajustes y cancela el refresco`() = runTest {
         val refresco = RefrescoQueNoTermina()
@@ -502,6 +537,10 @@ class AppStateVenueRecoveryTest {
         savedCartsRepository: com.avoqado.pos.pos.data.SavedCartsRepository? = null,
         modo: MutableStateFlow<PosMode> = MutableStateFlow(PosMode.RETAIL),
         planManager: PlanManager = mockk(relaxed = true),
+        /** D34: cobros fallidos sin revisar (lo que `blockingWorkCount` suma y `sinEnviarCount` no). */
+        cobrosRechazados: Int = 0,
+        /** D34: ¿quien está puede «Marcar resuelta»? */
+        puedeResolver: Boolean = false,
     ): AppState {
         val secureStorage = storageReal ?: mockk<SecureStorage>(relaxed = true) {
             every { isLoggedIn } returns true
@@ -523,6 +562,10 @@ class AppStateVenueRecoveryTest {
             every { pendingCount } returns MutableStateFlow(0)
             every { failedCount } returns MutableStateFlow(0)
             every { start() } answers { onPaymentStart() }
+            coEvery { blockingWorkCount() } returns cobrosRechazados
+            coEvery { porRevisarCount() } returns cobrosRechazados
+            coEvery { porRevisarPorSucursal(any()) } returns PaymentSyncService.PorRevisar(cobrosRechazados, 0)
+            coEvery { sinEnviarCount() } returns 0
         }
         val syncOutbox = mockk<SyncOutbox>(relaxed = true) {
             every { pendingCount } returns MutableStateFlow(0)
@@ -554,7 +597,7 @@ class AppStateVenueRecoveryTest {
             secureStorage = secureStorage,
             authRepository = authRepository,
             timeEntryRepository = mockk<TimeEntryRepository>(relaxed = true),
-            roleManager = mockk<RoleManager>(relaxed = true),
+            roleManager = mockk<RoleManager>(relaxed = true) { every { canResolveQuarantine } returns puedeResolver },
             planManager = planManager,
             tpvSettingsRepository = tpvSettingsRepository,
             paymentSyncService = paymentSyncService,

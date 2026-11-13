@@ -262,6 +262,20 @@ class MoreMenuViewModel @Inject constructor(
                 // Retiro con gerente (H6): la cola del cajón sólo se manda con SU sucursal activa; cambiar dejaría el retiro atrás y,
                 // tras un cambio de persona, saldría a nombre de otra.
                 (currentVenueId?.let { cashDrawerRepository?.movimientosSinSubir(it) } ?: 0)
+            // D34: lo rechazado frena igual, pero el texto dice qué hacer según quién puede resolverlo.
+            val rechazadas = if (blocking > 0) {
+                com.avoqado.pos.auth.presentation.rechazadasPorRevisar(paymentSyncService, syncOutbox, pendingGrantQueue, currentVenueId)
+            } else {
+                null
+            }
+            val conRechazo = rechazadas?.total?.coerceAtMost(blocking) ?: 0
+            if (conRechazo > 0) {
+                _sessionGuardMessage.value = com.avoqado.pos.auth.presentation.textoDelFrenoConRechazos(
+                    blocking, conRechazo, roleManager.canResolveQuarantine, "cambiar de establecimiento",
+                    deOtraSucursal = rechazadas?.deOtraSucursal?.coerceAtMost(conRechazo) ?: 0,
+                )
+                return@launch
+            }
             if (blocking > 0) {
                 _sessionGuardMessage.value = if (blocking == 1) {
                     "Hay 1 operación offline pendiente o en conciliación. Resuélvela antes de cambiar de establecimiento."

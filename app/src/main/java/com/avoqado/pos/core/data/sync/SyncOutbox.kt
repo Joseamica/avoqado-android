@@ -763,7 +763,10 @@ class SyncOutbox @Inject constructor(
      * Lectura persistida usada por las guardas de cerrar sesión y cambiar de venue: lo que falta enviar ([sinEnviarCount]) más
      * lo rechazado, que tampoco se deja atrás sin resolver.
      */
-    suspend fun blockingWorkCount(venueId: String): Int = sinEnviarCount(venueId) + dao.rejectedCount(venueId)
+    suspend fun blockingWorkCount(venueId: String): Int = sinEnviarCount(venueId) + rechazadasCount(venueId)
+
+    /** Lo REJECTED de [venueId]: no vuelve a salir solo y lo resuelve un gerente (D34 lo cuenta aparte para el texto del freno). */
+    suspend fun rechazadasCount(venueId: String): Int = dao.rejectedCount(venueId)
 
     /**
      * Lo que todavía va a salir con la sesión abierta: PENDING + HELD — una ronda en vuelo (Task 7 review, 2026-09-28) también

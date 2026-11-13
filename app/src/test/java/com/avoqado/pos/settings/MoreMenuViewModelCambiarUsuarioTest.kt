@@ -133,11 +133,77 @@ class MoreMenuViewModelCambiarUsuarioTest {
             vm.switchVenue(StoredVenue(id = "otra-sucursal", name = "Sucursal Centro"))
 
             coVerify(exactly = 0) { auth.switchVenue(any()) }
-            assertTrue(vm.sessionGuardMessage.value.orEmpty().contains("1 operación offline"))
+            // D34: el freno sigue; el texto ya no le pide «resuélvela» a quien no puede (un mesero, por default).
+            assertEquals(
+                "Hay 1 operación rechazada por revisar. Pídele a un gerente que la resuelva: Más › Cambiar usuario.",
+                vm.sessionGuardMessage.value,
+            )
         }
     }
 
-    private fun construir(syncOutbox: SyncOutbox, pagos: PaymentSyncService): MoreMenuViewModel {
+    /** D34: lo rechazado se cuenta aparte de lo que sólo espera a la red, con la cola y los cobros de verdad. */
+    @Test
+    fun `P1 cambiar de sucursal con un cobro rechazado y una ronda sin enviar dice las dos cosas`() = runTest {
+        Q16PrecioCapturadoTest.Fixture().use { f ->
+            cobrosSinNada(f)
+            coEvery { f.dao.getFailedPayments() } returns listOf(cobroFallido())
+            val vm = construir(cola(pendientes = 1), f.service, puedeResolver = true)
+
+            vm.switchVenue(StoredVenue(id = "otra-sucursal", name = "Sucursal Centro"))
+
+            coVerify(exactly = 0) { auth.switchVenue(any()) }
+            assertEquals(
+                "Hay 2 operaciones pendientes: 1 operación rechazada por revisar y 1 más. Sincroniza o resuelve lo demás y " +
+                    "resuelve lo rechazado en Ventas › Pendientes › «Otras operaciones y revisiones anteriores» antes de cambiar de establecimiento.",
+                vm.sessionGuardMessage.value,
+            )
+        }
+    }
+
+    /**
+     * Codex r2 #2 y r3: un cobro fallido de OTRA sucursal frena (el freno es de todo el aparato). Al mesero se le dice lo mismo que con
+     * uno de aquí (lo resuelve un gerente); al gerente, que se resuelve con esa sucursal abierta (no lo vería en la pantalla de ésta).
+     */
+    @Test
+    fun `P1 un cobro fallido de otra sucursal, solo, al mesero y al gerente`() = runTest {
+        Q16PrecioCapturadoTest.Fixture().use { f ->
+            cobrosSinNada(f)
+            coEvery { f.dao.getFailedPayments() } returns listOf(cobroFallido().copy(venueId = "otra-sucursal"))
+
+            val mesero = construir(cola(), f.service)
+            mesero.switchVenue(StoredVenue(id = "sucursal-centro", name = "Sucursal Centro"))
+            assertEquals(
+                "Hay 1 operación rechazada por revisar. Pídele a un gerente que la resuelva: Más › Cambiar usuario.",
+                mesero.sessionGuardMessage.value,
+            )
+
+            val gerente = construir(cola(), f.service, puedeResolver = true)
+            gerente.switchVenue(StoredVenue(id = "sucursal-centro", name = "Sucursal Centro"))
+            assertEquals(
+                "Hay 1 operación rechazada por revisar. Resuélvela con su sucursal abierta, en Ventas › Pendientes › " +
+                    "«Otras operaciones y revisiones anteriores».",
+                gerente.sessionGuardMessage.value,
+            )
+        }
+    }
+
+    /** Sin nada rechazado, el texto de siempre. */
+    @Test
+    fun `cambiar de sucursal con solo una ronda sin enviar conserva su aviso`() = runTest {
+        Q16PrecioCapturadoTest.Fixture().use { f ->
+            cobrosSinNada(f)
+            val vm = construir(cola(pendientes = 1), f.service)
+
+            vm.switchVenue(StoredVenue(id = "otra-sucursal", name = "Sucursal Centro"))
+
+            assertEquals(
+                "Hay 1 operación offline pendiente o en conciliación. Resuélvela antes de cambiar de establecimiento.",
+                vm.sessionGuardMessage.value,
+            )
+        }
+    }
+
+    private fun construir(syncOutbox: SyncOutbox, pagos: PaymentSyncService, puedeResolver: Boolean = false): MoreMenuViewModel {
         val tpv = mockk<TpvSettingsRepository>(relaxed = true) {
             every { terminalNavigation } returns MutableStateFlow(TerminalNavigationSettings.DEFAULT)
         }
@@ -147,7 +213,7 @@ class MoreMenuViewModelCambiarUsuarioTest {
             timeEntryRepository = mockk(relaxed = true),
             printerService = mockk(relaxed = true),
             printConfigRepository = mockk(relaxed = true),
-            roleManager = mockk(relaxed = true),
+            roleManager = mockk(relaxed = true) { every { canResolveQuarantine } returns puedeResolver },
             planManager = mockk(relaxed = true),
             posModeManager = mockk(relaxed = true),
             addonsManager = mockk(relaxed = true),
