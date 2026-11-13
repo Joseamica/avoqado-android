@@ -689,6 +689,8 @@ class CobroRechazadoSinConfirmarTest {
     fun `P1 D53 lo retenido con motivo no cuenta como por revisar ni se resuelve solo`() = runTest {
         every { secureStorage.venueId } returns VENUE
         disco.filas["retenido"] = sinDuenio("retenido", marcada = true).copy(q15Reason = ConciliacionDelCobro.RESULTADO_NO_COMPROBADO)
+        // Codex D53 r2: una fila heredada SIN captura tampoco tiene salida («Sí se cobró» sólo la retiene).
+        disco.filas["sin-captura"] = sinDuenio("sin-captura", marcada = false).copy(q15CaptureJson = null)
 
         assertEquals(0, caja.enVueloPorRevisar())
         assertEquals(0, caja.enVueloQueSeResuelveSolo())
