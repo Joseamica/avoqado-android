@@ -98,4 +98,6 @@ data class CanalReparto(
     val proveedor: String,
     val pausado: Boolean,
     val pausadoHasta: String?,
+    /** `ACTIVE`, `PAUSED`, `PENDING` o `DISABLED` (servidor). Sólo `ACTIVE` y `PAUSED` pueden traer pedidos. */
+    val estado: String = "ACTIVE",
 )
