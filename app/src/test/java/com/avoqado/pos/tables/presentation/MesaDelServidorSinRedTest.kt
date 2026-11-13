@@ -16,6 +16,8 @@ import com.avoqado.pos.core.data.sync.TrabajoSinResolver
 import com.avoqado.pos.core.domain.PlanManager
 import com.avoqado.pos.core.util.ConnectivityMonitor
 import com.avoqado.pos.giftcards.data.CobrosLocalesDeLaCuenta
+import com.avoqado.pos.payment.data.CashPaymentRepository
+import com.avoqado.pos.payment.data.EfectivoDelPedido
 import com.avoqado.pos.printing.data.PrinterService
 import com.avoqado.pos.printing.routing.PrintConfig
 import com.avoqado.pos.printing.routing.PrintConfigRepository
@@ -24,6 +26,8 @@ import com.avoqado.pos.tables.data.AddOrderItemRequest
 import com.avoqado.pos.tables.data.AppliedOrderDiscount
 import com.avoqado.pos.tables.data.OrderDetail
 import com.avoqado.pos.tables.data.OrderDetailItem
+import com.avoqado.pos.tables.data.OrderDetailPayment
+import com.avoqado.pos.tables.data.PreBillBalance
 import com.avoqado.pos.tables.data.OrderDetailResponse
 import com.avoqado.pos.tables.data.TableRoundDraftStore
 import com.avoqado.pos.tables.data.TableServiceRepository
@@ -82,6 +86,12 @@ class MesaDelServidorSinRedTest {
     private val cobros = mockk<CobrosLocalesDeLaCuenta>()
     private var piloto = true
     private var cobroEnOtraCola = false
+    /** D45: el efectivo de la orden en la cola de COBROS de esta tablet (la regla de la bandeja); null = no se pudo leer. */
+    private val efectivoDeCobros = mockk<CashPaymentRepository>()
+    private var efectivoGuardado: EfectivoDelPedido? = EfectivoDelPedido.NINGUNO
+    /** D45: las filas de la orden en esa cola, por su llave y si ya subieron (la firma). */
+    private var cobrosGuardados: List<com.avoqado.pos.payment.domain.DineroDeLaOrden> = emptyList()
+    private fun abono(subido: Boolean) = listOf(com.avoqado.pos.payment.domain.DineroDeLaOrden("e:abono-50", 5000, esTarjeta = false, confirmado = subido))
 
     // MARK: - El servidor (la cuenta que conoce) y la red
 
@@ -186,13 +196,15 @@ class MesaDelServidorSinRedTest {
         }
         every { plan.concedidaPorAvoqado(TableOrderViewModel.CODIGO_PILOTO_SIN_RED) } answers { piloto }
         coEvery { cobros.hayPendiente(any(), any(), any(), any()) } answers { cobroEnOtraCola }
+        coEvery { efectivoDeCobros.efectivoDelPedido(any()) } answers { efectivoGuardado ?: throw IllegalStateException("disco") }
+        coEvery { efectivoDeCobros.cobrosDelPedido(any(), any()) } answers { cobrosGuardados }
         val config = mockk<PrintConfigRepository>(relaxed = true)
         every { config.getCurrentConfig() } returns PrintConfig()
         val connectivity = mockk<ConnectivityMonitor>(relaxed = true)
         every { connectivity.isConnected } answers { MutableStateFlow(conInternet) }
         return TableOrderViewModel(repository, session, config, mockk(relaxed = true), mockk<PrinterService>(relaxed = true), storage,
             outbox, mockk(relaxed = true), connectivity, mockk(relaxed = true), mockk(relaxed = true), mockk(relaxed = true), draftStore = drafts,
-            planManager = plan, fotos = fotos, cobrosLocales = cobros)
+            planManager = plan, fotos = fotos, cobrosLocales = cobros, efectivoEnColaDeCobros = efectivoDeCobros)
     }
 
     /** El mesero abre la mesa M1 (del servidor) desde el plano. */
@@ -245,6 +257,89 @@ class MesaDelServidorSinRedTest {
         assertFalse(subject.preparePagar())
         assertEquals(CUENTA_COBRADA_AQUI, subject.blockedNotice.value)
         assertFalse(session.current()!!.cobroSinRed)
+        subject.viewModelScope.cancel()
+    }
+
+    // MARK: - D45: un abono en efectivo que espera en la cola de COBROS (el SERVIDOR todavía no lo cuenta)
+
+    /** Mesa del servidor de $100 abierta y leída CON internet; piloto apagado (como en el ensayo general). */
+    private fun TestScope.mesaDeCien(): TableOrderViewModel {
+        piloto = false
+        abrir()
+        val subject = vm()
+        leer(subject)
+        ronda(subject, 10000)
+        leer(subject)
+        assertEquals(10000, (cuenta.total * 100).toInt())
+        return subject
+    }
+
+    @Test fun `P1 D45 un abono en la cola de cobros no deja cobrar el total y al subir se cobra el resto`() = runTest {
+        val subject = mesaDeCien()
+        // $50 en efectivo cuyo POST no llegó: espera en `pending_payments`. La cuenta se relee CON internet antes de que suba.
+        efectivoGuardado = EfectivoDelPedido.EN_COLA
+        cobrosGuardados = abono(subido = false)
+        leer(subject)
+        assertEquals("el servidor todavía no lo cuenta", 10000, subject.saldoDeMesa.porPagarCents)
+
+        assertFalse("no se cobran $100 a quien ya abonó $50", subject.preparePagar())
+        assertEquals(MESA_COBRO_SIN_SINCRONIZAR, subject.blockedNotice.value)
+        assertEquals(TableSession.Mode.ORDERING, session.current()!!.mode)
+        advanceUntilIdle() // el toque volvió a leer la cuenta: con el abono todavía en la cola
+
+        // Sube el abono: el SERVIDOR ya lo cuenta, pero la cuenta en pantalla es la que se leyó con el abono en la cola.
+        efectivoGuardado = EfectivoDelPedido.NINGUNO
+        cobrosGuardados = abono(subido = true)
+        cuenta = cuenta.copy(payments = listOf(OrderDetailPayment("pay-50", 50.0, 0.0, "COMPLETED")),
+            preBillBalance = PreBillBalance(10000, 5000, 5000))
+        assertFalse("esa lectura no se usa para cobrar: se vuelve a leer", subject.preparePagar())
+        assertEquals(CUENTA_SE_ACTUALIZA, subject.blockedNotice.value)
+        advanceUntilIdle()
+
+        assertTrue(subject.preparePagar())
+        assertEquals("el resto", 5000, session.current()!!.totalCents)
+        subject.viewModelScope.cancel()
+    }
+
+    /**
+     * Codex r1 #1: la lectura empieza con la cola vacía, el abono nace y SUBE mientras el SERVIDOR contesta la cuenta vieja ($100). Al tocar
+     * «Pagar» ya no hay nada en la cola, pero esa lectura no lo trae: no se cobra con ella, se vuelve a leer.
+     */
+    @Test fun `P1 D45 un abono que nace y sube durante la lectura no deja cobrar con la cuenta vieja`() = runTest {
+        val subject = mesaDeCien()
+        antesDelGet = {
+            antesDelGet = null
+            cobrosGuardados = abono(subido = true) // el GET contesta $100: el SERVIDOR registra el abono justo después
+        }
+        leer(subject)
+        cuenta = cuenta.copy(payments = listOf(OrderDetailPayment("pay-50", 50.0, 0.0, "COMPLETED")),
+            preBillBalance = PreBillBalance(10000, 5000, 5000))
+        assertEquals("la lectura se quedó con $100", 10000, subject.saldoDeMesa.porPagarCents)
+
+        assertFalse(subject.preparePagar())
+        assertEquals(CUENTA_SE_ACTUALIZA, subject.blockedNotice.value)
+        advanceUntilIdle()
+        assertTrue(subject.preparePagar())
+        assertEquals(5000, session.current()!!.totalCents)
+        subject.viewModelScope.cancel()
+    }
+
+    @Test fun `D45 un cobro por revisar o la cola sin leer no dejan cobrar la mesa`() = runTest {
+        val subject = mesaDeCien()
+        efectivoGuardado = EfectivoDelPedido.POR_REVISAR
+        assertFalse(subject.preparePagar())
+        assertEquals(MESA_COBRO_POR_REVISAR, subject.blockedNotice.value)
+
+        efectivoGuardado = null // la lectura de la cola truena: falla CERRADO
+        assertFalse(subject.preparePagar())
+        assertEquals(MESA_COBROS_SIN_LEER, subject.blockedNotice.value)
+        subject.viewModelScope.cancel()
+    }
+
+    @Test fun `D45 sin nada en la cola de cobros la mesa se cobra al primer toque`() = runTest {
+        val subject = mesaDeCien()
+        assertTrue(subject.preparePagar())
+        assertEquals(10000, session.current()!!.totalCents)
         subject.viewModelScope.cancel()
     }
 
