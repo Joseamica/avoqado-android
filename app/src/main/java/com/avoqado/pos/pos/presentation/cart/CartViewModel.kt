@@ -176,6 +176,26 @@ data class CartState(
     /** D2: el `discountId` del descuento del cliente que viaja con la venta (con monto); null si la venta no lo lleva. */
     val descuentoDelClienteQueViaja: String? get() = orderDiscount?.id?.takeIf { descuentoEsDelCliente && orderDiscountCents > 0 }
 
+    /**
+     * D4 (hz:f34960c5:D4): la venta lleva un descuento que pide la aprobación de un gerente (de cuenta, cupón o renglón). Sin
+     * «Aplicar descuentos en TPV», el PIN se pide al COBRAR, antes de crear la venta y de apartar el efectivo; sin red no se cobra
+     * con él. El SERVIDOR lo vuelve a revisar.
+     */
+    val pideAprobacionDeGerente: Boolean
+        get() = (orderDiscount?.pideAprobacion == true && orderDiscountCents > 0) ||
+            items.any { it.itemDiscountPideAprobacion && !it.itemDiscountId.isNullOrBlank() && !it.isCortesia }
+
+    /**
+     * D4: el id del descuento de CUENTA del catálogo. Viaja como etiqueta junto al importe (`discount`, que no cambia) para que el
+     * SERVIDOR revise con SU catálogo si pide aprobación y guarde quién la dio. Codex r2 #2: también cuando la foto del carrito dice
+     * que no la pide (el catálogo pudo cambiar después): manda el SERVIDOR. No para cupón (el servidor lo busca por su código),
+     * referido, descuento del cliente, cortesía ni manual (traen `source` o un id que no es del catálogo).
+     */
+    val descuentoDeCatalogoQueViaja: String?
+        get() = orderDiscount?.takeIf {
+            it.couponCode == null && it.source == null && orderDiscountCents > 0 && (it.pideAprobacion || ID_DEL_CATALOGO.matches(it.id))
+        }?.id
+
     /** D2: el token del PIN de ESE descuento, si lo hay. Va en el cuerpo de la venta, nunca en el encabezado ni en la llave. */
     val autorizacionQueViaja: String?
         get() = autorizacionDelDescuento?.takeIf { it.discountId == descuentoDelClienteQueViaja }?.token
@@ -385,6 +405,12 @@ const val PAQUETES_NO_PAGAR_DESPUES = "Los paquetes se cobran en el momento: no 
 /** hz:e0b12f00:D2: el «Descuento de la cuenta» deja los productos en $0 y quien cobra no puede dar cortesías. */
 const val CORTESIA_NO_PAGAR_DESPUES =
     "Este descuento deja la cuenta en \$0: es una cortesía. Cóbrala para que un gerente la autorice con su PIN, o quita el descuento."
+/** D4: el id de una fila del catálogo (cuid v1 del SERVIDOR). Los descuentos que arma la caja llevan prefijo (`manual_`, `cortesia_`…). */
+private val ID_DEL_CATALOGO = Regex("^c[a-z0-9]{24}$")
+
+/** D4: «Pagar después» con un descuento que pide aprobación, sin el permiso. */
+const val APROBACION_NO_PAGAR_DESPUES =
+    "Este descuento necesita la aprobación de un gerente. Cobra la venta para que la autorice con su PIN, o quita el descuento."
 fun pagarDespuesGuardadaSinRed(cliente: String) = "Sin conexión: la cuenta de $cliente quedó guardada en el aparato y se sube sola."
 fun pagarDespuesOtroImporte(cliente: String, registradoCents: Int, esperadoCents: Int) =
     "La cuenta de $cliente quedó por ${com.avoqado.pos.core.util.formatMoneyFromCents(registradoCents)}, " +
@@ -1576,6 +1602,7 @@ class CartViewModel @Inject constructor(
             itemDiscountValue = discount?.value,
             itemDiscountName = discount?.name,
             itemDiscountMax = discount?.maxDiscountAmount,
+            itemDiscountPideAprobacion = discount?.pideAprobacion == true,
             serviceCourse = immediateServiceCourse(),
             catalogAt = product.catalogAt,
         )
@@ -3145,6 +3172,8 @@ class CartViewModel @Inject constructor(
                 itemDiscountName = vivo?.name ?: savedItem.itemDiscountName,
                 // Con el descuento vivo a la mano su tope manda aunque sea null (el dueño pudo quitarlo).
                 itemDiscountMax = if (vivo != null) vivo.maxDiscountAmount else savedItem.itemDiscountMax,
+                // D4: lo dice el catálogo vivo; sin él (borrado o sin cargar) decide el SERVIDOR al crear la venta.
+                itemDiscountPideAprobacion = vivo?.pideAprobacion == true,
                 // El combo vuelve como combo: mismo `promotionInstanceId` y las
                 // mismas elecciones, o el carrito restaurado cobraría el 2x1
                 // como dos productos a precio de lista.
@@ -3270,6 +3299,9 @@ class CartViewModel @Inject constructor(
         // hz:e0b12f00:D2: una cuenta que queda en $0 es una cortesía; sin permiso la autoriza un gerente con su PIN al COBRAR (una deuda
         // de $0 no tiene nada que diferir, y su reenvío sin red se registraría sin PIN).
         venta.descuentoDeCuentaRegala && !com.avoqado.pos.core.domain.RoleManager(secureStorage).canCompOrders -> CORTESIA_NO_PAGAR_DESPUES
+        // D4: un descuento que pide aprobación, sin el permiso: el PIN del gerente no viaja en «Pagar después» (se pide al COBRAR).
+        venta.pideAprobacionDeGerente && !com.avoqado.pos.core.domain.RoleManager(secureStorage).canApproveDiscounts ->
+            APROBACION_NO_PAGAR_DESPUES
         // 🔴 D2 (spec punto 18): el descuento del cliente sin permiso ni PIN suficiente (carrito restaurado por otra sesión, cuenta que
         // creció) no se manda: ni en línea ni a la fila sin red, donde subiría con el descuento sin nadie que lo autorizara.
         !venta.puedeCrearOrdenConDescuentoDelCliente(customerId, puedeAplicarDescuentos()) ->
@@ -3317,6 +3349,8 @@ class CartViewModel @Inject constructor(
                 couponCode = venta.couponCode,
                 descuentoDelClienteId = venta.descuentoDelClienteQueViaja,
                 autorizacionDelDescuento = venta.autorizacionQueViaja,
+                descuentoDeCatalogoId = venta.descuentoDeCatalogoQueViaja,
+                descuentoDeCatalogoPideAprobacion = venta.orderDiscount?.pideAprobacion == true,
             )
             if (!OrderRepository.hasProductItems(request)) {
                 return ResultadoPagarDespues.Error("No hay productos válidos para crear la orden")
@@ -3324,7 +3358,8 @@ class CartViewModel @Inject constructor(
             // El carrito ya enseñó el total con el premio: la cuenta que queda abierta tiene que ser ésa (se canjea al crearla).
             val premio = venta.pendingStampRewardId?.takeIf { venta.premioAplica }
             // D5: el cupón, igual que el premio, sólo se aplica con el SERVIDOR enfrente: nunca a la fila de reenvío.
-            val sinFila = premio != null || venta.couponCode != null
+            // D4 (Codex r1 #5): igual un descuento que pide aprobación: sin red no entra para nadie.
+            val sinFila = premio != null || venta.couponCode != null || venta.pideAprobacionDeGerente
             val llave = venta.llavePagarDespues ?: "pay-later:${UUID.randomUUID()}"
             // La llave es de la venta desde ya: cualquier intento siguiente de ESTA venta la reusa (R2-2).
             _cartState.update { if (it.identidadDeVenta == venta.identidadDeVenta) it.copy(llavePagarDespues = llave) else it }
@@ -3487,7 +3522,12 @@ class CartViewModel @Inject constructor(
                         }
                     }
                     is DesenlacePagarDespues.SesionVencida -> d.mensaje
-                    else -> if (s.venta.pendingStampReward != null) PAGAR_DESPUES_PREMIO_SIN_RED else PAGAR_DESPUES_CUPON_SIN_RED
+                    else -> when {
+                        s.venta.pendingStampReward != null -> PAGAR_DESPUES_PREMIO_SIN_RED
+                        s.venta.couponCode != null -> PAGAR_DESPUES_CUPON_SIN_RED
+                        // D4: el descuento que pide aprobación tampoco se deja en la fila sin red.
+                        else -> com.avoqado.pos.payment.data.model.DESCUENTO_CON_APROBACION_SIN_RED
+                    }
                 },
             )
         }

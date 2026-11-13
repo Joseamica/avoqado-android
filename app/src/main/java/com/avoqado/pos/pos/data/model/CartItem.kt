@@ -86,6 +86,8 @@ data class CartItem(
     var itemDiscountName: String? = null,
     /** D13: el descuento máximo del catálogo (pesos) congelado junto al resto de la foto. `null` = sin tope (carritos viejos). */
     var itemDiscountMax: Double? = null,
+    /** D4: ese descuento pide la aprobación de un gerente ([com.avoqado.pos.pos.data.model.Discount.pideAprobacion]). */
+    var itemDiscountPideAprobacion: Boolean = false,
     /**
      * Venta por peso (báscula): kg con 3 decimales. Cuando está presente, [unitPrice] es el precio
      * POR KG en centavos, [quantity] queda fija en 1 y el total de línea = round(weightKg × unitPrice)

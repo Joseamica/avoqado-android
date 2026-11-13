@@ -562,14 +562,27 @@ class TableServiceRepository @Inject constructor(
         }.onFailure { Log.e(TAG, "❌ splitOrder failed: ${it.message}") }
     }
 
-    /** Aplica un descuento de catálogo (scope ORDER) a la cuenta abierta. */
-    suspend fun applyOrderDiscount(venueId: String, orderId: String, discountId: String): Result<Unit> = runCatching {
-        apiService.applyOrderDiscount(venueId, orderId, ApplyOrderDiscountRequest(discountId))
-        Unit
-    }.orQueueOffline(venueId, "APPLY_DISCOUNT", Unit) {
-        putOrderRef(orderId)
-        put("discountId", kotlinx.serialization.json.JsonPrimitive(discountId))
-    }.onFailure { Log.e(TAG, "❌ applyOrderDiscount failed: ${it.message}") }
+    /**
+     * Aplica un descuento de catálogo (scope ORDER) a la cuenta abierta.
+     *
+     * D4 (hz:f34960c5:D4): uno que pide la aprobación de un gerente ([pideAprobacion]) NUNCA se encola: sin red no hay PIN y la cola
+     * lo subiría sin aprobar. Si la red falla, el fallo sube tal cual (la pantalla lo dice); en línea, el 403 `overridable` abre el
+     * teclado del PIN en el `ForbiddenInterceptor` y reintenta.
+     */
+    suspend fun applyOrderDiscount(venueId: String, orderId: String, discountId: String, pideAprobacion: Boolean = false): Result<Unit> {
+        val enLinea = runCatching {
+            apiService.applyOrderDiscount(venueId, orderId, ApplyOrderDiscountRequest(discountId))
+            Unit
+        }
+        val resultado = if (pideAprobacion) enLinea else enLinea.orQueueOffline(venueId, "APPLY_DISCOUNT", Unit) {
+            putOrderRef(orderId)
+            put("discountId", kotlinx.serialization.json.JsonPrimitive(discountId))
+        }
+        return resultado.onFailure { Log.e(TAG, "❌ applyOrderDiscount failed: ${it.message}") }
+    }
+
+    /** D4: ¿el fallo fue de red? (para decir «necesita internet» en vez de un error genérico). */
+    fun esFalloDeRed(e: Throwable): Boolean = isNetworkError(e)
 
     /** Quita un descuento aplicado de la cuenta. */
     suspend fun removeOrderDiscount(venueId: String, orderId: String, orderDiscountId: String): Result<Unit> = runCatching {

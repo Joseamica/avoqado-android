@@ -122,6 +122,10 @@ internal const val CUENTA_SIN_LEER_ESPERA = CUENTA_SIN_LEER + ": espera a que vu
 
 private const val IMPORTE_RONDA_FUERA_DE_LIMITE = "El importe de esta ronda excede el límite de la cuenta. Ajusta la ronda antes de enviarla."
 
+/** D4 (hz:f34960c5:D4): un descuento que pide la aprobación de un gerente no se aplica sin red (no hay PIN ni se encola). */
+internal const val DESCUENTO_CON_APROBACION_SIN_RED_MESA =
+    "Sin conexión: este descuento necesita internet para que lo apruebe un gerente. Aplícalo cuando vuelva la red."
+
 /** No changes to Cart formulas: reject nonrepresentable intermediates before reading its Int total. */
 internal fun valorRondaSinRedComprobado(items: List<CartItem>): Int = items.fold(0) { total, item ->
     val line = if (item.isCortesia) 0 else {
@@ -1531,15 +1535,30 @@ class TableOrderViewModel @Inject constructor(
         }
     }
 
-    /** Aplica un descuento de catálogo (ORDER) al cheque. */
-    fun applyDiscount(discountId: String) {
+    /**
+     * Aplica un descuento de catálogo (ORDER) al cheque.
+     *
+     * D4 (hz:f34960c5:D4): uno que pide la aprobación de un gerente ([pideAprobacion]) necesita internet para todos: sin red no se
+     * encola ni dice «Descuento aplicado». En línea, sin el permiso, el SERVIDOR contesta 403 `overridable` y el teclado del PIN se
+     * abre solo; sólo un 2xx dice «Descuento aplicado».
+     */
+    fun applyDiscount(discountId: String, pideAprobacion: Boolean = false) {
         val session = tableSession.current() ?: return
         val vId = venueId ?: return
         bloqueoDeSaldo(vId, session)?.let { showBlockedReason(it); return }
+        if (pideAprobacion && !connectivityMonitor.isConnected.value) {
+            showError(DESCUENTO_CON_APROBACION_SIN_RED_MESA)
+            return
+        }
         viewModelScope.launch {
-            mutarCuenta(vId, session) { mutar { repository.applyOrderDiscount(vId, session.orderId, discountId)  }}.fold(
+            mutarCuenta(vId, session) { mutar { repository.applyOrderDiscount(vId, session.orderId, discountId, pideAprobacion) }}.fold(
                 onSuccess = { _actionMessage.value = "Descuento aplicado"; repository.refresh(vId) },
-                onFailure = { e -> showError(com.avoqado.pos.core.data.network.ServerErrorText.humanize(e, "No se pudo aplicar el descuento")) },
+                onFailure = { e ->
+                    showError(
+                        if (pideAprobacion && repository.esFalloDeRed(e)) DESCUENTO_CON_APROBACION_SIN_RED_MESA
+                        else com.avoqado.pos.core.data.network.ServerErrorText.humanize(e, "No se pudo aplicar el descuento"),
+                    )
+                },
             )
         }
     }

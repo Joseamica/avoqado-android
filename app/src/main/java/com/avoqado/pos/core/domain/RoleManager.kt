@@ -399,6 +399,13 @@ class RoleManager @Inject constructor(
     val canApplyDiscounts: Boolean
         get() = hasVenuePermission("discounts:apply", fallbackRoles = PISO_DE_DESCUENTOS)
 
+    /**
+     * D4 (hz:f34960c5:D4): aprobar un % o fijo con «Requiere aprobación» (`tpv-orders:discount`, «Aplicar descuentos en TPV»; de
+     * fábrica gerente, admin y dueño). Sin él la app pide el PIN de un gerente; el juez sigue siendo el SERVIDOR.
+     */
+    val canApproveDiscounts: Boolean
+        get() = hasVenuePermission("tpv-orders:discount", fallbackRoles = MANAGER_UP)
+
     /** Membership tiles are optional and must not trigger a forbidden request. */
     val canReadCreditPacks: Boolean
         get() = hasVenuePermission("creditPacks:read")
