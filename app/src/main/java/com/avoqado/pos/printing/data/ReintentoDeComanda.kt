@@ -43,6 +43,11 @@ sealed interface EstadoDeComanda {
          * Sigue siendo `NoSalio` —cero intentos nunca es éxito—, pero el mostrador no lo avisa: sin cocina no hay comanda.
          */
         val sinImpresoraDeCocina: Boolean = false,
+        /**
+         * `true` si, sumando TODOS los intentos, al menos un plan salió en papel. Distingue «no salió nada» (se puede
+         * soltar y que otro aparato lo intente) de «salió una parte» (soltarlo repetiría lo que ya salió).
+         */
+        val algoSalio: Boolean = false,
     ) : EstadoDeComanda
 }
 
@@ -184,6 +189,8 @@ class ReintentoDeComanda @Inject constructor(
         // auditoría de Codex, 2026-09-07).
         val saltadas = LinkedHashSet<String>(saltadasPrevias).apply { addAll(ultimo.skippedStations) }
         var intentos = 1
+        // Las HOJAS que salieron en cualquier intento (no planes: uno que muere en la copia 2 de 2 ya dejó papel): el veredicto sólo ve el último, que lleva únicamente lo que tronó.
+        var hojas = ultimo.hojas
 
         while (ultimo.failedPlans.isNotEmpty() && intentos < maxIntentos) {
             val paso = PoliticaDeReintento.siguientePaso(intentos)
@@ -201,6 +208,7 @@ class ReintentoDeComanda @Inject constructor(
                 pendientes, config, orderNumber, orderType, serverName, comboNames, copiasQueFaltan, encabezado,
             )
             saltadas += ultimo.skippedStations
+            hojas += ultimo.hojas
             intentos++
         }
 
@@ -215,6 +223,7 @@ class ReintentoDeComanda @Inject constructor(
                 // «La impresora no respondió» sería mentira. Con una falla real, la causa real.
                 causa = if (ultimo.failedPlans.isEmpty()) CAUSA_SIN_IMPRESORA else ultimo.lastError,
                 orderNumber = orderNumber,
+                algoSalio = hojas > 0,
                 // 🔴 SÓLO lo que TRONÓ. Un plan saltado no tiene impresora: reenviarlo no le
                 // inventa una, y meterlo aquí haría que el botón prometa algo imposible.
                 trabajo = ultimo.failedPlans.takeIf { it.isNotEmpty() }?.let {

@@ -98,7 +98,13 @@ class KDSViewModel @Inject constructor(
     private val ticketsLocales: KdsTicketsLocalesStore,
     private val preparationRepository: com.avoqado.pos.kds.data.KitchenPreparationRepository? = null,
     private val preparationDelivery: com.avoqado.pos.kds.data.PreparationDeliveryService? = null,
+    // La pieza que imprime los pedidos de reparto desde cualquier pantalla; null = la propia de este ViewModel.
+    impresionCompartida: com.avoqado.pos.kds.data.ImpresionDeComandasDeReparto? = null,
 ) : ViewModel() {
+
+    private val impresion = impresionCompartida ?: com.avoqado.pos.kds.data.ImpresionDeComandasDeReparto(
+        kdsRepository, comandaDispatcher, printConfigRepository, syncOutbox,
+    )
 
     data class BoardPaging(val offset: Int = 0, val total: Int? = null, val nextOffset: Int? = null, val loading: Boolean = false, val count: Int = 0)
     private val _boardPaging = MutableStateFlow(BoardPaging())
@@ -299,7 +305,7 @@ class KDSViewModel @Inject constructor(
                 guardarFoto()
                 publicar(desdeServidor = true)
                 // Después de publicar: la cocina ve el pedido primero, el papel sale enseguida.
-                viewModelScope.launch { imprimirComandasPendientes(delServidor.filterNot { it.id in bumpsVigentes() }) }
+                viewModelScope.launch { impresion.imprimirPendientes(delServidor.filterNot { it.id in bumpsVigentes() }) }
                 // Ronda 1: la copia del servidor gana también en el disco. La local pendiente de estos folios sobra; si se
                 // quedara, al terminarla en línea (aquí u otra pantalla) el servidor deja de mandarla y resucitaba.
                 // I1 (revisión T8): también los de la lectura ANTERIOR — si la copia del WiFi llegó después de la lectura
@@ -736,110 +742,6 @@ class KDSViewModel @Inject constructor(
                 .onSuccess { refrescarTablero() }
                 .onFailure { e -> _aviso.value = AvisoDeCocina(e.message ?: "No se pudo rechazar el pedido", esError = true) }
         }
-    }
-
-    /**
-     * Saca en papel las comandas que llegaron SOLAS y que nadie ha impreso.
-     *
-     * 🔴 Primero se RECLAMA en el servidor y sólo el ganador imprime. Un pedido de
-     * marketplace aparece a la vez en todas las pantallas de cocina: sin árbitro, las tres
-     * tablets del local sacan el mismo papel tres veces.
-     *
-     * Si la impresión falla se SUELTA en el acto, para que otro aparato lo intente sin
-     * esperar a que caduque la reclamación. Una tablet sin papel no puede dejar a la cocina
-     * sin enterarse del pedido.
-     */
-    private suspend fun imprimirComandasPendientes(pedidos: List<KDSOrder>) {
-        val pendientes = pedidos.filter { it.needsPrint }
-        if (pendientes.isEmpty()) return
-
-        val deviceId = runCatching { syncOutbox.get().deviceId }.getOrNull() ?: return
-        val venueId = kdsRepository.venueIdActual()
-
-        for (pedido in pendientes) {
-            if (!kdsRepository.reclamarImpresion(pedido.id, deviceId)) continue
-
-            val lineas = pedido.items.map { item ->
-                RoutableItem(
-                    orderItemId = item.id,
-                    productId = item.productId,
-                    categoryId = item.categoryId,
-                    productName = item.productName,
-                    quantity = item.quantity,
-                    modifiers = item.modifiers,
-                    notes = item.notes,
-                )
-            }
-
-            // 🔴 «No lanzó excepción» NO es «imprimió». `dispatch` NUNCA lanza ante un fallo de
-            // impresora: devuelve el estado. Con `.isSuccess` el KDS mandaba `confirm-print`
-            // sobre una comanda que no salió, y eso IMPIDE que otra tablet la recoja — el pedido
-            // se pierde con la reclamación consumida (P1 #11 de la auditoría de Codex).
-            val estadoDeLaComanda = runCatching {
-                comandaDispatcher.dispatch(
-                    venueId = venueId,
-                    lines = lineas,
-                    orderNumber = pedido.orderNumber,
-                    orderType = "Delivery",
-                    // 🔴 SIN reintento: a diferencia del mostrador, el KDS SÍ tiene tablets
-                    // hermanas que pueden tomar este pedido si esta impresora no lo saca. Con
-                    // el default (~1 min) la reclamación se quedaría retenida todo ese tiempo
-                    // en vez de soltarse en segundos (`release-print`, abajo) para que otro
-                    // aparato la reclame — comportamiento EXACTO de antes del reintento.
-                    maxIntentos = 1,
-                    // «La libreta» (Task 16) — el id REAL de la orden, ya presente en el pedido
-                    // (KDSRepository lo llena del JSON del server); sin él, «la libreta» caía al
-                    // orderNumber para armar el eventId, correcto pero menos preciso que el id real.
-                    orderId = pedido.orderId,
-                )
-            }.getOrNull()
-            val ok = laComandaSalio(estadoDeLaComanda)
-
-            // El ticket de EMPAQUE: el pedido completo en UNA hoja, para quien mete todo en
-            // la bolsa y se la da al repartidor. No es una comanda —esas dicen qué cocinar y
-            // cada estación ve sólo su parte—: es la lista de verificación de la bolsa. En
-            // una mesa el mesero lleva los platos y ve al cliente; aquí, si falta una salsa
-            // el cliente se entera en su casa, y eso acaba en reembolso.
-            //
-            // Sólo si el negocio marcó una estación de empaque. Si no marcó ninguna, no sale
-            // nada extra: no le cambiamos el papeleo a quien no lo pidió.
-            if (ok) imprimirTicketDeEmpaque(pedido, lineas)
-
-            kdsRepository.marcarImpresion(pedido.id, deviceId, if (ok) "confirm-print" else "release-print")
-            if (!ok) Log.e(TAG, "No se pudo imprimir la comanda ${pedido.orderNumber}; soltada para que otro aparato lo intente")
-        }
-    }
-
-    private suspend fun imprimirTicketDeEmpaque(pedido: KDSOrder, lineas: List<RoutableItem>) {
-        val config = printConfigRepository.getCurrentConfig()
-        val estacion = config.packingStationId ?: return
-
-        // UN solo plan con TODOS los renglones, dirigido a la estación de empaque. Se arma
-        // aquí en vez de rutear, justamente porque el punto es que NO se reparta.
-        val plan = TicketPlan(
-            stationId = estacion,
-            unrouted = false,
-            lines = lineas.map { l ->
-                ConsolidatedLine(
-                    productName = l.productName,
-                    quantity = l.quantity,
-                    modifiers = l.modifiers,
-                    notes = l.notes,
-                    orderItemIds = listOf(l.orderItemId),
-                )
-            },
-        )
-
-        runCatching {
-            comandaPrinter.printComandas(
-                plans = listOf(plan),
-                config = config,
-                orderNumber = pedido.orderNumber,
-                // Lo que se lee ARRIBA del papel. Tiene que gritar que es para empacar, no
-                // otra comanda de cocina.
-                orderType = "EMPAQUE · Delivery",
-            )
-        }.onFailure { Log.e(TAG, "No se pudo imprimir el ticket de empaque de ${pedido.orderNumber}: ${it.message}") }
     }
 
     private suspend fun fetchCanalesReparto() {
