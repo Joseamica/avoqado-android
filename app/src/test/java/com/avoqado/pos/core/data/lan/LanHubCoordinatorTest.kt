@@ -57,7 +57,6 @@ class LanHubCoordinatorTest {
         val outcome = coordinator.acquire("mesa-5", "s1", "Juan")
 
         assertTrue(outcome is LeaseOutcome.Granted)
-        assertEquals(1L, (outcome as LeaseOutcome.Granted).lease.epoch)
         assertEquals(setOf("mesa-5"), coordinator.myTables.value)
     }
 

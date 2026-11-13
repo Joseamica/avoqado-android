@@ -138,7 +138,7 @@ class LanHubCoordinator(
             } else {
                 heldLeases[tableId] = lease
                 _myTables.value = heldLeases.keys.toSet()
-                LeaseOutcome.Granted(lease)
+                LeaseOutcome.Granted
             }
         }
         LeaseProtocol.STATUS_DENIED -> LeaseOutcome.Taken(response.holder?.holderName ?: "otro mesero")
@@ -191,7 +191,7 @@ class LanHubCoordinator(
 
 /** Qué hacer en la UI después de pedir una mesa. */
 sealed class LeaseOutcome {
-    data class Granted(val lease: TableLease) : LeaseOutcome()
+    data object Granted : LeaseOutcome()
 
     /** Otro mesero la tiene. [holderName] se muestra tal cual. */
     data class Taken(val holderName: String) : LeaseOutcome()
