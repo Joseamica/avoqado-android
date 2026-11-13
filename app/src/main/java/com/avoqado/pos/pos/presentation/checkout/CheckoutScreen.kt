@@ -387,6 +387,16 @@ fun CheckoutScreen(
     // después de `chargingAgainstOrderId` y `pendingPackGrant`. Ver
     // `CartViewModel.selectedCustomer`.
     val selectedCustomer by cartViewModel.selectedCustomer.collectAsState()
+    // D2: el aviso del descuento del cliente (sin permiso, otro descuento, combo, tope o sin red).
+    val avisoDescuentoDelCliente by cartViewModel.avisoDescuentoDelCliente.collectAsState()
+    val accionDescuentoDelCliente: (com.avoqado.pos.pos.presentation.cart.AvisoDescuentoDelCliente.Accion) -> Unit = { accion ->
+        when (accion) {
+            com.avoqado.pos.pos.presentation.cart.AvisoDescuentoDelCliente.Accion.PEDIR_AUTORIZACION ->
+                cartViewModel.pedirAutorizacionDelDescuento()
+            com.avoqado.pos.pos.presentation.cart.AvisoDescuentoDelCliente.Accion.USAR_EL_DEL_CLIENTE ->
+                cartViewModel.usarDescuentoDelCliente()
+        }
+    }
     // Los sellos del cliente de la venta, junto a su nombre: se lean como se haya elegido (lista, escáner o carrito guardado).
     val sellosViewModel: com.avoqado.pos.customers.presentation.CustomerStampsViewModel =
         hiltViewModel(key = "sellos-del-carrito")
@@ -547,6 +557,9 @@ fun CheckoutScreen(
     fun proceedToPayment(cart: CartState = cartViewModel.cartState.value) {
         // Codex iOS r3 #1: mientras «Pagar después» manda esta venta, no se cobra (botón, F12, upsell, dividir).
         if (cartViewModel.detenerPorPagarDespues()) return
+        // 🔴 D2 (spec punto 18): el descuento del cliente sin permiso ni PIN suficiente (carrito restaurado por otra sesión, cuenta que
+        // creció tras el PIN) no llega al cobro: lo dice con el texto del 403. Todos los caminos al cobro pasan por aquí.
+        if (!isTablePaying && cartViewModel.detenerCobroPorDescuentoDelCliente()) return
         // Mientras se consulta un código leído, el cobro no se abre: lo leído entra ANTES de fotografiar el carrito, y un
         // vale no queda en la sesión de vales sin cobrarse. Lo cuenta el CARRITO, que sobrevive a que esta pantalla se
         // recree (pendientes, Codex r2 #1 a r4 #1). Es una fracción de segundo; el siguiente «Cobrar» ya abre. Todos los
@@ -906,6 +919,9 @@ fun CheckoutScreen(
                         },
                         onRemoveStampReward = { cartViewModel.setPendingStampReward(null) },
                         premioEditable = cartViewModel.puedeCambiarPremio(),
+                        avisoDescuentoDelCliente = avisoDescuentoDelCliente,
+                        onQuitarDescuentoDelCliente = cartViewModel::quitarDescuentoDelCliente,
+                        onAccionDescuentoDelCliente = accionDescuentoDelCliente,
                         onSplitPayment = {
                             // Codex iOS r3 #1: mientras «Pagar después» manda esta venta, no se divide.
                             if (cartViewModel.detenerPorPagarDespues()) Unit
@@ -1339,6 +1355,9 @@ fun CheckoutScreen(
             },
             onRemoveStampReward = { cartViewModel.setPendingStampReward(null) },
             premioEditable = cartViewModel.puedeCambiarPremio(),
+            avisoDescuentoDelCliente = avisoDescuentoDelCliente,
+            onQuitarDescuentoDelCliente = cartViewModel::quitarDescuentoDelCliente,
+            onAccionDescuentoDelCliente = accionDescuentoDelCliente,
             onSplitPayment = {
                 // Membresías grant only on FULL payment — mismo guard que en tablet.
                 if (cartViewModel.detenerPorPagarDespues()) {
@@ -1648,6 +1667,17 @@ fun CheckoutScreen(
         )
     }
 
+    // D2: el descuento del cliente se quitó por otro, o el cobro se frenó sin permiso ni PIN suficiente (texto del 403).
+    val avisoDeDescuento by cartViewModel.avisoDeDescuento.collectAsState()
+    avisoDeDescuento?.let { aviso ->
+        AvoqadoWarningToast(
+            message = "Descuento del cliente",
+            subtitle = aviso,
+            durationMs = 6000L,
+            onDismiss = cartViewModel::consumeAvisoDeDescuento,
+        )
+    }
+
     // D13 (IVA por producto, plan 7a): un carrito guardado que sumaba impuesto aparte se restauró sin él. Aviso ámbar, nunca bloqueo.
     val avisoDelCarrito by cartViewModel.avisoDelCarrito.collectAsState()
     avisoDelCarrito?.let { aviso ->
@@ -1910,6 +1940,7 @@ fun CheckoutScreen(
                 restaurarVenta = { foto -> if (cartViewModel.restaurarFoto(foto)) cartViewModel.getCartForPayment() else null },
                 registrarRecuperacionDeFoto = cartViewModel::observarRestauracionDeFoto,
                 alRestaurarSnapshot = { paymentCartSnapshot = it.paymentSnapshot() },
+                alFrenarPorDescuentoDelCliente = cartViewModel::releerAvisoDelDescuento,
                 pruebaPreseleccionada = tarjetaPreseleccionada,
                 onCuentaConSaldo = { id ->
                     showPaymentFlow = false; cartViewModel.cerrarCobro(); paymentCartSnapshot = null
@@ -2251,7 +2282,9 @@ fun CheckoutScreen(
                     viewModel = customersViewModel,
                     onCustomerSelected = { customer ->
                         val fromPayLater = customerSelectionContext == CustomerSelectionContext.PAY_LATER
-                        cartViewModel.setSelectedCustomer(customer.id, customer.fullName)
+                        // D2 (spec r4 #1): el cliente TAL COMO llegó de la lista, con su descuento; nunca se vuelve a buscar en la
+                        // memoria de clientes, que deja de guardar a los 500.
+                        cartViewModel.setSelectedCustomer(customer)
                         showCustomersSheet = false
                         showCreateCustomer = false
                         if (fromPayLater) {
@@ -2478,6 +2511,9 @@ private fun IPhoneCartSheet(
     onSplitPayment: () -> Unit,
     onRemoveStampReward: () -> Unit,
     premioEditable: Boolean,
+    avisoDescuentoDelCliente: com.avoqado.pos.pos.presentation.cart.AvisoDescuentoDelCliente?,
+    onQuitarDescuentoDelCliente: () -> Unit,
+    onAccionDescuentoDelCliente: (com.avoqado.pos.pos.presentation.cart.AvisoDescuentoDelCliente.Accion) -> Unit,
     customerName: String? = null,
     customerId: String? = null,
     onCustomerTap: () -> Unit = {},
@@ -2562,6 +2598,9 @@ private fun IPhoneCartSheet(
                 onSplitPayment = onSplitPayment,
                 onRemoveStampReward = onRemoveStampReward,
                 premioEditable = premioEditable,
+                avisoDescuentoDelCliente = avisoDescuentoDelCliente,
+                onQuitarDescuentoDelCliente = onQuitarDescuentoDelCliente,
+                onAccionDescuentoDelCliente = onAccionDescuentoDelCliente,
                 referralCode = referralCode,
                 referralUiState = referralUiState,
                 customerSelectedForReferral = customerSelectedForReferral,

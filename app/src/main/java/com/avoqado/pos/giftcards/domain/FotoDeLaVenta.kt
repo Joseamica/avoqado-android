@@ -25,6 +25,10 @@ data class FotoDeLaVenta(
     val llavePagarDespues: String? = null,
     val clienteId: String? = null,
     val clienteNombre: String? = null,
+    /** D2: el descuento que el negocio le asignó al cliente, el PIN del gerente (token y tope) y los clientes quitados en esta venta. */
+    val clienteDescuento: com.avoqado.pos.customers.data.model.DescuentoDelCliente? = null,
+    val autorizacionDelDescuento: AutorizacionDelDescuento? = null,
+    val descuentosDeClienteQuitados: Set<String> = emptySet(),
 )
 
 fun CartState.aFoto(cliente: CartViewModel.SelectedCustomer?): FotoDeLaVenta = FotoDeLaVenta(
@@ -36,6 +40,8 @@ fun CartState.aFoto(cliente: CartViewModel.SelectedCustomer?): FotoDeLaVenta = F
     reservationId = reservationId, carritoGuardadoId = carritoGuardadoId, vinoDeCarritoGuardado = vinoDeCarritoGuardado,
     descuentoDeCuentaCongelado = descuentoDeCuentaCongelado?.copy(huellas = descuentoDeCuentaCongelado.huellas.toMap()),
     creacionIncierta = creacionIncierta, llavePagarDespues = llavePagarDespues, clienteId = cliente?.id, clienteNombre = cliente?.name,
+    clienteDescuento = cliente?.descuentoDelCliente, autorizacionDelDescuento = autorizacionDelDescuento,
+    descuentosDeClienteQuitados = descuentosDeClienteQuitados.toSet(),
 )
 
 fun FotoDeLaVenta.aCartState(): CartState = CartState(
@@ -47,4 +53,5 @@ fun FotoDeLaVenta.aCartState(): CartState = CartState(
     reservationId = reservationId, carritoGuardadoId = carritoGuardadoId, vinoDeCarritoGuardado = vinoDeCarritoGuardado,
     descuentoDeCuentaCongelado = descuentoDeCuentaCongelado?.copy(huellas = descuentoDeCuentaCongelado.huellas.toMap()),
     creacionIncierta = creacionIncierta, llavePagarDespues = llavePagarDespues,
+    autorizacionDelDescuento = autorizacionDelDescuento, descuentosDeClienteQuitados = descuentosDeClienteQuitados.toSet(),
 )

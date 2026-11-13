@@ -63,6 +63,10 @@ class TablesViewModel @Inject constructor(
     private val cashDrawerRepository: com.avoqado.pos.cashdrawer.data.CashDrawerRepository,
     /** D5 · B2b (piloto): sin red, una mesa del servidor se cobra desde su cuenta (la foto vive ahí), no desde el plano. */
     private val connectivityMonitor: com.avoqado.pos.core.util.ConnectivityMonitor? = null,
+    /** D6: las cajas que se ven por el WiFi (sólo lectura, para [avisoDeIsla]). */
+    private val transporteLan: com.avoqado.pos.core.data.lan.TransporteLan? = null,
+    /** D6: el disco de las cajas recordadas del D12 (sólo lectura, para [avisoDeIsla]). */
+    private val payloadCache: com.avoqado.pos.core.data.local.PayloadCache? = null,
 ) : ViewModel() {
 
     private var generacion = 0L
@@ -156,6 +160,24 @@ class TablesViewModel @Inject constructor(
                 SharingStarted.WhileSubscribed(5_000),
                 FloorLayoutBuilder.build(repository.tables.value, floorPlanRepository.plan.value, repository.floorPlanVersionFromTables),
             )
+    }
+
+    /**
+     * D6 (hz:e5ee98bc:D6): «este aparato no ve a las otras cajas por el WiFi» ([AvisoDeIsla]). Sólo lo pinta el plano: ningún botón
+     * lo lee. Perezoso y sólo mientras alguien lo mira, como [layout] (Cobrar y la cuenta también crean este ViewModel).
+     */
+    val avisoDeIsla: StateFlow<Boolean> by lazy {
+        val transporte = transporteLan
+        val cache = payloadCache
+        if (transporte == null || cache == null) return@lazy MutableStateFlow(false).asStateFlow()
+        // Codex r1 #5: `replayExpirationMillis = 0` ⇒ al detenerse vuelve a «sin línea»; al regresar al plano no se entrega el `true`
+        // de la visita anterior.
+        AvisoDeIsla.flujo(
+            peers = transporte.peers,
+            yo = { transporte.deviceId },
+            hubDelNegocio = { planManager.hasFeature("OFFLINE_LAN_HUB") },
+            recordadas = { venueId?.let { AvisoDeIsla.recordadas(cache, it, transporte.deviceId, System.currentTimeMillis()) }.orEmpty() },
+        ).stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000, replayExpirationMillis = 0), false)
     }
 
     private val _rememberedTab = MutableStateFlow<String?>(null)

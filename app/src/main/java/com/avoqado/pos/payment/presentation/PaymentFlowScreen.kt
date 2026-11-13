@@ -89,6 +89,8 @@ fun PaymentFlowScreen(
     restaurarVenta: ((FotoDeLaVenta) -> CartState?)? = null,
     registrarRecuperacionDeFoto: ((() -> Boolean, () -> Boolean, () -> Unit) -> Pair<() -> Unit, () -> Boolean>)? = null,
     alRestaurarSnapshot: (CartState) -> Unit = {},
+    /** D2: el saldo de tarjeta frenó por el descuento del cliente (el carrito relee su aviso). */
+    alFrenarPorDescuentoDelCliente: () -> Unit = {},
     desdeCuentasAbiertas: Boolean = false,
     pruebaPreseleccionada: TarjetaIdentificada? = null,
     onCuentaConSaldo: ((String) -> Unit)? = null,
@@ -119,7 +121,8 @@ fun PaymentFlowScreen(
     var preseleccionConsumida by remember { mutableStateOf(false) }
     var reintentoDisponible by remember { mutableStateOf(false) }
     SideEffect {
-        viewModel.configurarSaldo(ventaViva, fotoDeLaVenta, vaciarVenta, restaurarVenta, desdeCuentasAbiertas, alRestaurarSnapshot)
+        viewModel.configurarSaldo(ventaViva, fotoDeLaVenta, vaciarVenta, restaurarVenta, desdeCuentasAbiertas, alRestaurarSnapshot,
+            alFrenarPorDescuento = alFrenarPorDescuentoDelCliente)
         viewModel.vincularRecuperacionDeFoto(registrarRecuperacionDeFoto)
     }
     // Salir del cobro sin cobrar (calificación, propina, elegir método): si ESTE cobro ya armó la cuenta de los vales (una
