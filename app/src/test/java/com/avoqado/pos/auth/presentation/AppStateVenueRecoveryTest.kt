@@ -428,9 +428,84 @@ class AppStateVenueRecoveryTest {
         )
     }
 
-    /** D52: un cobro de otra sucursal frena cerrar sesión (puede borrar lo local) y el aviso dice de cuál y cómo llegar. */
+    /**
+     * D52 (a): cerrar sesión con los cobros y la cola de mesas REALES, sobre sus DAO. [fallidos] = los cobros fallidos que hay en el
+     * aparato. Devuelve si se cerró, el aviso y los DAO, ya con lo leído antes del cierre olvidado.
+     */
+    private suspend fun kotlinx.coroutines.test.TestScope.cerrarSesionDeVerdad(
+        fallidos: List<com.avoqado.pos.core.data.local.database.PendingPaymentEntity>,
+    ): Triple<Boolean, String?, Pair<com.avoqado.pos.core.data.local.database.PendingPaymentDao, com.avoqado.pos.core.data.local.database.SyncIntentDao>> {
+        val pagosDao = mockk<com.avoqado.pos.core.data.local.database.PendingPaymentDao>(relaxed = true) {
+            coEvery { getUnsyncedPayments() } returns emptyList()
+            coEvery { enVueloDeTodas() } returns emptyList()
+            coEvery { getFailedPayments() } returns fallidos
+        }
+        val mesasDao = mockk<com.avoqado.pos.core.data.local.database.SyncIntentDao>(relaxed = true)
+        val red = mockk<ConnectivityMonitor>(relaxed = true) {
+            every { isConnected } returns MutableStateFlow(true)
+            every { isServerReachable } returns MutableStateFlow(true)
+        }
+        val sesion = mockk<SecureStorage>(relaxed = true) { every { venueId } returns "venue-atole" }
+        val cola = SyncOutbox(mesasDao, mockk(relaxed = true), red, sesion, mockk(relaxed = true),
+            mockk<android.content.Context>(relaxed = true), mockk(relaxed = true))
+        val pagos = PaymentSyncService(pagosDao, sesion, mockk(relaxed = true), red, mockk(relaxed = true), cola, mockk(relaxed = true))
+        var cerro = false
+        val appState = createAppState(
+            true, {}, {}, {}, onOutboxStart = {},
+            configurarSesion = {
+                every { isLoggedIn } returns false
+                every { clearSession() } answers { cerro = true }
+                every { venuesList } returns listOf(com.avoqado.pos.core.data.local.StoredVenue(id = "venue-centro", name = "Sucursal Centro"))
+            },
+            pagosReales = pagos,
+            colaReal = cola,
+        )
+        advanceUntilIdle()
+        clearMocks(pagosDao, mesasDao, answers = false, recordedCalls = true, childMocks = false, verificationMarks = true, exclusionRules = false)
+
+        appState.onLogout()
+        advanceUntilIdle()
+        return Triple(cerro, appState.sessionGuardMessage.value, pagosDao to mesasDao)
+    }
+
+    /**
+     * D52 (a), antes de dejar salir: cerrar sesión de verdad NO toca la base de los cobros ni la cola de mesas; sólo la LEE para el freno.
+     * Si un cambio futuro borrara algo al salir, esta prueba lo dice (`confirmVerified` falla con cualquier otra llamada al DAO).
+     */
     @Test
-    fun `P1 D52 cerrar sesion con un cobro de otra sucursal dice cual`() = runTest {
+    fun `P1 D52 cerrar sesion no borra los cobros ni la cola de mesas`() = runTest {
+        val (cerro, _, daos) = cerrarSesionDeVerdad(fallidos = emptyList())
+        val (pagosDao, mesasDao) = daos
+
+        assertTrue(cerro)
+        io.mockk.coVerify { pagosDao.getUnsyncedPayments(); pagosDao.enVueloDeTodas(); pagosDao.getFailedPayments() }
+        io.mockk.coVerify { mesasDao.pendingCount("venue-atole"); mesasDao.heldCount("venue-atole"); mesasDao.rejectedCount("venue-atole") }
+        io.mockk.confirmVerified(pagosDao, mesasDao)
+    }
+
+    /**
+     * D52 (a) de la conversación principal: lo ÚNICO que frena es de otra sucursal → se puede cerrar sesión (no borra nada, prueba de
+     * arriba) y el aviso dice, honesto, que queda en el aparato y cómo se resuelve. El aparato nunca se queda sin salida.
+     */
+    @Test
+    fun `P1 D52 con lo pendiente solo de otra sucursal se puede cerrar sesion y avisa que queda`() = runTest {
+        val deCentro = com.avoqado.pos.core.data.local.database.PendingPaymentEntity(
+            "cobro-centro", "venue-centro", "mesero", 2_500, 0, "CASH", "FAST", syncStatus = "FAILED",
+        )
+        val (cerro, aviso, daos) = cerrarSesionDeVerdad(fallidos = listOf(deCentro))
+
+        assertTrue(cerro)
+        assertEquals(
+            "Queda 1 operación de Sucursal Centro en este aparato: se resuelve al entrar con un usuario de Sucursal Centro.",
+            aviso,
+        )
+        io.mockk.coVerify { daos.first.getUnsyncedPayments(); daos.first.enVueloDeTodas(); daos.first.getFailedPayments() }
+        io.mockk.confirmVerified(daos.first)
+    }
+
+    /** D52 (a): con algo de ESTA sucursal se sigue frenando, y el aviso sólo habla de eso (lo de otra sucursal ya no frena). */
+    @Test
+    fun `P1 D52 con algo de esta sucursal y algo de otra se frena solo por lo de aqui`() = runTest {
         var cerro = false
         val appState = createAppState(
             true, {}, {}, {}, onOutboxStart = {},
@@ -438,7 +513,7 @@ class AppStateVenueRecoveryTest {
                 every { clearSession() } answers { cerro = true }
                 every { venuesList } returns listOf(com.avoqado.pos.core.data.local.StoredVenue(id = "venue-centro", name = "Sucursal Centro"))
             },
-            cobrosRechazados = 0,
+            cobrosRechazados = 1,
             deOtrasSucursales = mapOf("venue-centro" to 1),
         )
         advanceUntilIdle()
@@ -447,8 +522,8 @@ class AppStateVenueRecoveryTest {
         advanceUntilIdle()
 
         org.junit.Assert.assertFalse(cerro)
-        org.junit.Assert.assertEquals(
-            "Hay 1 operación pendiente de Sucursal Centro: cambia a esa sucursal para resolverla (Más › Cambiar de establecimiento).",
+        assertEquals(
+            "Hay 1 operación por revisar. Pídele a un gerente que la resuelva: Más › Cambiar usuario.",
             appState.sessionGuardMessage.value,
         )
     }
@@ -550,6 +625,9 @@ class AppStateVenueRecoveryTest {
         puedeResolver: Boolean = false,
         /** D52: lo que frena de OTRAS sucursales, por sucursal (también suma en `blockingWorkCount`). */
         deOtrasSucursales: Map<String, Int> = emptyMap(),
+        /** D52 (a): los cobros y la cola de mesas de verdad (sobre sus DAO), en vez de los de mentira. */
+        pagosReales: PaymentSyncService? = null,
+        colaReal: SyncOutbox? = null,
     ): AppState {
         val secureStorage = storageReal ?: mockk<SecureStorage>(relaxed = true) {
             every { isLoggedIn } returns true
@@ -567,7 +645,7 @@ class AppStateVenueRecoveryTest {
                 repairResult
             }
         }
-        val paymentSyncService = mockk<PaymentSyncService>(relaxed = true) {
+        val paymentSyncService = pagosReales ?: mockk<PaymentSyncService>(relaxed = true) {
             every { pendingCount } returns MutableStateFlow(0)
             every { failedCount } returns MutableStateFlow(0)
             every { start() } answers { onPaymentStart() }
@@ -577,7 +655,7 @@ class AppStateVenueRecoveryTest {
             coEvery { frenoPorSucursal(any()) } returns PaymentSyncService.FrenoPorSucursal(cobrosRechazados, deOtrasSucursales)
             coEvery { sinEnviarCount() } returns 0
         }
-        val syncOutbox = mockk<SyncOutbox>(relaxed = true) {
+        val syncOutbox = colaReal ?: mockk<SyncOutbox>(relaxed = true) {
             every { pendingCount } returns MutableStateFlow(0)
             every { rejectedCount } returns MutableStateFlow(0)
             every { start("venue-atole") } answers { onOutboxStart() }
