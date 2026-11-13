@@ -94,6 +94,7 @@ fun QuarantineSheet(
     val retryingPaymentId by viewModel.retryingPaymentId.collectAsState()
     val revisionCancelada by viewModel.revisionCancelada.collectAsState()
     val cobrosInterrumpidos by viewModel.cobrosInterrumpidos.collectAsState()
+    val deOtrasSucursales by viewModel.deOtrasSucursales.collectAsState()
     val cuentasPagarDespues by viewModel.cuentasPagarDespues.collectAsState()
     val paquetesPorRevisar by viewModel.paquetesPorRevisar.collectAsState()
     val entregandoPaquete by viewModel.entregandoPaquete.collectAsState()
@@ -167,7 +168,7 @@ fun QuarantineSheet(
                     modifier = Modifier.weight(1f).fillMaxWidth(),
                     contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = AvoqadoTheme.spacing.xxl, vertical = AvoqadoTheme.spacing.lg),
                 ) {
-                    if (historial.canRead && revisiones.isEmpty() && (revisadas || (items.isEmpty() && failedPayments.isEmpty() && failedReservations.isEmpty() && cancelaciones.isEmpty() && cobrosInterrumpidos.isEmpty() && cuentasPagarDespues.isEmpty() && paquetesPorRevisar.isEmpty()))) {
+                    if (historial.canRead && revisiones.isEmpty() && (revisadas || (items.isEmpty() && failedPayments.isEmpty() && failedReservations.isEmpty() && cancelaciones.isEmpty() && cobrosInterrumpidos.isEmpty() && cuentasPagarDespues.isEmpty() && paquetesPorRevisar.isEmpty() && deOtrasSucursales.isEmpty()))) {
                         item {
                             Text(
                                 if (revisadas) "No hay cobros revisados." else "No hay operaciones pendientes de revisión.",
@@ -307,6 +308,17 @@ fun QuarantineSheet(
                                 }
                                 AccionDeRevision(text = if (consultando) "Consultando…" else com.avoqado.pos.payment.domain.CancelacionDeCobro.BOTON_VOLVER_A_CONSULTAR, onClick = { cancelacionesViewModel.volverAConsultar(cancelacion.id) }, enabled = !consultando)
                                 if (abierto) Text("Folio ${cancelacion.id}", style = MaterialTheme.typography.bodySmall)
+                            }
+                            HorizontalDivider()
+                        }
+                        // D52: lo de otras sucursales, sin acciones: se resuelve con su sucursal abierta.
+                        if (deOtrasSucursales.isNotEmpty()) item { SeccionDeRevision("De otras sucursales") }
+                        items(deOtrasSucursales, key = { "otra-sucursal-${it.cobro.id}" }) { pendiente ->
+                            Column(Modifier.fillMaxWidth().padding(vertical = AvoqadoTheme.spacing.md), verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
+                                Text(tituloDelCobroInterrumpido(pendiente.cobro.method, pendiente.cobro.tenderTypeId), style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                                Text(formatMoney(pendiente.cobro.amountCents), style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold)
+                                Text("Folio ${pendiente.cobro.id.take(8)} · ${formatTime(pendiente.cobro.createdAt)}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Text(textoDeCobroDeOtraSucursal(pendiente.sucursal), style = MaterialTheme.typography.bodyMedium)
                             }
                             HorizontalDivider()
                         }

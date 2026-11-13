@@ -566,7 +566,10 @@ class AppState @Inject constructor(
         val sello = secureStorage.generacion
         viewModelScope.launch {
             val venueId = secureStorage.venueId
-            val blocking = paymentSyncService.blockingWorkCount() +
+            // D52 (Codex r1 #4): los cobros de aquí y los de otras sucursales salen de UNA foto, no de restar dos lecturas.
+            val cobros = venueId?.let { paymentSyncService.frenoPorSucursal(it) }
+            val deOtras = cobros?.deOtras.orEmpty()
+            val deAqui = (cobros?.deAqui ?: paymentSyncService.blockingWorkCount()) +
                 (venueId?.let { syncOutbox.blockingWorkCount(it) } ?: 0) +
                 secureStorage.areaTicketRecoveryCount() +
                 // Las llegadas del kiosco sólo se mandan con SU sucursal activa: entrar a otra las dejaría varadas.
@@ -575,24 +578,21 @@ class AppState @Inject constructor(
                 (pendingGrantQueue?.bloqueantes(venueId) ?: 0) +
                 // Retiro con gerente (Codex r3 #12): la cola del cajón se manda con la sesión que esté; no se cierra encima.
                 (venueId?.let { cashDrawerRepository.movimientosSinSubir(it) } ?: 0)
-            // D34: lo rechazado frena igual, pero el texto dice qué hacer según quién puede resolverlo.
-            val rechazadas = if (blocking > 0) rechazadasPorRevisar(paymentSyncService, syncOutbox, pendingGrantQueue, venueId) else null
-            val conRechazo = rechazadas?.total?.coerceAtMost(blocking) ?: 0
-            if (conRechazo > 0) {
-                _sessionGuardMessage.value = textoDelFrenoConRechazos(
-                    blocking, conRechazo, roleManager.canResolveQuarantine, "cerrar sesión",
-                    deOtraSucursal = rechazadas?.deOtraSucursal?.coerceAtMost(conRechazo) ?: 0,
-                )
-                return@launch
-            }
-            if (blocking > 0) {
-                _sessionGuardMessage.value = if (blocking == 1) {
-                    "Hay 1 operación offline pendiente o en conciliación. Sincronízala o resuélvela antes de cerrar sesión para no perder su contexto."
-                } else {
-                    "Hay $blocking operaciones offline pendientes o en conciliación. Sincronízalas o resuélvelas antes de cerrar sesión para no perder su contexto."
+            // D52 (a) de la conversación principal: lo de OTRAS sucursales ya no frena. Cerrar sesión no borra los cobros ni la cola de
+            // mesas (prueba «cerrar sesion no borra…»): se quedan en el aparato y se resuelven con un usuario de su sucursal. Sólo se avisa.
+            if (deAqui > 0) {
+                // D34: lo rechazado frena igual, pero el texto dice qué hacer según quién puede resolverlo.
+                val conRechazo = rechazadasPorRevisar(paymentSyncService, syncOutbox, pendingGrantQueue, venueId).coerceAtMost(deAqui)
+                _sessionGuardMessage.value = when {
+                    conRechazo > 0 -> textoDelFrenoConRechazos(deAqui, conRechazo, roleManager.canResolveQuarantine, "cerrar sesión")
+                    deAqui == 1 ->
+                        "Hay 1 operación offline pendiente o en conciliación. Sincronízala o resuélvela antes de cerrar sesión para no perder su contexto."
+                    else ->
+                        "Hay $deAqui operaciones offline pendientes o en conciliación. Sincronízalas o resuélvelas antes de cerrar sesión para no perder su contexto."
                 }
                 return@launch
             }
+            val loQueQueda = textoDeLoQueQuedaDeOtrasSucursales(deOtras, secureStorage.venuesList.associate { it.id to it.name })
 
             // Spec §5: lo PROPIO se intenta subir antes de soltar el token (que el servidor usa como
             // autor), con un plazo corto. Sin red no retiene el cierre: se queda, con su dueño.
@@ -613,7 +613,8 @@ class AppState @Inject constructor(
             soltarAjustesDeLaSesion()
             // ponytail: los `stop()` de arriba y este borrado no son un solo paso; entre la comprobación y aquí no hay
             // espera, y el borrado igual sólo sale si la sesión sigue siendo la que se cerraba.
-            secureStorage.clearSessionSiSigueLaGeneracion(sello)
+            // D52 (a): el aviso de lo que queda sólo si de verdad se cerró (el diálogo vive fuera de la sesión: se ve en la entrada).
+            if (secureStorage.clearSessionSiSigueLaGeneracion(sello)) loQueQueda?.let { _sessionGuardMessage.value = it }
             _isLoggedIn.value = false
             notifyDeviceSessionChanged()
         }
@@ -627,46 +628,63 @@ class AppState @Inject constructor(
 /**
  * D34: lo rechazado que frena cerrar sesión o cambiar de sucursal y que no vuelve a salir solo: lo resuelve un gerente en «Operaciones
  * por revisar». Los cobros fallidos sin revisar, lo que el servidor rechazó de la cola de mesas (el cambio de usuario por PIN ya no los
- * cuenta, D28) y los paquetes por revisar. [aqui] es lo de ESTA sucursal, lo que el gerente encuentra en su pantalla; [deOtraSucursal],
- * los cobros fallidos de otra (el freno es de todo el aparato y sólo se ven con su sucursal abierta, Codex r2 #2 y r3). Se cuenta
- * DIRECTO, nunca restando dos lecturas (Codex r1 #1: un acuse entre las dos inventaba un rechazo).
+ * cuenta, D28), los cobros «sin confirmar» que esperan a una persona (D53) y los paquetes por revisar: todo de ESTA sucursal, lo que el
+ * gerente encuentra en su pantalla (lo de otra no frena: [textoDeLoQueQuedaDeOtrasSucursales], D52). Se cuenta DIRECTO, nunca restando dos
+ * lecturas (Codex r1 #1: un acuse entre las dos inventaba un rechazo).
  */
-internal data class Rechazadas(val aqui: Int, val deOtraSucursal: Int) {
-    val total: Int get() = aqui + deOtraSucursal
-}
-
 internal suspend fun rechazadasPorRevisar(
     pagos: PaymentSyncService,
     cola: com.avoqado.pos.core.data.sync.SyncOutbox,
     paquetes: com.avoqado.pos.customers.data.PendingGrantQueue?,
     venueId: String?,
-): Rechazadas {
-    if (venueId == null) return Rechazadas(aqui = 0, deOtraSucursal = pagos.porRevisarCount())
-    val cobros = pagos.porRevisarPorSucursal(venueId)
+): Int {
+    if (venueId == null) return 0
     val paquetesAqui = paquetes?.filas?.value?.count { it.venueId == venueId && it.porRevisar } ?: 0
     // D53: los cobros «sin confirmar» que esperan a una persona también los resuelve el gerente en la misma hoja.
-    val sinConfirmar = pagos.sinConfirmarPorRevisar()
-    return Rechazadas(aqui = cobros.aqui + sinConfirmar + cola.rechazadasCount(venueId) + paquetesAqui, deOtraSucursal = cobros.deOtraSucursal)
+    return pagos.porRevisarDeLaSucursal(venueId) + pagos.sinConfirmarPorRevisar() + cola.rechazadasCount(venueId) + paquetesAqui
+}
+
+/**
+ * D52 (a) de la conversación principal: lo de OTRAS sucursales ya no frena cerrar sesión (no se borra: se queda en el aparato). Al
+ * salir se avisa, honesto, qué queda y dónde. Codex r4 #1, r5 #1 y r6 #1 (la misma familia tres veces; r6 fue la pasada exhaustiva
+ * por estado): si una fila sube sola, la resuelve un gerente o se queda retenida sin salida (deuda previa) lo decide el drenado
+ * después. Lo único cierto para TODO estado es que no se borra y que, al entrar alguien de su sucursal, se sube o la ve un GERENTE
+ * en la hoja (r7: «Pendientes» es de gerente para arriba, `SalesNoticesViewModel.canRead`); eso dice, sin prometer quién la resuelve.
+ * Las sucursales que esta sesión no tiene (no están en [nombres], `venuesList`) se dicen sin nombre. PURA.
+ */
+internal fun textoDeLoQueQuedaDeOtrasSucursales(porSucursal: Map<String, Int>, nombres: Map<String, String>): String? {
+    fun frase(n: Int, de: String, quien: String): String {
+        val (queda, borra, sube, alguna) = if (n == 1) listOf("Queda 1 operación", "no se borra", "se sube", "queda")
+            else listOf("Quedan $n operaciones", "no se borran", "se suben", "alguna queda")
+        return "$queda de $de en este aparato ($borra): al entrar alguien de $quien $sube o, si $alguna por revisar, un gerente de " +
+            "$quien la ve en $DONDE_SE_RESUELVE."
+    }
+    val (conocidas, sinAcceso) = porSucursal.filterValues { it > 0 }.entries.partition { it.key in nombres }
+    val deConocidas = conocidas.takeIf { it.isNotEmpty() }?.let { c ->
+        val n = c.map { nombres.getValue(it.key) }
+        val cuales = if (n.size == 1) n.single() else n.dropLast(1).joinToString(", ") + " y " + n.last()
+        frase(c.sumOf { it.value }, cuales, if (n.size == 1) n.single() else "cada sucursal")
+    }
+    val deSinAcceso = sinAcceso.takeIf { it.isNotEmpty() }?.let { s ->
+        if (s.size == 1) frase(s.single().value, "otra sucursal", "esa sucursal")
+        else frase(s.sumOf { it.value }, "otras sucursales", "cada sucursal")
+    }
+    return listOfNotNull(deConocidas, deSinAcceso).takeIf { it.isNotEmpty() }?.joinToString(" ")
 }
 
 /**
  * D34 (opción «a» de la conversación principal, 12-nov): el texto del freno cuando hay [rechazadas] entre las [total] operaciones que
- * frenan ([deOtraSucursal] de ellas, de otra sucursal). El freno se queda (cerrar sesión puede borrar lo local), pero «resuélvela» sólo
+ * frenan, todas de esta sucursal (lo de otras no frena, D52). El freno se queda (lo de esta sucursal sale con su sesión), pero «resuélvela» sólo
  * se le dice a quien puede: un mesero no puede «Marcar resuelta» ([RoleManager.canResolveQuarantine]), así que se le dice que entre
  * un gerente por «Cambiar usuario», que lo rechazado ya no frena (D28). PURA. [antesDe]: «cerrar sesión» o «cambiar de establecimiento».
  */
-internal fun textoDelFrenoConRechazos(total: Int, rechazadas: Int, puedeResolver: Boolean, antesDe: String, deOtraSucursal: Int = 0): String {
+internal fun textoDelFrenoConRechazos(total: Int, rechazadas: Int, puedeResolver: Boolean, antesDe: String): String {
     val sinEnviar = (total - rechazadas).coerceAtLeast(0)
     val una = rechazadas == 1
     // D53: no todo lo que espera a un gerente fue rechazado (un cobro «sin confirmar»): se dice «por revisar», como la hoja.
     val rechazo = if (una) "1 operación por revisar" else "$rechazadas operaciones por revisar"
-    // Dónde, para quien puede (Codex r3): un cobro fallido de OTRA sucursal sólo se ve con esa sucursal abierta.
-    val donde = when {
-        deOtraSucursal <= 0 -> "en $DONDE_SE_RESUELVE antes de $antesDe"
-        deOtraSucursal >= rechazadas -> "con su sucursal abierta, en $DONDE_SE_RESUELVE"
-        else -> "en $DONDE_SE_RESUELVE antes de $antesDe; " +
-            (if (deOtraSucursal == 1) "la de otra sucursal" else "las $deOtraSucursal de otra sucursal") + ", con esa sucursal abierta"
-    }
+    // Lo de otra sucursal ya no llega aquí (D52): no frena.
+    val donde = "en $DONDE_SE_RESUELVE antes de $antesDe"
     if (sinEnviar == 0) {
         return if (puedeResolver) {
             "Hay $rechazo. ${if (una) "Resuélvela" else "Resuélvelas"} $donde."

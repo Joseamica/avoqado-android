@@ -56,8 +56,8 @@ class FrenoConRechazosTest {
 
     // MARK: - Qué cuenta como rechazado (Codex r1)
 
-    private fun pagos(porRevisar: Int, bloqueantes: Int = porRevisar, sinEnviar: Int = 0, deOtra: Int = 0, sinConfirmar: Int = 0) = mockk<PaymentSyncService> {
-        coEvery { porRevisarPorSucursal("v-1") } returns PaymentSyncService.PorRevisar(porRevisar, deOtra)
+    private fun pagos(porRevisar: Int, bloqueantes: Int = porRevisar, sinEnviar: Int = 0, sinConfirmar: Int = 0) = mockk<PaymentSyncService> {
+        coEvery { porRevisarDeLaSucursal("v-1") } returns porRevisar
         coEvery { sinConfirmarPorRevisar() } returns sinConfirmar
         coEvery { blockingWorkCount() } returns bloqueantes
         coEvery { sinEnviarCount() } returns sinEnviar
@@ -70,7 +70,7 @@ class FrenoConRechazosTest {
 
     /** r1 #1: con «bloquea 1» y «sin enviar 0» leídos en momentos distintos (un acuse en medio), la resta inventaba un rechazo. */
     @Test fun `P1 un acuse entre dos lecturas no inventa un rechazo`() = runBlocking {
-        assertEquals(Rechazadas(0, 0), rechazadasPorRevisar(pagos(porRevisar = 0, bloqueantes = 1, sinEnviar = 0), cola(), null, "v-1"))
+        assertEquals(0, rechazadasPorRevisar(pagos(porRevisar = 0, bloqueantes = 1, sinEnviar = 0), cola(), null, "v-1"))
     }
 
     /** r1 #3: un paquete rechazado o en duda también lo resuelve un gerente; esperar la red no lo saca. Uno de otra sucursal, no. */
@@ -83,30 +83,45 @@ class FrenoConRechazosTest {
         }
 
         assertEquals(
-            "1 cobro + 1 ronda + 2 paquetes, y 1 cobro de otra sucursal aparte",
-            Rechazadas(aqui = 4, deOtraSucursal = 1),
-            rechazadasPorRevisar(pagos(porRevisar = 1, deOtra = 1), cola(rechazadas = 1), paquetes, "v-1"),
+            "1 cobro + 1 ronda + 2 paquetes, todo de esta sucursal",
+            4,
+            rechazadasPorRevisar(pagos(porRevisar = 1), cola(rechazadas = 1), paquetes, "v-1"),
         )
     }
 
+    // MARK: - D52 (a): lo de otras sucursales no frena; al salir se dice que queda y cómo se resuelve
+
     /**
-     * Codex r3: un cobro fallido de OTRA sucursal también lo resuelve un gerente (al mesero se le dice lo mismo), pero sólo se ve con
-     * esa sucursal abierta: al gerente se le dice dónde.
+     * D52 (a): lo de otra sucursal se queda en el aparato (cerrar sesión no lo borra). Codex r4-r6: si sube sola, la revisa un gerente o se
+     * queda retenida lo decide el drenado después; la frase sólo dice lo cierto para todo estado: no se borra, se sube o aparece en la hoja.
      */
-    @Test fun `P1 un cobro rechazado de otra sucursal`() {
+    @Test fun `P1 D52 lo que queda de otra sucursal se dice con su nombre y donde aparece`() {
+        val nombres = mapOf("v-centro" to "Sucursal Centro", "v-norte" to "Sucursal Norte")
         assertEquals(
-            "Hay 1 operación por revisar. Pídele a un gerente que la resuelva: Más › Cambiar usuario.",
-            textoDelFrenoConRechazos(total = 1, rechazadas = 1, puedeResolver = false, antesDe = "cerrar sesión", deOtraSucursal = 1),
+            "Queda 1 operación de Sucursal Centro en este aparato (no se borra): al entrar alguien de Sucursal Centro se sube o, si queda por revisar, un gerente de Sucursal Centro la ve en Ventas › Pendientes › «Otras operaciones y revisiones anteriores».",
+            textoDeLoQueQuedaDeOtrasSucursales(mapOf("v-centro" to 1), nombres),
         )
         assertEquals(
-            "Hay 1 operación por revisar. Resuélvela con su sucursal abierta, en Ventas › Pendientes › " +
-                "«Otras operaciones y revisiones anteriores».",
-            textoDelFrenoConRechazos(total = 1, rechazadas = 1, puedeResolver = true, antesDe = "cerrar sesión", deOtraSucursal = 1),
+            "Quedan 3 operaciones de Sucursal Centro y Sucursal Norte en este aparato (no se borran): al entrar alguien de cada sucursal se suben o, si alguna queda por revisar, un gerente de cada sucursal la ve en Ventas › Pendientes › «Otras operaciones y revisiones anteriores».",
+            textoDeLoQueQuedaDeOtrasSucursales(mapOf("v-centro" to 2, "v-norte" to 1), nombres),
+        )
+        assertEquals(null, textoDeLoQueQuedaDeOtrasSucursales(emptyMap(), nombres))
+    }
+
+    /** D52 (a): una sucursal que esta sesión no tiene se dice sin nombre; las conocidas conservan el suyo (Codex r2). */
+    @Test fun `P1 D52 lo que queda de una sucursal sin acceso se dice sin nombre`() {
+        assertEquals(
+            "Queda 1 operación de otra sucursal en este aparato (no se borra): al entrar alguien de esa sucursal se sube o, si queda por revisar, un gerente de esa sucursal la ve en Ventas › Pendientes › «Otras operaciones y revisiones anteriores».",
+            textoDeLoQueQuedaDeOtrasSucursales(mapOf("v-ajena" to 1), mapOf("v-centro" to "Sucursal Centro")),
         )
         assertEquals(
-            "Hay 2 operaciones por revisar. Resuélvelas en Ventas › Pendientes › «Otras operaciones y revisiones " +
-                "anteriores» antes de cerrar sesión; la de otra sucursal, con esa sucursal abierta.",
-            textoDelFrenoConRechazos(total = 2, rechazadas = 2, puedeResolver = true, antesDe = "cerrar sesión", deOtraSucursal = 1),
+            "Quedan 2 operaciones de otras sucursales en este aparato (no se borran): al entrar alguien de cada sucursal se suben o, si alguna queda por revisar, un gerente de cada sucursal la ve en Ventas › Pendientes › «Otras operaciones y revisiones anteriores».",
+            textoDeLoQueQuedaDeOtrasSucursales(mapOf("v-ajena" to 1, "v-otra" to 1), emptyMap()),
+        )
+        assertEquals(
+            "Queda 1 operación de Sucursal Centro en este aparato (no se borra): al entrar alguien de Sucursal Centro se sube o, si queda por revisar, un gerente de Sucursal Centro la ve en Ventas › Pendientes › «Otras operaciones y revisiones anteriores». " +
+                "Queda 1 operación de otra sucursal en este aparato (no se borra): al entrar alguien de esa sucursal se sube o, si queda por revisar, un gerente de esa sucursal la ve en Ventas › Pendientes › «Otras operaciones y revisiones anteriores».",
+            textoDeLoQueQuedaDeOtrasSucursales(mapOf("v-centro" to 1, "v-ajena" to 1), mapOf("v-centro" to "Sucursal Centro")),
         )
     }
 
@@ -115,6 +130,6 @@ class FrenoConRechazosTest {
      * misma hoja: cuenta como «por revisar», y desde D53 tampoco frena «Cambiar usuario».
      */
     @Test fun `P1 D53 un cobro sin confirmar que espera a una persona cuenta como por revisar`() = runBlocking {
-        assertEquals(Rechazadas(aqui = 1, deOtraSucursal = 0), rechazadasPorRevisar(pagos(porRevisar = 0, sinConfirmar = 1), cola(), null, "v-1"))
+        assertEquals(1, rechazadasPorRevisar(pagos(porRevisar = 0, sinConfirmar = 1), cola(), null, "v-1"))
     }
 }

@@ -297,6 +297,10 @@ interface PendingPaymentDao {
     @Query("SELECT * FROM pending_payments WHERE syncStatus = 'EN_VUELO' ORDER BY createdAt ASC")
     fun observarEnVuelo(): Flow<List<PendingPaymentEntity>>
 
+    /** D52: los apartados de TODAS las sucursales, para contar el freno por sucursal (`PaymentSyncService.bloqueantesPorSucursal`). */
+    @Query("SELECT * FROM pending_payments WHERE syncStatus = 'EN_VUELO' ORDER BY createdAt ASC")
+    suspend fun enVueloDeTodas(): List<PendingPaymentEntity>
+
     @Query(Q15_EN_VUELO_COUNT_SQL)
     suspend fun contarEnVueloSqlQ15(): Int
     @androidx.room.Transaction
