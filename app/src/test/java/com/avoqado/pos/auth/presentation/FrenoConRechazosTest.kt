@@ -91,38 +91,47 @@ class FrenoConRechazosTest {
 
     // MARK: - D52 (a): lo de otras sucursales no frena; al salir se dice que queda y cómo se resuelve
 
-    /** D52 (a): lo de otra sucursal se queda en el aparato (cerrar sesión no lo borra): el aviso lo dice con su nombre. */
-    @Test fun `P1 D52 lo que queda de otra sucursal se dice con su nombre`() {
+    /** D52 (a): lo de otra sucursal que sale solo se queda en el aparato (cerrar sesión no lo borra) y se sube con un usuario suyo. */
+    @Test fun `P1 D52 lo que queda de otra sucursal y sale solo se dice con su nombre`() {
         val nombres = mapOf("v-centro" to "Sucursal Centro", "v-norte" to "Sucursal Norte")
         assertEquals(
-            "Queda 1 operación de Sucursal Centro en este aparato: se resuelve al entrar con un usuario de Sucursal Centro.",
-            textoDeLoQueQuedaDeOtrasSucursales(mapOf("v-centro" to 1), nombres),
+            "Queda 1 operación de Sucursal Centro en este aparato: se sube al entrar con un usuario de Sucursal Centro.",
+            textoDeLoQueQuedaDeOtrasSucursales(mapOf("v-centro" to 1), emptyMap(), nombres),
         )
         assertEquals(
-            "Quedan 3 operaciones de Sucursal Centro y Sucursal Norte en este aparato: se resuelven al entrar con un usuario de cada sucursal.",
-            textoDeLoQueQuedaDeOtrasSucursales(mapOf("v-centro" to 2, "v-norte" to 1), nombres),
+            "Quedan 2 operaciones de Sucursal Centro en este aparato: se suben al entrar con un usuario de Sucursal Centro. " +
+                "Queda 1 operación de Sucursal Norte en este aparato: se sube al entrar con un usuario de Sucursal Norte.",
+            textoDeLoQueQuedaDeOtrasSucursales(mapOf("v-centro" to 2, "v-norte" to 1), emptyMap(), nombres),
         )
-        assertEquals(null, textoDeLoQueQuedaDeOtrasSucursales(emptyMap(), nombres))
+        assertEquals(null, textoDeLoQueQuedaDeOtrasSucursales(emptyMap(), emptyMap(), nombres))
     }
 
-    /** D52 (a): una sucursal que esta sesión no tiene se dice sin nombre (no lo conocemos). */
+    /** Codex D52 r4 #1: un cobro fallido no se sube solo y un cajero no puede resolverlo: el aviso dice que lo revisa un gerente, y dónde. */
+    @Test fun `P1 D52 lo que queda por revisar de otra sucursal lo revisa un gerente`() {
+        assertEquals(
+            "Queda 1 operación de Sucursal Centro en este aparato: la revisa un gerente de Sucursal Centro al entrar, en Ventas › Pendientes › «Otras operaciones y revisiones anteriores».",
+            textoDeLoQueQuedaDeOtrasSucursales(mapOf("v-centro" to 1), mapOf("v-centro" to 1), mapOf("v-centro" to "Sucursal Centro")),
+        )
+        assertEquals(
+            "Quedan 2 operaciones de Sucursal Centro en este aparato: las revisa un gerente de Sucursal Centro al entrar, en Ventas › Pendientes › «Otras operaciones y revisiones anteriores».",
+            textoDeLoQueQuedaDeOtrasSucursales(mapOf("v-centro" to 2), mapOf("v-centro" to 1), mapOf("v-centro" to "Sucursal Centro")),
+        )
+    }
+
+    /** D52 (a): una sucursal que esta sesión no tiene se dice sin nombre (no lo conocemos); las conocidas conservan el suyo (Codex r2). */
     @Test fun `P1 D52 lo que queda de una sucursal sin acceso se dice sin nombre`() {
         assertEquals(
-            "Queda 1 operación de otra sucursal en este aparato: se resuelve al entrar con un usuario de esa sucursal.",
-            textoDeLoQueQuedaDeOtrasSucursales(mapOf("v-ajena" to 1), mapOf("v-centro" to "Sucursal Centro")),
+            "Queda 1 operación de otra sucursal en este aparato: se sube al entrar con un usuario de esa sucursal.",
+            textoDeLoQueQuedaDeOtrasSucursales(mapOf("v-ajena" to 1), emptyMap(), mapOf("v-centro" to "Sucursal Centro")),
         )
         assertEquals(
-            "Quedan 2 operaciones de otras sucursales en este aparato: se resuelven al entrar con un usuario de cada sucursal.",
-            textoDeLoQueQuedaDeOtrasSucursales(mapOf("v-ajena" to 1, "v-otra" to 1), emptyMap()),
+            "Quedan 2 operaciones de otras sucursales en este aparato: las revisa un gerente de cada sucursal al entrar, en Ventas › Pendientes › «Otras operaciones y revisiones anteriores».",
+            textoDeLoQueQuedaDeOtrasSucursales(mapOf("v-ajena" to 1, "v-otra" to 1), mapOf("v-otra" to 1), emptyMap()),
         )
-    }
-
-    /** Codex D52 r2: una sucursal sin acceso no le quita a las conocidas su nombre. */
-    @Test fun `P1 D52 lo que queda de una sucursal conocida y de una sin acceso se dice por separado`() {
         assertEquals(
-            "Queda 1 operación de Sucursal Centro en este aparato: se resuelve al entrar con un usuario de Sucursal Centro. " +
-                "Queda 1 operación de otra sucursal en este aparato: se resuelve al entrar con un usuario de esa sucursal.",
-            textoDeLoQueQuedaDeOtrasSucursales(mapOf("v-centro" to 1, "v-ajena" to 1), mapOf("v-centro" to "Sucursal Centro")),
+            "Queda 1 operación de Sucursal Centro en este aparato: se sube al entrar con un usuario de Sucursal Centro. " +
+                "Queda 1 operación de otra sucursal en este aparato: se sube al entrar con un usuario de esa sucursal.",
+            textoDeLoQueQuedaDeOtrasSucursales(mapOf("v-centro" to 1, "v-ajena" to 1), emptyMap(), mapOf("v-centro" to "Sucursal Centro")),
         )
     }
 

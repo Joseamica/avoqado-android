@@ -1287,13 +1287,17 @@ class PaymentSyncService @Inject constructor(
         (dao.getUnsyncedPayments() + dao.enVueloDeTodas().filterNot(RevisionCanceladoCero::revisado) +
             dao.getFailedPayments().filterNot(RevisionCanceladoCero::revisado)).distinctBy { it.id }
 
-    /** D52: lo que frena, de UNA foto: lo de [deAqui] (la sucursal abierta y lo viejo sin sucursal) y lo de otras, por sucursal. */
-    data class FrenoPorSucursal(val deAqui: Int, val deOtras: Map<String, Int>)
+    /**
+     * D52: lo que frena, de UNA foto: lo de [deAqui] (la sucursal abierta y lo viejo sin sucursal) y lo de otras, por sucursal.
+     * [deOtrasPorRevisar] (D52 a, Codex r4 #1): de eso, lo que no sale solo (FAILED o `EN_VUELO`): lo revisa un gerente de su sucursal.
+     */
+    data class FrenoPorSucursal(val deAqui: Int, val deOtras: Map<String, Int>, val deOtrasPorRevisar: Map<String, Int> = emptyMap())
 
     /** D52: [blockingWorkCount] partido por sucursal en UNA foto (Codex r1 #4: restar dos lecturas inventaba trabajo de aquí). */
     suspend fun frenoPorSucursal(venueId: String): FrenoPorSucursal {
         val (aqui, otras) = filasQueFrenan().partition { it.venueId == venueId || it.venueId.isBlank() }
-        return FrenoPorSucursal(aqui.size, otras.groupingBy { it.venueId }.eachCount())
+        val porRevisar = otras.filter { it.syncStatus == "FAILED" || it.syncStatus == "EN_VUELO" }
+        return FrenoPorSucursal(aqui.size, otras.groupingBy { it.venueId }.eachCount(), porRevisar.groupingBy { it.venueId }.eachCount())
     }
 
     /**
