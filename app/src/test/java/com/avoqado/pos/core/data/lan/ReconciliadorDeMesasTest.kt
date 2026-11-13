@@ -27,6 +27,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.BufferedInputStream
@@ -661,6 +662,43 @@ class ReconciliadorDeMesasTest {
         assertEquals("X la resolvió antes de la época nueva", LeaseOutcome.Taken("Beto"), mesas.esperar(apertura) { false })
     }
 
+    // MARK: - Codex código r3: una elección publicada por el transporte no cae entre revisar y aplicar
+
+    @Test
+    fun `r3-h2 - Y y X se publican desde otro hilo mientras se valida y aplica - la respuesta de X no se aplica tras el tránsito`() = runTest {
+        val x = arbitro("X")
+        x.declara("B", "m14")
+        val mesas = caja()
+        val c = coordinador(red(x), mesas) // sin start(): la vuelta se corre a mano y el tránsito lo publica el otro hilo
+        val apertura = mesas.abrirApertura("m14", "s1", "Ana", v)
+        val transito = DesdeOtroHilo(c) {
+            discovery.publicar(listOf(yo, peerY))
+            discovery.publicar(listOf(yo, peerX))
+            mesas.hayPendientes(v)
+        }
+
+        c.reconciliarUnaVez()
+
+        assertEquals("el tránsito X → Y → X terminó con la apertura pendiente y luego X la resolvió", false, transito.terminar())
+        assertEquals("X la resolvió antes del tránsito", LeaseOutcome.Taken("Beto"), mesas.esperar(apertura) { false })
+    }
+
+    @Test
+    fun `r3-h1 - X se publica y nace una apertura desde otro hilo mientras se aplica «sin Hub» - esa apertura no sale en isla`() = runTest {
+        discovery.peers.value = emptyList()
+        val mesas = caja()
+        val c = coordinador(red(arbitro("X")), mesas)
+        val nueva = DesdeOtroHilo(c) {
+            discovery.publicar(listOf(yo, peerX))
+            mesas.abrirApertura("m14", "s1", "Ana", v)
+        }
+
+        c.reconciliarUnaVez()
+
+        assertNotNull(nueva.terminar())
+        assertTrue("la apertura nacida con X ya publicado salió en isla", mesas.hayPendientes(v))
+    }
+
     // MARK: - Codex código r2 H1: un «sin Hub» visto ANTES de que llegue un árbitro no resuelve una apertura posterior
 
     private fun islaVieja(elColectorYaLoVio: Boolean) = runTest {
@@ -882,6 +920,30 @@ internal class Red(private val arbitros: Map<String, LeaseServer>, private val r
     }
 
     private suspend fun esperarTurno(pedido: LeaseRequest) = Vuelo(pedido).also { retenidos += it }.compuerta.await()
+}
+
+/**
+ * Codex código r3: arma `trasValidar` para que, ya validado y antes de aplicar, OTRO hilo corra [accion] (publicar peers, abrir una
+ * apertura) y espera a que termine o se quede esperando su turno. [terminar] da lo que regresó [accion].
+ */
+internal class DesdeOtroHilo<T>(c: LanHubCoordinator, accion: () -> T) {
+    @Volatile private var resultado: T? = null
+    @Volatile private var hilo: Thread? = null
+
+    init {
+        c.trasValidar = {
+            c.trasValidar = {}
+            hilo = thread { resultado = accion() }.also { t ->
+                val hasta = System.nanoTime() + 10_000_000_000L
+                while (t.state != Thread.State.BLOCKED && t.state != Thread.State.TERMINATED && System.nanoTime() < hasta) Thread.sleep(1)
+            }
+        }
+    }
+
+    fun terminar(): T? {
+        hilo?.join(10_000)
+        return resultado
+    }
 }
 
 /**

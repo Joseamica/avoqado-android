@@ -121,8 +121,12 @@ internal class FakeDiscovery(peers: List<LanPeer>) : LanDiscoveryPort {
     override fun desconectarHub() {}
 
     /** Como `TransporteLan.publicarPeers` (Codex código r2 H2): cuenta el cambio de elección ANTES de publicar. */
+    @Synchronized
     fun publicar(lista: List<LanPeer>) {
         if (ArbiterElection.cambiaElArbitro(peers.value, lista)) cambiosDeArbitro++
         peers.value = lista
     }
+
+    /** Como `TransporteLan` (Codex código r3): el mismo monitor que [publicar]. */
+    override fun <T> sinCambiarDeArbitro(bloque: () -> T): T = synchronized(this) { bloque() }
 }

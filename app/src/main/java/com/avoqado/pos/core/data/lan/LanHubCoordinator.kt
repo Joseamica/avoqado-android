@@ -168,7 +168,7 @@ class LanHubCoordinator(
         if (gen == null || arbitro == null) {
             // Codex código r2 H1: «sin Hub» se aplica bajo el candado de la época y mirando los peers de AHORA. Si mientras tanto llegó
             // un árbitro (o subió la época), una apertura pedida después no sale en isla: la siguiente vuelta se la pregunta.
-            return mesas.aplicarSiVigente(epoca, { gen == null || ArbiterElection.pick(discovery.peers.value) == null }) { enIsla() } ?: 0
+            return aplicarSiSigue(epoca, { gen == null || ArbiterElection.pick(discovery.peers.value) == null }) { trasValidar(); enIsla() } ?: 0
         }
 
         // 2. Lo que se manda.
@@ -186,7 +186,7 @@ class LanHubCoordinator(
         // 5. Primero el contexto local: si cambió la época o el árbitro elegido, nada de lo que volvió vale (ni null, ni stale, ni
         //    error). Es un mensaje nuevo para otro árbitro, no un reintento al mismo. Revisar y aplicar son UNA operación (Codex código
         //    r1 #3): una época nueva de otro hilo espera a que esto termine o lo encuentra ya invalidado.
-        return mesas.aplicarSiVigente(epoca, { sigueElegido(arbitro, cambios) }) {
+        return aplicarSiSigue(epoca, { sigueElegido(arbitro, cambios) }) {
             trasValidar()
             aplicarRespuesta(resp, arbitro, declaracion)
         } ?: 0
@@ -225,6 +225,14 @@ class LanHubCoordinator(
         val esperar = resultados.filter { it.resultado == APERTURA_ESPERAR }.mapNotNull { it.esperarMs }.minOrNull()
         return minOf(LATIDO_MS, esperar ?: LATIDO_MS).coerceAtLeast(1)
     }
+
+    /**
+     * Revisar y aplicar como UNA operación frente a los dos que pueden invalidarla (Codex código r1 #3 y r3): la época nueva
+     * ([MesasDeEstaCaja.nuevaEpoca]) y una elección publicada por el transporte ([LanDiscoveryPort.sinCambiarDeArbitro]). Orden de
+     * candados: transporte → época; nada que tome el de la época pide después el del transporte.
+     */
+    private fun <T> aplicarSiSigue(epoca: Long, sigue: () -> Boolean, aplicar: () -> T): T? =
+        discovery.sinCambiarDeArbitro { mesas.aplicarSiVigente(epoca, sigue, aplicar) }
 
     /**
      * ¿[arbitro] sigue siendo el elegido, sin otra elección entre medias? La identidad sola no basta: tras X → Y → X vuelve a ser X
@@ -290,7 +298,7 @@ class LanHubCoordinator(
         }
 
         // Revisar y aplicar, UNA operación (Codex código r1 #3): sin esto, una época nueva podía caer entre el último `sigue()` y aquí.
-        return mesas.aplicarSiVigente(epoca, { sigueElegido(arbitro, cambios) }) {
+        return aplicarSiSigue(epoca, { sigueElegido(arbitro, cambios) }) {
             trasValidar()
             d.aperturas.forEach { a ->
                 if (a.tableId in retenidas) mesas.resolver(a.id, LeaseOutcome.Granted)

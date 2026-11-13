@@ -16,6 +16,12 @@ interface LanDiscoveryPort {
      */
     val cambiosDeArbitro: Long get() = 0L
 
+    /**
+     * Corre [bloque] sin que se publique otra elección a la mitad (Codex código r3): «¿sigue el mismo árbitro?» y aplicar su respuesta
+     * van juntos, y una publicación de [peers] espera a que termine. [bloque] no toca la red ni suspende.
+     */
+    fun <T> sinCambiarDeArbitro(bloque: () -> T): T = bloque()
+
     /** Desde aquí el TXT dice `hub=1` y las ops de lease se contestan con [respondTo] (el `LeaseServer` puro). */
     fun conectarHub(respondTo: (String) -> LeaseResponse)
 

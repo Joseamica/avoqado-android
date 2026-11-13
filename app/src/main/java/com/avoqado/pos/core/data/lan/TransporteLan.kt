@@ -67,6 +67,9 @@ class TransporteLan @Inject constructor(
     private val eleccionesPublicadas = java.util.concurrent.atomic.AtomicLong(0)
     override val cambiosDeArbitro: Long get() = eleccionesPublicadas.get()
 
+    /** El mismo monitor que [publicarPeers] (`@Synchronized`): mientras corre [bloque] no se publica otra elección. */
+    override fun <T> sinCambiarDeArbitro(bloque: () -> T): T = synchronized(this) { bloque() }
+
     private val _estacionesAnunciadas = MutableStateFlow<Set<String>>(emptySet())
     val estacionesAnunciadas: StateFlow<Set<String>> = _estacionesAnunciadas.asStateFlow()
 
