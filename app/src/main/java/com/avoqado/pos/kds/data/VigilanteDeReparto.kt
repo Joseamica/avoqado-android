@@ -123,8 +123,9 @@ class VigilanteDeReparto internal constructor(
      * segundo toque mientras corre el primero no manda otra copia (lo aparta la pizarra).
      */
     fun reimprimir(kdsId: String) {
-        // Sólo lo de la sucursal de ahora: nunca mandar a las impresoras de aquí el trabajo de otra.
-        if (avisos.value.none { it.kdsId == kdsId }) return
+        // Sólo con sesión, permiso y plan, y sólo lo de la sucursal de ahora: nunca mandar a las impresoras de aquí el
+        // trabajo de otra (Codex c3: el botón no revisaba el permiso).
+        if (!puedeImprimir() || avisos.value.none { it.kdsId == kdsId }) return
         scope.launch {
             try {
                 reimprimirLoQueFalto(kdsId)
@@ -172,7 +173,7 @@ class VigilanteDeReparto internal constructor(
 
     /** Sin sesión, permiso o plan: nada se queda (avisos y lo que siga en vuelo para ellos), ni canales ni proveedor. */
     private fun olvidar() {
-        pizarra.descartar()
+        pizarra.olvidarTodo()
         olvidarCanales()
     }
 

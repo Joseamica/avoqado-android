@@ -26,6 +26,9 @@ class AvisosDeReparto @Inject constructor() {
 
     private var epoca = 0L
 
+    /** Intentos que empezaron antes de [olvidarTodo] ya no se apuntan, sean del pedido que sean. */
+    private var piso = 0L
+
     /** Pedido → época en que se descartó. `ponytail:` se queda con los últimos [MAX_DESCARTADOS]; más viejos ya no vuelven. */
     private val descartadoEn = LinkedHashMap<String, Long>()
     private val reimprimiendo = mutableSetOf<String>()
@@ -36,6 +39,7 @@ class AvisosDeReparto @Inject constructor() {
     /** Apunta (o reemplaza, por pedido) el resultado de un intento que empezó en [epocaDelIntento]. */
     @Synchronized
     fun publicar(c: ComandaImpresa, epocaDelIntento: Long) {
+        if (epocaDelIntento < piso) return
         val descartado = descartadoEn[c.kdsId]
         if (descartado != null && descartado > epocaDelIntento) return
         _avisos.value = _avisos.value.filterNot { it.kdsId == c.kdsId } + c
@@ -47,6 +51,18 @@ class AvisosDeReparto @Inject constructor() {
         epoca++
         for (id in _avisos.value.map { it.kdsId } + reimprimiendo) descartadoEn[id] = epoca
         while (descartadoEn.size > MAX_DESCARTADOS) descartadoEn.remove(descartadoEn.keys.first())
+        _avisos.value = emptyList()
+    }
+
+    /**
+     * Sin sesión, permiso o plan: borra todo y cierra la puerta a TODO lo que siga en vuelo, también a la primera impresión
+     * de un pedido que todavía no estaba en la franja (Codex c3: con [descartar] reaparecía y sonaba hasta el siguiente sondeo).
+     */
+    @Synchronized
+    fun olvidarTodo() {
+        epoca++
+        piso = epoca
+        descartadoEn.clear()
         _avisos.value = emptyList()
     }
 

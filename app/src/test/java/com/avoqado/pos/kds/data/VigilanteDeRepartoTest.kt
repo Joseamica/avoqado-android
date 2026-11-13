@@ -231,6 +231,36 @@ class VigilanteDeRepartoTest {
     }
 
     @Test
+    fun `perder el permiso no deja que un resultado en vuelo vuelva a sonar ni se reimprima`() = runTest {
+        val f = armar { canales = Result.success(listOf(canal())); comandas = Result.success(listOf(comanda("k1", needsPrint = false))) }
+        f.apuntar(impresa("k0", salio = false, porReimprimir = listOf(trabajo)))
+        runCurrent()
+        val epocaDelIntento = f.pizarra.epoca() // «Pantalla de cocina» empieza a imprimir k1
+        f.puede = false
+        advanceTimeBy(15_001)
+        assertTrue(f.vigilante.avisos.value.isEmpty())
+        f.pizarra.publicar(impresa("k1", salio = false, porReimprimir = listOf(trabajo)), epocaDelIntento)
+        runCurrent()
+        assertTrue(f.vigilante.avisos.value.isEmpty())
+        f.vigilante.reimprimir("k1")
+        runCurrent()
+        assertTrue(f.reintentos.isEmpty())
+        f.vigilante.onStop(owner)
+    }
+
+    @Test
+    fun `reimprimir sin permiso no manda nada aunque el aviso siga a la vista`() = runTest {
+        val f = armar { canales = Result.success(listOf(canal())); comandas = Result.success(listOf(comanda("k1", needsPrint = false))) }
+        f.apuntar(impresa("k1", salio = false, porReimprimir = listOf(trabajo)))
+        runCurrent()
+        f.puede = false // se perdió el permiso; el siguiente sondeo todavía no llega
+        f.vigilante.reimprimir("k1")
+        runCurrent()
+        assertTrue(f.reintentos.isEmpty())
+        f.vigilante.onStop(owner)
+    }
+
+    @Test
     fun `onStop detiene el sondeo`() = runTest {
         val f = armar { canales = Result.success(listOf(canal())); comandas = Result.success(listOf(comanda("k1", needsPrint = false))) }
         f.vigilante.onStop(owner)

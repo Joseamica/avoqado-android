@@ -76,4 +76,16 @@ class AvisosDeRepartoTest {
         p.retirarAusentes(emptySet(), masVieja = null)
         assertTrue(p.avisos.value.isEmpty())
     }
+
+    @Test
+    fun `olvidar todo cierra la puerta a lo que estaba en vuelo aunque fuera un pedido nuevo`() {
+        val p = AvisosDeReparto()
+        val epocaDelIntento = p.epoca() // la primera impresión de «nuevo», que todavía no está en la franja
+        p.olvidarTodo() // se perdió el permiso, el plan o la sesión
+        p.publicar(aviso("nuevo"), epocaDelIntento)
+        assertTrue(p.avisos.value.isEmpty())
+        // Lo que empieza después sí se apunta.
+        p.publicar(aviso("despues"), p.epoca())
+        assertEquals(listOf("despues"), p.avisos.value.map { it.kdsId })
+    }
 }
