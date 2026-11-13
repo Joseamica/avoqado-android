@@ -18,6 +18,9 @@ package com.avoqado.pos.core.data.lan
  *   posee de todos modos.
  * - Hub D3 (mesa declarada): `estado` lo decide [Presencias], bajo este mismo `lock` y con el reloj MONOTÓNICO
  *   ([monoMillis]); la hora de pared ([nowMillis]) sólo sigue en los `expiresAtMillis` de los permisos viejos.
+ * - Convive con apps viejas en el mismo árbitro: cada `estado` aceptado borra los permisos viejos de ese aparato (adopción) y, mientras
+ *   esté «en presencia», sus acquire/renew/release son `error`. El acquire viejo de una mesa que declara una caja nueva viva se niega,
+ *   y el permiso viejo vivo de otro aparato ocupa la mesa para `estado`. `list` junta las dos fuentes, una vez por mesa.
  */
 class LeaseServer(
     private val registry: LeaseRegistry = LeaseRegistry(),
@@ -59,10 +62,19 @@ class LeaseServer(
 
         val now = nowMillis()
         return synchronized(lock) {
+            val mono = monoMillis()
+            // Adopción (D3): un aparato que ya declara su estado no habla las ops viejas; un acquire suyo que llegue tarde no revive nada.
+            val opVieja = request.op == LeaseProtocol.OP_ACQUIRE || request.op == LeaseProtocol.OP_RENEW || request.op == LeaseProtocol.OP_RELEASE
+            if (opVieja && presencias.enPresencia(request.deviceId, mono)) {
+                return@synchronized LeaseResponse(status = LeaseProtocol.STATUS_ERROR, message = "en presencia")
+            }
             when (request.op) {
-                LeaseProtocol.OP_ACQUIRE -> LeaseProtocol.toResponse(
-                    registry.acquire(request.tableId, request.deviceId, request.staffId, request.staffName, now),
-                )
+                // App vieja: se le niega la mesa que declara una caja nueva viva; si no, el registro de siempre.
+                LeaseProtocol.OP_ACQUIRE -> presencias.comoPermiso(request.tableId, request.deviceId, mono, now)
+                    ?.let { LeaseResponse(status = LeaseProtocol.STATUS_DENIED, holder = it) }
+                    ?: LeaseProtocol.toResponse(
+                        registry.acquire(request.tableId, request.deviceId, request.staffId, request.staffName, now),
+                    )
                 LeaseProtocol.OP_RENEW -> LeaseProtocol.toResponse(
                     registry.renew(request.tableId, request.deviceId, request.epoch, now),
                 )
@@ -73,11 +85,17 @@ class LeaseServer(
                         currentEpoch = if (released) null else request.epoch,
                     )
                 }
-                LeaseProtocol.OP_LIST -> LeaseResponse(
-                    status = LeaseProtocol.STATUS_LEASES,
-                    leases = registry.activeLeases(now).map { it.toWire() },
-                )
-                LeaseProtocol.OP_ESTADO -> presencias.estado(request, monoMillis(), deviceId)
+                // Una entrada por mesa: primero los permisos viejos vivos, luego las mesas que sólo declaran presencias vivas.
+                LeaseProtocol.OP_LIST -> {
+                    val viejos = registry.activeLeases(now).map { it.toWire() }
+                    LeaseResponse(
+                        status = LeaseProtocol.STATUS_LEASES,
+                        leases = viejos + presencias.comoPermisos(mono, now, viejos.mapTo(HashSet()) { it.tableId }),
+                    )
+                }
+                LeaseProtocol.OP_ESTADO -> presencias.estado(request, mono, deviceId, registry.activeLeases(now)).also {
+                    if (it.status == LeaseProtocol.STATUS_OK) registry.soltarDe(request.deviceId)
+                }
                 else -> LeaseResponse(status = LeaseProtocol.STATUS_ERROR, message = "Operación desconocida: ${request.op}")
             }
         }
