@@ -3346,7 +3346,7 @@ class PaymentFlowViewModel @Inject constructor(
                                             message = MENSAJE_CUPON_SIN_RED,
                                             source = PaymentErrorSource.NETWORK,
                                         )
-                                    } else if (isQueueable && cart.pideAprobacionDeGerente) {
+                                    } else if (isQueueable && (cart.pideAprobacionDeGerente || pideAprobacionPorElServidor)) {
                                         // 🔴 D4 (Codex r2 #1): la red cayó al crear la venta. Un descuento que pide aprobación no
                                         // entra sin red para nadie: encolado subiría sin el PIN (el token es de un uso y 60 s).
                                         if (otra) return@fold
@@ -4158,7 +4158,7 @@ class PaymentFlowViewModel @Inject constructor(
                                             message = MENSAJE_CUPON_SIN_RED,
                                             source = PaymentErrorSource.NETWORK,
                                         )
-                                    } else if (isQueueable && cart.pideAprobacionDeGerente) {
+                                    } else if (isQueueable && (cart.pideAprobacionDeGerente || pideAprobacionPorElServidor)) {
                                         // 🔴 D4 (Codex r2 #1): igual que el cupón: sin red este descuento no entra, ni a la cola.
                                         _state.value = PaymentFlowState.Error(
                                             message = DESCUENTO_CON_APROBACION_SIN_RED,

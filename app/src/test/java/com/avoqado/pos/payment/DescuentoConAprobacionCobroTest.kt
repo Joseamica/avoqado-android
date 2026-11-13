@@ -208,6 +208,24 @@ class DescuentoConAprobacionCobroTest {
     }
 
     @Test
+    fun `Codex r3 - el SERVIDOR pidio la aprobacion (catalogo viejo) y luego la red cae - tampoco se encola`() = runTest {
+        every { roles.canApproveDiscounts } returns true
+        val sinMarca = gerencial.copy(id = "cmn3a6xr8000kn227eg8zeh50", requiresApproval = false)
+        coEvery { orderRepository.createOrder(any(), any(), any(), any(), any(), any(), any(), any(), any()) } returnsMany listOf(
+            Result.failure(OrderRepository.ServerException(403, "Permission 'tpv-orders:discount' required", requerido = "tpv-orders:discount")),
+            Result.failure(java.io.IOException("se cayó la red")),
+        )
+        cobrarEnEfectivo(CartState(items = listOf(playera), orderDiscount = sinMarca))
+        advanceUntilIdle()
+        vm.retry()
+        advanceUntilIdle()
+
+        coVerify(exactly = 1) { coordinador.preauthorize("tpv-orders:discount", any(), any()) }
+        assertEquals(DESCUENTO_CON_APROBACION_SIN_RED, (vm.state.value as PaymentFlowState.Error).message)
+        nadaSeEncolo()
+    }
+
+    @Test
     fun `PIN apagado - lo dice y no sale nada`() = runTest {
         pinPrendido.value = false
         cobrarEnEfectivo(conGerencial())
