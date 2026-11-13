@@ -192,6 +192,9 @@ class QuarantineViewModel @Inject constructor(
     private val _items = MutableStateFlow<List<SyncOutbox.QuarantinedIntent>>(emptyList())
     val items: StateFlow<List<SyncOutbox.QuarantinedIntent>> = _items.asStateFlow()
 
+    private val _deOtrasSucursales = MutableStateFlow<List<CobroDeOtraSucursal>>(emptyList())
+    val deOtrasSucursales: StateFlow<List<CobroDeOtraSucursal>> = _deOtrasSucursales.asStateFlow()
+
     private val _failedPayments = MutableStateFlow<List<PendingPaymentEntity>>(emptyList())
     val failedPayments: StateFlow<List<PendingPaymentEntity>> = _failedPayments.asStateFlow()
 
@@ -598,3 +601,7 @@ class QuarantineViewModel @Inject constructor(
         }
     }
 }
+
+data class CobroDeOtraSucursal(val cobro: PendingPaymentEntity, val sucursal: String?)
+
+fun textoDeCobroDeOtraSucursal(sucursal: String?): String = ""

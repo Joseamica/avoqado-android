@@ -428,6 +428,31 @@ class AppStateVenueRecoveryTest {
         )
     }
 
+    /** D52: un cobro de otra sucursal frena cerrar sesión (puede borrar lo local) y el aviso dice de cuál y cómo llegar. */
+    @Test
+    fun `P1 D52 cerrar sesion con un cobro de otra sucursal dice cual`() = runTest {
+        var cerro = false
+        val appState = createAppState(
+            true, {}, {}, {}, onOutboxStart = {},
+            configurarSesion = {
+                every { clearSession() } answers { cerro = true }
+                every { venuesList } returns listOf(com.avoqado.pos.core.data.local.StoredVenue(id = "venue-centro", name = "Sucursal Centro"))
+            },
+            cobrosRechazados = 0,
+            deOtrasSucursales = mapOf("venue-centro" to 1),
+        )
+        advanceUntilIdle()
+
+        appState.onLogout()
+        advanceUntilIdle()
+
+        org.junit.Assert.assertFalse(cerro)
+        org.junit.Assert.assertEquals(
+            "Hay 1 operación pendiente de Sucursal Centro: cambia a esa sucursal para resolverla (Más › Cambiar de establecimiento).",
+            appState.sessionGuardMessage.value,
+        )
+    }
+
     @Test
     fun `onLogout limpia los ajustes y cancela el refresco`() = runTest {
         val refresco = RefrescoQueNoTermina()
@@ -523,6 +548,8 @@ class AppStateVenueRecoveryTest {
         cobrosRechazados: Int = 0,
         /** D34: ¿quien está puede «Marcar resuelta»? */
         puedeResolver: Boolean = false,
+        /** D52: lo que frena de OTRAS sucursales, por sucursal (también suma en `blockingWorkCount`). */
+        deOtrasSucursales: Map<String, Int> = emptyMap(),
     ): AppState {
         val secureStorage = storageReal ?: mockk<SecureStorage>(relaxed = true) {
             every { isLoggedIn } returns true
@@ -544,9 +571,10 @@ class AppStateVenueRecoveryTest {
             every { pendingCount } returns MutableStateFlow(0)
             every { failedCount } returns MutableStateFlow(0)
             every { start() } answers { onPaymentStart() }
-            coEvery { blockingWorkCount() } returns cobrosRechazados
+            coEvery { blockingWorkCount() } returns cobrosRechazados + deOtrasSucursales.values.sum()
             coEvery { porRevisarCount() } returns cobrosRechazados
-            coEvery { porRevisarPorSucursal(any()) } returns PaymentSyncService.PorRevisar(cobrosRechazados, 0)
+            coEvery { porRevisarDeLaSucursal(any()) } returns cobrosRechazados
+            coEvery { bloqueantesDeOtrasSucursales(any()) } returns deOtrasSucursales
             coEvery { sinEnviarCount() } returns 0
         }
         val syncOutbox = mockk<SyncOutbox>(relaxed = true) {

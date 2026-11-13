@@ -1275,6 +1275,14 @@ class PaymentSyncService @Inject constructor(
     /** Ver [porRevisarPorSucursal]. */
     data class PorRevisar(val aqui: Int, val deOtraSucursal: Int)
 
+    suspend fun porRevisarDeLaSucursal(venueId: String): Int = porRevisarPorSucursal(venueId).aqui
+
+    suspend fun bloqueantesDeLaSucursal(venueId: String): Int = blockingWorkCount()
+
+    suspend fun bloqueantesDeOtrasSucursales(venueId: String): Map<String, Int> = emptyMap()
+
+    suspend fun pendientesDeOtrasSucursales(venueId: String): List<PendingPaymentEntity> = emptyList()
+
     /**
      * Lo que todavía va a salir: la cola y un cobro interrumpido (la app murió a media petición), que tampoco puede irse con la
      * sesión: nadie ha decidido todavía si ese dinero entró. Lo usa el cambio de usuario por PIN (D28): un FAILED no sale solo,

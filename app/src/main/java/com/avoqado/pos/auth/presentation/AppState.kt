@@ -569,12 +569,9 @@ class AppState @Inject constructor(
                 (venueId?.let { cashDrawerRepository.movimientosSinSubir(it) } ?: 0)
             // D34: lo rechazado frena igual, pero el texto dice qué hacer según quién puede resolverlo.
             val rechazadas = if (blocking > 0) rechazadasPorRevisar(paymentSyncService, syncOutbox, pendingGrantQueue, venueId) else null
-            val conRechazo = rechazadas?.total?.coerceAtMost(blocking) ?: 0
+            val conRechazo = rechazadas?.coerceAtMost(blocking) ?: 0
             if (conRechazo > 0) {
-                _sessionGuardMessage.value = textoDelFrenoConRechazos(
-                    blocking, conRechazo, roleManager.canResolveQuarantine, "cerrar sesión",
-                    deOtraSucursal = rechazadas?.deOtraSucursal?.coerceAtMost(conRechazo) ?: 0,
-                )
+                _sessionGuardMessage.value = textoDelFrenoConRechazos(blocking, conRechazo, roleManager.canResolveQuarantine, "cerrar sesión")
                 return@launch
             }
             if (blocking > 0) {
@@ -623,23 +620,19 @@ class AppState @Inject constructor(
  * los cobros fallidos de otra (el freno es de todo el aparato y sólo se ven con su sucursal abierta, Codex r2 #2 y r3). Se cuenta
  * DIRECTO, nunca restando dos lecturas (Codex r1 #1: un acuse entre las dos inventaba un rechazo).
  */
-internal data class Rechazadas(val aqui: Int, val deOtraSucursal: Int) {
-    val total: Int get() = aqui + deOtraSucursal
-}
-
 internal suspend fun rechazadasPorRevisar(
     pagos: PaymentSyncService,
     cola: com.avoqado.pos.core.data.sync.SyncOutbox,
     paquetes: com.avoqado.pos.customers.data.PendingGrantQueue?,
     venueId: String?,
-): Rechazadas {
-    if (venueId == null) return Rechazadas(aqui = 0, deOtraSucursal = pagos.porRevisarCount())
-    val cobros = pagos.porRevisarPorSucursal(venueId)
+): Int {
+    if (venueId == null) return 0
     val paquetesAqui = paquetes?.filas?.value?.count { it.venueId == venueId && it.porRevisar } ?: 0
     // D53: los cobros «sin confirmar» que esperan a una persona también los resuelve el gerente en la misma hoja.
-    val sinConfirmar = pagos.sinConfirmarPorRevisar()
-    return Rechazadas(aqui = cobros.aqui + sinConfirmar + cola.rechazadasCount(venueId) + paquetesAqui, deOtraSucursal = cobros.deOtraSucursal)
+    return pagos.porRevisarDeLaSucursal(venueId) + pagos.sinConfirmarPorRevisar() + cola.rechazadasCount(venueId) + paquetesAqui
 }
+
+internal fun textoDeLoDeOtrasSucursales(porSucursal: Map<String, Int>, nombres: Map<String, String>): String? = null
 
 /**
  * D34 (opción «a» de la conversación principal, 12-nov): el texto del freno cuando hay [rechazadas] entre las [total] operaciones que

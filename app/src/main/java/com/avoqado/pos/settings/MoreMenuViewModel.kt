@@ -268,11 +268,10 @@ class MoreMenuViewModel @Inject constructor(
             } else {
                 null
             }
-            val conRechazo = rechazadas?.total?.coerceAtMost(blocking) ?: 0
+            val conRechazo = rechazadas?.coerceAtMost(blocking) ?: 0
             if (conRechazo > 0) {
                 _sessionGuardMessage.value = com.avoqado.pos.auth.presentation.textoDelFrenoConRechazos(
                     blocking, conRechazo, roleManager.canResolveQuarantine, "cambiar de establecimiento",
-                    deOtraSucursal = rechazadas?.deOtraSucursal?.coerceAtMost(conRechazo) ?: 0,
                 )
                 return@launch
             }
