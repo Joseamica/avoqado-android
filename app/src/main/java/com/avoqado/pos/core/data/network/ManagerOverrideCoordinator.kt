@@ -46,7 +46,13 @@ open class ManagerOverrideCoordinator @Inject constructor(
      *   forma que el PIN tecleado en uno nunca sobreviva al siguiente, y para
      *   que una cancelación tardía no tumbe la espera de otra acción.
      */
-    data class Prompt(val id: Long, val permission: String, val actionLabel: String)
+    data class Prompt(
+        val id: Long,
+        val permission: String,
+        val actionLabel: String,
+        /** Renglón extra para el gerente («Descuento de Cecilia −$10.00»); lo pinta el anfitrión del teclado. `null` = el de siempre. */
+        val contexto: String? = null,
+    )
 
     private val _prompt = MutableStateFlow<Prompt?>(null)
     val prompt: StateFlow<Prompt?> = _prompt.asStateFlow()
@@ -109,7 +115,14 @@ open class ManagerOverrideCoordinator @Inject constructor(
      * Las peticiones que comparten UN teclado: la que lo abrió y, si traían marca de ráfaga, las de esa misma ráfaga y
      * permiso que llegaron mientras estaba en fila o a la vista. Todo su estado mutable se toca con [candado].
      */
-    private class Grupo(val rafaga: String?, val permission: String, abrio: Espera) {
+    private class Grupo(
+        val rafaga: String?,
+        val permission: String,
+        abrio: Espera,
+        /** Si viene, el token del servidor sólo sirve para esa operación. */
+        val operationKey: String? = null,
+        val contexto: String? = null,
+    ) {
         /** Por orden de llegada; la primera es la que abrió. Sale de aquí al recibir su token o al soltarse. */
         val pendientes = ArrayDeque<Espera>().apply { addLast(abrio) }
         var unidas = 0
@@ -179,7 +192,7 @@ open class ManagerOverrideCoordinator @Inject constructor(
         // Si la UI ya pidió el PIN al TOCAR el botón, ese token se usa aquí y
         // nadie vuelve a ver un teclado. Sin esto, adelantar el PIN lo pediría
         // DOS veces por la misma acción.
-        takePreauthorized(permission)?.let { return@runBlocking it }
+        takePreauthorized(permission, null)?.let { return@runBlocking it }
 
         // Una llamada que ya se cortó no pide teclado (D26, Codex código r5: otra fecha antes de que llegue el 403).
         if (!vivo()) return@runBlocking null
@@ -246,12 +259,12 @@ open class ManagerOverrideCoordinator @Inject constructor(
      *
      * @return true si alguien autorizó; false si canceló, venció o falló.
      */
-    open suspend fun preauthorize(permission: String): Boolean {
+    open suspend fun preauthorize(permission: String, operationKey: String? = null, contexto: String? = null): Boolean {
         // ¿Ya hay uno vivo? Tocar dos veces el mismo botón no puede costar dos
         // PINes — y el token NO se consume aquí: lo consume la petición real.
-        if (peekPreauthorized(permission) != null) return true
+        if (peekPreauthorized(permission, operationKey) != null) return true
         val espera = Espera { true }
-        val grupo = Grupo(null, permission, espera)
+        val grupo = Grupo(null, permission, espera, operationKey, contexto)
         presentar(grupo)
         val token = try {
             espera.token.await()
@@ -260,7 +273,7 @@ open class ManagerOverrideCoordinator @Inject constructor(
             soltar(grupo)
             throw e
         } ?: return false
-        stashPreauthorized(permission, token)
+        stashPreauthorized(permission, operationKey, token)
         return true
     }
 
@@ -283,7 +296,7 @@ open class ManagerOverrideCoordinator @Inject constructor(
         val id = ++nextId
         tecladosPublicados++
         pending = Waiting(id, grupo)
-        _prompt.value = Prompt(id, grupo.permission, PermissionLabels.of(grupo.permission))
+        _prompt.value = Prompt(id, grupo.permission, PermissionLabels.of(grupo.permission), grupo.contexto)
         // Vencer = cancelar: se suelta a quien esperaba y pasa el siguiente.
         grupo.vence = alcance.launch {
             delay(promptTimeoutMs)
@@ -350,24 +363,25 @@ open class ManagerOverrideCoordinator @Inject constructor(
     // de un solo uso Y de un solo permiso, así que reusarlo cruzado sólo lograría
     // quemarlo y dejar la acción real sin autorización.
 
-    private data class Preauthorized(val permission: String, val token: String, val atNanos: Long)
+    private data class Preauthorized(val permission: String, val operationKey: String?, val token: String, val atNanos: Long)
 
     @Volatile
     private var preauthorized: Preauthorized? = null
 
-    private fun vigente(entry: Preauthorized?, permission: String): Preauthorized? {
-        if (entry == null || entry.permission != permission) return null
+    private fun vigente(entry: Preauthorized?, permission: String, operationKey: String? = null): Preauthorized? {
+        if (entry == null || entry.permission != permission || entry.operationKey != operationKey) return null
         val edadMs = (nowNanos() - entry.atNanos) / 1_000_000
         return if (edadMs < preauthTtlMs) entry else null
     }
 
     @Synchronized
-    private fun stashPreauthorized(permission: String, token: String) {
-        preauthorized = Preauthorized(permission, token, nowNanos())
+    private fun stashPreauthorized(permission: String, operationKey: String?, token: String) {
+        preauthorized = Preauthorized(permission, operationKey, token, nowNanos())
     }
 
     @Synchronized
-    private fun peekPreauthorized(permission: String): String? = vigente(preauthorized, permission)?.token
+    private fun peekPreauthorized(permission: String, operationKey: String?): String? =
+        vigente(preauthorized, permission, operationKey)?.token
 
     /**
      * Tira el token adelantado de [permission] sin usarlo. Lo llama quien lo pidió cuando la acción se abandona
@@ -380,8 +394,8 @@ open class ManagerOverrideCoordinator @Inject constructor(
 
     /** Un solo uso también de este lado: al entregarlo, se borra. */
     @Synchronized
-    private fun takePreauthorized(permission: String): String? {
-        val vivo = vigente(preauthorized, permission) ?: return null
+    private fun takePreauthorized(permission: String, operationKey: String?): String? {
+        val vivo = vigente(preauthorized, permission, operationKey) ?: return null
         preauthorized = null
         return vivo.token
     }
@@ -390,7 +404,8 @@ open class ManagerOverrideCoordinator @Inject constructor(
      * hz:e0b12f00:D2: el token adelantado de [permission], para la llamada que lo pone ELLA en su header. La ruta del dinero es
      * `FAIL_FAST`: ahí el interceptor no abre el teclado ni toma el token, así que la venta lo lleva a mano. Un solo uso.
      */
-    open fun tomarPreautorizado(permission: String): String? = takePreauthorized(permission)
+    open fun tomarPreautorizado(permission: String, operationKey: String? = null): String? =
+        takePreauthorized(permission, operationKey)
 
     @Synchronized
     open fun discardPreauthorized(permission: String) {
@@ -426,7 +441,7 @@ open class ManagerOverrideCoordinator @Inject constructor(
             while (true) {
                 val turno = siguienteTurno(grupo) ?: break
                 // El PIN viaja una vez por token: el servidor lo valida y lo audita cada vez. Nunca se guarda.
-                val result = repository.requestToken(venueId, pin, grupo.permission)
+                val result = repository.requestToken(venueId, pin, grupo.permission, grupo.operationKey)
                 if (result is OverrideResult.Granted) {
                     // Entregar y soltar se deciden bajo el MISMO candado (Codex código r1 #1): si mientras viajaba este
                     // token se canceló o venció el teclado, ya se soltó a todas y el token se tira sin usarse.

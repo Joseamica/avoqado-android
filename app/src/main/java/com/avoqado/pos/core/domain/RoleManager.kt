@@ -392,6 +392,13 @@ class RoleManager @Inject constructor(
     val canCompOrders: Boolean
         get() = hasVenuePermission("orders:comp", fallbackRoles = MANAGER_UP)
 
+    /**
+     * D2: aplicar un descuento a la cuenta (`discounts:apply`; de fábrica mesero, cajero y gerente para arriba). Lo pide el descuento
+     * que el negocio le asignó al cliente: sin él, el carrito avisa y pide el PIN de un gerente. El juez sigue siendo el SERVIDOR.
+     */
+    val canApplyDiscounts: Boolean
+        get() = hasVenuePermission("discounts:apply", fallbackRoles = PISO_DE_DESCUENTOS)
+
     /** Membership tiles are optional and must not trigger a forbidden request. */
     val canReadCreditPacks: Boolean
         get() = hasVenuePermission("creditPacks:read")
@@ -437,6 +444,8 @@ class RoleManager @Inject constructor(
         /** El respaldo histórico de todo lo administrativo. */
         val MANAGER_UP = setOf("MANAGER", "ADMIN", "OWNER", "SUPERADMIN")
         val ADMIN_UP = setOf("ADMIN", "OWNER", "SUPERADMIN")
+        /** Quien trae `discounts:apply` de fábrica en el SERVIDOR (`permissions.ts`). */
+        val PISO_DE_DESCUENTOS = setOf("WAITER", "CASHIER", "MANAGER", "ADMIN", "OWNER", "SUPERADMIN")
 
         /** El respaldo histórico de lo que se usa desde el piso. */
         val FLOOR = setOf("WAITER", "CASHIER", "MANAGER", "ADMIN", "OWNER", "SUPERADMIN")

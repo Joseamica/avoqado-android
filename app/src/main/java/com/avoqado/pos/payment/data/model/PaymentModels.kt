@@ -233,6 +233,14 @@ data class CreateOrderRequest(
     val orderType: String? = null,
     /** D5: el cupón validado ([com.avoqado.pos.pos.data.model.Discount.couponCode]). El SERVIDOR lo revalida y calcula el monto. */
     val couponCode: String? = null,
+    /**
+     * D2: el `discountId` del descuento que el negocio le asignó al cliente, cuando ESE es el descuento de cuenta ([discount] > 0).
+     * Viaja como etiqueta `descuentoDelCliente {discountId, montoCents = discount}` y hace que la venta lleve ORDEN aunque sean puros
+     * importes ([com.avoqado.pos.payment.data.OrderRepository.aceptaCrearOrden]). Null = sin descuento del cliente: el cuerpo no cambia.
+     */
+    val descuentoDelClienteId: String? = null,
+    /** D2: el token del PIN de gerente atado al monto. Viaja en el CUERPO, nunca en `X-Permission-Override` ni en la llave. */
+    val autorizacionDelDescuento: String? = null,
 )
 
 /** Una elección de la persona dentro de la promoción: qué grupo y qué opción. */

@@ -626,6 +626,9 @@ class TableOrderViewModel @Inject constructor(
                             "REJECTED" -> showError("Una ronda guardada necesita revisión", "Abre la cola de sincronización para ver el motivo.")
                             "HELD" -> syncOutbox.soltar(vId, key)
                             null -> {
+                                // D29 (Codex r1): el gerente pudo marcarla resuelta después de leer el borrador. El descarte la saca
+                                // del disco ANTES de borrar su fila: sin fila y fuera del borrador en disco, ya no se vuelve a encolar.
+                                if (draftStore.load(vId, scope.second).rounds[key] == null) continue
                                 val requests = com.avoqado.pos.tables.data.buildTableRoundRequests(lines.map { it.item }, lines.associate { it.item.id to it.course }, lines.associate { it.item.id to it.seat })
                                 syncOutbox.enqueue(vId, com.avoqado.pos.core.data.sync.SyncIntentTypes.ADD_ITEMS,
                                     payloadDeRonda(restoredSession, RondaConLlave.conLlaves(requests, key)), id = key, createdAtLocal = draftDates[key])

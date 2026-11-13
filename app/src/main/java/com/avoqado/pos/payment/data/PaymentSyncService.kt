@@ -1262,12 +1262,16 @@ class PaymentSyncService @Inject constructor(
         data class CancelledZeroPaymentReview(val propuesta: PropuestaRevisionCancelada) : RetryOutcome
     }
 
-    /** Lectura persistida para impedir logout/cambio de venue con trabajo oculto. */
+    /** Lectura persistida para impedir logout/cambio de venue con trabajo oculto: lo que falta enviar y los cobros por revisar. */
     suspend fun blockingWorkCount(): Int =
-        dao.getUnsyncedPayments().size + dao.getFailedPayments().count { !RevisionCanceladoCero.revisado(it) } +
-            // Un cobro interrumpido (la app murió a media petición) tampoco puede irse con la sesión:
-            // nadie ha decidido todavía si ese dinero entró.
-            dao.enVueloCount()
+        sinEnviarCount() + dao.getFailedPayments().count { !RevisionCanceladoCero.revisado(it) }
+
+    /**
+     * Lo que todavía va a salir: la cola y un cobro interrumpido (la app murió a media petición), que tampoco puede irse con la
+     * sesión: nadie ha decidido todavía si ese dinero entró. Lo usa el cambio de usuario por PIN (D28): un FAILED no sale solo,
+     * lo reintenta o descarta un gerente, y el reintento manda el `staffId` original.
+     */
+    suspend fun sinEnviarCount(): Int = dao.getUnsyncedPayments().size + dao.enVueloCount()
 
     private fun calculateBackoff(retryCount: Int): Long {
         return minOf(

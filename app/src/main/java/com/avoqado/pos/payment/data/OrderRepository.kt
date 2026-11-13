@@ -501,11 +501,17 @@ class OrderRepository @Inject constructor(
          * siendo cobro rápido. Deciden con ESTA regla crear la orden ([createOrder]) y la fila de la cola sin red
          * ([CashPaymentRepository]): así la parte guardada sin red se reproduce contra la misma orden por su `externalId`.
          * D5: también con cupón: un cobro rápido no tiene orden donde ligarlo y el cupón nunca contaría.
+         * D2 (spec punto 15): y con el descuento del cliente: un cobro rápido no lleva descuento ni etiqueta ni PIN.
          */
         fun aceptaCrearOrden(request: CreateOrderRequest): Boolean =
             hasProductItems(request) ||
                 (request.items.isNotEmpty() && !request.couponCode.isNullOrBlank()) ||
-                (request.items.isNotEmpty() && request.splitType != null && request.splitType != "FULLPAYMENT")
+                (request.items.isNotEmpty() && request.splitType != null && request.splitType != "FULLPAYMENT") ||
+                (request.items.isNotEmpty() && llevaDescuentoDelCliente(request))
+
+        /** D2: la etiqueta del descuento del cliente sólo viaja con monto (el SERVIDOR exige `montoCents == discount`). */
+        private fun llevaDescuentoDelCliente(request: CreateOrderRequest): Boolean =
+            request.discount > 0 && !request.descuentoDelClienteId.isNullOrBlank()
 
         /**
          * El cuerpo EXACTO que viaja en `POST /mobile/venues/:id/fast`.
@@ -747,6 +753,15 @@ class OrderRepository @Inject constructor(
                     // hz:e0b12f00:D2: «esta app pide el PIN de gerente antes de mandar un descuento de cuenta que regala». Sólo a ella le
                     // exige el SERVIDOR `orders:comp` en línea (una app vieja, no). ADITIVO: sin descuento de cuenta el cuerpo no cambia.
                     put("cortesiaDeCuentaConPin", true)
+                }
+                // D2: ese descuento es el del cliente. La etiqueta dice de quién y cuánto (= `discount`); el PIN del gerente va en el
+                // CUERPO, nunca en `X-Permission-Override` ni en la llave. ADITIVO: sin etiqueta el cuerpo queda byte a byte igual.
+                if (llevaDescuentoDelCliente(request)) {
+                    put("descuentoDelCliente", buildJsonObject {
+                        put("discountId", request.descuentoDelClienteId)
+                        put("montoCents", request.discount)
+                    })
+                    request.autorizacionDelDescuento?.takeIf { it.isNotBlank() }?.let { put("autorizacionDelDescuento", it) }
                 }
                 // D5. ADITIVO: sin cupón el cuerpo queda byte a byte igual.
                 request.couponCode?.takeIf { it.isNotBlank() }?.let { put("couponCode", it) }

@@ -208,6 +208,60 @@ class DescuentoDeCuentaQueRegalaCobroTest {
         coVerify(exactly = 0) { orderRepository.createOrder(any(), any(), any(), any(), any(), any(), any(), any(), any()) }
     }
 
+    /**
+     * D2 · 7c: con el descuento del cliente, la venta de puros importes SÍ crea su orden (nunca `/fast`), así que un descuento fijo que
+     * la deja en $0 es una cortesía como la de un producto: sin `orders:comp`, el PIN del gerente ANTES de crear o apartar nada.
+     */
+    private fun importesConDescuentoDelClienteEnCero() = CartState(
+        items = listOf(CartItem(id = "o1", type = CartItemType.CustomAmount, name = "Otro importe", unitPrice = 10000)),
+        orderDiscount = Discount(
+            id = "d-vecino", name = "Vecino", value = 150.0, type = "FIXED_AMOUNT",
+            source = com.avoqado.pos.pos.presentation.cart.DESCUENTO_DEL_CLIENTE_SOURCE,
+        ),
+    )
+
+    private fun nadaPorFast() = coVerify(exactly = 0) {
+        orderRepository.recordFastCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any())
+    }
+
+    @Test
+    fun `D2 importes con el descuento del cliente que deja la cuenta en 0 - pide el PIN antes de crear y nunca va por FAST`() = runTest {
+        coEvery { coordinador.preauthorize("orders:comp") } returns false
+        cobrarEnEfectivo(importesConDescuentoDelClienteEnCero())
+        advanceUntilIdle()
+
+        coVerify(exactly = 1) { coordinador.preauthorize("orders:comp") }
+        coVerify(exactly = 0) { orderRepository.createOrder(any(), any(), any(), any(), any(), any(), any(), any(), any()) }
+        nadaPorFast()
+        nadaSeAparto()
+        nadaSeEncolo()
+
+        // Con el PIN, la venta sale con su token de cortesía y la etiqueta del descuento del cliente, y tampoco por FAST.
+        coEvery { coordinador.preauthorize("orders:comp") } returns true
+        val pedidos = mutableListOf<com.avoqado.pos.payment.data.model.CreateOrderRequest>()
+        coEvery { orderRepository.createOrder(capture(pedidos), any(), any(), any(), any(), any(), any(), any(), any()) } returns creada()
+        vm.processCashPayment(0)
+        advanceUntilIdle()
+        coVerify(exactly = 1) { orderRepository.createOrder(any(), any(), any(), any(), any(), any(), any(), any(), "token-gerente") }
+        assertEquals("d-vecino", pedidos.single().descuentoDelClienteId)
+        assertEquals(10000, pedidos.single().discount)
+        nadaPorFast()
+    }
+
+    @Test
+    fun `D2 importes con el descuento del cliente en 0 y sin red - lo dice y no crea, no aparta, no encola ni va por FAST`() = runTest {
+        enLinea.value = false
+        cobrarEnEfectivo(importesConDescuentoDelClienteEnCero())
+        advanceUntilIdle()
+
+        coVerify(exactly = 0) { coordinador.preauthorize(any()) }
+        coVerify(exactly = 0) { orderRepository.createOrder(any(), any(), any(), any(), any(), any(), any(), any(), any()) }
+        nadaPorFast()
+        nadaSeAparto()
+        nadaSeEncolo()
+        assertEquals(CORTESIA_DE_CUENTA_SIN_RED, (vm.state.value as PaymentFlowState.Error).message)
+    }
+
     @Test
     fun `cancelar el PIN - no sale nada ni se guarda nada`() = runTest {
         coEvery { coordinador.preauthorize("orders:comp") } returns false

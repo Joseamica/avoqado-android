@@ -166,9 +166,12 @@ class CuentasPorLaRedTest {
             s.getOutputStream().flush()
             s.close()
         }
-        assertEquals(LeaseProtocol.STATUS_GRANTED, LeaseClient().preguntarCuenta(peer(ss), pedido)?.status)
-        val puerto = ss.localPort
+        // Prueba inestable en el CI de GitHub (12-nov, PR #220, #223 y #224): el plazo de 2 s por intento podía vencer en un runner
+        // cargado, y un puerto recién cerrado lo puede tomar otra prueba. Aquí se prueba la conducta, no la velocidad: plazo amplio para
+        // la que contesta, y el puerto 1 (nadie escucha ahí) para «nadie escuchando».
+        assertEquals("la dueña contestó", LeaseProtocol.STATUS_GRANTED,
+            LeaseClient().preguntarCuenta(peer(ss), pedido, plazoTotalMs = 20_000, plazoIntentoMs = 10_000)?.status)
         ss.close()
-        assertNull(LeaseClient().preguntarCuenta(LanPeer("x", "127.0.0.1", puerto), pedido, plazoTotalMs = 500, plazoIntentoMs = 200))
+        assertNull("nadie escuchando", LeaseClient().preguntarCuenta(LanPeer("x", "127.0.0.1", 1), pedido, plazoTotalMs = 2_000, plazoIntentoMs = 1_000))
     }
 }

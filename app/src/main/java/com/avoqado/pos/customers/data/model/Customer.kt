@@ -4,6 +4,16 @@ import com.avoqado.pos.transactions.data.model.CustomerStoreCredit
 import com.avoqado.pos.transactions.data.model.CustomerStoreCreditTolerante
 import kotlinx.serialization.Serializable
 
+/** El descuento de la ficha del cliente. [value] en pesos o en %, según [type] (`PERCENTAGE` | `FIXED_AMOUNT`). */
+@Serializable
+data class DescuentoDelCliente(
+    val discountId: String,
+    val name: String,
+    val type: String,
+    val value: Double,
+    val maxDiscountAmount: Double? = null,
+)
+
 @Serializable
 data class Customer(
     val id: String,
@@ -26,6 +36,8 @@ data class Customer(
     /** Saldo a favor (aditivo): `null` = sin sobre o servidor anterior. */
     @Serializable(with = CustomerStoreCreditTolerante::class)
     val storeCredit: CustomerStoreCredit? = null,
+    /** Descuento asignado a su ficha (aditivo): `null` = sin descuento o servidor anterior. */
+    val descuentoDelCliente: DescuentoDelCliente? = null,
 ) {
     val fullName: String
         get() {
