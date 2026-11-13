@@ -61,7 +61,9 @@ class AperturaDeMesaConElHubTest {
     private val venue = "FULLTEST-apertura"
     private val mesaB = DiningTable("t-B", "B")
     private val mesaC = DiningTable("t-C", "C")
-    private val plano = MutableStateFlow<List<DiningTable>>(emptyList())
+    /** El plano trae la mesa que se abre (se toca desde ahí): una mesa ausente con la carga terminada es una mesa que ya no está. */
+    private val plano = MutableStateFlow(listOf(mesaB, mesaC, DiningTable("m13", "13")))
+    private val cargando = MutableStateFlow(false)
 
     // La cuenta de cada ticket que entrega el Hub.
     private val tickets = mutableListOf<Apertura>()
@@ -81,7 +83,7 @@ class AperturaDeMesaConElHubTest {
 
     private fun vm(lanHub: LanHubService = hub, sesion: TableSession = session): TablesViewModel {
         every { repository.tables } returns plano
-        every { repository.isLoading } returns MutableStateFlow(false)
+        every { repository.isLoading } returns cargando
         coEvery { repository.refresh(any()) } returns Result.success(emptyList())
         every { storage.venueId } returns venue
         sesion.sincronizarContexto("actor", venue)
@@ -319,9 +321,10 @@ class AperturaDeMesaConElHubTest {
             subject.selectTable(mesaB.id)
             subject.openTableAndStartOrdering(mesaB, 2) { navego++ }; runCurrent()
             assertEquals("startIfCurrent ya corrió", "t-B", session.current()?.tableId)
+            // Codex código r1 #2: la sesión ya declara la mesa, así que el ticket se terminó en ese momento (no tras el refresco).
+            assertTrue("el ticket ya no vive", vivos.isEmpty())
 
             subject.selectTable(null)
-            assertEquals(1, vivos.size)
 
             refresco.complete(Result.success(emptyList())); advanceUntilIdle()
             assertEquals("t-B", session.current()?.tableId)
@@ -330,6 +333,32 @@ class AperturaDeMesaConElHubTest {
             assertEquals("t-B", mesaAlTerminar[tickets.single().id])
             assertEquals(TableActionState.Idle, subject.actionState.value)
         } finally { subject.viewModelScope.cancel() }
+    }
+
+    @Test fun `comprometida con red - con el refresco retenido entra a otra mesa ocupada y sale - la primera ya no queda declarada`() = runTest {
+        // Codex código r1 #2: el ticket de t-B vivía hasta que terminara el refresco viejo y declaraba t-B aunque A ya estuviera en otra.
+        val x = arbitro()
+        val a = caja("A", "Ana", "10.0.0.1", x)
+        coEvery { repository.openTable(venue, "t-B", any()) } returns Result.success(OpenedOrder("o-B", "B"))
+        val subject = vm(hubDe(a), a.sesion)
+        val refresco = CompletableDeferred<Result<List<DiningTable>>>()
+        coEvery { repository.refresh(any()) } coAnswers { refresco.await() }
+        try {
+            a.coordinador.start(); runCurrent()
+            subject.selectTable(mesaB.id)
+            subject.openTableAndStartOrdering(mesaB, 2) {}; runCurrent()
+            assertEquals("startIfCurrent ya corrió y el refresco sigue retenido", "t-B", a.sesion.current()?.tableId)
+
+            subject.selectTable(null)
+            subject.startOrdering(m13Ocupada) {}; runCurrent() // entra a otra mesa ocupada (el botón está habilitado)
+            assertEquals("m13", a.sesion.current()?.tableId)
+            subject.exitTableMode(); runCurrent() // y sale
+
+            assertEquals(MesasDeEstaCaja.Declaracion(emptySet(), emptyList()), a.mesas.declaracion(venue))
+            assertEquals("el árbitro no le guarda t-B a A", emptySet<String>(), x.ocupadas())
+        } finally {
+            subject.viewModelScope.cancel(); refresco.cancel(); a.coordinador.stop()
+        }
     }
 
     // MARK: - p20b (Codex plan r1 #4): cerrar la hoja después de Granted, con openTable retenido
@@ -415,7 +444,9 @@ class AperturaDeMesaConElHubTest {
         } finally { subject.viewModelScope.cancel() }
     }
 
-    @Test fun `p20c una lista vacia es cargando - no abandona`() = runTest {
+    // Codex código r1 #4: el repositorio publica una lista vacía DEFINITIVA con la carga ya terminada; sólo la vacía de mientras carga
+    // es «cargando».
+    @Test fun `p20c una lista vacia mientras carga no abandona - y si la carga trae la mesa sigue el intento`() = runTest {
         plano.value = listOf(mesaB, mesaC)
         esperar = esperarHastaQueSuelte
         val subject = vm()
@@ -423,9 +454,31 @@ class AperturaDeMesaConElHubTest {
             subject.selectTable(mesaB.id)
             subject.openTableAndStartOrdering(mesaB, 2) {}; runCurrent()
 
-            plano.value = emptyList(); runCurrent()
+            cargando.value = true; plano.value = emptyList(); runCurrent()
             assertEquals(1, vivos.size)
             assertEquals(TableActionState.Working, subject.actionState.value)
+
+            plano.value = listOf(mesaB, mesaC); cargando.value = false; runCurrent()
+            assertEquals(1, vivos.size)
+            assertEquals(TableActionState.Working, subject.actionState.value)
+        } finally { subject.viewModelScope.cancel() }
+    }
+
+    @Test fun `p20c una lista vacia definitiva (la carga termino) abandona - el ticket se termina y queda Idle`() = runTest {
+        plano.value = listOf(mesaB)
+        esperar = esperarHastaQueSuelte
+        val subject = vm()
+        try {
+            subject.selectTable(mesaB.id)
+            subject.openTableAndStartOrdering(mesaB, 2) {}; runCurrent()
+
+            cargando.value = true; plano.value = emptyList(); runCurrent() // la respuesta: ya no hay mesas
+            cargando.value = false; runCurrent()
+            assertTrue("se terminó al confirmarse la ausencia", vivos.isEmpty())
+            assertEquals(TableActionState.Idle, subject.actionState.value)
+
+            advanceUntilIdle()
+            coVerify(exactly = 0) { repository.openTable(any(), any(), any()) }
         } finally { subject.viewModelScope.cancel() }
     }
 

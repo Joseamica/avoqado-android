@@ -290,7 +290,7 @@ class TablesViewModel @Inject constructor(
      * red partiría su escritura. Su `finally` repite el `terminarApertura` sin efecto.
      */
     private fun abandonarApertura() {
-        // Comprometido: no se toca (termina, navega y su `finally` cierra el ticket con la sesión ya declarando la mesa).
+        // Comprometido: no se toca (termina y navega; su ticket se suelta en cuanto la sesión declara la mesa).
         if (aperturaEnCurso?.comprometida == true) return
         if (_actionState.value is TableActionState.Working) _actionState.value = TableActionState.Idle
         _revisandoConCajas.value = false
@@ -338,10 +338,17 @@ class TablesViewModel @Inject constructor(
                 staffName = secureStorage.selectedStaffNameForCurrentVenue
                     ?: secureStorage.userFirstName.orEmpty(),
             )
+            // Codex código r1 #2: el ticket se suelta EN CUANTO la sesión de la mesa la declara (con y sin red), no tras el refresco: si
+            // no, seguía declarando esta mesa aunque el mesero ya hubiera entrado a otra y salido. El `finally` es la red de seguridad.
+            var ticketVivo = true
+            fun soltarTicket() {
+                if (ticketVivo) { ticketVivo = false; lanHub.terminarApertura(ticket) }
+            }
             val enCurso = AperturaEnCurso(ticket).also { aperturaEnCurso = it }
-            // La hoja deja de dibujarse si la mesa sale del plano: se abandona. Una lista vacía es «cargando» y no cuenta.
+            // La hoja deja de dibujarse si la mesa sale del plano: se abandona. Sólo cuenta la ausencia con la carga terminada (Codex
+            // código r1 #4): una lista vacía mientras carga no dice nada, pero el repositorio también publica una vacía DEFINITIVA.
             val vigilante = launch {
-                tables.first { lista -> lista.isNotEmpty() && lista.none { it.id == table.id } }
+                combine(tables, isLoading) { lista, cargando -> !cargando && lista.none { it.id == table.id } }.first { it }
                 if (aperturaEnCurso === enCurso) abandonarApertura()
             }
             try {
@@ -378,6 +385,7 @@ class TablesViewModel @Inject constructor(
                         )
                         if (!tableSession.startIfCurrent(opened, original, vId, sessionEpoch)) { desistir(); return@launch }
                         enCurso.comprometida = true // la sesión ya declara la mesa: cerrar la hoja ya no la suelta
+                        soltarTicket()
                         repository.refresh(vId)
                         if (!vigenteAbierta(opened)) { desistir(); return@launch }
                         _actionState.value = TableActionState.Idle
@@ -394,7 +402,7 @@ class TablesViewModel @Inject constructor(
                             var aperturaLocal: TableSession.Active? = null
                             try {
                                 val opened = openTableOffline(vId, table, covers, original, sessionEpoch,
-                                    onActivated = { aperturaLocal = it }, sigueOriginal = { vigente(original) },
+                                    onActivated = { aperturaLocal = it; soltarTicket() }, sigueOriginal = { vigente(original) },
                                     alComprometer = { enCurso.comprometida = true })
                                 if (opened == null || !vigenteAbierta(opened)) { desistir(); return@launch }
                                 _actionState.value = TableActionState.Idle
@@ -413,8 +421,8 @@ class TablesViewModel @Inject constructor(
             } finally {
                 vigilante.cancel()
                 if (aperturaEnCurso === enCurso) { aperturaEnCurso = null; _revisandoConCajas.value = false }
-                // En el éxito `startIfCurrent` ya corrió arriba: la sesión declara la mesa ANTES de que el ticket termine (sin hueco).
-                lanHub.terminarApertura(ticket)
+                // En el éxito ya se soltó justo después de `startIfCurrent` (la sesión declara la mesa ANTES: sin hueco). Aquí, toda otra salida.
+                soltarTicket()
             }
         }
     }

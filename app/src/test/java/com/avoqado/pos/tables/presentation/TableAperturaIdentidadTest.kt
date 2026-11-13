@@ -29,7 +29,8 @@ class TableAperturaIdentidadTest {
     private val target=DiningTable("t-B","B")
     private fun active(id:String="A")=TableSession.Active("t-$id",id,null,"o-$id",id,1,8000,TableSession.Mode.PAYING)
     private fun vm():TablesViewModel {
-        every { repository.tables } returns MutableStateFlow(emptyList())
+        // La mesa que se abre está en el plano (se toca desde ahí): ausente y sin cargar, la apertura se abandona (Codex código r1 #4).
+        every { repository.tables } returns MutableStateFlow(listOf(target))
         every { repository.isLoading } returns MutableStateFlow(false)
         coEvery { repository.refresh(any()) } returns Result.success(emptyList())
         every { storage.venueId } answers { venue }
