@@ -213,6 +213,10 @@ class PaymentSyncService @Inject constructor(
             // ruido que promete algo que ese endpoint no hace.
             if (!esCobroDeOrden) {
                 payment.customerId?.takeIf { it.isNotBlank() }?.let { put("customerId", it) }
+                // La hora de la venta, sólo en EFECTIVO (sin tipo del catálogo): el SERVIDOR fecha la lealtad con ella (promoción
+                // vigente y tope diario de sellos) en vez de con la hora del reenvío. Es la de la fila (se guarda ANTES de la red), así
+                // que cada reintento manda la misma. Tarjeta y demás: sin campo, como hoy. Un SERVIDOR viejo lo ignora.
+                if (tenderId == null && payment.method == "CASH") put("createdAtLocal", payment.createdAt)
             }
             // 🔴 LA CAJA DE LA VENTA (efectivo sin red en el turno correcto): el servidor saca de ahí el turno de la venta, y una
             // venta cuyo turno ya cerró queda aparte con aviso en vez de caer en el turno nuevo. Sólo cuenta con

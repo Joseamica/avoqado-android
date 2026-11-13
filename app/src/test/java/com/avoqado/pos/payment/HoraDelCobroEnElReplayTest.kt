@@ -63,8 +63,24 @@ class HoraDelCobroEnElReplayTest {
             .jsonObject["createdAtLocal"] as JsonPrimitive).long)
     }
 
-    @Test fun `la venta rapida no la manda`() {
-        assertFalse(PaymentSyncService.buildReplayBody(fila("FAST"), "venue-1", esCobroDeOrden = false).contains("createdAtLocal"))
+    @Test fun `la venta rapida en efectivo manda la hora de la fila, igual en cada reintento`() {
+        val fila = fila("FAST")
+        repeat(2) {
+            val cuerpo = Json.parseToJsonElement(PaymentSyncService.buildReplayBody(fila, "venue-1", esCobroDeOrden = false)).jsonObject
+            val hora = cuerpo["createdAtLocal"] as JsonPrimitive
+            assertFalse(hora.isString)
+            assertEquals(cobradoA, hora.long)
+            assertEquals(true, (cuerpo["isOfflineReplay"] as JsonPrimitive).content.toBoolean())
+        }
+    }
+
+    @Test fun `la venta rapida con tarjeta u otro metodo no la manda`() {
+        for (m in listOf("CARD_EXTERNAL", "TRANSFER")) {
+            assertFalse(PaymentSyncService.buildReplayBody(fila("FAST").copy(method = m), "venue-1", esCobroDeOrden = false)
+                .contains("createdAtLocal"))
+        }
+        assertFalse(PaymentSyncService.buildReplayBody(fila("FAST").copy(tenderTypeId = "t1", tenderRevision = 1), "venue-1", false)
+            .contains("createdAtLocal"))
     }
 
     @Test fun `con la cola real la hora del pay es la de la captura, la misma que la de la orden`() = runTest {
