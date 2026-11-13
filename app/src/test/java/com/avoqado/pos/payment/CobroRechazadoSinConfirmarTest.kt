@@ -684,6 +684,24 @@ class CobroRechazadoSinConfirmarTest {
         assertEquals("el de la app de antes espera a una persona", 1, caja.enVueloPorRevisar())
     }
 
+    /** Codex D53 r1 #2: lo retenido con motivo Q15 («Conservar para revisión») no tiene acción en la hoja: no se cuenta «por revisar». */
+    @Test
+    fun `P1 D53 lo retenido con motivo no cuenta como por revisar ni se resuelve solo`() = runTest {
+        every { secureStorage.venueId } returns VENUE
+        disco.filas["retenido"] = sinDuenio("retenido", marcada = true).copy(q15Reason = ConciliacionDelCobro.RESULTADO_NO_COMPROBADO)
+
+        assertEquals(0, caja.enVueloPorRevisar())
+        assertEquals(0, caja.enVueloQueSeResuelveSolo())
+    }
+
+    /** Codex D53 r1 #3: la tarjeta del cobro interrumpido dice cómo se cobró. */
+    @Test
+    fun `P1 D53 el cobro interrumpido dice como se cobro`() {
+        assertEquals("Cobro en efectivo", com.avoqado.pos.sync.presentation.tituloDelCobroInterrumpido("CASH", null))
+        assertEquals("Cobro con transferencia", com.avoqado.pos.sync.presentation.tituloDelCobroInterrumpido("TRANSFER", null))
+        assertEquals("Cobro con otro tipo de pago", com.avoqado.pos.sync.presentation.tituloDelCobroInterrumpido("CASH", "tipo-1"))
+    }
+
     /** M-1 (espejo de iOS): tras «No se pudo cancelar», «Reintentar» reintenta la CANCELACIÓN, nunca el cobro. */
     @Test
     fun `P1 Reintentar tras No se pudo cancelar reintenta la cancelacion y no vuelve a cobrar`() = runTest {

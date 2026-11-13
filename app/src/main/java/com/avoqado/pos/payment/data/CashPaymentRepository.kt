@@ -338,13 +338,17 @@ class CashPaymentRepository @Inject constructor(
     }
 
     /**
-     * D53: los del local actual que esperan a una PERSONA («Cobro sin confirmar» en «Operaciones por revisar»: «Ya pagó de otra forma»
-     * a medias, los de la app de antes, los que tienen motivo Q15). No salen solos: no frenan «Cambiar usuario» —el gerente tiene que
-     * poder entrar a resolverlos— y el aviso de cerrar sesión los cuenta como «por revisar». Conservan el `staffId` de quien cobró.
+     * D53: los del local actual que esperan a una PERSONA y que ella puede resolver: los «Cobros interrumpidos» de «Operaciones por
+     * revisar» («Sí se cobró» / «Conservar para revisión»), o sea [cobrosSinConfirmar] menos lo que el barrido da por cobrado: «Ya pagó de
+     * otra forma» a medias y los de la app de antes. El aviso de cerrar sesión los cuenta como «por revisar». Codex D53 r1 #1 y #2: lo ya
+     * revisado o retenido con motivo Q15 no se cuenta aquí (la hoja no lo enseña con una acción; queda en «lo demás»). Conservan el
+     * `staffId` de quien cobró.
      */
     suspend fun enVueloPorRevisar(): Int {
         val venueId = secureStorage.venueId?.takeIf { it.isNotBlank() } ?: return 0
-        return pendingPaymentDao.enVueloDelVenue(venueId).count { it.id !in reservasDeEsteProceso && !seDaPorCobrada(it, venueId) }
+        return pendingPaymentDao.enVueloDelVenue(venueId).count {
+            it.id !in reservasDeEsteProceso && RevisionCanceladoCero.mostrarFallido(it) && !seDaPorCobrada(it, venueId)
+        }
     }
 
     /**
