@@ -25,12 +25,14 @@ import com.avoqado.pos.tables.data.OrderDetailItem
 import com.avoqado.pos.tables.data.RondaConLlave
 import com.avoqado.pos.tables.data.TableServiceRepository
 import com.avoqado.pos.tables.data.TableSession
+import com.avoqado.pos.tables.data.paraLaCuenta
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -647,6 +649,9 @@ class TableOrderViewModel @Inject constructor(
         val generation = ++checkLoadGeneration
         val generacionAlSalir = generacion
         _chequeAlDia.value = false
+        // El saldo de puntos es de la cuenta que se está releyendo: se olvida y cualquier lectura en vuelo (de esta u otra cuenta) se
+        // descarta; al llegar la cuenta al día se lee el suyo (Codex android r7 #3 y #6).
+        olvidarLealtad()
         // Un GET nuevo todavía no acredita el cargo anterior, incluso si falla la lectura o el disco.
         tableSession.start(session.copy(serviceChargeCents = 0))
         venueId?.let { restoreDraft(it, session) }
@@ -711,8 +716,9 @@ class TableOrderViewModel @Inject constructor(
             if (generation != checkLoadGeneration) return@launch
             _isLoadingCheck.value = false
             if (tableSession.contextoActual() != contextoDeSesion) return@launch
-            // El saldo de puntos depende del cliente adjunto, que viene en el cheque.
-            loadLoyalty()
+            // El saldo de puntos depende de la clienta de la cuenta: sólo se lee con la cuenta al día. Con la cuenta vieja (la lectura
+            // falló) se leería el saldo de una clienta que otra caja pudo quitar (Codex android r6 #2).
+            if (cuentaAlDiaAqui) loadLoyalty()
         }
     }
 
@@ -1134,6 +1140,9 @@ class TableOrderViewModel @Inject constructor(
     /** Conectividad, para que la UI distinga "espera" de "te falta un paso". */
     val isConnected: StateFlow<Boolean> = connectivityMonitor.isConnected
 
+    /** ¿El servidor contesta? Con WiFi conectado pero sin internet, `isConnected` sigue en true y sólo esto cambia. */
+    val isServerReachable: StateFlow<Boolean> get() = connectivityMonitor.isServerReachable
+
     /**
      * Un botón gris que no explica por qué está gris es el peor estado posible
      * para un mesero: toca, no pasa nada, y no sabe si está roto. Esto le da
@@ -1185,10 +1194,31 @@ class TableOrderViewModel @Inject constructor(
 
     fun showBlockedReason(motivo: String) {
         _blockedNotice.value = motivo
+        avisoDeRecompensas = false
     }
 
     fun dismissBlockedNotice() {
         _blockedNotice.value = null
+        avisoDeRecompensas = false
+    }
+
+    /** El aviso en pantalla lo dejó el botón gris de «Recompensas» (se marca aquí, no comparando textos: Codex android r6 #5). */
+    private var avisoDeRecompensas = false
+
+    fun mostrarAvisoDeRecompensas(motivo: String) {
+        _blockedNotice.value = motivo
+        avisoDeRecompensas = true
+    }
+
+    /**
+     * El aviso que dejó un toque al botón gris de «Recompensas» describe un estado: si su motivo cambia (volvió la red, llegó el
+     * saldo), dice el nuevo, o se va si ya se puede canjear. Vive en el VM: se renueva aunque la pantalla se recree. El aviso de otro
+     * botón no se toca (Codex android r5 #2, r6 #5).
+     */
+    fun renovarAvisoDeRecompensas(motivoNuevo: String?) {
+        if (!avisoDeRecompensas || _blockedNotice.value == null) return
+        _blockedNotice.value = motivoNuevo
+        if (motivoNuevo == null) avisoDeRecompensas = false
     }
 
     /**
@@ -1203,6 +1233,7 @@ class TableOrderViewModel @Inject constructor(
      */
     private fun invalidateBlockedNotice() {
         _blockedNotice.value = null
+        avisoDeRecompensas = false
     }
 
     private fun requireOnline(accion: String): Boolean {
@@ -1629,45 +1660,146 @@ class TableOrderViewModel @Inject constructor(
 
     // MARK: - Recompensas (lealtad)
 
-    private val _loyalty = MutableStateFlow<com.avoqado.pos.tables.data.CustomerLoyalty?>(null)
-    val loyalty: StateFlow<com.avoqado.pos.tables.data.CustomerLoyalty?> = _loyalty.asStateFlow()
+    private val _lectura = MutableStateFlow<com.avoqado.pos.tables.data.LealtadLeida?>(null)
+
+    /**
+     * La lectura del saldo que vale AHORA: la de la cuenta que se ve (orden, clienta y versión) y sólo con esa cuenta al día. Mientras
+     * la cuenta se recarga (una mutación, un acuse, tocar «Recompensas») o si no se pudo leer, no se ofrece nada (Codex android r6 #2).
+     */
+    private val lecturaVigente: StateFlow<com.avoqado.pos.tables.data.LealtadLeida?> =
+        combine(_lectura, _check, _chequeAlDia) { leida, cuenta, alDia -> if (alDia) leida.paraLaCuenta(cuenta) else null }
+            .stateIn(viewModelScope, kotlinx.coroutines.flow.SharingStarted.Eagerly, null)
+
+    /** El saldo que se puede ofrecer (ver [lecturaVigente]). */
+    val loyalty: StateFlow<com.avoqado.pos.tables.data.CustomerLoyalty?> =
+        lecturaVigente.map { it?.lealtad }.stateIn(viewModelScope, kotlinx.coroutines.flow.SharingStarted.Eagerly, null)
+
+    /** Por qué falló ESA lectura (null = no falló o todavía no hay). Decide el motivo del botón gris: sin red no es «agrega el cliente». */
+    val loyaltyFallo: StateFlow<com.avoqado.pos.core.data.network.FalloDeLectura?> =
+        lecturaVigente.map { it?.fallo }.stateIn(viewModelScope, kotlinx.coroutines.flow.SharingStarted.Eagerly, null)
+
+    /**
+     * Al tocar «Recompensas» y al volver la red (el WiFi, o sólo el servidor): el saldo pudo gastarse y la clienta de la cuenta pudo
+     * cambiar en otra caja. Se olvida el saldo (y cualquier lectura pendiente) y se relee la cuenta primero; al llegar al día, `loadCheck`
+     * relee el saldo de la clienta que tiene ahora. El diálogo sólo pinta esa lectura fresca (Codex android r3 #2, r4 #1, r5 #1, r6 #1).
+     * Una cuenta abierta sin red en este aparato (provisional) todavía no existe en el servidor: no tiene saldo que leer.
+     */
+    fun releerRecompensas() {
+        // Una lectura que pide la persona vuelve a permitir la relectura por «máximo $0»: la clienta pudo cambiar otra vez con la misma
+        // versión de la cuenta («Detalles» no la sube) (Codex android r8 #2).
+        releidaPorMaximoCero = null
+        releer()
+    }
+
+    private fun releer() {
+        val session = tableSession.current() ?: return
+        olvidarLealtad()
+        if (!session.isProvisional) loadCheck()
+    }
+
+    private fun olvidarLealtad() {
+        lecturaDeLealtad++
+        _lectura.value = null
+    }
+
+    /** La cuenta (orden, clienta, versión) que ya se volvió a leer por un «máximo $0» que la contradecía: una sola vez por cuenta. */
+    private var releidaPorMaximoCero: Triple<String, String, Int?>? = null
+
+    /** La lectura del saldo más nueva: una respuesta vieja (la que se colgó sin red) no pisa a la que llegó después. */
+    private var lecturaDeLealtad = 0
 
     /** Carga el saldo del cliente adjunto al cheque (null si no hay cliente). */
     fun loadLoyalty() {
         val session = tableSession.current() ?: return
         val vId = venueId ?: return
-        val customerId = _check.value?.customerId
-        if (customerId.isNullOrBlank()) {
-            _loyalty.value = null
-            return
-        }
+        val cuenta = _check.value
+        val customerId = cuenta?.customerId
+        val lectura = ++lecturaDeLealtad
+        // Mientras llega la lectura nueva no se ofrece la vieja, ni su fallo: cada lectura es la única que vale (Codex android r6 #4,
+        // r7 #3). La pantalla dice «Leyendo los puntos del cliente…».
+        _lectura.value = null
+        if (cuenta == null || customerId.isNullOrBlank()) return
+        val llave = Triple(session.orderId, customerId, cuenta.version)
         viewModelScope.launch {
-            repository.getCustomerLoyalty(vId, customerId, session.orderId).fold(
-                onSuccess = { _loyalty.value = it },
-                onFailure = { _loyalty.value = null },
+            val leido = repository.getCustomerLoyalty(vId, customerId, session.orderId)
+            if (lectura != lecturaDeLealtad) return@launch
+            leido.fold(
+                onSuccess = {
+                    // Sólo si la respuesta es de la cuenta y la clienta que se ven: una respuesta de otra cuenta nunca relee esta
+                    // (Codex android r7 #6; `loadCheck` además sube `lecturaDeLealtad` al empezar).
+                    val esDeLaQueSeVe = tableSession.current()?.orderId == session.orderId && _check.value?.customerId == customerId
+                    if (esDeLaQueSeVe && com.avoqado.pos.tables.data.maximoCeroContradiceLaCuenta(it, cuenta) && releidaPorMaximoCero != llave) {
+                        releidaPorMaximoCero = llave
+                        releer()
+                        return@launch
+                    }
+                    // Etiquetado con la cuenta que se pidió: si para entonces se ve otra, no se ofrece (Codex android r4 #1).
+                    _lectura.value = com.avoqado.pos.tables.data.LealtadLeida(session.orderId, customerId, cuenta.version, it)
+                },
+                onFailure = {
+                    _lectura.value = com.avoqado.pos.tables.data.LealtadLeida(
+                        session.orderId, customerId, cuenta.version, null, com.avoqado.pos.core.data.network.FalloDeLectura.de(it),
+                    )
+                },
             )
         }
+    }
+
+    /** El diálogo de Recompensas (vive aquí: un 409 lo reabre aunque la pantalla se recree). */
+    private val _recompensasAbiertas = MutableStateFlow(false)
+    val recompensasAbiertas: StateFlow<Boolean> = _recompensasAbiertas.asStateFlow()
+
+    /** «La cuenta cambió: revisa los puntos.» tras un 409 del candado de la oferta; null = nada que avisar. */
+    private val _avisoDelCanje = MutableStateFlow<String?>(null)
+    val avisoDelCanje: StateFlow<String?> = _avisoDelCanje.asStateFlow()
+
+    /** Tocar «Recompensas»: abre el diálogo, que sólo pinta la lectura fresca de cuenta → saldo (Codex android r6 #1). */
+    fun abrirRecompensas() {
+        _avisoDelCanje.value = null
+        _recompensasAbiertas.value = true
+        releerRecompensas()
+    }
+
+    fun cerrarRecompensas() {
+        _recompensasAbiertas.value = false
+        _avisoDelCanje.value = null
     }
 
     /**
      * Canjea puntos como descuento del cheque. El server quema los puntos y
      * aplica el descuento en UNA transacción; quitar ese descuento después
      * devuelve los puntos solo.
+     *
+     * Candado de la oferta (D18, 12-nov): manda [montoMostrado], lo que dice el diálogo, y el SERVIDOR sólo canjea exactamente eso. Con
+     * un 409 `LOYALTY_OFFER_CHANGED` no canjea solo: la recarga que hace `mutar` al terminar relee cuenta → saldo y el diálogo se reabre
+     * con la oferta nueva y «La cuenta cambió». El «aplicada» dice lo que aplicó el SERVIDOR, nunca lo pedido.
      */
-    fun redeemPoints(points: Int) {
+    fun redeemPoints(points: Int, montoMostrado: Double) {
         val session = tableSession.current() ?: return
         val vId = venueId ?: return
         bloqueoDeSaldo(vId, session)?.let { showBlockedReason(it); return }
         if (!requireOnline("canjear puntos")) return
         val customerId = _check.value?.customerId ?: return
+        cerrarRecompensas()
         viewModelScope.launch {
-            mutarCuenta(vId, session) { mutar { repository.redeemLoyaltyPoints(vId, session.orderId, customerId, points)  }}.fold(
-                onSuccess = {
-                    _actionMessage.value = "Recompensa aplicada — $points puntos"
-                    loadLoyalty()
+            mutarCuenta(vId, session) { mutar { repository.redeemLoyaltyPoints(vId, session.orderId, customerId, points, montoMostrado)  }}.fold(
+                onSuccess = { aplicado ->
+                    // `showMessage`, no `_actionMessage`: un rechazo anterior dejaba el éxito pintado como error (Codex android r8 #3).
+                    showMessage(
+                        "Recompensa aplicada — ${aplicado.pointsRedeemed} puntos por " +
+                            com.avoqado.pos.core.util.formatMoney(aplicado.discountAmount),
+                    )
+                    // El saldo nuevo lo relee la recarga de la cuenta que hace `mutar` al terminar (con la versión nueva).
                     repository.refresh(vId)
                 },
-                onFailure = { e -> showError(com.avoqado.pos.core.data.network.ServerErrorText.humanize(e, "No se pudo canjear los puntos")) },
+                onFailure = { e ->
+                    if (e is com.avoqado.pos.tables.data.CanjeRechazado && e.ofertaCambio) {
+                        _avisoDelCanje.value = "La cuenta cambió: revisa los puntos."
+                        _recompensasAbiertas.value = true
+                    } else {
+                        showError(com.avoqado.pos.core.data.network.ServerErrorText.humanize(e, "No se pudo canjear los puntos"))
+                    }
+                },
             )
         }
     }

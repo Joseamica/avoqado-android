@@ -438,9 +438,21 @@ class TableServiceRepository @Inject constructor(
     }.onFailure { Log.e(TAG, "❌ getCustomerLoyalty failed: ${it.message}") }
 
     /** Canjea puntos como descuento en la cuenta abierta. */
-    suspend fun redeemLoyaltyPoints(venueId: String, orderId: String, customerId: String, points: Int): Result<Unit> = runCatching {
-        apiService.redeemLoyaltyPoints(venueId, orderId, RedeemPointsRequest(customerId, points))
-        Unit
+    /**
+     * Canjea [points] mandando lo que enseñó el diálogo ([expectedDiscountAmount]): el SERVIDOR sólo canjea exactamente eso; si la
+     * cuenta cambió contesta 409 `LOYALTY_OFFER_CHANGED` y no quema nada (candado de la oferta, D18 12-nov). Un rechazo 4xx llega como
+     * [CanjeRechazado] con su código y mensaje; lo aplicado, con lo que el SERVIDOR aplicó de verdad.
+     */
+    suspend fun redeemLoyaltyPoints(
+        venueId: String, orderId: String, customerId: String, points: Int, expectedDiscountAmount: Double,
+    ): Result<RedeemPointsData> = runCatching {
+        try {
+            apiService.redeemLoyaltyPoints(venueId, orderId, RedeemPointsRequest(customerId, points, expectedDiscountAmount)).data
+                ?: error("Respuesta del canje sin datos")
+        } catch (e: retrofit2.HttpException) {
+            if (e.code() !in 400..499) throw e
+            throw canjeRechazadoDe(runCatching { e.response()?.errorBody()?.string() }.getOrNull())
+        }
     }.onFailure { Log.e(TAG, "❌ redeemLoyaltyPoints failed: ${it.message}") }
 
     /**

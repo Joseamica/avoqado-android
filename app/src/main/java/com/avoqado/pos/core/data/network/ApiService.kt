@@ -410,7 +410,7 @@ interface ApiService {
         @Path("venueId") venueId: String,
         @Path("orderId") orderId: String,
         @Body request: com.avoqado.pos.tables.data.RedeemPointsRequest,
-    ): com.avoqado.pos.tables.data.SimpleSuccessResponse
+    ): com.avoqado.pos.tables.data.RedeemPointsResponse
 
     // "Fusionar cuentas": vuelca sourceOrderId en esta cuenta (inverso de dividir).
     @POST("mobile/venues/{venueId}/orders/{orderId}/merge")
