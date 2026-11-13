@@ -646,18 +646,22 @@ internal suspend fun rechazadasPorRevisar(
  * ella; si no (no está en su lista), sólo se dice a quién avisar. PURA. [nombres]: las sucursales de esta persona (`venuesList`).
  */
 internal fun textoDeLoDeOtrasSucursales(porSucursal: Map<String, Int>, nombres: Map<String, String>): String? {
-    val total = porSucursal.values.sum()
-    if (total <= 0) return null
-    val una = total == 1
-    val cuantas = if (una) "Hay 1 operación pendiente" else "Hay $total operaciones pendientes"
-    val conocidas = porSucursal.keys.mapNotNull { nombres[it] }
-    if (conocidas.size < porSucursal.size) {
-        // Codex D52 r1 #2: «Cambiar usuario» no lleva a otra sucursal (el PIN es de la abierta): no se promete ese camino.
-        return "$cuantas de otra sucursal a la que esta sesión no tiene acceso: avisa a un gerente de esa sucursal."
+    fun cuantas(n: Int) = if (n == 1) "Hay 1 operación pendiente" else "Hay $n operaciones pendientes"
+    // Codex D52 r2: las sucursales conocidas conservan su nombre y su camino aunque haya otra sin acceso; ésa se explica aparte.
+    val conocidas = porSucursal.filter { (id, n) -> id in nombres && n > 0 }
+    val sinAcceso = porSucursal.filter { (id, _) -> id !in nombres }.values.sum()
+    val deConocidas = conocidas.takeIf { it.isNotEmpty() }?.let { c ->
+        val total = c.values.sum()
+        val nombresDe = c.keys.map { nombres.getValue(it) }
+        val cuales = if (nombresDe.size == 1) nombresDe.single() else nombresDe.dropLast(1).joinToString(", ") + " y " + nombresDe.last()
+        val como = if (nombresDe.size == 1) "cambia a esa sucursal" else "cambia a cada sucursal"
+        "${cuantas(total)} de $cuales: $como para ${if (total == 1) "resolverla" else "resolverlas"} (Más › Cambiar de establecimiento)."
     }
-    val cuales = if (conocidas.size == 1) conocidas.single() else conocidas.dropLast(1).joinToString(", ") + " y " + conocidas.last()
-    val como = if (conocidas.size == 1) "cambia a esa sucursal" else "cambia a cada sucursal"
-    return "$cuantas de $cuales: $como para ${if (una) "resolverla" else "resolverlas"} (Más › Cambiar de establecimiento)."
+    // Codex D52 r1 #2: «Cambiar usuario» no lleva a otra sucursal (el PIN es de la abierta): no se promete ese camino.
+    val deSinAcceso = sinAcceso.takeIf { it > 0 }?.let {
+        "${cuantas(it)} de otra sucursal a la que esta sesión no tiene acceso: avisa a un gerente de esa sucursal."
+    }
+    return listOfNotNull(deConocidas, deSinAcceso).takeIf { it.isNotEmpty() }?.joinToString(" ")
 }
 
 /**

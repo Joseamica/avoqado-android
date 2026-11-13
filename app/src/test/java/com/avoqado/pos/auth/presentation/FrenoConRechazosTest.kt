@@ -117,6 +117,15 @@ class FrenoConRechazosTest {
         )
     }
 
+    /** Codex D52 r2: una sucursal sin acceso no le quita a las conocidas su nombre ni su camino. */
+    @Test fun `P1 D52 lo de una sucursal conocida y lo de una sin acceso se dicen por separado`() {
+        assertEquals(
+            "Hay 1 operación pendiente de Sucursal Centro: cambia a esa sucursal para resolverla (Más › Cambiar de establecimiento). " +
+                "Hay 1 operación pendiente de otra sucursal a la que esta sesión no tiene acceso: avisa a un gerente de esa sucursal.",
+            textoDeLoDeOtrasSucursales(mapOf("v-centro" to 1, "v-ajena" to 1), mapOf("v-centro" to "Sucursal Centro")),
+        )
+    }
+
     /**
      * D53: un cobro «sin confirmar» que espera a una persona (un «Ya pagó de otra forma» a medias) también lo resuelve un gerente en la
      * misma hoja: cuenta como «por revisar», y desde D53 tampoco frena «Cambiar usuario».
