@@ -5332,6 +5332,14 @@ class PaymentFlowViewModel @Inject constructor(
                 empezarACancelar(intencion.id)
             }
 
+            // D37 (ensayo general F2, D3 12-nov): la lista dijo «Sin conexión… Cobra en efectivo»: «Cancelar» regresa a elegir
+            // método con ESTE cobro, donde está el efectivo. Salir del cobro tiraba la lectura al día de una mesa abierta con
+            // internet y, sin red, ya no se podía volver a cobrar.
+            estado is PaymentFlowState.SelectingTerminal && estado.sinLista == TARJETA_SIN_RED -> {
+                selectedMethod = null
+                _state.value = PaymentFlowState.SelectingPaymentMethod(currentBaseAmount() + currentTipCents)
+            }
+
             else -> {
                 // Nada que cancelar en el servidor: se sale como siempre. Con vales se suelta su apartado (D1, 20-oct).
                 paymentGeneration++
