@@ -248,7 +248,8 @@ class MoreMenuViewModel @Inject constructor(
         if (venue.id == secureStorage.venueId) return
         viewModelScope.launch {
             val currentVenueId = secureStorage.venueId
-            val blocking = paymentSyncService.blockingWorkCount() +
+            // D52: sólo frena lo de la sucursal que se deja: lo de otra ya espera a la suya, y cambiar hacia ella es la salida.
+            val blocking = (currentVenueId?.let { paymentSyncService.bloqueantesDeLaSucursal(it) } ?: paymentSyncService.blockingWorkCount()) +
                 (currentVenueId?.let { syncOutbox.blockingWorkCount(it) } ?: 0) +
                 secureStorage.areaTicketRecoveryCount(currentVenueId) +
                 // Cada llegada guarda su sucursal y sólo se manda con esa sucursal activa: cambiar la dejaría esperando.

@@ -567,19 +567,26 @@ class AppState @Inject constructor(
                 (pendingGrantQueue?.bloqueantes(venueId) ?: 0) +
                 // Retiro con gerente (Codex r3 #12): la cola del cajón se manda con la sesión que esté; no se cierra encima.
                 (venueId?.let { cashDrawerRepository.movimientosSinSubir(it) } ?: 0)
-            // D34: lo rechazado frena igual, pero el texto dice qué hacer según quién puede resolverlo.
-            val rechazadas = if (blocking > 0) rechazadasPorRevisar(paymentSyncService, syncOutbox, pendingGrantQueue, venueId) else null
-            val conRechazo = rechazadas?.coerceAtMost(blocking) ?: 0
-            if (conRechazo > 0) {
-                _sessionGuardMessage.value = textoDelFrenoConRechazos(blocking, conRechazo, roleManager.canResolveQuarantine, "cerrar sesión")
-                return@launch
-            }
             if (blocking > 0) {
-                _sessionGuardMessage.value = if (blocking == 1) {
-                    "Hay 1 operación offline pendiente o en conciliación. Sincronízala o resuélvela antes de cerrar sesión para no perder su contexto."
+                // D52: lo de OTRA sucursal se dice aparte, con su nombre (sólo se ve y se resuelve con ella abierta).
+                val deOtras = venueId?.let { paymentSyncService.bloqueantesDeOtrasSucursales(it) }.orEmpty()
+                val deAqui = (blocking - deOtras.values.sum()).coerceAtLeast(0)
+                // D34: lo rechazado frena igual, pero el texto dice qué hacer según quién puede resolverlo.
+                val conRechazo = if (deAqui > 0) {
+                    rechazadasPorRevisar(paymentSyncService, syncOutbox, pendingGrantQueue, venueId).coerceAtMost(deAqui)
                 } else {
-                    "Hay $blocking operaciones offline pendientes o en conciliación. Sincronízalas o resuélvelas antes de cerrar sesión para no perder su contexto."
+                    0
                 }
+                val deEsta = when {
+                    deAqui == 0 -> null
+                    conRechazo > 0 -> textoDelFrenoConRechazos(deAqui, conRechazo, roleManager.canResolveQuarantine, "cerrar sesión")
+                    deAqui == 1 ->
+                        "Hay 1 operación offline pendiente o en conciliación. Sincronízala o resuélvela antes de cerrar sesión para no perder su contexto."
+                    else ->
+                        "Hay $deAqui operaciones offline pendientes o en conciliación. Sincronízalas o resuélvelas antes de cerrar sesión para no perder su contexto."
+                }
+                val deOtrasTexto = textoDeLoDeOtrasSucursales(deOtras, secureStorage.venuesList.associate { it.id to it.name })
+                _sessionGuardMessage.value = listOfNotNull(deEsta, deOtrasTexto).joinToString(" ")
                 return@launch
             }
 
@@ -616,9 +623,9 @@ class AppState @Inject constructor(
 /**
  * D34: lo rechazado que frena cerrar sesión o cambiar de sucursal y que no vuelve a salir solo: lo resuelve un gerente en «Operaciones
  * por revisar». Los cobros fallidos sin revisar, lo que el servidor rechazó de la cola de mesas (el cambio de usuario por PIN ya no los
- * cuenta, D28) y los paquetes por revisar. [aqui] es lo de ESTA sucursal, lo que el gerente encuentra en su pantalla; [deOtraSucursal],
- * los cobros fallidos de otra (el freno es de todo el aparato y sólo se ven con su sucursal abierta, Codex r2 #2 y r3). Se cuenta
- * DIRECTO, nunca restando dos lecturas (Codex r1 #1: un acuse entre las dos inventaba un rechazo).
+ * cuenta, D28), los cobros «sin confirmar» que esperan a una persona (D53) y los paquetes por revisar: todo de ESTA sucursal, lo que el
+ * gerente encuentra en su pantalla (lo de otra lo dice [textoDeLoDeOtrasSucursales], D52). Se cuenta DIRECTO, nunca restando dos
+ * lecturas (Codex r1 #1: un acuse entre las dos inventaba un rechazo).
  */
 internal suspend fun rechazadasPorRevisar(
     pagos: PaymentSyncService,
@@ -632,26 +639,38 @@ internal suspend fun rechazadasPorRevisar(
     return pagos.porRevisarDeLaSucursal(venueId) + pagos.sinConfirmarPorRevisar() + cola.rechazadasCount(venueId) + paquetesAqui
 }
 
-internal fun textoDeLoDeOtrasSucursales(porSucursal: Map<String, Int>, nombres: Map<String, String>): String? = null
+/**
+ * D52: el aviso de lo que frena y es de OTRAS sucursales: de cuál es y cómo llegar. Si esta persona tiene esa sucursal, que cambie a
+ * ella; si no (no está en su lista), que entre alguien que sí. PURA. [nombres]: las sucursales de esta persona (`venuesList`).
+ */
+internal fun textoDeLoDeOtrasSucursales(porSucursal: Map<String, Int>, nombres: Map<String, String>): String? {
+    val total = porSucursal.values.sum()
+    if (total <= 0) return null
+    val una = total == 1
+    val cuantas = if (una) "Hay 1 operación pendiente" else "Hay $total operaciones pendientes"
+    val conocidas = porSucursal.keys.mapNotNull { nombres[it] }
+    if (conocidas.size < porSucursal.size) {
+        return "$cuantas de otra sucursal: pídele a alguien con acceso a esa sucursal que entre y ${if (una) "la" else "las"} resuelva " +
+            "(Más › Cambiar usuario)."
+    }
+    val cuales = if (conocidas.size == 1) conocidas.single() else conocidas.dropLast(1).joinToString(", ") + " y " + conocidas.last()
+    val como = if (conocidas.size == 1) "cambia a esa sucursal" else "cambia a cada sucursal"
+    return "$cuantas de $cuales: $como para ${if (una) "resolverla" else "resolverlas"} (Más › Cambiar de establecimiento)."
+}
 
 /**
  * D34 (opción «a» de la conversación principal, 12-nov): el texto del freno cuando hay [rechazadas] entre las [total] operaciones que
- * frenan ([deOtraSucursal] de ellas, de otra sucursal). El freno se queda (cerrar sesión puede borrar lo local), pero «resuélvela» sólo
+ * frenan, todas de esta sucursal (lo de otras lo dice [textoDeLoDeOtrasSucursales], D52). El freno se queda (cerrar sesión puede borrar lo local), pero «resuélvela» sólo
  * se le dice a quien puede: un mesero no puede «Marcar resuelta» ([RoleManager.canResolveQuarantine]), así que se le dice que entre
  * un gerente por «Cambiar usuario», que lo rechazado ya no frena (D28). PURA. [antesDe]: «cerrar sesión» o «cambiar de establecimiento».
  */
-internal fun textoDelFrenoConRechazos(total: Int, rechazadas: Int, puedeResolver: Boolean, antesDe: String, deOtraSucursal: Int = 0): String {
+internal fun textoDelFrenoConRechazos(total: Int, rechazadas: Int, puedeResolver: Boolean, antesDe: String): String {
     val sinEnviar = (total - rechazadas).coerceAtLeast(0)
     val una = rechazadas == 1
     // D53: no todo lo que espera a un gerente fue rechazado (un cobro «sin confirmar»): se dice «por revisar», como la hoja.
     val rechazo = if (una) "1 operación por revisar" else "$rechazadas operaciones por revisar"
-    // Dónde, para quien puede (Codex r3): un cobro fallido de OTRA sucursal sólo se ve con esa sucursal abierta.
-    val donde = when {
-        deOtraSucursal <= 0 -> "en $DONDE_SE_RESUELVE antes de $antesDe"
-        deOtraSucursal >= rechazadas -> "con su sucursal abierta, en $DONDE_SE_RESUELVE"
-        else -> "en $DONDE_SE_RESUELVE antes de $antesDe; " +
-            (if (deOtraSucursal == 1) "la de otra sucursal" else "las $deOtraSucursal de otra sucursal") + ", con esa sucursal abierta"
-    }
+    // Lo de otra sucursal ya no llega aquí (D52): lo dice [textoDeLoDeOtrasSucursales].
+    val donde = "en $DONDE_SE_RESUELVE antes de $antesDe"
     if (sinEnviar == 0) {
         return if (puedeResolver) {
             "Hay $rechazo. ${if (una) "Resuélvela" else "Resuélvelas"} $donde."

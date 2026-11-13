@@ -1275,13 +1275,30 @@ class PaymentSyncService @Inject constructor(
     /** Ver [porRevisarPorSucursal]. */
     data class PorRevisar(val aqui: Int, val deOtraSucursal: Int)
 
+    /** Los cobros fallidos sin revisar de [venueId]: los que «Operaciones por revisar» le enseña a esa sucursal (D34). */
     suspend fun porRevisarDeLaSucursal(venueId: String): Int = porRevisarPorSucursal(venueId).aqui
 
-    suspend fun bloqueantesDeLaSucursal(venueId: String): Int = blockingWorkCount()
+    /**
+     * D52: las MISMAS filas que cuenta [blockingWorkCount] (la cola PENDING/SYNCING, los `EN_VUELO` sin la cortesía ya revisada y los
+     * FAILED sin revisar), con su sucursal. `""` = filas viejas sin sucursal: salen con la que esté abierta.
+     */
+    private suspend fun filasQueFrenan(): List<PendingPaymentEntity> =
+        dao.getUnsyncedPayments() + dao.enVueloDeTodas().filterNot(RevisionCanceladoCero::revisado) +
+            dao.getFailedPayments().filterNot(RevisionCanceladoCero::revisado)
 
-    suspend fun bloqueantesDeOtrasSucursales(venueId: String): Map<String, Int> = emptyMap()
+    /**
+     * D52: lo que frena DEJAR la sucursal [venueId] (cambiar de sucursal): lo suyo y lo viejo sin sucursal. Lo de otra sucursal ya espera
+     * a la suya; ir hacia ella es justo la salida.
+     */
+    suspend fun bloqueantesDeLaSucursal(venueId: String): Int = filasQueFrenan().count { it.venueId == venueId || it.venueId.isBlank() }
 
-    suspend fun pendientesDeOtrasSucursales(venueId: String): List<PendingPaymentEntity> = emptyList()
+    /** D52: lo que frena cerrar sesión y es de OTRA sucursal (sólo se ve y se resuelve con ella abierta), por sucursal. */
+    suspend fun bloqueantesDeOtrasSucursales(venueId: String): Map<String, Int> =
+        pendientesDeOtrasSucursales(venueId).groupingBy { it.venueId }.eachCount()
+
+    /** D52: esas filas, para que «Operaciones por revisar» las enseñe con el nombre de su sucursal (sin acciones). */
+    suspend fun pendientesDeOtrasSucursales(venueId: String): List<PendingPaymentEntity> =
+        filasQueFrenan().filter { it.venueId != venueId && it.venueId.isNotBlank() }
 
     /**
      * Lo que todavía va a salir: la cola y un cobro interrumpido (la app murió a media petición), que tampoco puede irse con la
@@ -1296,7 +1313,12 @@ class PaymentSyncService @Inject constructor(
      * app de antes) ya no lo frena: no sale solo y el gerente tiene que poder entrar a resolverlo; conserva su `staffId`. «Cerrar sesión» y
      * cambiar de sucursal siguen contándolos todos ([blockingWorkCount]).
      */
-    suspend fun sinEnviarParaElRelevo(): Int = dao.getUnsyncedPayments().size + cashPaymentRepository.enVueloQueSeResuelveSolo()
+    suspend fun sinEnviarParaElRelevo(): Int {
+        // D52: la cola de OTRA sucursal sólo sale con su sucursal abierta (y conserva su `staffId`): no frena el relevo de ésta.
+        val sucursal = secureStorage.venueId.orEmpty()
+        return dao.getUnsyncedPayments().count { it.venueId == sucursal || it.venueId.isBlank() } +
+            cashPaymentRepository.enVueloQueSeResuelveSolo()
+    }
 
     /** D53: los apartados del local que esperan a una persona ([CashPaymentRepository.enVueloPorRevisar]); el aviso los cuenta «por revisar». */
     suspend fun sinConfirmarPorRevisar(): Int = cashPaymentRepository.enVueloPorRevisar()
