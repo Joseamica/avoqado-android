@@ -41,6 +41,21 @@ class KdsPrefsTest {
     }
 
     @Test
+    fun `la foto del tablero conserva impresionReparto y una foto vieja sin el campo se lee con null`() {
+        val kds = KdsPrefs(context)
+        val ir = com.avoqado.pos.kds.domain.ImpresionReparto("RAPPI", "cA", false, "cB")
+        val o = com.avoqado.pos.kds.domain.KDSOrder(
+            id = "k1", orderNumber = "1", orderType = "Delivery", items = emptyList(), createdAt = 1L,
+            status = com.avoqado.pos.kds.domain.KDSOrderStatus.NEW, impresionReparto = ir,
+        )
+        kds.guardarFoto("v", "s", listOf(o), tomadaEnMillis = 1_000L)
+        assertEquals(ir, kds.foto("v", "s", ahora = 2_000L)!!.single().impresionReparto)
+
+        guardado["board_v_old"] = """{"tomadaEnMillis":1000,"comandas":[{"id":"k1","orderNumber":"1","orderType":"Delivery","items":[],"createdAt":1,"status":"NEW"}]}"""
+        assertNull(kds.foto("v", "old", ahora = 2_000L)!!.single().impresionReparto)
+    }
+
+    @Test
     fun `sin nada guardado suena y la letra es normal`() {
         val kds = KdsPrefs(context)
         assertTrue(kds.sonido)
