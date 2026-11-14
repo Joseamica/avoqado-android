@@ -16,6 +16,15 @@ class TrabajoDeLaOrdenTest {
     private val ids = setOf("o1", "L-1")
     private fun fila(tipo: String, estado: String, payload: String) = IntentSinResolver(tipo, estado, payload)
 
+    // D75: «Liberar mesa» nombra su cuenta para el SERVIDOR, pero sigue sin ser trabajo de la cuenta (como cuando sólo llevaba la mesa).
+    @Test fun `D75 liberar la mesa con su cuenta no es trabajo de la cuenta`() {
+        val t = SyncOutbox.resumirTrabajo(listOf(
+            fila("CLEAR_TABLE", "PENDING", """{"tableId":"t1","localOrderId":"L-1"}"""),
+            fila("CLEAR_TABLE", "REJECTED", """{"tableId":"t1","orderId":"o1"}"""),
+        ), ids)
+        assertEquals(0, t.intents); assertEquals(0, t.rechazados); assertEquals(emptySet<String>(), t.tipos)
+    }
+
     @Test fun `incluye retenidos y rechazados por el id real y local`() {
         val t = SyncOutbox.resumirTrabajo(listOf(
             fila("ADD_ITEMS", "PENDING", """{"orderId":"o1"}"""),

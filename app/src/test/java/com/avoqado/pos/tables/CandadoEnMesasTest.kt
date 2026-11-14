@@ -53,7 +53,7 @@ class CandadoEnMesasTest(private val action:String,private val mode:String) {
         coEvery {repo.compItem(any(),any(),any(),any())} answers {writes++;Result.success(Unit)}
         coEvery {repo.compWholeOrder(any(),any(),any())} answers {writes++;Result.success(Unit)}
         coEvery {repo.cancelOrder(any(),any(),any())} answers {writes++;Result.success(Unit)}
-        coEvery {repo.clearTable(any(),any())} answers {writes++;Result.success(Unit)}
+        coEvery {repo.clearTable(any(),any(),any())} answers {writes++;Result.success(Unit)}
         coEvery {repo.mergeOrders(any(),any(),any())} answers {writes++;Result.success(Unit)}
         coEvery {repo.splitOrderBySeat(any(),any(),any())} answers {writes++;Result.success(Unit)}
         coEvery {repo.splitOrder(any(),any(),any())} answers {writes++;Result.success(Unit)}
