@@ -301,12 +301,17 @@ class PaymentSyncService @Inject constructor(
      */
     private var despertador: Job? = null
 
+    /** D67 (Codex r2 #1): la sesión con la que arrancó la pasada en curso; el despertar sólo vale para ella. */
+    private var contextoDeLaPasada: SyncContext? = null
+
     private fun despertarAlVencerLaPausa(faltaMs: Long) {
         synchronized(this) {
             val scope = syncScope
             val cycle = syncCycle
-            // Codex r1 #4: como `syncRequested`, sólo despierta con la MISMA sucursal, persona, rol y sesión.
-            val contexto = syncContext()
+            // Codex r1 #4 y r2 #1: como `syncRequested`, sólo con la MISMA sucursal, persona, rol y sesión que la pasada que
+            // falló. Si cambió mientras viajaba la petición (cierre automático y entró otra persona), no se agenda nada.
+            val contexto = contextoDeLaPasada ?: return
+            if (syncContext() != contexto) return
             despertador?.cancel()
             despertador = scope.launch {
                 delay(faltaMs + 100)
@@ -655,6 +660,7 @@ class PaymentSyncService @Inject constructor(
         val cycle = syncCycle
         val context = syncContext()
         syncRequested = null
+        contextoDeLaPasada = context
         // Install the owner and completion hook before the body can finish, even on an immediate dispatcher.
         val job = scope.launch(start = CoroutineStart.LAZY) {
             try {
@@ -1631,6 +1637,9 @@ class PaymentSyncService @Inject constructor(
         if (payment.retryCount >= MAX_RETRIES) {
             Log.e(TAG, "❌ Payment ${payment.id} exceeded max retries — marking FAILED")
             dao.updateStatusWithError(payment.id, PaymentSyncStatus.FAILED.name, error)
+            // D67 (Codex r2 #2): ya en «por revisar», suelta la cola: la pasada se cortó aquí y el siguiente cobro no espera
+            // otro disparo (hasta 15 min).
+            despertarAlVencerLaPausa(0)
         } else {
             Log.w(TAG, "⚠️ Payment ${payment.id} retry ${payment.retryCount + 1}/$MAX_RETRIES: $error")
             dao.incrementRetry(payment.id)

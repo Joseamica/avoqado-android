@@ -149,6 +149,39 @@ class PaymentSyncServiceInternetAMediasTest {
     }
 
     @Test
+    fun `si la persona cambia mientras viaja la peticion, el corte no agenda un despertar con la sesion nueva`() = runTest {
+        // Codex r2 #1: sale con la sesión A; a media petición entra B (cierre automático sin stop) y luego se corta.
+        // 1 intento contado hace 40 s: dentro de la ventana, no cuenta otro y su pausa es de 2 s.
+        val call = laRedContesta {
+            every { secureStorage.userId } returns "otra-persona"
+            throw IOException("unexpected end of stream")
+        }
+        coEvery { dao.getPendingPayments(any()) } returns listOf(cobro(retryCount = 1, lastRetryAt = ahora - 40_000))
+        service.start()
+        coVerify(timeout = 5_000) { dao.updateStatus("local-pay-1", PaymentSyncStatus.PENDING.name) }
+        Thread.sleep(3_000)
+        verify(exactly = 1) { call.execute() }
+    }
+
+    @Test
+    fun `cuando un cobro se va a por revisar el siguiente sale sin esperar otro disparo`() = runTest {
+        // Codex r2 #2: A agota sus intentos (fuera de la ventana) y pasa a FAILED; B, detrás en la fila, debe salir solo.
+        val b = cobro().copy(id = "local-pay-B", q15CaptureJson = ConciliacionDelCobro.guardarCaptura(CapturaDelCobro(
+            venueId = "venue-123", key = "local-pay-B", orderId = null, amountCents = 4500, tipCents = 0, method = "CASH",
+            splitType = "FULLPAYMENT",
+        )))
+        val fila = mutableListOf(cobro(retryCount = 10, lastRetryAt = ahora - 4 * 60_000), b)
+        coEvery { dao.getPendingPayments(any()) } answers { fila.toList() }
+        coEvery { dao.updateStatusWithError("local-pay-1", PaymentSyncStatus.FAILED.name, any()) } answers {
+            fila.removeAll { it.id == "local-pay-1" }
+        }
+        laRedContesta { throw IOException("unexpected end of stream") }
+        service.start()
+        coVerify(timeout = 5_000) { dao.updateStatusWithError("local-pay-1", PaymentSyncStatus.FAILED.name, any()) }
+        coVerify(timeout = 5_000) { dao.updateStatus("local-pay-B", "SYNCING") }
+    }
+
+    @Test
     fun `el despertar no sube nada si cambio la persona de la sesion`() = runTest {
         // Codex r1 #4: la pausa vence ~300 ms después, pero para entonces entró otra persona sin pasar por stop().
         coEvery { dao.getPendingPayments(any()) } returns listOf(cobro(retryCount = 3, lastRetryAt = ahora - 7_700))
