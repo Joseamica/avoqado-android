@@ -2136,7 +2136,7 @@ class TableOrderViewModel @Inject constructor(
         viewModelScope.launch {
             mutarCuenta(vId, session) { mutar { repository.cancelOrder(vId, session.orderId, reason)  }}.fold(
                 onSuccess = {
-                    mutarCuenta(vId, session) { mutar { repository.clearTable(vId, session.tableId)  }}
+                    mutarCuenta(vId, session) { mutar { repository.clearTable(vId, session.tableId, session.orderId)  }}
                     repository.refresh(vId)
                     tableSession.finalizar(vId, session.idsDeLaOrden, contextoDeSesion)
                     onDone(true, "Cuenta anulada — Mesa ${session.tableNumber} liberada")

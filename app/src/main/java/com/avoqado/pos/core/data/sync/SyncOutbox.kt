@@ -693,7 +693,7 @@ class SyncOutbox @Inject constructor(
         // D5 · B2b (R5-1): un rechazo de algo de la mesa (su ronda, sobre todo) mata su foto: si el gerente la descarta y el borrador
         // la vuelve a encolar, nunca suma sobre la foto. Si el disco no deja borrarla, queda muerta en memoria y el rechazo se guarda
         // igual (Codex b2b-r1 #1): la fila rechazada pone gris, y con el piloto prendido «Marcar resuelta» no la quita hasta borrarla.
-        if (!ack.isAcked) runCatching { fotos?.invalidar(row.payloadJson) }
+        if (!ack.isAcked && !row.type.liberaLaMesa()) runCatching { fotos?.invalidar(row.payloadJson) }
         if(ack.status == "REJECTED" && ack.errorCode == "STALE_DEVICE_SEQUENCE") {
             require(row.venueId == venueId && sentDeviceId.isNotBlank() && sentDeviceId == currentDeviceId)
             dao.resolveStaleSequence(ack.id,venueId,row.seq,
@@ -737,7 +737,7 @@ class SyncOutbox @Inject constructor(
         // D5 · B2b (R5-1): descartar la ronda tampoco deja que su borrador sume sobre la foto. Con el piloto prendido, si el disco no
         // deja borrarla, lanza y la fila rechazada se queda (la mesa sigue en gris); apagado, sigue como hoy (la foto queda muerta).
         val fila = dao.findForVenue(venueId, id)
-        fotos?.let { f -> fila?.let { f.borrarAntesDe(it.payloadJson) } }
+        fotos?.let { f -> fila?.takeUnless { it.type.liberaLaMesa() }?.let { f.borrarAntesDe(it.payloadJson) } }
         // D29 (deuda A4): la ronda sale del borrador de su mesa ANTES que su fila. Sin esto, al reabrir la mesa `restoreDraft` la
         // volvía a encolar con el mismo id (una ronda del borrador sin fila es la que la app no alcanzó a encolar). Si la app muere
         // entre los dos pasos, la fila sigue y se vuelve a marcar; si el disco no deja, lanza y la fila se queda.
@@ -784,7 +784,7 @@ class SyncOutbox @Inject constructor(
     suspend fun filasSinResolverDeLaOrden(venueId: String, ids: Set<String>): List<FilaDeLaOrden> = withContext(Dispatchers.IO) {
         val filas = dao.filasSinResolver(venueId)
         val expanded = conAlias(venueId, ids, filas.map { it.payloadJson })
-        filas.filter { tocaLaOrden(it.payloadJson, expanded) }.map {
+        filas.filter { !it.type.liberaLaMesa() && tocaLaOrden(it.payloadJson, expanded) }.map {
             FilaDeLaOrden(it.id, it.type, it.status, if (it.type == TIPO_PAGO_EN_EFECTIVO) importeDelEfectivo(it.payloadJson) else null)
         }
     }
@@ -796,7 +796,7 @@ class SyncOutbox @Inject constructor(
     suspend fun filasDeLaOrdenDesde(venueId: String, ids: Set<String>, desdeSeq: Long): List<FilaDeLaOrden> = withContext(Dispatchers.IO) {
         val filas = dao.filasDesde(venueId, desdeSeq)
         val expanded = conAlias(venueId, ids, filas.map { it.payloadJson })
-        filas.filter { tocaLaOrden(it.payloadJson, expanded) }.map {
+        filas.filter { !it.type.liberaLaMesa() && tocaLaOrden(it.payloadJson, expanded) }.map {
             FilaDeLaOrden(it.id, it.type, it.status, if (it.type == TIPO_PAGO_EN_EFECTIVO) importeDelEfectivo(it.payloadJson) else null, it.seq)
         }
     }
@@ -826,7 +826,7 @@ class SyncOutbox @Inject constructor(
             var cobrado = 0
             val tipos = mutableSetOf<String>()
             for (fila in filas) {
-                if (!tocaLaOrden(fila.payloadJson, ids)) continue
+                if (fila.type.liberaLaMesa() || !tocaLaOrden(fila.payloadJson, ids)) continue
                 intents++
                 if (fila.status == SyncIntentEntity.STATUS_REJECTED) rechazados++
                 tipos += fila.type
@@ -843,6 +843,13 @@ class SyncOutbox @Inject constructor(
             require(cents >= 0) { "Importe de pago negativo" }
             return cents
         }
+
+        /**
+         * D75 (hz:8024bc1c:D75): «Liberar mesa» actúa sobre la MESA, no sobre la cuenta. Desde D75 su payload nombra la cuenta que el
+         * aparato quiso soltar (para que el SERVIDOR no lo rechace por OTRA cuenta de la mesa), pero eso no lo vuelve trabajo de esa
+         * cuenta ni toca su foto: las lecturas por cuenta lo saltan, como cuando sólo llevaba la mesa.
+         */
+        internal fun String.liberaLaMesa() = this == "CLEAR_TABLE"
 
         internal fun tocaLaOrden(payloadJson: String, ids: Set<String>): Boolean {
             fun contieneId(value: JsonElement): Boolean = when (value) {

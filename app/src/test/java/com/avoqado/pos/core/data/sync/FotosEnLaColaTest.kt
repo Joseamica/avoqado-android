@@ -163,6 +163,15 @@ class FotosEnLaColaTest {
         assertNull(enDisco("order-F"))
     }
 
+    @Test fun `D75 un Liberar mesa rechazado que nombra su cuenta no borra su foto ni al guardarse ni al descartarse`() = runTest {
+        tomar("order-F")
+        val liberar = SyncIntentEntity("clear-1", "v1", "staff", 9, "CLEAR_TABLE", """{"tableId":"mesa-1","orderId":"order-F"}""")
+        cola().conservarAck(SyncAck("clear-1", "REJECTED", "BUSINESS_RULE", "Cannot clear table with unpaid order ORD-1"), liberar, "v1", "d1", "d1")
+        coEvery { dao.findForVenue("v1", "clear-1") } returns liberar.copy(status = SyncIntentEntity.STATUS_REJECTED)
+        cola().dismissRejected("v1", "clear-1")
+        assertNotNull(enDisco("order-F"))
+    }
+
     // MARK: - B3 C3: el mismo «Liberar mesa» rechazado dos veces
 
     private fun liberar(id: String, seq: Long, mesa: String, creada: Long) = SyncIntentEntity(id, "v1", "staff", seq, "CLEAR_TABLE",

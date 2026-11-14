@@ -634,11 +634,18 @@ class TableServiceRepository @Inject constructor(
         put("reason", kotlinx.serialization.json.JsonPrimitive(reason))
     }.onFailure { Log.e(TAG, "❌ cancelOrder failed: ${it.message}") }
 
-    /** Releases the table (the server rejects clearing a table with an unpaid order). */
-    suspend fun clearTable(venueId: String, tableId: String): Result<Unit> = runCatching {
+    /**
+     * Releases the table (the server rejects clearing a table with an unpaid order).
+     *
+     * D75 (hz:8024bc1c:D75): sin red, el intent lleva también la cuenta que este aparato quiso soltar ([orderId]). Así, si la mesa
+     * abierta sin red terminó en cuenta aparte (D51/D71) y la que debe es OTRA, el SERVIDOR lo da por hecho sin tocar la mesa en vez
+     * de dejar una «operación por revisar». La cuenta no vuelve el intent trabajo de esa cuenta ([SyncOutbox.tocaLaOrden]).
+     */
+    suspend fun clearTable(venueId: String, tableId: String, orderId: String): Result<Unit> = runCatching {
         apiService.clearTable(venueId, tableId)
         Unit
     }.orQueueOffline(venueId, "CLEAR_TABLE", Unit) {
         put("tableId", kotlinx.serialization.json.JsonPrimitive(tableId))
+        putOrderRef(orderId)
     }.onFailure { Log.e(TAG, "❌ clearTable failed: ${it.message}") }
 }
