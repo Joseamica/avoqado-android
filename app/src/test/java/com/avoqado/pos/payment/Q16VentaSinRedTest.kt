@@ -173,8 +173,8 @@ class Q16VentaSinRedTest {
             assertTrue(falso.peticiones.isNotEmpty())
             assertTrue(falso.peticiones.all { (tipo, body) -> tipo == "orders" && body.getString("externalId") == a })
             assertTrue(falso.ordenes.isEmpty()); assertTrue(falso.pagos.isEmpty())
-            // D67: un corte de red ya no gasta reintentos (antes 1); sigue PENDING y B no se adelanta.
-            assertEquals(0, (f.row(a)["retryCount"] as Number).toInt()); assertEquals("PENDING", f.row(a)["syncStatus"])
+            // D67: el primer corte cuenta (arranca la ventana); los siguientes de la ventana ya no.
+            assertEquals(1, (f.row(a)["retryCount"] as Number).toInt()); assertEquals("PENDING", f.row(a)["syncStatus"])
             assertEquals(antesB, f.row(b))
         }
     }

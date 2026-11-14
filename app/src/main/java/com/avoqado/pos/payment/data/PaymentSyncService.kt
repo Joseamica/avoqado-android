@@ -81,6 +81,8 @@ class PaymentSyncService @Inject constructor(
     companion object {
         private const val TAG = "🔄 PaymentSync"
         private const val MAX_RETRIES = 10
+        /** D67: un corte de red gasta a lo más un intento por ventana (10 intentos ≈ 30 min de cortes seguidos). */
+        internal const val VENTANA_DE_CORTES_MS = 3L * 60 * 1000
         private const val SYNC_INTERVAL_MS = 15L * 60 * 1000  // 15 minutes
         private const val MAX_PAYMENTS_PER_SYNC = 10
         private const val MAX_DRAIN_BATCHES = 100
@@ -303,11 +305,13 @@ class PaymentSyncService @Inject constructor(
         synchronized(this) {
             val scope = syncScope
             val cycle = syncCycle
+            // Codex r1 #4: como `syncRequested`, sólo despierta con la MISMA sucursal, persona, rol y sesión.
+            val contexto = syncContext()
             despertador?.cancel()
             despertador = scope.launch {
                 delay(faltaMs + 100)
                 synchronized(this@PaymentSyncService) {
-                    if (isStarted && syncCycle == cycle && syncScope === scope) syncNow()
+                    if (isStarted && syncCycle == cycle && syncScope === scope && syncContext() == contexto) syncNow()
                 }
             }
         }
@@ -1394,8 +1398,12 @@ class PaymentSyncService @Inject constructor(
                         // cola la CREÓ; una cuenta que ya existía (la cortesía que se re-resuelve) nunca se marca aquí.
                         if (payment.orderId == null) cuentasAbiertasAqui?.marcar(venueId, result.orderId)
                     }
-                    is OrderResolution.AuthExpired, is OrderResolution.SinRespuesta -> {
+                    is OrderResolution.AuthExpired -> {
                         dao.updateStatus(payment.id, PaymentSyncStatus.PENDING.name)
+                        return true
+                    }
+                    is OrderResolution.SinRespuesta -> {
+                        sinRespuesta(payment, "Sin respuesta al recrear la orden")
                         return true
                     }
                     is OrderResolution.PermanentFailure -> {
@@ -1460,11 +1468,7 @@ class PaymentSyncService @Inject constructor(
             dao.updateStatus(payment.id, PaymentSyncStatus.PENDING.name)
             return true
         } catch (e: java.io.IOException) {
-            // D67: un corte de transporte (sin red, conexión rechazada o cortada a media petición) no dice nada del cobro:
-            // queda PENDING sin gastar reintentos, como la sesión sin renovar. Viaja con su llave, así que reenviarlo no
-            // duplica. Lo reintenta el «volvió la red»: el corte apaga la bandera del servidor y su ping de salud la prende.
-            Log.w(TAG, "⚠️ Corte de red al subir ${payment.id}: queda pendiente sin gastar reintentos (${e.message})")
-            dao.updateStatus(payment.id, PaymentSyncStatus.PENDING.name)
+            sinRespuesta(payment, e.message ?: "Error de red")
             return true
         } catch (e: Exception) {
             handleNetworkError(payment, e.message ?: "Error desconocido")
@@ -1630,6 +1634,26 @@ class PaymentSyncService @Inject constructor(
         } else {
             Log.w(TAG, "⚠️ Payment ${payment.id} retry ${payment.retryCount + 1}/$MAX_RETRIES: $error")
             dao.incrementRetry(payment.id)
+            // D67 (Codex r1 #3): el fallo que crea la pausa agenda su despertar; un 409 o un 5xx no siempre traen otro disparo.
+            despertarAlVencerLaPausa(calculateBackoff(payment.retryCount + 1))
+        }
+    }
+
+    /**
+     * D67: un corte de red (sin red, conexión rechazada o cortada a media petición, o un cuerpo que no se terminó de leer)
+     * gasta a lo más UN intento cada [VENTANA_DE_CORTES_MS]. Con internet a medias cada «volvió la red» (~10 s) gastaba uno y a
+     * los 10 el efectivo ya cobrado iba a «por revisar» (J: 4 de 10 en 40 s); ahora eso pide ~30 min de cortes seguidos. Sin
+     * tope, un cobro que SIEMPRE se corta trabaría la cola y el relevo para siempre (Codex r1 #1): a los 10 sigue yendo a «por
+     * revisar» y suelta la cola. Viaja con su llave: reenviarlo no duplica.
+     */
+    private suspend fun sinRespuesta(payment: PendingPaymentEntity, error: String) {
+        val desdeElUltimo = System.currentTimeMillis() - (payment.lastRetryAt ?: 0)
+        if (payment.retryCount > 0 && desdeElUltimo in 0 until VENTANA_DE_CORTES_MS) {
+            Log.w(TAG, "⚠️ Corte de red al subir ${payment.id}: queda pendiente sin gastar otro intento ($error)")
+            dao.updateStatus(payment.id, PaymentSyncStatus.PENDING.name)
+            despertarAlVencerLaPausa(calculateBackoff(payment.retryCount))
+        } else {
+            handleNetworkError(payment, error)
         }
     }
 
