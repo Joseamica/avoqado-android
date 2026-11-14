@@ -18,6 +18,26 @@ internal const val MESA_COBRO_SIN_SINCRONIZAR = "Esta mesa tiene un cobro sin si
 internal const val MESA_COBRO_POR_REVISAR =
     "Esta mesa tiene un cobro por revisar: un gerente lo resuelve en Operaciones por revisar antes de cobrarla otra vez."
 internal const val MESA_COBROS_SIN_LEER = "No se pudo revisar si esta mesa tiene cobros sin sincronizar. Intenta de nuevo."
+/** D62: la cuenta que se quiere fusionar tiene un cobro en la cola de COBROS de ESTE aparato (la misma regla del D45). */
+internal const val FUSIONAR_COBRO_SIN_SINCRONIZAR =
+    "La cuenta que quieres fusionar tiene un cobro sin sincronizar: fusiónala cuando se sincronice."
+internal const val FUSIONAR_COBRO_POR_REVISAR =
+    "La cuenta que quieres fusionar tiene un cobro por revisar: un gerente lo resuelve en Operaciones por revisar antes de fusionarla."
+internal const val FUSIONAR_COBROS_SIN_LEER = "No se pudo revisar si la cuenta que quieres fusionar tiene cobros sin sincronizar. Intenta de nuevo."
+/** D62: los motivos de arriba ya dicen qué hacer: la pantalla no les pega la pista de «reversa su pago». */
+internal val MOTIVOS_DE_FUSIONAR_POR_COBRO_EN_COLA = setOf(FUSIONAR_COBRO_SIN_SINCRONIZAR, FUSIONAR_COBRO_POR_REVISAR, FUSIONAR_COBROS_SIN_LEER)
+
+/**
+ * D62 (Codex r1 del D45 #2): un abono de la cuenta ORIGEN en la cola de COBROS se queda con su llave (orderId = origen). Si se fusiona antes
+ * de que suba, «Pagar» de la cuenta destino mira sólo las llaves del destino y ofrece su total con ese dinero ya recibido. En cola o por
+ * revisar no se fusiona; sin poder leer la cola, tampoco (falla cerrado). PURA.
+ */
+internal fun motivoParaFusionar(efectivo: com.avoqado.pos.payment.data.EfectivoDelPedido?): String? = when (efectivo) {
+    null -> FUSIONAR_COBROS_SIN_LEER
+    com.avoqado.pos.payment.data.EfectivoDelPedido.POR_REVISAR -> FUSIONAR_COBRO_POR_REVISAR
+    com.avoqado.pos.payment.data.EfectivoDelPedido.EN_COLA -> FUSIONAR_COBRO_SIN_SINCRONIZAR
+    com.avoqado.pos.payment.data.EfectivoDelPedido.NINGUNO -> null
+}
 
 internal sealed interface SaldoSinRed {
     /** [hayCobro]: hay al menos un `PAY_CASH` de la orden en la cola (también un cierre de $0). */
