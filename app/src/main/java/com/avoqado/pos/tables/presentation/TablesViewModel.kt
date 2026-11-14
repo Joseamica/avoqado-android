@@ -70,7 +70,14 @@ class TablesViewModel @Inject constructor(
     private val transporteLan: com.avoqado.pos.core.data.lan.TransporteLan? = null,
     /** D6: el disco de las cajas recordadas del D12 (sólo lectura, para [avisoDeIsla]). */
     private val payloadCache: com.avoqado.pos.core.data.local.PayloadCache? = null,
+    /** D62: el efectivo de cada cuenta en la cola de COBROS de este aparato («Unir mesas» no junta una cuenta con un abono sin subir). */
+    private val efectivoEnColaDeCobros: com.avoqado.pos.payment.data.CashPaymentRepository? = null,
+    /** D62: los borradores, para reconocer el id local con que nació una cuenta (su abono pudo guardarse con él). */
+    private val draftStore: com.avoqado.pos.tables.data.TableRoundDraftStore? = null,
 ) : ViewModel() {
+
+    /** D62: dónde se lee el borrador al revisar las cuentas que se unen (las pruebas lo corren en su propio hilo). */
+    internal var discoParaFusionar: kotlin.coroutines.CoroutineContext = kotlinx.coroutines.Dispatchers.IO
 
     private var generacion = 0L
     private var mutacionesEnVuelo = 0
@@ -854,6 +861,13 @@ class TablesViewModel @Inject constructor(
                 .flatMap { openOrderIds(it) }
                 .distinct()
                 .filter { it != targetOrder.id }
+            // D62: antes de unir NADA, ninguna cuenta que se junta puede tener efectivo en la cola de COBROS (en cola, por revisar o sin
+            // poder leerla): su fila se queda con la llave de esa cuenta y la mesa destino ofrecería su total. Todas o ninguna: así no
+            // queda una unión a medias.
+            for (sourceOrderId in orderIds) {
+                motivoParaFusionar(efectivoDeLaCuentaEnColaDeCobros(efectivoEnColaDeCobros, draftStore, tableSession, vId, sourceOrderId,
+                    discoParaFusionar))?.let { onDone(0, orderIds.size, it); return@launch }
+            }
             orderIds.forEach { sourceOrderId ->
                 mutarCuenta(vId, setOf(targetOrder.id, sourceOrderId)) { repository.mergeOrders(vId, targetOrder.id, sourceOrderId) }.fold(
                     onSuccess = {

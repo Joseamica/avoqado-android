@@ -334,27 +334,8 @@ class TableOrderViewModel @Inject constructor(
         } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (_: Exception) { null }
     }
 
-    /**
-     * D62: el efectivo de OTRA cuenta (todas las llaves que este aparato le conoce) en la cola de COBROS, con la regla de la bandeja.
-     * Las llaves: las de la memoria (la cuenta activa o estacionada) y, en disco, los ids locales con que nació la cuenta antes de que
-     * su apertura subiera (`originalOrderIdsQ16` del borrador, que la promoción guarda, y el id al que lleva): un cobro guardado con el id local sigue
-     * contando tras reiniciar la app (Codex r1 #1). null = no se pudo leer. Sin la cola inyectada (pantallas viejas y pruebas que no
-     * la usan), nada.
-     */
-    private suspend fun efectivoDeOtraCuenta(vId: String, orderId: String): com.avoqado.pos.payment.data.EfectivoDelPedido? {
-        val cola = efectivoEnColaDeCobros ?: return com.avoqado.pos.payment.data.EfectivoDelPedido.NINGUNO
-        return try {
-            // Si la que se eligió es el id local ya promovido, el borrador lleva al del servidor (`canonico`) y a sus locales.
-            val locales = draftStore?.loadResolved(vId, orderId)?.let { (canonico, borrador) -> borrador.originalOrderIdsQ16.orEmpty() + canonico }
-                .orEmpty()
-            val estados = (tableSession.idsParaPreCuenta(vId, orderId) + locales).map { cola.efectivoDelPedido(it) }
-            when {
-                com.avoqado.pos.payment.data.EfectivoDelPedido.POR_REVISAR in estados -> com.avoqado.pos.payment.data.EfectivoDelPedido.POR_REVISAR
-                com.avoqado.pos.payment.data.EfectivoDelPedido.EN_COLA in estados -> com.avoqado.pos.payment.data.EfectivoDelPedido.EN_COLA
-                else -> com.avoqado.pos.payment.data.EfectivoDelPedido.NINGUNO
-            }
-        } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (_: Exception) { null }
-    }
+    /** D62: dónde se lee el borrador al revisar la cuenta que se fusiona (las pruebas lo corren en su propio hilo). */
+    internal var discoParaFusionar: kotlin.coroutines.CoroutineContext = kotlinx.coroutines.Dispatchers.IO
 
     private suspend fun leerTrabajo(s: TableSession.Active): TrabajoSinResolver? {
         val vId = venueId ?: return null
@@ -2034,7 +2015,8 @@ class TableOrderViewModel @Inject constructor(
         val offline = !connectivityMonitor.isConnected.value
         viewModelScope.launch {
             // D62: un cobro del ORIGEN en la cola de COBROS se queda con la llave del origen; fusionado, «Pagar» del destino no lo ve.
-            motivoParaFusionar(efectivoDeOtraCuenta(vId, sourceOrderId))?.let { onDone(false, it); return@launch }
+            motivoParaFusionar(efectivoDeLaCuentaEnColaDeCobros(efectivoEnColaDeCobros, draftStore, tableSession, vId, sourceOrderId,
+                discoParaFusionar))?.let { onDone(false, it); return@launch }
             mutarCuenta(vId, session, sourceOrderId) { mutar { repository.mergeOrders(vId, session.orderId, sourceOrderId)  }}.fold(
                 onSuccess = {
                     tableSession.finalizar(vId, setOf(sourceOrderId), contextoDeSesion)

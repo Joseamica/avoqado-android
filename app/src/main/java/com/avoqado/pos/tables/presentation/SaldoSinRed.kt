@@ -39,6 +39,36 @@ internal fun motivoParaFusionar(efectivo: com.avoqado.pos.payment.data.EfectivoD
     com.avoqado.pos.payment.data.EfectivoDelPedido.NINGUNO -> null
 }
 
+/**
+ * D62: el efectivo de una cuenta (todas las llaves que este aparato le conoce) en la cola de COBROS, con la regla de la bandeja. Lo usan
+ * las DOS entradas que fusionan cuentas: «Fusionar cuentas» de la cuenta y «Unir mesas» del plano (Codex r2 #1).
+ * Las llaves: las de la memoria (la cuenta activa o estacionada) y, en disco, el id al que lleva el borrador y los ids locales con que
+ * nació la cuenta antes de que su apertura subiera (`originalOrderIdsQ16`, que la promoción guarda): un cobro guardado con el id local
+ * sigue contando tras reiniciar la app (Codex r1 #1). El borrador se lee en [disco], fuera del hilo de la pantalla (Codex r2 #2).
+ * null = no se pudo leer (falla cerrado). Sin la cola inyectada, nada.
+ */
+internal suspend fun efectivoDeLaCuentaEnColaDeCobros(
+    cola: com.avoqado.pos.payment.data.CashPaymentRepository?,
+    borradores: com.avoqado.pos.tables.data.TableRoundDraftStore?,
+    sesion: com.avoqado.pos.tables.data.TableSession,
+    venueId: String,
+    orderId: String,
+    disco: kotlin.coroutines.CoroutineContext,
+): com.avoqado.pos.payment.data.EfectivoDelPedido? {
+    cola ?: return com.avoqado.pos.payment.data.EfectivoDelPedido.NINGUNO
+    return try {
+        val delDisco = kotlinx.coroutines.withContext(disco) {
+            borradores?.loadResolved(venueId, orderId)?.let { (canonico, borrador) -> borrador.originalOrderIdsQ16.orEmpty() + canonico }
+        }.orEmpty()
+        val estados = (sesion.idsParaPreCuenta(venueId, orderId) + delDisco).map { cola.efectivoDelPedido(it) }
+        when {
+            com.avoqado.pos.payment.data.EfectivoDelPedido.POR_REVISAR in estados -> com.avoqado.pos.payment.data.EfectivoDelPedido.POR_REVISAR
+            com.avoqado.pos.payment.data.EfectivoDelPedido.EN_COLA in estados -> com.avoqado.pos.payment.data.EfectivoDelPedido.EN_COLA
+            else -> com.avoqado.pos.payment.data.EfectivoDelPedido.NINGUNO
+        }
+    } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (_: Exception) { null }
+}
+
 internal sealed interface SaldoSinRed {
     /** [hayCobro]: hay al menos un `PAY_CASH` de la orden en la cola (también un cierre de $0). */
     data class Conocido(val rondasCents: Int, val cobradoCents: Int, val hayCobro: Boolean) : SaldoSinRed {

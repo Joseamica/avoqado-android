@@ -213,6 +213,7 @@ class MesaDelServidorSinRedTest {
         return TableOrderViewModel(repository, session, config, mockk(relaxed = true), mockk<PrinterService>(relaxed = true), storage,
             outbox, mockk(relaxed = true), connectivity, mockk(relaxed = true), mockk(relaxed = true), mockk(relaxed = true), draftStore = drafts,
             planManager = plan, fotos = fotos, cobrosLocales = cobros, efectivoEnColaDeCobros = efectivoDeCobros)
+            .also { it.discoParaFusionar = kotlin.coroutines.EmptyCoroutineContext }
     }
 
     /** El mesero abre la mesa M1 (del servidor) desde el plano. */
