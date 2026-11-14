@@ -292,6 +292,26 @@ class PaymentSyncService @Inject constructor(
     )
     private var timerJob: Job? = null
     private var connectivityJob: Job? = null
+
+    /**
+     * D67: el drenado se corta si el cobro más viejo sigue en su pausa entre intentos, y nada lo volvía a despertar: el
+     * «volvió la red» llegaba dentro de la pausa y lo siguiente era el reloj de 15 min (J: 7 min, K-C: 4 min en la D3).
+     */
+    private var despertador: Job? = null
+
+    private fun despertarAlVencerLaPausa(faltaMs: Long) {
+        synchronized(this) {
+            val scope = syncScope
+            val cycle = syncCycle
+            despertador?.cancel()
+            despertador = scope.launch {
+                delay(faltaMs + 100)
+                synchronized(this@PaymentSyncService) {
+                    if (isStarted && syncCycle == cycle && syncScope === scope) syncNow()
+                }
+            }
+        }
+    }
     private var pendingCountJob: Job? = null
     private var failedCountJob: Job? = null
     private var syncScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -320,6 +340,8 @@ class PaymentSyncService @Inject constructor(
         data class RetryableFailure(val message: String) : OrderResolution
         data class PermanentFailure(val message: String) : OrderResolution
         data object AuthExpired : OrderResolution
+        /** D67: la red se cortó (sin red, conexión rechazada o cortada a media petición): pendiente sin gastar reintentos. */
+        data object SinRespuesta : OrderResolution
     }
 
     /** Qué dejó la recuperación de una fila retenida (Q16). */
@@ -395,6 +417,7 @@ class PaymentSyncService @Inject constructor(
         Log.d(TAG, "Stopping payment sync service")
         timerJob?.cancel()
         connectivityJob?.cancel()
+        despertador?.cancel()
         stoppingJob?.cancel()
         pendingCountJob?.cancel()
         failedCountJob?.cancel()
@@ -856,6 +879,7 @@ class PaymentSyncService @Inject constructor(
                     // Codex apps r7 #2: un último intento EN EL FUTURO (se corrigió la hora del aparato) no es una espera: se reintenta.
                     if (timeSinceLastRetry in 0 until backoff) {
                         Log.d(TAG, "Stopping drain at ${payment.id} — backoff not elapsed")
+                        despertarAlVencerLaPausa(backoff - timeSinceLastRetry)
                         return Drenado(resueltos, cortada = true)
                     }
                 }
@@ -1370,7 +1394,7 @@ class PaymentSyncService @Inject constructor(
                         // cola la CREÓ; una cuenta que ya existía (la cortesía que se re-resuelve) nunca se marca aquí.
                         if (payment.orderId == null) cuentasAbiertasAqui?.marcar(venueId, result.orderId)
                     }
-                    is OrderResolution.AuthExpired -> {
+                    is OrderResolution.AuthExpired, is OrderResolution.SinRespuesta -> {
                         dao.updateStatus(payment.id, PaymentSyncStatus.PENDING.name)
                         return true
                     }
@@ -1435,14 +1459,12 @@ class PaymentSyncService @Inject constructor(
             Log.w(TAG, "⚠️ Sesión sin renovar (${e.motivo}) — pausing sync, payment ${payment.id} stays PENDING")
             dao.updateStatus(payment.id, PaymentSyncStatus.PENDING.name)
             return true
-        } catch (e: java.net.UnknownHostException) {
-            handleNetworkError(payment, "Sin conexión")
-            return true
-        } catch (e: java.net.ConnectException) {
-            handleNetworkError(payment, "No se pudo conectar al servidor")
-            return true
         } catch (e: java.io.IOException) {
-            handleNetworkError(payment, e.message ?: "Error de red")
+            // D67: un corte de transporte (sin red, conexión rechazada o cortada a media petición) no dice nada del cobro:
+            // queda PENDING sin gastar reintentos, como la sesión sin renovar. Viaja con su llave, así que reenviarlo no
+            // duplica. Lo reintenta el «volvió la red»: el corte apaga la bandera del servidor y su ping de salud la prende.
+            Log.w(TAG, "⚠️ Corte de red al subir ${payment.id}: queda pendiente sin gastar reintentos (${e.message})")
+            dao.updateStatus(payment.id, PaymentSyncStatus.PENDING.name)
             return true
         } catch (e: Exception) {
             handleNetworkError(payment, e.message ?: "Error desconocido")
@@ -1486,12 +1508,8 @@ class PaymentSyncService @Inject constructor(
         } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
         catch (e: com.avoqado.pos.core.data.network.SesionSinRenovar) {
             OrderResolution.AuthExpired
-        } catch (e: java.net.UnknownHostException) {
-            OrderResolution.RetryableFailure("Sin conexión")
-        } catch (e: java.net.ConnectException) {
-            OrderResolution.RetryableFailure("No se pudo conectar al servidor")
         } catch (e: java.io.IOException) {
-            OrderResolution.RetryableFailure(e.message ?: "Error de red")
+            OrderResolution.SinRespuesta // D67: un corte de red no gasta reintentos
         } catch (e: Exception) {
             OrderResolution.RetryableFailure(e.message ?: "Error recreando orden")
         }
