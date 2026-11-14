@@ -862,13 +862,24 @@ class TablesViewModel @Inject constructor(
                 .distinct()
                 .filter { it != targetOrder.id }
             // D62: antes de unir NADA, ninguna cuenta que se junta puede tener efectivo en la cola de COBROS (en cola, por revisar o sin
-            // poder leerla): su fila se queda con la llave de esa cuenta y la mesa destino ofrecería su total. Todas o ninguna: así no
-            // queda una unión a medias.
+            // poder leerla): su fila se queda con la llave de esa cuenta y la mesa destino ofrecería su total. Si una ya tiene abono, no
+            // se une ninguna (no queda una unión a medias por algo que ya se sabía).
             for (sourceOrderId in orderIds) {
                 motivoParaFusionar(efectivoDeLaCuentaEnColaDeCobros(efectivoEnColaDeCobros, draftStore, tableSession, vId, sourceOrderId,
                     discoParaFusionar))?.let { onDone(0, orderIds.size, it); return@launch }
             }
-            orderIds.forEach { sourceOrderId ->
+            for (sourceOrderId in orderIds) {
+                // D62 (Codex r3 #1): las fusiones van una por una y pueden tardar; mientras, la cajera puede abrir otra cuenta de la lista
+                // y abonarle. Cada cuenta se vuelve a revisar justo antes de SU fusión; si ya tiene un abono, se para ahí y se dice
+                // cuántas sí entraron (nunca se junta una cuenta con efectivo sin subir).
+                motivoParaFusionar(efectivoDeLaCuentaEnColaDeCobros(efectivoEnColaDeCobros, draftStore, tableSession, vId, sourceOrderId,
+                    discoParaFusionar))?.let { motivo ->
+                    fail += orderIds.size - ok - fail
+                    if (firstError == null) firstError = motivo
+                    repository.refresh(vId)
+                    onDone(ok, fail, firstError)
+                    return@launch
+                }
                 mutarCuenta(vId, setOf(targetOrder.id, sourceOrderId)) { repository.mergeOrders(vId, targetOrder.id, sourceOrderId) }.fold(
                     onSuccess = {
                         tableSession.finalizar(vId, setOf(sourceOrderId), sessionEpoch)

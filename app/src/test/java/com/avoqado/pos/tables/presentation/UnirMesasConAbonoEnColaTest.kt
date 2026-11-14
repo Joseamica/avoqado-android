@@ -71,6 +71,20 @@ class UnirMesasConAbonoEnColaTest {
         } finally { subject.viewModelScope.cancel() }
     }
 
+    /** Codex r3 #1: mientras se fusiona A (una petición lenta), la cajera abre C y le abona: C ya no se fusiona y se dice cuántas entraron. */
+    @Test fun `P2 D62 un abono que nace a media union frena la cuenta que falta`() = runTest {
+        val subject = vm()
+        try {
+            coEvery { repository.mergeOrders(any(), any(), "order-A") } answers {
+                efectivo["order-C"] = EfectivoDelPedido.EN_COLA
+                Result.success(Unit)
+            }
+            assertEquals(Triple(1, 1, FUSIONAR_COBRO_SIN_SINCRONIZAR), unir(subject))
+            coVerify(exactly = 1) { repository.mergeOrders(venue, "order-B", "order-A") }
+            coVerify(exactly = 0) { repository.mergeOrders(any(), any(), "order-C") }
+        } finally { subject.viewModelScope.cancel() }
+    }
+
     @Test fun `D62 unir mesas se frena con un cobro por revisar, la cola sin leer o el id local del borrador`() = runTest {
         val subject = vm()
         try {
