@@ -334,6 +334,22 @@ class TableOrderViewModel @Inject constructor(
         } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (_: Exception) { null }
     }
 
+    /**
+     * D62: el efectivo de OTRA cuenta (todas las llaves que este aparato le conoce) en la cola de COBROS, con la regla de la bandeja.
+     * null = no se pudo leer. Sin la cola inyectada (pantallas viejas y pruebas que no la usan), nada.
+     */
+    private suspend fun efectivoDeOtraCuenta(vId: String, orderId: String): com.avoqado.pos.payment.data.EfectivoDelPedido? {
+        val cola = efectivoEnColaDeCobros ?: return com.avoqado.pos.payment.data.EfectivoDelPedido.NINGUNO
+        return try {
+            val estados = tableSession.idsParaPreCuenta(vId, orderId).map { cola.efectivoDelPedido(it) }
+            when {
+                com.avoqado.pos.payment.data.EfectivoDelPedido.POR_REVISAR in estados -> com.avoqado.pos.payment.data.EfectivoDelPedido.POR_REVISAR
+                com.avoqado.pos.payment.data.EfectivoDelPedido.EN_COLA in estados -> com.avoqado.pos.payment.data.EfectivoDelPedido.EN_COLA
+                else -> com.avoqado.pos.payment.data.EfectivoDelPedido.NINGUNO
+            }
+        } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (_: Exception) { null }
+    }
+
     private suspend fun leerTrabajo(s: TableSession.Active): TrabajoSinResolver? {
         val vId = venueId ?: return null
         val epoch = generacion
@@ -2011,6 +2027,8 @@ class TableOrderViewModel @Inject constructor(
         bloqueoDeSaldo(vId, session, sourceOrderId)?.let { onDone(false, it); return }
         val offline = !connectivityMonitor.isConnected.value
         viewModelScope.launch {
+            // D62: un cobro del ORIGEN en la cola de COBROS se queda con la llave del origen; fusionado, «Pagar» del destino no lo ve.
+            motivoParaFusionar(efectivoDeOtraCuenta(vId, sourceOrderId))?.let { onDone(false, it); return@launch }
             mutarCuenta(vId, session, sourceOrderId) { mutar { repository.mergeOrders(vId, session.orderId, sourceOrderId)  }}.fold(
                 onSuccess = {
                     tableSession.finalizar(vId, setOf(sourceOrderId), contextoDeSesion)

@@ -1237,7 +1237,8 @@ fun TableOrderScreen(
                         // YA dice qué hacer (cancélalo o espera), así que no se le pega otra pista
                         // que apunta a lo contrario.
                         val pista = "Cobra el resto de esa cuenta por separado, o reversa su pago antes de fusionarla."
-                            .takeIf { msg != com.avoqado.pos.payment.domain.CancelacionDeCobro.COBRO_EN_CURSO_BLOQUEA_CUENTA }
+                            .takeIf { msg != com.avoqado.pos.payment.domain.CancelacionDeCobro.COBRO_EN_CURSO_BLOQUEA_CUENTA &&
+                                msg !in MOTIVOS_DE_FUSIONAR_POR_COBRO_EN_COLA }
                         viewModel.showError(msg, pista)
                     }
                 }
