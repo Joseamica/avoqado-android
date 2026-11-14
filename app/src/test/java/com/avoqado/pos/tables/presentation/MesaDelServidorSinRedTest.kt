@@ -395,6 +395,25 @@ class MesaDelServidorSinRedTest {
         subject.viewModelScope.cancel()
     }
 
+    /** Codex r1 #1: A nació sin red como «local-A», su apertura subió y la app se reinició: la memoria ya no sabe que A fue «local-A». */
+    @Test fun `D62 el abono guardado con el id local de una cuenta ya promovida frena la fusion tras reiniciar`() = runTest {
+        drafts.promote(venue, "local-A", "order-A") // lo que deja en disco el acuse de su apertura
+        efectivoDeOtraCuenta["local-A"] = EfectivoDelPedido.POR_REVISAR
+        val subject = mesaDeCien()
+        assertEquals(false to FUSIONAR_COBRO_POR_REVISAR, fusionar(subject, "order-A"))
+        coVerify(exactly = 0) { repo.mergeOrders(any(), any(), any()) }
+        subject.viewModelScope.cancel()
+    }
+
+    @Test fun `D62 elegida por su id local ya promovido, cuenta el abono guardado con el id del servidor`() = runTest {
+        drafts.promote(venue, "local-A", "order-A")
+        efectivoDeOtraCuenta["order-A"] = EfectivoDelPedido.EN_COLA
+        val subject = mesaDeCien()
+        assertEquals(false to FUSIONAR_COBRO_SIN_SINCRONIZAR, fusionar(subject, "local-A"))
+        coVerify(exactly = 0) { repo.mergeOrders(any(), any(), any()) }
+        subject.viewModelScope.cancel()
+    }
+
     @Test fun `D62 la pista de reversar el pago no se pega a los motivos de la cola de cobros`() {
         assertEquals(setOf(FUSIONAR_COBRO_SIN_SINCRONIZAR, FUSIONAR_COBRO_POR_REVISAR, FUSIONAR_COBROS_SIN_LEER), MOTIVOS_DE_FUSIONAR_POR_COBRO_EN_COLA)
         assertEquals(null, motivoParaFusionar(EfectivoDelPedido.NINGUNO))
