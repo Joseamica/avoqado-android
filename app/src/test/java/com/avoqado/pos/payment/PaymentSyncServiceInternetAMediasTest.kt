@@ -182,6 +182,34 @@ class PaymentSyncServiceInternetAMediasTest {
     }
 
     @Test
+    fun `el envio sale sellado con la sesion que empezo la pasada aunque a media pasada entre otra persona`() = runTest {
+        // Codex r3 #1: la pasada arranca con la generación 7; mientras lee la cola entra otra persona (8). El POST lleva el sello
+        // 7, así que AuthInterceptor no lo deja salir con la sesión 8 (SesionCambiada).
+        every { secureStorage.generacion } returns 7L
+        val pedidas = mutableListOf<okhttp3.Request>()
+        val call = mockk<okhttp3.Call>()
+        every { client.newCall(capture(pedidas)) } returns call
+        every { call.execute() } throws IOException("unexpected end of stream")
+        coEvery { dao.getPendingPayments(any()) } answers {
+            every { secureStorage.generacion } returns 8L
+            listOf(cobro())
+        }
+        service.start()
+        coVerify(timeout = 5_000) { dao.incrementRetry("local-pay-1", any()) }
+        org.junit.Assert.assertEquals(7L, with(com.avoqado.pos.core.data.network.SelloDePeticion::class.java) { pedidas.first().tag(this)?.generacion })
+    }
+
+    @Test
+    fun `un envio que no salio porque cambio la sesion queda pendiente sin gastar intentos`() = runTest {
+        laRedContesta { throw com.avoqado.pos.core.data.network.SesionCambiada() }
+        coEvery { dao.getPendingPayments(any()) } returns listOf(cobro())
+        service.start()
+        coVerify(timeout = 5_000) { dao.updateStatus("local-pay-1", PaymentSyncStatus.PENDING.name) }
+        coVerify(exactly = 0) { dao.incrementRetry(any(), any()) }
+        coVerify(exactly = 0) { dao.updateStatusWithError(any(), any(), any()) }
+    }
+
+    @Test
     fun `el despertar no sube nada si cambio la persona de la sesion`() = runTest {
         // Codex r1 #4: la pausa vence ~300 ms después, pero para entonces entró otra persona sin pasar por stop().
         coEvery { dao.getPendingPayments(any()) } returns listOf(cobro(retryCount = 3, lastRetryAt = ahora - 7_700))

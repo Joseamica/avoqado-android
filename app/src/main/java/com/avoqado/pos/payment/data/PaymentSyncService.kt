@@ -304,6 +304,18 @@ class PaymentSyncService @Inject constructor(
     /** D67 (Codex r2 #1): la sesión con la que arrancó la pasada en curso; el despertar sólo vale para ella. */
     private var contextoDeLaPasada: SyncContext? = null
 
+    /**
+     * D67 (Codex r3 #1, misma familia por tercera vez): la generación de sesión con que arrancó la pasada. Los envíos de la cola
+     * salen con ese [com.avoqado.pos.core.data.network.SelloDePeticion]: si a media pasada entra otra persona (cierre automático
+     * sin `stop`), `AuthInterceptor` no los deja salir con su sesión ([com.avoqado.pos.core.data.network.SesionCambiada]).
+     * Cubre cualquier disparo (despertar, reloj, flanco de red), no sólo el del D67. Renovar el token no cambia la generación.
+     */
+    @Volatile private var selloDeLaPasada: Long? = null
+
+    private fun Request.Builder.conSelloDeLaPasada(): Request.Builder = apply {
+        selloDeLaPasada?.let { tag(com.avoqado.pos.core.data.network.SelloDePeticion::class.java, com.avoqado.pos.core.data.network.SelloDePeticion(it)) }
+    }
+
     private fun despertarAlVencerLaPausa(faltaMs: Long) {
         synchronized(this) {
             val scope = syncScope
@@ -661,6 +673,7 @@ class PaymentSyncService @Inject constructor(
         val context = syncContext()
         syncRequested = null
         contextoDeLaPasada = context
+        selloDeLaPasada = secureStorage.generacion
         // Install the owner and completion hook before the body can finish, even on an immediate dispatcher.
         val job = scope.launch(start = CoroutineStart.LAZY) {
             try {
@@ -1453,6 +1466,7 @@ class PaymentSyncService @Inject constructor(
             val request = Request.Builder()
                 .url(url)
                 .post(bodyJson.toRequestBody(JSON_MEDIA))
+                .conSelloDeLaPasada()
                 .build()
 
             val (code, responseBody, headers) = withContext(Dispatchers.IO) {
@@ -1471,6 +1485,12 @@ class PaymentSyncService @Inject constructor(
             // La sesión venció sin red para renovarla: igual que el 401 de siempre, no gasta
             // reintentos (diez parpadeos del internet no pueden mandar un efectivo a cuarentena).
             Log.w(TAG, "⚠️ Sesión sin renovar (${e.motivo}) — pausing sync, payment ${payment.id} stays PENDING")
+            dao.updateStatus(payment.id, PaymentSyncStatus.PENDING.name)
+            return true
+        } catch (e: com.avoqado.pos.core.data.network.SesionCambiada) {
+            // D67 (Codex r3): la pasada empezó con otra sesión; no sale con la de otra persona. Sin gastar intentos: lo sube
+            // la pasada de quien está ahora.
+            Log.w(TAG, "⚠️ La sesión cambió durante la pasada: ${payment.id} queda pendiente")
             dao.updateStatus(payment.id, PaymentSyncStatus.PENDING.name)
             return true
         } catch (e: java.io.IOException) {
@@ -1499,6 +1519,7 @@ class PaymentSyncService @Inject constructor(
         val request = Request.Builder()
             .url("${ApiConstants.BASE_URL}/mobile/venues/$venueId/orders")
             .post(pedidoConLaCaja(orderRequestJson, cajaParaElServidor).toRequestBody(JSON_MEDIA))
+            .conSelloDeLaPasada()
             .build()
 
         return try {
@@ -1518,6 +1539,8 @@ class PaymentSyncService @Inject constructor(
         } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
         catch (e: com.avoqado.pos.core.data.network.SesionSinRenovar) {
             OrderResolution.AuthExpired
+        } catch (e: com.avoqado.pos.core.data.network.SesionCambiada) {
+            OrderResolution.AuthExpired // D67 (Codex r3): no salió con la sesión de otra persona; sin gastar intentos
         } catch (e: java.io.IOException) {
             OrderResolution.SinRespuesta // D67: un corte de red no gasta reintentos
         } catch (e: Exception) {

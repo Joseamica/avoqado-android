@@ -24,7 +24,7 @@ class AuthInterceptor @Inject constructor(
         // o sale alguien, su 401 o su 403 no renueva ni reenvía con la sesión de otra persona. Va en un tag: no viaja.
         val (sello, token) = secureStorage.selloYAccess()
         // La que ya trae su sello (el toque de una persona que manda dinero) no sale con la sesión de otra (Codex apps r8 #1).
-        if (originalRequest.sello.let { it != null && it != sello }) throw java.io.IOException("La sesión cambió: no sale con la de otra persona")
+        if (originalRequest.sello.let { it != null && it != sello }) throw SesionCambiada()
         requestBuilder.tag(SelloDePeticion::class.java, SelloDePeticion(sello))
 
         // Skip auth for login/refresh endpoints
@@ -41,6 +41,9 @@ class AuthInterceptor @Inject constructor(
 
 /** Con qué [SecureStorage.generacion] salió una petición (D4). */
 data class SelloDePeticion(val generacion: Long)
+
+/** Una petición con su [SelloDePeticion] no salió porque mientras tanto entró o salió alguien (no es un corte de red). */
+class SesionCambiada : java.io.IOException("La sesión cambió: no sale con la de otra persona")
 
 /** El sello de una petición, si pasó por [AuthInterceptor]. */
 val okhttp3.Request.sello: Long? get() = tag(SelloDePeticion::class.java)?.generacion
