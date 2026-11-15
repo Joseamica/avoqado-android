@@ -114,11 +114,13 @@ fun PaymentMethodSelectionScreen(
     var efectivoConTotal by remember { mutableStateOf(false) }
     var showItemsSheet by remember { mutableStateOf(false) }
     var showManualMethodSheet by remember { mutableStateOf(false) }
+    // D57: la tarjeta elegida en «¿Cómo pagó el cliente?» que espera el «Fue otra terminal» del aviso.
+    var tarjetaPorConfirmar by remember { mutableStateOf<com.avoqado.pos.payment.domain.ManualPaymentChoice?>(null) }
 
     // Teclas del POS de Windows (founder, 19-oct): hacen lo mismo que el clic en su botón. Con cualquiera de las
     // hojas de abajo abierta no responden (la hoja es barrera).
     LaunchedEffect(metodosHabilitados) {
-        if (!metodosHabilitados) { showCustomCashSheet = false; showManualMethodSheet = false }
+        if (!metodosHabilitados) { showCustomCashSheet = false; showManualMethodSheet = false; tarjetaPorConfirmar = null }
     }
     AtajoDeTeclado(Key.F5, activo = metodosHabilitados) {
         if (!metodosVigentes) return@AtajoDeTeclado
@@ -400,9 +402,25 @@ fun PaymentMethodSelectionScreen(
             tenderTypes = tenderTypes,
             onSelect = { method ->
                 showManualMethodSheet = false
-                if (metodosVigentes) onManualMethodSelected(method)
+                when {
+                    !metodosVigentes -> Unit
+                    com.avoqado.pos.payment.domain.AvisoDeTerminalDeAvoqado.aplica(method) -> tarjetaPorConfirmar = method
+                    else -> onManualMethodSelected(method)
+                }
             },
             onDismiss = { showManualMethodSheet = false },
+        )
+    }
+
+    val tarjeta = tarjetaPorConfirmar
+    if (metodosHabilitados && tarjeta != null && onManualMethodSelected != null) {
+        AvisoDeTerminalDeAvoqadoDialog(
+            amountCents = amountCents,
+            onRegistrar = {
+                tarjetaPorConfirmar = null
+                if (metodosVigentes) onManualMethodSelected(tarjeta)
+            },
+            onNoRegistrar = { tarjetaPorConfirmar = null },
         )
     }
 
@@ -423,6 +441,49 @@ fun PaymentMethodSelectionScreen(
         PaymentItemsSheet(
             paymentContext = paymentContext,
             onDismiss = { showItemsSheet = false },
+        )
+    }
+}
+
+/**
+ * D57: antes de registrar a mano una TARJETA, la pregunta de si se cobró en una terminal de Avoqado (textos y cuándo sale:
+ * [com.avoqado.pos.payment.domain.AvisoDeTerminalDeAvoqado]). Cerrar con la X, tocar fuera o «No registrar» no registra nada
+ * y deja al mesero en el cobro, como estaba. En Windows Enter y Espacio no pican «registrar» (registra dinero).
+ */
+@Composable
+private fun AvisoDeTerminalDeAvoqadoDialog(
+    amountCents: Int,
+    onRegistrar: () -> Unit,
+    onNoRegistrar: () -> Unit,
+) {
+    val aviso = com.avoqado.pos.payment.domain.AvisoDeTerminalDeAvoqado
+    val enWindows = LocalEsEscritorio.current
+    com.avoqado.pos.designsystem.components.AvoqadoDialog(
+        title = aviso.TITULO,
+        description = aviso.TEXTO,
+        onDismiss = onNoRegistrar,
+        actionButton = {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm),
+            ) {
+                com.avoqado.pos.designsystem.components.PrimaryButton(
+                    text = aviso.NO_REGISTRAR,
+                    onClick = onNoRegistrar,
+                    fullWidth = true,
+                )
+                TextButton(onClick = onRegistrar, modifier = Modifier.sinTeclasDeClic(enWindows)) {
+                    Text(aviso.registrar(formatAmount(amountCents)), style = MaterialTheme.typography.titleSmall)
+                }
+            }
+        },
+    ) {
+        Text(
+            text = aviso.CONSEJO,
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.Medium,
+            color = MaterialTheme.colorScheme.onSurface,
         )
     }
 }
