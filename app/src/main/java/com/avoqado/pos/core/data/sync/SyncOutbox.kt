@@ -408,7 +408,7 @@ class SyncOutbox @Inject constructor(
     }
 
     /** Recover only an already stored ACK. Missing/ambiguous/processing/rejected stay held. */
-    private suspend fun recuperarRetenidoQ16(row: SyncIntentEntity, venueId: String, epoch: Long): Boolean {
+    private suspend fun recuperarRetenidoQ16(row: SyncIntentEntity, venueId: String, epoch: Long, sello: Long): Boolean {
         if (row.venueId != venueId || row.type !in setOf(SyncIntentTypes.OPEN_TABLE, SyncIntentTypes.ADD_ITEMS, SyncIntentTypes.PAY_CASH)) return false
         val savedDevice = prefs.getString(KEY_DEVICE_ID, null)?.takeIf { it.isNotBlank() } ?: return false
         try {
@@ -418,7 +418,7 @@ class SyncOutbox @Inject constructor(
             val response = apiService.recoverSyncQ16(venueId, kotlinx.serialization.json.buildJsonObject {
                 put("deviceId", JsonPrimitive(savedDevice))
                 put("intentIds", kotlinx.serialization.json.JsonArray(listOf(JsonPrimitive(row.id))))
-            })
+            }, com.avoqado.pos.core.data.network.SelloDePeticion(sello))
             val data = response["data"] as? JsonObject ?: return false
             val records = data["intents"] as? kotlinx.serialization.json.JsonArray ?: return false
             val orders = data["orders"] as? kotlinx.serialization.json.JsonArray
@@ -474,8 +474,8 @@ class SyncOutbox @Inject constructor(
         withContext(Dispatchers.IO) { tableDrafts.loadResolved(venueId, original).first.takeIf { it != original && it.isNotBlank() } }
 
     private suspend fun enviarAdmitidoQ16(venueId: String, request: SyncIntentsRequest,
-        token: AdmisionDePrecioQ16.Token): SyncIntentsResponse = kotlinx.coroutines.suspendCancellableCoroutine { continuation ->
-        val call=apiService.syncIntentsAdmittedQ16(venueId,request,token)
+        token: AdmisionDePrecioQ16.Token, sello: Long): SyncIntentsResponse = kotlinx.coroutines.suspendCancellableCoroutine { continuation ->
+        val call=apiService.syncIntentsAdmittedQ16(venueId,request,token,com.avoqado.pos.core.data.network.SelloDePeticion(sello))
         continuation.invokeOnCancellation { call.cancel() }
         val admitted=AdmisionDePrecioQ16.admit(token) {
             if (continuation.isActive) call.enqueue(object: retrofit2.Callback<SyncIntentsResponse> {
@@ -503,11 +503,18 @@ class SyncOutbox @Inject constructor(
         ) {
             return 0
         }
+        // 🔴 D80: la corrida manda con UNA sesión: la de la pasada que la corre (`PaymentSyncService`) o, si viene de los disparadores
+        // propios (reloj, reconexión, un intent nuevo), la que hay al empezar. Si a media corrida entra otra persona, sus lotes no
+        // salen con la sesión de ella (`AuthInterceptor` ⇒ `SesionCambiada`): se quedan PENDIENTES y los sube la pasada de quien
+        // entró. El cajón de esta corrida, con el mismo sello.
+        val sello = com.avoqado.pos.core.data.network.selloDeLaPasadaEnCurso() ?: secureStorage.generacion
         // 🔴 EL CAJÓN VA PRIMERO, TAMBIÉN POR ESTA PUERTA (P2-3). Es el MISMO punto de entrada y el
         // MISMO candado de un solo vuelo que usa `PaymentSyncService`: si ya hay un replay del
         // cajón en vuelo, éste espera su turno y encuentra la cola vacía, así que la apertura NUNCA
         // se manda dos veces por sumar un segundo llamador.
-        val cobrosPuedenSalir = runCatching { cajon.sincronizarCajonPrimero() }
+        val cobrosPuedenSalir = runCatching {
+            withContext(com.avoqado.pos.core.data.network.PasadaConSello(sello)) { cajon.sincronizarCajonPrimero() }
+        }
             .onFailure { Log.e(TAG, "❌ No se pudo sincronizar el cajón antes del outbox: ${it.message}") }
             .getOrDefault(true)
         // 🔴 La barrera de la apertura POR CAJA (efectivo sin red en el turno correcto): un intent con caja espera a la apertura de
@@ -526,7 +533,7 @@ class SyncOutbox @Inject constructor(
                     if (leidos.isEmpty()) break
                     if (leidos.first().q15Reason != null) {
                         // Soltada (19-oct): vuelve a pasar por la admisión de precio UNA vez por ciclo; nunca un bucle caliente.
-                        if (recuperarRetenidoQ16(leidos.first(), venueId, contextoDeSesion) && soltadasEnEsteCiclo.add(leidos.first().id)) continue
+                        if (recuperarRetenidoQ16(leidos.first(), venueId, contextoDeSesion, sello) && soltadasEnEsteCiclo.add(leidos.first().id)) continue
                         break // no same-cycle re-price or hot loop after recovery
                     }
 
@@ -584,8 +591,8 @@ class SyncOutbox @Inject constructor(
                     // Context captured before reading this batch also fences the Q16 query await.
                     val response = try {
                         if (batch.any { it.type == SyncIntentTypes.OPEN_TABLE || it.type == SyncIntentTypes.ADD_ITEMS })
-                            enviarAdmitidoQ16(venueId, request, precioToken)
-                        else apiService.syncIntents(venueId, request)
+                            enviarAdmitidoQ16(venueId, request, precioToken, sello)
+                        else apiService.syncIntents(venueId, request, com.avoqado.pos.core.data.network.SelloDePeticion(sello))
                     } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
                     catch (e: Exception) {
                         // Error de red/5xx: los intents quedan PENDING y el próximo

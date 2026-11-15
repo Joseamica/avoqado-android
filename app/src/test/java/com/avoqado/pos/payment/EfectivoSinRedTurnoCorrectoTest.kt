@@ -213,7 +213,7 @@ class EfectivoSinRedTurnoCorrectoTest {
     private fun outboxReal(): SyncOutbox {
         val api = mockk<ApiService>(relaxed = true)
         com.avoqado.pos.core.data.sync.vincularCallFixtureQ16(api)
-        coEvery { api.syncIntents(VENUE, any()) } answers {
+        coEvery { api.syncIntents(VENUE, any(), any()) } answers {
             val request = secondArg<SyncIntentsRequest>()
             SyncIntentsResponse(data = request.intents.map { wire ->
                 bitacora += "${wire.type} ${wire.id} ${(wire.payload["cashDrawerSessionId"] as? JsonPrimitive)?.content ?: "-"}"

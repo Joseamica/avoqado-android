@@ -377,7 +377,11 @@ class PaymentSyncService @Inject constructor(
 
     @Synchronized
     fun start() {
-        if (isStarted) return
+        // D80: `AppState.onLoginSuccess` vuelve a llamar `start()` cuando entra otra persona sin que el servicio se haya detenido (el
+        // cierre automático por renovación rechazada no llama `stop()`). Antes regresaba sin más y lo que la pasada de la persona
+        // anterior dejó en la cola esperaba al reloj de 15 min; ahora pide la pasada de quien entró (si hay una en curso, al
+        // terminar ésa: ver `invokeOnCompletion` en [syncNow]).
+        if (isStarted) { syncNow(); return }
         isStarted = true
         Log.d(TAG, "Starting payment sync service")
 
@@ -473,8 +477,10 @@ class PaymentSyncService @Inject constructor(
             ConciliacionDelCobro.leerCaptura(payment.q15CaptureJson,payment.venueId,payment.id) == null) return sigue
         val external = externalIdDelPedido(payment.orderRequestJson) ?: return sigue
         val (code, response) = try {
+            // D80: con el sello de la pasada; si entró otra persona, `AuthInterceptor` no la deja salir (⇒ Pausa, sin gastar nada).
             val request = Request.Builder().url("${ApiConstants.BASE_URL}/mobile/venues/${payment.venueId}/sync/recovery")
-                .post(buildJsonObject { put("externalOrderIds",kotlinx.serialization.json.JsonArray(listOf(kotlinx.serialization.json.JsonPrimitive(external)))) }.toString().toRequestBody(JSON_MEDIA)).build()
+                .post(buildJsonObject { put("externalOrderIds",kotlinx.serialization.json.JsonArray(listOf(kotlinx.serialization.json.JsonPrimitive(external)))) }.toString().toRequestBody(JSON_MEDIA))
+                .conSelloDeLaPasada().build()
             withContext(Dispatchers.IO) { client.newCall(request).execute().use { it.code to it.body?.string() } }
         } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
         catch (error: Exception) {
@@ -517,7 +523,10 @@ class PaymentSyncService @Inject constructor(
         val capture = ResultadoDeEfectivoPorLlave.captura(payment) ?: return retenida
         val contexto = syncContext()
         val ciclo = syncCycle
-        fun vigente() = isStarted && syncCycle == ciclo && syncContext() == contexto &&
+        // D80: la sesión de la PASADA, no la de este momento: si entró otra (o la misma persona volvió a entrar), ni se consulta ni
+        // se guarda lo consultado con su sesión.
+        val sello = selloDeLaPasada
+        fun vigente() = isStarted && syncCycle == ciclo && syncContext() == contexto && (sello == null || sello == secureStorage.generacion) &&
             contexto.venue == payment.venueId && !contexto.actor.isNullOrBlank() &&
             connectivityMonitor.isConnected.value
         if (!vigente()) return Recuperacion.Pausa
@@ -532,6 +541,7 @@ class PaymentSyncService @Inject constructor(
                     .addPathSegment("by-key").addPathSegment(payment.id).build()
                 val request = Request.Builder().url(url)
                     .header(com.avoqado.pos.core.data.network.ForbiddenInterceptor.BACKGROUND_HEADER, "true")
+                    .conSelloDeLaPasada()
                     .get().build()
                 client.newCall(request).execute().use { it.code to (it.body?.string() ?: "") }
             }
@@ -646,9 +656,12 @@ class PaymentSyncService @Inject constructor(
         val cycle = syncCycle
         val context = syncContext()
         syncRequested = null
-        selloDeLaPasada = secureStorage.generacion
+        val sello = secureStorage.generacion
+        selloDeLaPasada = sello
         // Install the owner and completion hook before the body can finish, even on an immediate dispatcher.
-        val job = scope.launch(start = CoroutineStart.LAZY) {
+        // D80: la pasada lleva su sello en el contexto ([com.avoqado.pos.core.data.network.PasadaConSello]): el replay del cajón y
+        // el outbox de Mesas que corre aquí mandan con la MISMA sesión que sus cobros, no con la de quien entre a media pasada.
+        val job = scope.launch(com.avoqado.pos.core.data.network.PasadaConSello(sello), start = CoroutineStart.LAZY) {
             try {
                 // 🔴 EL CAJÓN VA PRIMERO, Y LOS COBROS DE UNA CAJA ESPERAN A SU APERTURA (F1).
                 //
@@ -717,8 +730,11 @@ class PaymentSyncService @Inject constructor(
                 // stop/new owner may already have replaced it; an old finalizer owns nothing now.
                 if (syncJob !== job) return@synchronized
                 syncJob = null
-                val wake = syncRequested == context && cause == null && !job.isCancelled &&
-                    syncScope === scope && scope.isActive && syncCycle == cycle && syncContext() == context
+                // D80: despierta la pasada que pidió la sesión VIGENTE, aunque no sea la de la pasada que termina (entró otra persona y
+                // pidió la suya con `start()`). Un pedido de una sesión que ya salió no despierta nada, como antes.
+                val pedida = syncRequested
+                val wake = pedida != null && syncContext() == pedida && cause == null && !job.isCancelled &&
+                    syncScope === scope && scope.isActive && syncCycle == cycle
                 syncRequested = null
                 // The Job is REALLY completed and released here, never merely in its still-active finally.
                 if (wake) syncNow()
