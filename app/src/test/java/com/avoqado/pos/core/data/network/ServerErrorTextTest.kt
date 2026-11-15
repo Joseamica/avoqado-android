@@ -52,6 +52,15 @@ class ServerErrorTextTest {
         assertEquals("No tienes permiso para hacer esto.", ServerErrorText.humanize("Forbidden"))
     }
 
+    /** D59 (D3, 12-nov): la mesa vieja de la tablet ofrecía cobrar una cuenta que ya se cobró en la terminal; salía en inglés. */
+    @Test
+    fun `D59 Order is already paid se dice en espanol y aclara que el cobro no se registro`() {
+        val out = ServerErrorText.humanize("Order is already paid")
+        assertEquals(ServerErrorText.CUENTA_YA_PAGADA, out)
+        assertTrue(out.startsWith("Esta cuenta ya está pagada"))
+        assertTrue("dice que este cobro no quedó: $out", out.contains("no se registró"))
+    }
+
     @Test
     fun `un mensaje ya en espanol se respeta tal cual`() {
         val msg = "La mesa ya tiene una cuenta abierta"

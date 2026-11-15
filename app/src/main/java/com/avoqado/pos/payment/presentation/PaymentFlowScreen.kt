@@ -598,7 +598,9 @@ fun PaymentFlowScreen(
                     fuente == com.avoqado.pos.payment.data.model.PaymentErrorSource.SOLO_GERENTE
                 PaymentErrorView(
                     accionesDeRedHabilitadas = accionesDeRedHabilitadas,
-                    message = currentState.message,
+                    // D59: el texto del SERVIDOR se dice en español aquí, al pintarlo («Order is already paid»); el estado lo conserva
+                    // tal cual porque otras piezas lo comparan.
+                    message = com.avoqado.pos.core.data.network.ServerErrorText.humanize(currentState.message, currentState.message),
                     sinRed = fuente == com.avoqado.pos.payment.data.model.PaymentErrorSource.NETWORK,
                     pideGerente = pideGerente,
                     retryLabel = when (fuente) {

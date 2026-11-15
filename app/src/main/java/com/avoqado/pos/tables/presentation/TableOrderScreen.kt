@@ -196,6 +196,13 @@ fun TableOrderScreen(
     // mismo que prende la franja de «Sin conexión» de la app (`AppState.showOfflineBanner`).
     val servidorAlcanzable by viewModel.isServerReachable.collectAsState()
     val recompensasEnLinea = isConnected && servidorAlcanzable
+    // D59 (D3, 12-nov): con la mesa abierta sin red, la cobraron en la terminal (TPV › Mesas); al volver la red esta pantalla
+    // seguía ofreciendo «Pagar $65». Al volver red y servidor se relee la cuenta: sale «Ya pagado». Sólo en ese cambio, no al abrir.
+    var estabaEnLinea by remember { mutableStateOf(recompensasEnLinea) }
+    LaunchedEffect(recompensasEnLinea) {
+        if (recompensasEnLinea && !estabaEnLinea) viewModel.loadCheck()
+        estabaEnLinea = recompensasEnLinea
+    }
     // «Recompensas»: prendido sólo si no hay motivo para apagarlo (sin red, sin cliente…); el motivo es el texto del botón gris.
     val motivoRecompensas = com.avoqado.pos.tables.data.motivoSinRecompensas(
         // Sin la cuenta al día del servidor no se sabe qué clienta tiene: ni «Agrega el cliente» ni el saldo de una clienta que otra

@@ -771,4 +771,41 @@ class TableOrderRondaConLlaveTest {
             org.junit.Assert.assertNull("al terminar, «Ya se está enviando…» ya no es cierto", vm.blockedNotice.value)
         } finally { vm.viewModelScope.cancel() }
     }
+
+    /** D59 (Codex r2): tras releer una cuenta que el servidor ya marcó pagada, el botón dice «Ya pagada» (no «Pagar $0.00»). */
+    @Test
+    fun `D59 la cuenta que el servidor ya marco pagada pinta Ya pagada en el boton`() = runTest {
+        val vm = vm()
+        try {
+            coEvery { repository.getOrderDetail(any(), any()) } returns
+                Result.success(OrderDetail(id = "o1", orderNumber = "ORD-1", paymentStatus = "PAID", items = emptyList()))
+            vm.loadCheck()
+            advanceUntilIdle()
+            assertEquals(MESA_YA_PAGADA, vm.motivoCobradaAqui)
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    /**
+     * D72 (D3, 13-nov): «Borrar nuevos artículos» salió con el círculo ROJO y «Esa estación no tiene impresora…» aunque borró
+     * bien. Ese rojo y esa pista eran de la comanda anterior que no salió: un aviso escrito a mano no los limpiaba.
+     */
+    @Test
+    fun `D72 un aviso que salio bien no hereda el rojo ni la pista de un error anterior`() = runTest {
+        val vm = vm()
+        try {
+            vm.showError("No salió la comanda de: Cocina", TableOrderViewModel.PISTA_COMANDA_SIN_IMPRESORA)
+            vm.consumeActionMessage()
+            vm.clearPending()
+            assertEquals("Artículos sin enviar borrados", vm.actionMessage.value)
+            org.junit.Assert.assertFalse("salió bien: no va en rojo", vm.actionIsError.value)
+            org.junit.Assert.assertNull("y sin la pista de la impresora", vm.actionHint.value)
+
+            // Igual si el error todavía estaba en pantalla cuando llega el aviso nuevo.
+            vm.showError("No salió la comanda de: Cocina", TableOrderViewModel.PISTA_COMANDA_SIN_IMPRESORA)
+            vm.sortPending(TableOrderViewModel.CartSort.NOMBRE)
+            assertEquals("Carrito ordenado — por nombre", vm.actionMessage.value)
+            org.junit.Assert.assertFalse(vm.actionIsError.value)
+            org.junit.Assert.assertNull(vm.actionHint.value)
+        } finally { vm.viewModelScope.cancel() }
+    }
 }
