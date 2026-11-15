@@ -296,19 +296,11 @@ class PaymentSyncService @Inject constructor(
     private var connectivityJob: Job? = null
 
     /**
-     * D67: el drenado se corta si el cobro más viejo sigue en su pausa entre intentos, y nada lo volvía a despertar: el
-     * «volvió la red» llegaba dentro de la pausa y lo siguiente era el reloj de 15 min (J: 7 min, K-C: 4 min en la D3).
-     */
-    private var despertador: Job? = null
-
-    /** D67 (Codex r2 #1): la sesión con la que arrancó la pasada en curso; el despertar sólo vale para ella. */
-    private var contextoDeLaPasada: SyncContext? = null
-
-    /**
      * D67 (Codex r3 #1, misma familia por tercera vez): la generación de sesión con que arrancó la pasada. Los envíos de la cola
      * salen con ese [com.avoqado.pos.core.data.network.SelloDePeticion]: si a media pasada entra otra persona (cierre automático
      * sin `stop`), `AuthInterceptor` no los deja salir con su sesión ([com.avoqado.pos.core.data.network.SesionCambiada]).
-     * Cubre cualquier disparo (despertar, reloj, flanco de red), no sólo el del D67. Renovar el token no cambia la generación.
+     * Cubre cualquier disparo (reloj, flanco de red, una venta nueva). Renovar el token no cambia la generación. Si la sesión
+     * cambió, la fila espera al siguiente disparo (ya de la persona nueva) en vez de salir con su sesión.
      */
     @Volatile private var selloDeLaPasada: Long? = null
 
@@ -316,23 +308,6 @@ class PaymentSyncService @Inject constructor(
         selloDeLaPasada?.let { tag(com.avoqado.pos.core.data.network.SelloDePeticion::class.java, com.avoqado.pos.core.data.network.SelloDePeticion(it)) }
     }
 
-    private fun despertarAlVencerLaPausa(faltaMs: Long) {
-        synchronized(this) {
-            val scope = syncScope
-            val cycle = syncCycle
-            // Codex r1 #4 y r2 #1: como `syncRequested`, sólo con la MISMA sucursal, persona, rol y sesión que la pasada que
-            // falló. Si cambió mientras viajaba la petición (cierre automático y entró otra persona), no se agenda nada.
-            val contexto = contextoDeLaPasada ?: return
-            if (syncContext() != contexto) return
-            despertador?.cancel()
-            despertador = scope.launch {
-                delay(faltaMs + 100)
-                synchronized(this@PaymentSyncService) {
-                    if (isStarted && syncCycle == cycle && syncScope === scope && syncContext() == contexto) syncNow()
-                }
-            }
-        }
-    }
     private var pendingCountJob: Job? = null
     private var failedCountJob: Job? = null
     private var syncScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -438,7 +413,6 @@ class PaymentSyncService @Inject constructor(
         Log.d(TAG, "Stopping payment sync service")
         timerJob?.cancel()
         connectivityJob?.cancel()
-        despertador?.cancel()
         stoppingJob?.cancel()
         pendingCountJob?.cancel()
         failedCountJob?.cancel()
@@ -672,7 +646,6 @@ class PaymentSyncService @Inject constructor(
         val cycle = syncCycle
         val context = syncContext()
         syncRequested = null
-        contextoDeLaPasada = context
         selloDeLaPasada = secureStorage.generacion
         // Install the owner and completion hook before the body can finish, even on an immediate dispatcher.
         val job = scope.launch(start = CoroutineStart.LAZY) {
@@ -902,7 +875,6 @@ class PaymentSyncService @Inject constructor(
                     // Codex apps r7 #2: un último intento EN EL FUTURO (se corrigió la hora del aparato) no es una espera: se reintenta.
                     if (timeSinceLastRetry in 0 until backoff) {
                         Log.d(TAG, "Stopping drain at ${payment.id} — backoff not elapsed")
-                        despertarAlVencerLaPausa(backoff - timeSinceLastRetry)
                         return Drenado(resueltos, cortada = true)
                     }
                 }
@@ -1660,14 +1632,9 @@ class PaymentSyncService @Inject constructor(
         if (payment.retryCount >= MAX_RETRIES) {
             Log.e(TAG, "❌ Payment ${payment.id} exceeded max retries — marking FAILED")
             dao.updateStatusWithError(payment.id, PaymentSyncStatus.FAILED.name, error)
-            // D67 (Codex r2 #2): ya en «por revisar», suelta la cola: la pasada se cortó aquí y el siguiente cobro no espera
-            // otro disparo (hasta 15 min).
-            despertarAlVencerLaPausa(0)
         } else {
             Log.w(TAG, "⚠️ Payment ${payment.id} retry ${payment.retryCount + 1}/$MAX_RETRIES: $error")
             dao.incrementRetry(payment.id)
-            // D67 (Codex r1 #3): el fallo que crea la pausa agenda su despertar; un 409 o un 5xx no siempre traen otro disparo.
-            despertarAlVencerLaPausa(calculateBackoff(payment.retryCount + 1))
         }
     }
 
@@ -1683,7 +1650,6 @@ class PaymentSyncService @Inject constructor(
         if (payment.retryCount > 0 && desdeElUltimo in 0 until VENTANA_DE_CORTES_MS) {
             Log.w(TAG, "⚠️ Corte de red al subir ${payment.id}: queda pendiente sin gastar otro intento ($error)")
             dao.updateStatus(payment.id, PaymentSyncStatus.PENDING.name)
-            despertarAlVencerLaPausa(calculateBackoff(payment.retryCount))
         } else {
             handleNetworkError(payment, error)
         }
