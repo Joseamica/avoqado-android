@@ -445,7 +445,8 @@ fun TablesScreen(
                                 .clickable {
                                     showBulkMover = false
                                     viewModel.bulkMover(source, t.id) { ok, msg ->
-                                        viewModel.showMessage(msg)
+                                        // D2: el rechazo ya salió en rojo desde el ViewModel.
+                                        if (ok) viewModel.showMessage(msg)
                                     }
                                     exitSelection()
                                 }

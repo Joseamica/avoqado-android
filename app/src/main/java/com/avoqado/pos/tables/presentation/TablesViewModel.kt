@@ -818,7 +818,12 @@ class TablesViewModel @Inject constructor(
                     repository.refresh(vId)
                     onDone(true, "Cuenta movida")
                 },
-                onFailure = { e -> onDone(false, com.avoqado.pos.core.data.network.ServerErrorText.humanize(e, "No se pudo mover")) },
+                // D2: el rechazo se ve como fallo aquí mismo; la pantalla sólo pone la palomita cuando `ok`.
+                onFailure = { e ->
+                    val motivo = com.avoqado.pos.core.data.network.ServerErrorText.humanize(e, "No se pudo mover")
+                    showError(motivo)
+                    onDone(false, motivo)
+                },
             )
         }
     }
