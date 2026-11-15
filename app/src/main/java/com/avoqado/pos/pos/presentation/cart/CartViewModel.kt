@@ -255,6 +255,12 @@ data class CartState(
     val descuentoDeCuentaRegala: Boolean
         get() = couponCode == null && orderDiscountCents > 0 && baseDelCuponCents > 0 && orderDiscountCents >= baseDelCuponCents
 
+    /**
+     * D15 (hz:87f4b879:D15): la venta regala un PRODUCTO ([CartItem.regalaElProducto]). Como [descuentoDeCuentaRegala], pide
+     * `orders:comp` o el PIN de un gerente ANTES de mandar la venta; el SERVIDOR lo vuelve a revisar.
+     */
+    val regalaUnProducto: Boolean get() = items.any { it.regalaElProducto }
+
     val taxableSubtotalCents: Int get() = items.filter { it.type is CartItemType.ProductItem }.sumOf { it.totalPrice }
 
     /**

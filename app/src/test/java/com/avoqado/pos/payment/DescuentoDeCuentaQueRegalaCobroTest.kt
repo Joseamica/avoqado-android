@@ -188,6 +188,7 @@ class DescuentoDeCuentaQueRegalaCobroTest {
         vm.confirmManualChoice(otraForma)
         advanceUntilIdle()
         assertEquals(CORTESIA_DE_CUENTA_PIDE_PIN, (vm.state.value as PaymentFlowState.Error).message)
+        assertEquals(com.avoqado.pos.payment.data.model.PaymentErrorSource.PIDE_PIN, (vm.state.value as PaymentFlowState.Error).source)
         coVerify(exactly = 0) { cashPaymentRepository.descartarReservaRechazada(any()) }
 
         vm.confirmManualChoice(otraForma)
@@ -260,6 +261,7 @@ class DescuentoDeCuentaQueRegalaCobroTest {
         nadaSeAparto()
         nadaSeEncolo()
         assertEquals(CORTESIA_DE_CUENTA_SIN_RED, (vm.state.value as PaymentFlowState.Error).message)
+        assertEquals(com.avoqado.pos.payment.data.model.PaymentErrorSource.NETWORK, (vm.state.value as PaymentFlowState.Error).source)
     }
 
     @Test
@@ -302,6 +304,7 @@ class DescuentoDeCuentaQueRegalaCobroTest {
         coVerify(exactly = 0) { orderRepository.createOrder(any(), any(), any(), any(), any(), any(), any(), any(), any()) }
         nadaSeAparto()
         assertEquals(CORTESIA_DE_CUENTA_LA_DA_UN_GERENTE, (vm.state.value as PaymentFlowState.Error).message)
+        assertEquals(com.avoqado.pos.payment.data.model.PaymentErrorSource.SOLO_GERENTE, (vm.state.value as PaymentFlowState.Error).source)
     }
 
     @Test
@@ -315,6 +318,7 @@ class DescuentoDeCuentaQueRegalaCobroTest {
         nadaSeAparto()
         nadaSeEncolo()
         assertEquals(CORTESIA_DE_CUENTA_SIN_RED, (vm.state.value as PaymentFlowState.Error).message)
+        assertEquals(com.avoqado.pos.payment.data.model.PaymentErrorSource.NETWORK, (vm.state.value as PaymentFlowState.Error).source)
     }
 
     @Test
@@ -345,6 +349,7 @@ class DescuentoDeCuentaQueRegalaCobroTest {
         coVerify(exactly = 1) { cashPaymentRepository.descartarReservaRechazada(any()) }
         nadaSeEncolo()
         assertEquals(CORTESIA_DE_CUENTA_PIDE_PIN, (vm.state.value as PaymentFlowState.Error).message)
+        assertEquals(com.avoqado.pos.payment.data.model.PaymentErrorSource.PIDE_PIN, (vm.state.value as PaymentFlowState.Error).source)
 
         vm.retry()
         advanceUntilIdle()

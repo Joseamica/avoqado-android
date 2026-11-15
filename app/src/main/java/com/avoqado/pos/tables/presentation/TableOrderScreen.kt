@@ -321,6 +321,7 @@ fun TableOrderScreen(
     // aparece en el árbol de accesibilidad, así que se puede verificar que salió.
     val isReprinting by viewModel.isReprinting.collectAsState()
     val actionIsError by viewModel.actionIsError.collectAsState()
+    val mensajeSinRed by viewModel.mensajeSinRed.collectAsState()
     val actionHint by viewModel.actionHint.collectAsState()
     // El aviso lo pinta el DESIGN SYSTEM (AvoqadoSuccessToast / AvoqadoErrorToast):
     // centrado, con el color que corresponde y con subtítulo para decir qué hacer.
@@ -811,6 +812,14 @@ fun TableOrderScreen(
                     message = mensaje,
                     subtitle = actionHint,
                     onDismiss = { viewModel.consumeActionMessage() },
+                )
+            } else if (mensaje == mensajeSinRed) {
+                // D14: «Sin conexión… necesita internet» es un estado normal: gris con el wifi, y con tiempo para leerlo.
+                com.avoqado.pos.designsystem.components.AvoqadoWarningToast(
+                    message = mensaje,
+                    onDismiss = { viewModel.consumeActionMessage() },
+                    durationMs = 4000L,
+                    sinRed = true,
                 )
             } else {
                 AvoqadoSuccessToast(

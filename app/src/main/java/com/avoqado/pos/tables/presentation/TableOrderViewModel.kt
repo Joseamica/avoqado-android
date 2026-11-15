@@ -1298,6 +1298,7 @@ class TableOrderViewModel @Inject constructor(
     fun showMessage(text: String) {
         _actionMessage.value = text
         _actionIsError.value = false
+        _mensajeSinRed.value = null
         _actionHint.value = null
     }
 
@@ -1312,11 +1313,30 @@ class TableOrderViewModel @Inject constructor(
     fun showError(text: String, hint: String? = null) {
         _actionMessage.value = text
         _actionIsError.value = true
+        _mensajeSinRed.value = null
         _actionHint.value = hint
+    }
+
+    /**
+     * D14 (hz:87f4b879:D14): «Sin conexión… necesita internet» NO es un fallo (regla «todo funciona sin red»): se dice en gris con el
+     * wifi, nunca con el círculo rojo de [showError] ni con la palomita de [showMessage].
+     */
+    fun showSinRed(text: String) {
+        _actionMessage.value = text
+        _actionIsError.value = false
+        _mensajeSinRed.value = text
+        _actionHint.value = null
     }
 
     private val _actionIsError = MutableStateFlow(false)
     val actionIsError: StateFlow<Boolean> = _actionIsError.asStateFlow()
+
+    /**
+     * D14: el texto del último aviso de «Sin conexión» ([showSinRed]). El aviso en pantalla va en gris con el wifi sólo mientras
+     * [actionMessage] sea ESE texto (Codex r2 #2): muchos éxitos escriben [actionMessage] directo y no deben heredar el gris.
+     */
+    private val _mensajeSinRed = MutableStateFlow<String?>(null)
+    val mensajeSinRed: StateFlow<String?> = _mensajeSinRed.asStateFlow()
 
     private val _actionHint = MutableStateFlow<String?>(null)
     val actionHint: StateFlow<String?> = _actionHint.asStateFlow()
@@ -1367,7 +1387,7 @@ class TableOrderViewModel @Inject constructor(
 
     private fun requireOnline(accion: String): Boolean {
         if (connectivityMonitor.isConnected.value) return true
-        showError("Sin conexión — $accion necesita internet; se habilita al volver la señal")
+        showSinRed("Sin conexión — $accion necesita internet; se habilita al volver la señal")
         return false
     }
 
@@ -1581,6 +1601,7 @@ class TableOrderViewModel @Inject constructor(
 
     fun consumeActionMessage() {
         _actionMessage.value = null
+        _mensajeSinRed.value = null
     }
 
     /** "Mover" — moves the check to another table. The session's table context
@@ -1664,17 +1685,15 @@ class TableOrderViewModel @Inject constructor(
         val vId = venueId ?: return
         bloqueoDeSaldo(vId, session)?.let { showBlockedReason(it); return }
         if (pideAprobacion && !connectivityMonitor.isConnected.value) {
-            showError(DESCUENTO_CON_APROBACION_SIN_RED_MESA)
+            showSinRed(DESCUENTO_CON_APROBACION_SIN_RED_MESA)
             return
         }
         viewModelScope.launch {
             mutarCuenta(vId, session) { mutar { repository.applyOrderDiscount(vId, session.orderId, discountId, pideAprobacion) }}.fold(
                 onSuccess = { _actionMessage.value = "Descuento aplicado"; repository.refresh(vId) },
                 onFailure = { e ->
-                    showError(
-                        if (pideAprobacion && repository.esFalloDeRed(e)) DESCUENTO_CON_APROBACION_SIN_RED_MESA
-                        else com.avoqado.pos.core.data.network.ServerErrorText.humanize(e, "No se pudo aplicar el descuento"),
-                    )
+                    if (pideAprobacion && repository.esFalloDeRed(e)) showSinRed(DESCUENTO_CON_APROBACION_SIN_RED_MESA)
+                    else showError(com.avoqado.pos.core.data.network.ServerErrorText.humanize(e, "No se pudo aplicar el descuento"))
                 },
             )
         }
