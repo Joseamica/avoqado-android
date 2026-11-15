@@ -68,7 +68,12 @@ internal fun promotionRefDe(items: List<CartItem>, instanceId: String): Promotio
         .mapNotNull { linea ->
             val groupId = linea.promotionGroupId?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
             val optionId = linea.promotionOptionId?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
-            PromotionSelectionRequest(groupId = groupId, optionId = optionId, serviceCourse = linea.serviceCourse)
+            PromotionSelectionRequest(
+                groupId = groupId,
+                optionId = optionId,
+                serviceCourse = linea.serviceCourse,
+                modifierIds = if (linea.comboConExtras) linea.selectedModifiers.map { it.modifierId } else null,
+            )
         }
         // El server resuelve cada grupo con `selections.find(s => s.groupId === group.id)`:
         // un grupo repetido sólo usaría la primera. Se deduplica aquí para que

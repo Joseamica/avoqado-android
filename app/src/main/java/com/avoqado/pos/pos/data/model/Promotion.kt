@@ -45,7 +45,12 @@ data class Promotion(
 }
 
 @Serializable
-data class PromotionsPayload(val active: List<Promotion> = emptyList(), val upcoming: List<Promotion> = emptyList())
+data class PromotionsPayload(
+    val active: List<Promotion> = emptyList(),
+    val upcoming: List<Promotion> = emptyList(),
+    /** El SERVIDOR entiende extras por pieza del combo. Ausente (servidor viejo) = false: la tableta no los ofrece. */
+    val componentModifiers: Boolean = false,
+)
 
 /** Envoltura de red — GET mobile/venues/{venueId}/promotions. */
 @Serializable

@@ -146,4 +146,20 @@ class ServiceCourseRoundTest {
         assertNull(com.avoqado.pos.payment.domain.buildCounterCoursePedidos(items.map { it.copy(serviceCourse = null) }))
     }
 
+    @Test fun `mesa manda modifierIds por pieza, con lista vacia presente y sin marca ausente`() {
+        val conExtras = line("g1", immediate).copy(
+            comboConExtras = true,
+            selectedModifiers = listOf(
+                com.avoqado.pos.pos.data.model.SelectedModifier("ge", "Extras", "queso", "Queso", 1500),
+            ),
+        )
+        val vacia = line("g2", dessert).copy(comboConExtras = true)
+        val sinMarca = line("g3", dessert)
+        val wire = Json.encodeToString(buildTableRoundRequests(listOf(conExtras, vacia, sinMarca)).single())
+        val selections = Json.parseToJsonElement(wire).jsonObject["promotionRef"]!!.jsonObject["selections"]!!.jsonArray
+        assertEquals("[\"queso\"]", selections[0].jsonObject["modifierIds"].toString())
+        assertEquals("[]", selections[1].jsonObject["modifierIds"].toString())
+        assertFalse(selections[2].jsonObject.containsKey("modifierIds"))
+    }
+
 }
