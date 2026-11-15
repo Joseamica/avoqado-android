@@ -99,6 +99,29 @@ class ExtrasDelComboTest {
         assertEquals(emptyList<ProductModifierGroup>(), gruposDeLaPieza(oRefresco, listOf(refresco), capacidad = true))
     }
 
+    @Test
+    fun `un grupo obligatorio sin opciones se conserva y bloquea el combo`() {
+        val terminoVacio = termino.copy(modifiers = emptyList())
+        val extrasVacio = extras.copy(modifiers = emptyList())
+        val vacia = producto("p-vacia", datos(terminoVacio), datos(extrasVacio))
+        val o = opcion("o-vacia", "p-vacia", "Vacia")
+        val grupos = gruposDeLaPieza(o, listOf(vacia), capacidad = true)
+        assertEquals(listOf("g-termino"), grupos!!.map { it.id })
+        val c = combo(PromotionGroup("g-plato", "Plato", listOf(o)))
+        assertEquals(
+            listOf("Falta elegir «Término» de Vacia."),
+            faltantesDelCombo(c, emptyMap(), emptyMap()) { grupos },
+        )
+        assertTrue(comboPideExtras(c) { grupos })
+    }
+
+    @Test
+    fun `un grupo opcional sin opciones se sigue descartando`() {
+        val vacia = producto("p-vacia", datos(extras.copy(modifiers = emptyList())))
+        val o = opcion("o-vacia", "p-vacia", "Vacia")
+        assertEquals(emptyList<ProductModifierGroup>(), gruposDeLaPieza(o, listOf(vacia), capacidad = true))
+    }
+
     // ── topeDelGrupo ─────────────────────────────────────────────────────────
 
     @Test

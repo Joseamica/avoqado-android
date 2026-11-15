@@ -16,12 +16,14 @@ import com.avoqado.pos.pos.data.model.SelectedModifier
 
 /**
  * Grupos de extras que pide esta pieza, o null si se vende como hoy: sin capacidad del SERVIDOR, cantidad distinta de 1
- * o un producto que la tableta no tiene. Sólo cuentan los grupos que traen extras que elegir.
+ * o un producto que la tableta no tiene. Cuentan los grupos que traen extras que elegir y los obligatorios aunque no
+ * traigan ninguno (todas sus opciones archivadas): ese grupo bloquea el combo igual que bloquea al platillo suelto.
+ * Sólo se omiten los opcionales vacíos.
  */
 fun gruposDeLaPieza(opcion: PromotionOption, productos: List<Product>, capacidad: Boolean): List<ProductModifierGroup>? {
     if (!capacidad || opcion.quantity != 1) return null
     val producto = productos.firstOrNull { it.id == opcion.productId } ?: return null
-    return producto.sortedModifierGroups.filter { it.modifiers.isNotEmpty() }
+    return producto.sortedModifierGroups.filter { it.modifiers.isNotEmpty() || it.required }
 }
 
 /** Cuántos extras caben en el grupo: el máximo si deja elegir varios, uno si no. null = sin tope. */
