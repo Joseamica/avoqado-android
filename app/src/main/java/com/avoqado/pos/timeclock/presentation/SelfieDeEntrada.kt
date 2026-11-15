@@ -62,9 +62,10 @@ import java.util.concurrent.atomic.AtomicBoolean
 /**
  * La selfie al marcar Entrada, cuando el negocio prendió «Foto de entrada» (Equipo → Asistencia en el panel).
  *
- * - Con cámara: la foto es obligatoria. Sin permiso, se pide (y si se negó para siempre, se manda a Ajustes); no hay
- *   «saltar»: un PIN se presta, una foto deja huella.
- * - Sin cámara (o si no abre): la entrada se registra igual y el panel la marca «Sin foto» para el gerente.
+ * - Con cámara: la foto es obligatoria. Sin permiso, se pide (y si se negó para siempre, se manda a Ajustes); si no abre
+ *   o no toma la foto, «Reintentar». No hay «saltar»: un PIN se presta, una foto deja huella. Si la cámara está
+ *   descompuesta, el gerente apaga el interruptor en el panel.
+ * - Sin cámara (aparato que no tiene ninguna): la entrada se registra igual y el panel la marca «Sin foto».
  * - La foto sale de aquí ya chica (720 px, JPEG): unos 100 KB, para que viaje con la checada y quepa en el servidor.
  *
  * Sin red no se toma: el checador entero necesita internet (el PIN lo valida el servidor) y lo dice la hoja.
@@ -128,15 +129,28 @@ fun SelfieDeEntrada(
         verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.md),
     ) {
         when {
-            !tieneCamara || falloLaCamara -> {
-                Aviso(
-                    if (!tieneCamara) {
-                        "Este aparato no tiene cámara. Tu entrada se registra y tu gerente la verá marcada «Sin foto»."
-                    } else {
-                        "No se pudo abrir la cámara. Tu entrada se registra y tu gerente la verá marcada «Sin foto»."
-                    },
-                )
+            !tieneCamara -> {
+                Aviso("Este aparato no tiene cámara. Tu entrada se registra y tu gerente la verá marcada «Sin foto».")
                 PrimaryButton(text = "Marcar entrada sin foto", onClick = onSinCamara, isLoading = enviando, fullWidth = true)
+            }
+
+            // 🔴 Con cámara, un fallo NO abre «sin foto» (Codex r3 #1): sería la puerta para saltarla. Se reintenta; si la
+            // cámara está descompuesta de verdad, el gerente apaga «Foto de entrada» en el panel.
+            falloLaCamara -> {
+                Aviso(
+                    "No se pudo usar la cámara. Intenta otra vez; si sigue fallando, pide a tu gerente que apague " +
+                        "«Foto de entrada» en el panel.",
+                )
+                PrimaryButton(
+                    text = "Reintentar",
+                    onClick = {
+                        falloLaCamara = false
+                        fallosSeguidos = 0
+                        avisoDeCaptura = null
+                        camaraLista = false
+                    },
+                    fullWidth = true,
+                )
             }
 
             !permiso -> {
