@@ -12,6 +12,11 @@ data class StaffIdentifyResponse(
     val staff: IdentifiedStaffPayload? = null,
     val currentEntry: CurrentEntryPayload? = null,
     val message: String? = null,
+    /**
+     * «Foto de entrada» del negocio (Equipo → Asistencia en el panel). Con true, marcar Entrada pide una selfie.
+     * Un servidor viejo no lo manda: false, y la entrada sigue como siempre.
+     */
+    val requireClockInPhoto: Boolean = false,
 )
 
 @Serializable
@@ -41,6 +46,8 @@ data class StaffData(
     val onBreak: Boolean = false,
     /** ISO del inicio del turno activo. null cuando no ha marcado entrada. */
     val clockInTime: String? = null,
+    /** El negocio pide selfie al marcar Entrada (ver [StaffIdentifyResponse.requireClockInPhoto]). */
+    val requireClockInPhoto: Boolean = false,
 )
 
 @Serializable
@@ -62,7 +69,7 @@ enum class TimeClockAction {
 }
 
 fun StaffIdentifyResponse.toStaffDataOrNull(): StaffData? {
-    data?.let { return it }
+    data?.let { return it.copy(requireClockInPhoto = it.requireClockInPhoto || requireClockInPhoto) }
 
     val staffPayload = staff ?: return null
     val currentEntryPayload = currentEntry
@@ -75,5 +82,6 @@ fun StaffIdentifyResponse.toStaffDataOrNull(): StaffData? {
         clockedIn = currentEntryPayload != null,
         onBreak = currentEntryPayload?.isOnBreak == true || currentEntryPayload?.status == "ON_BREAK",
         clockInTime = currentEntryPayload?.clockInTime,
+        requireClockInPhoto = requireClockInPhoto,
     )
 }

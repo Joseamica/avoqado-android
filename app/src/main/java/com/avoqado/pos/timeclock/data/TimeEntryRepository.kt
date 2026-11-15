@@ -71,8 +71,13 @@ class TimeEntryRepository @Inject constructor(
         }
     }
 
-    suspend fun clockIn(pin: String, note: String? = null): Result<Unit> =
-        postTimeAction("clock-in", pin, note = note)
+    /**
+     * Marca Entrada. [selfieJpeg] es la foto de entrada (JPEG) cuando el negocio la pide: viaja en base64 en la misma
+     * petición y el servidor la guarda en su almacén privado. Sin red no hay checada (el PIN lo valida el servidor), así
+     * que la foto tampoco se guarda en el aparato: se toma otra vez al reintentar.
+     */
+    suspend fun clockIn(pin: String, note: String? = null, selfieJpeg: ByteArray? = null): Result<Unit> =
+        postTimeAction("clock-in", pin, note = note, selfieJpeg = selfieJpeg)
     suspend fun clockOut(pin: String, note: String? = null): Result<Unit> =
         postTimeAction("clock-out", pin, note = note)
     suspend fun startBreak(pin: String, breakType: String? = null): Result<Unit> =
@@ -85,6 +90,7 @@ class TimeEntryRepository @Inject constructor(
         pin: String,
         breakType: String? = null,
         note: String? = null,
+        selfieJpeg: ByteArray? = null,
     ): Result<Unit> {
         val venueId = secureStorage.venueId ?: return Result.failure(Exception("No venue"))
         val normalizedPin = pin.trim()
@@ -98,6 +104,7 @@ class TimeEntryRepository @Inject constructor(
                 put("pin", normalizedPin)
                 if (breakType != null) put("breakType", breakType)
                 if (note != null) put("note", note)
+                if (selfieJpeg != null) put("checkInPhoto", java.util.Base64.getEncoder().encodeToString(selfieJpeg))
             }.toString()
             val body = bodyJson.toRequestBody("application/json".toMediaType())
             val request = Request.Builder()

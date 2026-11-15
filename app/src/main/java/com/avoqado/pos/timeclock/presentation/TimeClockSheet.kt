@@ -57,6 +57,8 @@ private enum class TimeClockScreen {
     PIN_ENTRY,
     IDENTIFIED,
     BREAK_SELECTION,
+    /** «Foto de entrada» del negocio: la selfie antes de registrar la Entrada. */
+    SELFIE,
 }
 
 // MARK: - Break type (matching iOS: 3 predefined break types)
@@ -370,14 +372,20 @@ fun TimeClockSheet(
                             PrimaryButton(
                                 text = "Entrada",
                                 onClick = {
-                                    scope.launch {
-                                        isLoading = true
+                                    // El negocio pide foto: primero la selfie; la Entrada sale desde esa pantalla.
+                                    if (staff.requireClockInPhoto) {
                                         error = null
-                                        repository.clockIn(pin, note.ifBlank { null }).fold(
-                                            onSuccess = { acuse = "Entrada registrada a las ${horaActual()}." },
-                                            onFailure = { error = it.message },
-                                        )
-                                        isLoading = false
+                                        currentScreen = TimeClockScreen.SELFIE
+                                    } else {
+                                        scope.launch {
+                                            isLoading = true
+                                            error = null
+                                            repository.clockIn(pin, note.ifBlank { null }).fold(
+                                                onSuccess = { acuse = "Entrada registrada a las ${horaActual()}." },
+                                                onFailure = { error = it.message },
+                                            )
+                                            isLoading = false
+                                        }
                                     }
                                 },
                                 isLoading = isLoading,
@@ -446,6 +454,61 @@ fun TimeClockSheet(
                         currentScreen = TimeClockScreen.PIN_ENTRY
                     }) {
                         Text("Cambiar usuario")
+                    }
+                }
+
+                TimeClockScreen.SELFIE -> {
+                    // MARK: - Foto de entrada (el negocio la pide; se ve en Asistencia del panel)
+
+                    Text(
+                        text = "Foto de entrada",
+                        style = MaterialTheme.typography.headlineMedium,
+                    )
+                    Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xs))
+                    Text(
+                        text = "Este negocio pide una foto al marcar tu entrada.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center,
+                    )
+                    Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))
+
+                    fun marcarEntrada(selfie: ByteArray?) {
+                        scope.launch {
+                            isLoading = true
+                            error = null
+                            repository.clockIn(pin, note.ifBlank { null }, selfie).fold(
+                                onSuccess = {
+                                    acuse = if (selfie != null) {
+                                        "Entrada registrada a las ${horaActual()}, con tu foto."
+                                    } else {
+                                        "Entrada registrada a las ${horaActual()}, sin foto (este aparato no pudo tomarla)."
+                                    }
+                                },
+                                onFailure = { error = it.message },
+                            )
+                            isLoading = false
+                        }
+                    }
+
+                    SelfieDeEntrada(
+                        enviando = isLoading,
+                        onFoto = { jpeg -> marcarEntrada(jpeg) },
+                        onSinCamara = { marcarEntrada(null) },
+                        onCancelar = {
+                            error = null
+                            currentScreen = TimeClockScreen.IDENTIFIED
+                        },
+                    )
+
+                    error?.let {
+                        Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
+                        Text(
+                            text = it,
+                            color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodySmall,
+                            textAlign = TextAlign.Center,
+                        )
                     }
                 }
 
