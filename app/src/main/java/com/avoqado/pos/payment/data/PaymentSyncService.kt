@@ -81,6 +81,8 @@ class PaymentSyncService @Inject constructor(
     companion object {
         private const val TAG = "🔄 PaymentSync"
         private const val MAX_RETRIES = 10
+        /** D67: un corte de red gasta a lo más un intento por ventana (10 intentos ≈ 30 min de cortes seguidos). */
+        internal const val VENTANA_DE_CORTES_MS = 3L * 60 * 1000
         private const val SYNC_INTERVAL_MS = 15L * 60 * 1000  // 15 minutes
         private const val MAX_PAYMENTS_PER_SYNC = 10
         private const val MAX_DRAIN_BATCHES = 100
@@ -292,6 +294,20 @@ class PaymentSyncService @Inject constructor(
     )
     private var timerJob: Job? = null
     private var connectivityJob: Job? = null
+
+    /**
+     * D67 (Codex r3 #1, misma familia por tercera vez): la generación de sesión con que arrancó la pasada. Los envíos de la cola
+     * salen con ese [com.avoqado.pos.core.data.network.SelloDePeticion]: si a media pasada entra otra persona (cierre automático
+     * sin `stop`), `AuthInterceptor` no los deja salir con su sesión ([com.avoqado.pos.core.data.network.SesionCambiada]).
+     * Cubre cualquier disparo (reloj, flanco de red, una venta nueva). Renovar el token no cambia la generación. Si la sesión
+     * cambió, la fila espera al siguiente disparo (ya de la persona nueva) en vez de salir con su sesión.
+     */
+    @Volatile private var selloDeLaPasada: Long? = null
+
+    private fun Request.Builder.conSelloDeLaPasada(): Request.Builder = apply {
+        selloDeLaPasada?.let { tag(com.avoqado.pos.core.data.network.SelloDePeticion::class.java, com.avoqado.pos.core.data.network.SelloDePeticion(it)) }
+    }
+
     private var pendingCountJob: Job? = null
     private var failedCountJob: Job? = null
     private var syncScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -320,6 +336,8 @@ class PaymentSyncService @Inject constructor(
         data class RetryableFailure(val message: String) : OrderResolution
         data class PermanentFailure(val message: String) : OrderResolution
         data object AuthExpired : OrderResolution
+        /** D67: la red se cortó (sin red, conexión rechazada o cortada a media petición): pendiente sin gastar reintentos. */
+        data object SinRespuesta : OrderResolution
     }
 
     /** Qué dejó la recuperación de una fila retenida (Q16). */
@@ -628,6 +646,7 @@ class PaymentSyncService @Inject constructor(
         val cycle = syncCycle
         val context = syncContext()
         syncRequested = null
+        selloDeLaPasada = secureStorage.generacion
         // Install the owner and completion hook before the body can finish, even on an immediate dispatcher.
         val job = scope.launch(start = CoroutineStart.LAZY) {
             try {
@@ -1374,6 +1393,10 @@ class PaymentSyncService @Inject constructor(
                         dao.updateStatus(payment.id, PaymentSyncStatus.PENDING.name)
                         return true
                     }
+                    is OrderResolution.SinRespuesta -> {
+                        sinRespuesta(payment, "Sin respuesta al recrear la orden")
+                        return true
+                    }
                     is OrderResolution.PermanentFailure -> {
                         dao.updateStatusWithError(payment.id, PaymentSyncStatus.FAILED.name, result.message)
                         return false
@@ -1415,6 +1438,7 @@ class PaymentSyncService @Inject constructor(
             val request = Request.Builder()
                 .url(url)
                 .post(bodyJson.toRequestBody(JSON_MEDIA))
+                .conSelloDeLaPasada()
                 .build()
 
             val (code, responseBody, headers) = withContext(Dispatchers.IO) {
@@ -1435,14 +1459,14 @@ class PaymentSyncService @Inject constructor(
             Log.w(TAG, "⚠️ Sesión sin renovar (${e.motivo}) — pausing sync, payment ${payment.id} stays PENDING")
             dao.updateStatus(payment.id, PaymentSyncStatus.PENDING.name)
             return true
-        } catch (e: java.net.UnknownHostException) {
-            handleNetworkError(payment, "Sin conexión")
-            return true
-        } catch (e: java.net.ConnectException) {
-            handleNetworkError(payment, "No se pudo conectar al servidor")
+        } catch (e: com.avoqado.pos.core.data.network.SesionCambiada) {
+            // D67 (Codex r3): la pasada empezó con otra sesión; no sale con la de otra persona. Sin gastar intentos: lo sube
+            // la pasada de quien está ahora.
+            Log.w(TAG, "⚠️ La sesión cambió durante la pasada: ${payment.id} queda pendiente")
+            dao.updateStatus(payment.id, PaymentSyncStatus.PENDING.name)
             return true
         } catch (e: java.io.IOException) {
-            handleNetworkError(payment, e.message ?: "Error de red")
+            sinRespuesta(payment, e.message ?: "Error de red")
             return true
         } catch (e: Exception) {
             handleNetworkError(payment, e.message ?: "Error desconocido")
@@ -1467,6 +1491,7 @@ class PaymentSyncService @Inject constructor(
         val request = Request.Builder()
             .url("${ApiConstants.BASE_URL}/mobile/venues/$venueId/orders")
             .post(pedidoConLaCaja(orderRequestJson, cajaParaElServidor).toRequestBody(JSON_MEDIA))
+            .conSelloDeLaPasada()
             .build()
 
         return try {
@@ -1486,12 +1511,10 @@ class PaymentSyncService @Inject constructor(
         } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
         catch (e: com.avoqado.pos.core.data.network.SesionSinRenovar) {
             OrderResolution.AuthExpired
-        } catch (e: java.net.UnknownHostException) {
-            OrderResolution.RetryableFailure("Sin conexión")
-        } catch (e: java.net.ConnectException) {
-            OrderResolution.RetryableFailure("No se pudo conectar al servidor")
+        } catch (e: com.avoqado.pos.core.data.network.SesionCambiada) {
+            OrderResolution.AuthExpired // D67 (Codex r3): no salió con la sesión de otra persona; sin gastar intentos
         } catch (e: java.io.IOException) {
-            OrderResolution.RetryableFailure(e.message ?: "Error de red")
+            OrderResolution.SinRespuesta // D67: un corte de red no gasta reintentos
         } catch (e: Exception) {
             OrderResolution.RetryableFailure(e.message ?: "Error recreando orden")
         }
@@ -1612,6 +1635,23 @@ class PaymentSyncService @Inject constructor(
         } else {
             Log.w(TAG, "⚠️ Payment ${payment.id} retry ${payment.retryCount + 1}/$MAX_RETRIES: $error")
             dao.incrementRetry(payment.id)
+        }
+    }
+
+    /**
+     * D67: un corte de red (sin red, conexión rechazada o cortada a media petición, o un cuerpo que no se terminó de leer)
+     * gasta a lo más UN intento cada [VENTANA_DE_CORTES_MS]. Con internet a medias cada «volvió la red» (~10 s) gastaba uno y a
+     * los 10 el efectivo ya cobrado iba a «por revisar» (J: 4 de 10 en 40 s); ahora eso pide ~30 min de cortes seguidos. Sin
+     * tope, un cobro que SIEMPRE se corta trabaría la cola y el relevo para siempre (Codex r1 #1): a los 10 sigue yendo a «por
+     * revisar» y suelta la cola. Viaja con su llave: reenviarlo no duplica.
+     */
+    private suspend fun sinRespuesta(payment: PendingPaymentEntity, error: String) {
+        val desdeElUltimo = System.currentTimeMillis() - (payment.lastRetryAt ?: 0)
+        if (payment.retryCount > 0 && desdeElUltimo in 0 until VENTANA_DE_CORTES_MS) {
+            Log.w(TAG, "⚠️ Corte de red al subir ${payment.id}: queda pendiente sin gastar otro intento ($error)")
+            dao.updateStatus(payment.id, PaymentSyncStatus.PENDING.name)
+        } else {
+            handleNetworkError(payment, error)
         }
     }
 
