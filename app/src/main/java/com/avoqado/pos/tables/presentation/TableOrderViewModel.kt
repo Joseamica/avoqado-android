@@ -556,7 +556,10 @@ class TableOrderViewModel @Inject constructor(
         viewModelScope.launch { serviceCoursesRepository?.refresh(id) }
     }
 
-    fun addPromotion(promotion: com.avoqado.pos.pos.data.model.Promotion, selections: Map<String, String>, times: Map<String, com.avoqado.pos.pos.data.model.ServiceCourseSnapshot>): Boolean {
+    fun addPromotion(promotion: com.avoqado.pos.pos.data.model.Promotion, selections: Map<String, String>, times: Map<String, com.avoqado.pos.pos.data.model.ServiceCourseSnapshot>,
+        extras: Map<String, List<com.avoqado.pos.pos.data.model.SelectedModifier>> = emptyMap(),
+        piezasConExtras: Set<String> = emptySet(),
+    ): Boolean {
         if (cuentaCerrada()) return false
         if (readOnlyCheck.value || _isSending.value) return false
         val chosen = com.avoqado.pos.pos.presentation.promotions.opcionesElegidas(promotion, selections) ?: return false
@@ -570,6 +573,7 @@ class TableOrderViewModel @Inject constructor(
                 type = CartItemType.ProductItem(selection.opcion.productId), name = selection.opcion.productName.ifBlank { promotion.name },
                 subtitle = "${promotion.name} · ${snapshot.label}", unitPrice = prices[index], quantity = selection.opcion.quantity.coerceAtLeast(1),
                 categoryId = product?.categoryId, imageUrl = product?.imageUrl,
+                selectedModifiers = extras[selection.grupo.id].orEmpty(), comboConExtras = selection.grupo.id in piezasConExtras,
                 promotionInstanceId = instance, promotionId = promotion.id, promotionName = promotion.name,
                 promotionGroupId = selection.grupo.id, promotionOptionId = selection.opcion.id, serviceCourse = snapshot,
             ), course = snapshot.legacyCourse)
