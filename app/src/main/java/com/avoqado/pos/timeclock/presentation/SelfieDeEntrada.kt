@@ -89,6 +89,18 @@ fun SelfieDeEntrada(
     var falloLaCamara by remember { mutableStateOf(false) }
     var foto by remember { mutableStateOf<ByteArray?>(null) }
     var tomando by remember { mutableStateOf(false) }
+    // «Tomar foto» sólo con la cámara ya atada: antes se podía tocar mientras se ataba y CameraX contestaba
+    // ERROR_INVALID_CAMERA, que abría «sin foto» en un aparato que SÍ tiene cámara (Codex r2 #5).
+    var camaraLista by remember { mutableStateOf(false) }
+    var fallosSeguidos by remember { mutableStateOf(0) }
+    var avisoDeCaptura by remember { mutableStateOf<String?>(null) }
+
+    /** Un tropiezo al tomar la foto se reintenta; sólo tres seguidos cuentan como cámara que no funciona. */
+    fun capturaFallida() {
+        tomando = false
+        fallosSeguidos += 1
+        if (fallosSeguidos >= 3) falloLaCamara = true else avisoDeCaptura = "No se pudo tomar la foto. Intenta otra vez."
+    }
 
     val launcher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { concedido ->
         permiso = concedido
@@ -166,34 +178,47 @@ fun SelfieDeEntrada(
                     isLoading = enviando,
                     fullWidth = true,
                 )
-                TextButton(onClick = { foto = null }, enabled = !enviando) { Text("Tomar otra") }
+                TextButton(
+                    onClick = {
+                        foto = null
+                        camaraLista = false
+                    },
+                    enabled = !enviando,
+                ) { Text("Tomar otra") }
             }
 
             else -> {
                 val captura = remember { ImageCapture.Builder().setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY).build() }
-                VistaDeCamara(captura = captura, onFallo = { falloLaCamara = true })
+                VistaDeCamara(captura = captura, onLista = { camaraLista = true }, onFallo = { falloLaCamara = true })
+                avisoDeCaptura?.let { Aviso(it) }
                 PrimaryButton(
                     text = "Tomar foto",
                     onClick = {
                         tomando = true
+                        avisoDeCaptura = null
                         captura.takePicture(
                             ContextCompat.getMainExecutor(context),
                             object : ImageCapture.OnImageCapturedCallback() {
                                 override fun onCaptureSuccess(image: ImageProxy) {
                                     val jpeg = runCatching { comprimirSelfie(image) }.getOrNull()
                                     image.close()
-                                    tomando = false
-                                    if (jpeg != null) foto = jpeg else falloLaCamara = true
+                                    if (jpeg != null) {
+                                        tomando = false
+                                        fallosSeguidos = 0
+                                        foto = jpeg
+                                    } else {
+                                        capturaFallida()
+                                    }
                                 }
 
                                 override fun onError(exception: ImageCaptureException) {
                                     Log.e("⏰", "Selfie de entrada: la cámara no tomó la foto (${exception.imageCaptureError})")
-                                    tomando = false
-                                    falloLaCamara = true
+                                    capturaFallida()
                                 }
                             },
                         )
                     },
+                    enabled = camaraLista,
                     isLoading = tomando,
                     fullWidth = true,
                 )
@@ -222,7 +247,7 @@ private fun Aviso(texto: String) {
 
 /** La vista previa de la cámara frontal (la trasera si el aparato no tiene frontal), atada a esta pantalla. */
 @Composable
-private fun VistaDeCamara(captura: ImageCapture, onFallo: () -> Unit) {
+private fun VistaDeCamara(captura: ImageCapture, onLista: () -> Unit, onFallo: () -> Unit) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val proveedor = remember { ProcessCameraProvider.getInstance(context) }
@@ -261,6 +286,7 @@ private fun VistaDeCamara(captura: ImageCapture, onFallo: () -> Unit) {
                         preview.surfaceProvider = vista.surfaceProvider
                         camaras.unbind(preview, captura)
                         camaras.bindToLifecycle(lifecycleOwner, selector, preview, captura)
+                        onLista()
                     } catch (e: Exception) {
                         Log.e("⏰", "Selfie de entrada: no se pudo abrir la cámara (${e.javaClass.simpleName})")
                         onFallo()
