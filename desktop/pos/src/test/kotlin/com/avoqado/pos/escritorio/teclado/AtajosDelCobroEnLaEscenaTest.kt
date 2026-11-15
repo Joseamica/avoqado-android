@@ -227,7 +227,7 @@ class AtajosDelCobroEnLaEscenaTest {
         onMethodSelected = { cobro.metodo = it },
         onCancel = { cobro.cancelado++ },
         onManualMethodSelected = { cobro.manual = it },
-        tenderTypes = listOf(tipoDelNegocio("Tarjeta de crédito", "CREDIT_CARD"), tipoDelNegocio("Transferencia", "BANK_TRANSFER")),
+        tenderTypes = listOf(tipoDelNegocio("Tarjeta de crédito", "CREDIT_CARD"), tipoDelNegocio("SPEI", "BANK_TRANSFER")),
     )
 
     @Test fun `P1 D57 Tarjeta en «Ya pagó de otra forma» pregunta por la terminal de Avoqado antes de registrar`() = runComposeUiTest {
@@ -268,9 +268,10 @@ class AtajosDelCobroEnLaEscenaTest {
         val cobro = Cobro()
         setContent { EnWindows { SelectorConTipos(cobro) } }
         onNodeWithText("Ya pagó de otra forma").performClick()
-        onNodeWithText("Transferencia").performClick()
+        // Del catálogo se llama «SPEI»: la fija «Transferencia» también sale en la hoja (Codex r1: dos coincidencias).
+        onNodeWithText("SPEI").performClick()
         onNodeWithText(com.avoqado.pos.payment.domain.AvisoDeTerminalDeAvoqado.TITULO).assertDoesNotExist()
-        runOnIdle { assertEquals("Transferencia", (cobro.manual as com.avoqado.pos.payment.domain.ManualPaymentChoice.Tender).option.name) }
+        runOnIdle { assertEquals("SPEI", (cobro.manual as com.avoqado.pos.payment.domain.ManualPaymentChoice.Tender).option.name) }
     }
 
     @Test fun `P1 en Windows Enter y Espacio no pican Reintentar del error de pago, y Cancelar sí responde`() = runComposeUiTest {
