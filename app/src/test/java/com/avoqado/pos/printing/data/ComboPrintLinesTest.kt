@@ -198,4 +198,22 @@ class ComboPrintLinesTest {
         assertTrue(ComboPrintLines.receipt(emptyList()).isEmpty())
         assertTrue(ComboPrintLines.kitchen(emptyList()).isEmpty())
     }
+
+    /** Combo con extras: el renglón cabecera lleva el precio CON extras y cada pieza imprime los suyos, sin precio. */
+    @Test
+    fun `receipt combo con extras - la cabecera trae el precio con extras y cada pieza sus extras`() {
+        val combo = ComboTag(key = "inst-1", name = "Hamburguesa completa")
+        val hamburguesa = receiptLine("Hamburguesa", 18000 + 1500).copy(modifiers = listOf("Queso"))
+        val refresco = receiptLine("Refresco", 0)
+        val out = ComboPrintLines.receipt(listOf(combo to hamburguesa, combo to refresco))
+
+        assertEquals(3, out.size)
+        assertTrue(out[0].isComboHeader)
+        assertEquals(19500, out[0].totalPrice)
+        assertEquals(listOf("Queso"), out[1].modifiers)
+        assertEquals(0, out[1].totalPrice)
+        assertEquals(null, out[2].modifiers)
+        // Σ de lo impreso = lo que cuesta la copia del ticket (subtotal del carrito).
+        assertEquals(19500, out.sumOf { it.totalPrice })
+    }
 }

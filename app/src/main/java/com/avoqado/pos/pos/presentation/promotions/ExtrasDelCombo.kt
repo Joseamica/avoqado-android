@@ -90,6 +90,16 @@ fun extrasCents(extras: Map<String, List<SelectedModifier>>): Int =
 fun comboPideExtras(promocion: Promotion, grupos: (PromotionOption) -> List<ProductModifierGroup>?): Boolean =
     promocion.groups.any { g -> g.options.any { grupos(it).orEmpty().isNotEmpty() } }
 
+/** Los grupos del combo cuya pieza elegida (o única) manda su lista de extras: lo que se marca en `comboConExtras`. */
+fun piezasConExtras(
+    promocion: Promotion,
+    selecciones: Map<String, String>,
+    grupos: (PromotionOption) -> List<ProductModifierGroup>?,
+): Set<String> = promocion.groups.mapNotNull { g ->
+    val opcion = opcionElegida(g.options, selecciones[g.id]) ?: return@mapNotNull null
+    if (grupos(opcion) != null) g.id else null
+}.toSet()
+
 /** La opción elegida de un grupo; si el grupo sólo tiene una, es esa. */
 private fun opcionElegida(opciones: List<PromotionOption>, optionId: String?): PromotionOption? =
     opciones.firstOrNull { it.id == optionId } ?: opciones.singleOrNull()

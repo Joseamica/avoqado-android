@@ -178,12 +178,18 @@ fun TableOrderScreen(
     var showCombos by remember { mutableStateOf(false) }
     var selectedCombo by remember { mutableStateOf<com.avoqado.pos.pos.data.model.Promotion?>(null) }
     LaunchedEffect(session?.orderId) { viewModel.refreshServiceCourses(); promotionsViewModel.refresh() }
+    // Extras de cada pieza de un combo: sólo con un SERVIDOR que los entiende (si no, null = se vende como hoy).
+    val gruposDeLaPieza: (com.avoqado.pos.pos.data.model.PromotionOption) -> List<com.avoqado.pos.pos.data.model.ProductModifierGroup>? = { opcion ->
+        com.avoqado.pos.pos.presentation.promotions.gruposDeLaPieza(opcion, catalogViewModel.products.value, promotionCatalog.componentModifiers)
+    }
     selectedCombo?.let { combo ->
         com.avoqado.pos.pos.presentation.promotions.PromotionSheet(
-            promocion = combo, onDismiss = { selectedCombo = null }, onConfirm = {}, courses = availableCourses,
+            promocion = combo, onDismiss = { selectedCombo = null }, onConfirm = { _, _ -> }, courses = availableCourses,
+            gruposDeLaPieza = gruposDeLaPieza,
             initialCourse = availableCourses.firstOrNull { it.legacyCourse == selectedCourse },
-            onConfirmWithCourses = { selections, times ->
-                if (viewModel.addPromotion(combo, selections, times)) selectedCombo = null
+            onConfirmWithCourses = { selections, times, extras ->
+                val marcadas = com.avoqado.pos.pos.presentation.promotions.piezasConExtras(combo, selections, gruposDeLaPieza)
+                if (viewModel.addPromotion(combo, selections, times, extras, marcadas)) selectedCombo = null
             },
         )
     }

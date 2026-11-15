@@ -252,6 +252,10 @@ fun CheckoutScreen(
     val comboCourseNotice by promotionsViewModel.courseNotice.collectAsState()
     val ajustePanelPromos by promotionsViewModel.ajustePanelCajero.collectAsState()
     LaunchedEffect(Unit) { promotionsViewModel.refresh() }
+    // Extras de cada pieza de un combo: sólo con un SERVIDOR que los entiende (si no, null = se vende como hoy).
+    val gruposDeLaPieza: (com.avoqado.pos.pos.data.model.PromotionOption) -> List<com.avoqado.pos.pos.data.model.ProductModifierGroup>? = { opcion ->
+        com.avoqado.pos.pos.presentation.promotions.gruposDeLaPieza(opcion, cartViewModel.products.value, promociones.componentModifiers)
+    }
     // 🔴 `remember`, no lectura directa: `puedeAplicar` desemboca en
     // `venuePermissions`, que descifra EncryptedSharedPreferences y decodifica
     // JSON. Leerlo en cada recomposición de la pantalla más caliente de la app es
@@ -276,8 +280,13 @@ fun CheckoutScreen(
     // Se celebra SÓLO si de verdad entró (`aplicarPromocion` devuelve false
     // cuando falta elegir un grupo): un "¡Combo agregado!" que miente es peor
     // que no celebrar.
-    val agregarPromocion: (Promotion, Map<String, String>) -> Unit = { promo, selecciones ->
-        if (cartViewModel.aplicarPromocion(promo, selecciones)) {
+    val agregarPromocion: (Promotion, Map<String, String>, Map<String, List<com.avoqado.pos.pos.data.model.SelectedModifier>>) -> Unit = { promo, selecciones, extras ->
+        if (cartViewModel.aplicarPromocion(
+                promo, selecciones,
+                extras = extras,
+                piezasConExtras = com.avoqado.pos.pos.presentation.promotions.piezasConExtras(promo, selecciones, gruposDeLaPieza),
+            )
+        ) {
             promocionAgregada = promo.name
         } else {
             // Un toque que no hace NADA es peor que un error: pasa cuando la
@@ -287,7 +296,9 @@ fun CheckoutScreen(
         }
     }
     val onPromotionTap: (Promotion) -> Unit = { promo ->
-        if (promo.requiereEleccion || promotionsViewModel.usesServiceCourses) promocionEnEleccion = promo else agregarPromocion(promo, emptyMap())
+        if (promo.requiereEleccion || promotionsViewModel.usesServiceCourses ||
+            com.avoqado.pos.pos.presentation.promotions.comboPideExtras(promo, gruposDeLaPieza)
+        ) promocionEnEleccion = promo else agregarPromocion(promo, emptyMap(), emptyMap())
     }
     // Quitar una línea de promoción quita el combo COMPLETO — se avisa antes.
     // El `CartViewModel` lo garantiza igual venga de donde venga el borrado;
@@ -1146,14 +1157,20 @@ fun CheckoutScreen(
         PromotionSheet(
             promocion = promo,
             onDismiss = { promocionEnEleccion = null },
-            onConfirm = { selecciones ->
-                agregarPromocion(promo, selecciones)
+            gruposDeLaPieza = gruposDeLaPieza,
+            onConfirm = { selecciones, extras ->
+                agregarPromocion(promo, selecciones, extras)
                 promocionEnEleccion = null
             },
             courses = if (promotionsViewModel.usesServiceCourses) comboCourses else emptyList(),
             courseNotice = if (promotionsViewModel.usesServiceCourses) comboCourseNotice else null,
-            onConfirmWithCourses = if (promotionsViewModel.usesServiceCourses) { selections, times ->
-                if (cartViewModel.aplicarPromocion(promo, selections, times)) {
+            onConfirmWithCourses = if (promotionsViewModel.usesServiceCourses) { selections, times, extras ->
+                if (cartViewModel.aplicarPromocion(
+                        promo, selections, times,
+                        extras = extras,
+                        piezasConExtras = com.avoqado.pos.pos.presentation.promotions.piezasConExtras(promo, selections, gruposDeLaPieza),
+                    )
+                ) {
                     promocionAgregada = promo.name
                     promocionEnEleccion = null
                 } else promocionNoAgregada = promo.name
