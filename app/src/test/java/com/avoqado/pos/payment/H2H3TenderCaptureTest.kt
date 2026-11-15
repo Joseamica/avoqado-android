@@ -192,7 +192,7 @@ class H2H3TenderCaptureTest {
             seq
         }
         coEvery { intentDao.pendingFifo(any(), any()) } coAnswers { intents.filter { it.status == "PENDING" } }
-        coEvery { api.syncIntents(any(), any()) } coAnswers {
+        coEvery { api.syncIntents(any(), any(), any()) } coAnswers {
             replayRequests += secondArg<SyncIntentsRequest>()
             throw IOException("respuesta perdida") // keep the same durable row/key for retry
         }
