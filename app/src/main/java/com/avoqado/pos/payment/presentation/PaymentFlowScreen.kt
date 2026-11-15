@@ -597,6 +597,7 @@ fun PaymentFlowScreen(
                     // tal cual porque otras piezas lo comparan.
                     message = com.avoqado.pos.core.data.network.ServerErrorText.humanize(currentState.message, currentState.message),
                     sinRed = currentState.source == com.avoqado.pos.payment.data.model.PaymentErrorSource.NETWORK,
+                    noSeCobro = currentState.source == com.avoqado.pos.payment.data.model.PaymentErrorSource.NO_SE_COBRO,
                     onRetry = { viewModel.retry() },
                     // Cancelar aquí NO borra la orden a ciegas: primero se resuelve el cobro (si
                     // llegó a existir) y sólo cuando conste que no se cobró se cancela la venta.

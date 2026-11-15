@@ -12,6 +12,8 @@ enum class PaymentErrorSource {
     TERMINAL,
     SERVER,
     UNKNOWN,
+    /** D58: no se cobró y nadie rechazó (cancelación, terminal liberada, cajero lo confirmó): neutro, no rojo. */
+    NO_SE_COBRO,
 }
 
 /** En qué cola quedó un cobro hecho sin red. Son dos: la de cobros y el outbox de mesas provisionales. */

@@ -25,6 +25,7 @@ import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.Error
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.HelpOutline
 import androidx.compose.material.icons.filled.Print
 import androidx.compose.material.icons.filled.Warning
@@ -781,6 +782,8 @@ fun PaymentErrorView(
      * selector de terminal. Sin red es un estado normal (regla «todo funciona sin red»), no un error.
      */
     sinRed: Boolean = false,
+    /** D58: no se cobró y nadie rechazó (p. ej. se canceló en la terminal): «No se cobró» en gris, no «Error en el pago». */
+    noSeCobro: Boolean = false,
     /**
      * C1 (22-oct): «Revisar ese cobro» — la terminal (o la venta) la ocupa otro cobro y se puede consultar cómo quedó.
      * `null` ⇒ no se ofrece (cualquier otro error, o el servidor no dijo cuál es).
@@ -800,16 +803,20 @@ fun PaymentErrorView(
     ) {
         if (!accionesDeRedHabilitadas) Text(com.avoqado.pos.giftcards.domain.TextosDeTarjetas.SIN_RED)
         Icon(
-            if (sinRed) Icons.Filled.WifiOff else Icons.Filled.Error,
-            contentDescription = if (sinRed) "Sin conexión" else "Error",
-            tint = if (sinRed) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error,
+            when {
+                sinRed -> Icons.Filled.WifiOff
+                noSeCobro -> Icons.Filled.Info
+                else -> Icons.Filled.Error
+            },
+            contentDescription = if (sinRed) "Sin conexión" else if (noSeCobro) "No se cobró" else "Error",
+            tint = if (sinRed || noSeCobro) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error,
             modifier = Modifier.size(80.dp),
         )
 
         Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxl))
 
         Text(
-            text = titleLabel ?: if (sinRed) "Sin conexión" else "Error en el pago",
+            text = titleLabel ?: if (sinRed) "Sin conexión" else if (noSeCobro) "No se cobró" else "Error en el pago",
             style = MaterialTheme.typography.headlineLarge,
         )
 
