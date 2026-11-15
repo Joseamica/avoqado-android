@@ -18,6 +18,8 @@ internal const val MESA_COBRO_SIN_SINCRONIZAR = "Esta mesa tiene un cobro sin si
 internal const val MESA_COBRO_POR_REVISAR =
     "Esta mesa tiene un cobro por revisar: un gerente lo resuelve en Operaciones por revisar antes de cobrarla otra vez."
 internal const val MESA_COBROS_SIN_LEER = "No se pudo revisar si esta mesa tiene cobros sin sincronizar. Intenta de nuevo."
+/** D59: el SERVIDOR ya marcó la cuenta pagada (p. ej. la cobraron en la terminal, TPV › Mesas, mientras esta pantalla seguía abierta). */
+internal const val MESA_YA_PAGADA = "Esta mesa ya se pagó: no la cobres otra vez."
 
 internal sealed interface SaldoSinRed {
     /** [hayCobro]: hay al menos un `PAY_CASH` de la orden en la cola (también un cierre de $0). */

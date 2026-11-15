@@ -593,7 +593,9 @@ fun PaymentFlowScreen(
             is PaymentFlowState.Error -> {
                 PaymentErrorView(
                     accionesDeRedHabilitadas = accionesDeRedHabilitadas,
-                    message = currentState.message,
+                    // D59: el texto del SERVIDOR se dice en español aquí, al pintarlo («Order is already paid»); el estado lo conserva
+                    // tal cual porque otras piezas lo comparan.
+                    message = com.avoqado.pos.core.data.network.ServerErrorText.humanize(currentState.message, currentState.message),
                     sinRed = currentState.source == com.avoqado.pos.payment.data.model.PaymentErrorSource.NETWORK,
                     onRetry = { viewModel.retry() },
                     // Cancelar aquí NO borra la orden a ciegas: primero se resuelve el cobro (si

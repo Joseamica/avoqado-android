@@ -104,6 +104,8 @@ internal fun motivoParaNoCobrarLaMesa(provisional: Boolean, cheque: OrderDetail?
     provisional -> if (trabajo.rechazados == 0 && trabajo.tipos.all { it in setOf("OPEN_TABLE", "ADD_ITEMS", "PAY_CASH") }) null
         else "Esta mesa tiene cambios sin sincronizar: cóbrala cuando se sincronicen."
     trabajo.intents > 0 -> "Esta mesa tiene cambios sin sincronizar: cóbrala cuando se sincronicen."
+    // D59: el SERVIDOR ya la marcó pagada (la cobraron en la terminal con esta pantalla abierta): «Pagar $0.00» no se ofrece.
+    cheque?.id == orderId && cheque.paymentStatus.equals("PAID", ignoreCase = true) -> MESA_YA_PAGADA
     // Sin lectura fresca del servidor no se sabe si cambió: se dice lo cierto (no se pudo confirmar), no «cambió».
     !chequeAlDia && (cheque?.id == orderId || vioCambios) -> "No se pudo confirmar el saldo actual de esta cuenta: intenta de nuevo en un momento."
     else -> null
@@ -2495,6 +2497,8 @@ class TableOrderViewModel @Inject constructor(
      */
     internal val motivoCobradaAqui: String? get() = tableSession.current()?.let { s ->
         when {
+            // D59 (Codex r2): la cuenta del servidor ya viene pagada (la cobraron en la terminal): el botón dice «Ya pagada».
+            _check.value?.let { it.id == s.orderId && it.paymentStatus.equals("PAID", ignoreCase = true) } == true -> MESA_YA_PAGADA
             s.isProvisional && saldoDeMesaConocido && saldoDeMesa.porPagarCents <= 0 &&
                 trabajoParaSaldo?.takeIf { it.first == venueId && it.second == s.idsDeLaOrden }?.third?.tipos
                     ?.contains(com.avoqado.pos.core.data.sync.SyncIntentTypes.PAY_CASH) == true -> CUENTA_COBRADA_AQUI
@@ -2535,6 +2539,8 @@ class TableOrderViewModel @Inject constructor(
         // D5 · B2b: con el piloto, la mesa del servidor que no se puede cobrar en línea se cobra con su saldo sin red (o dice por qué no).
         val motivo = motivoParaNoCobrarLaMesa(session.isProvisional, _check.value, session.orderId, cuentaAlDiaAqui,
             hayMutacionEnVuelo, vioCambios, trabajo)
+        // D59: pagada en el servidor no se cobra ni con el saldo sin red (su texto diría «cobrada aquí, falta subirla»).
+        if (motivo == MESA_YA_PAGADA) { showBlockedReason(motivo); return false }
         var sinRed: SaldoSinRed.Conocido? = null
         if (motivo != null) {
             // Codex b2b-r3 (F2): si el piloto se apagó mientras se leía, el camino de hoy (el motivo de siempre, sin `cobroSinRed`).
