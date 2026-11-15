@@ -88,4 +88,12 @@ class LanTxtTest {
         assertFalse(cocina.sirveLeases)
         assertEquals(setOf("st_barra"), cocina.kdsStations)
     }
+
+    @Test fun `p05 pm=1 solo con presencia`() {
+        val con = LanTxt.construir("peer", "v", false, 1, emptySet(), hub = true, presencia = true)
+        assertEquals("1", con["pm"])
+        assertFalse(LanTxt.construir("peer", "v", false, 1, emptySet(), hub = true).containsKey("pm"))
+        assertTrue(LanTxt.peerDesde(con, "10.0.0.2", 9000, "me", "v")!!.presencia)
+        assertFalse(LanTxt.peerDesde(con - "pm", "10.0.0.2", 9000, "me", "v")!!.presencia)
+    }
 }

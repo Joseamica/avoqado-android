@@ -116,7 +116,7 @@ class AuthRepositorySwitchUserTest {
 
         assertEquals(SwitchUserResult.Error(AuthRepository.OTRA_PERSONA_ENTRO), r)
         verify(exactly = 0) { secureStorage.saveLogin(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any()) }
-        verify(exactly = 0) { secureStorage.saveSelectedStaffForCurrentVenue(any(), any()) }
+        verify(exactly = 0) { secureStorage.venderComoQuienEntra(any(), any()) }
     }
 
     @Test

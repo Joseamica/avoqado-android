@@ -295,11 +295,15 @@ class TableServiceRepository @Inject constructor(
     } }
     }
 
-    /** Persist the check pointer before ordering; status alone cannot reopen a table after restart. */
-    suspend fun markTableOccupiedLocally(tableId: String, covers: Int? = null, scopedVenueId: String? = loadedVenueId) = floorWrites.withLock {
+    /**
+     * Persist the check pointer before ordering; status alone cannot reopen a table after restart. [cuenta]: la apertura sin red ya
+     * encolada que NO se activó (Codex código r2 H3); sin ella, la sesión activa.
+     */
+    suspend fun markTableOccupiedLocally(tableId: String, covers: Int? = null, scopedVenueId: String? = loadedVenueId,
+        cuenta: TableSession.Active? = null) = floorWrites.withLock {
         val venueId = checkNotNull(scopedVenueId) { "No hay sucursal seleccionada" }
         check(loadedVenueId == venueId) { "La sucursal cambió" }
-        val session = checkNotNull(tableSession.current()) { "No hay cuenta abierta" }
+        val session = cuenta ?: checkNotNull(tableSession.current()) { "No hay cuenta abierta" }
         check(session.tableId == tableId && session.isProvisional)
         check(_tables.value.any { it.id == tableId }) { "No se pudo guardar la mesa en este aparato" }
         val check = OpenCheckSummary(session.orderId, session.orderNumber, covers, version = session.version,
@@ -630,11 +634,18 @@ class TableServiceRepository @Inject constructor(
         put("reason", kotlinx.serialization.json.JsonPrimitive(reason))
     }.onFailure { Log.e(TAG, "❌ cancelOrder failed: ${it.message}") }
 
-    /** Releases the table (the server rejects clearing a table with an unpaid order). */
-    suspend fun clearTable(venueId: String, tableId: String): Result<Unit> = runCatching {
+    /**
+     * Releases the table (the server rejects clearing a table with an unpaid order).
+     *
+     * D75 (hz:8024bc1c:D75): sin red, el intent lleva también la cuenta que este aparato quiso soltar ([orderId]). Así, si la mesa
+     * abierta sin red terminó en cuenta aparte (D51/D71) y la que debe es OTRA, el SERVIDOR lo da por hecho sin tocar la mesa en vez
+     * de dejar una «operación por revisar». La cuenta no vuelve el intent trabajo de esa cuenta ([SyncOutbox.tocaLaOrden]).
+     */
+    suspend fun clearTable(venueId: String, tableId: String, orderId: String): Result<Unit> = runCatching {
         apiService.clearTable(venueId, tableId)
         Unit
     }.orQueueOffline(venueId, "CLEAR_TABLE", Unit) {
         put("tableId", kotlinx.serialization.json.JsonPrimitive(tableId))
+        putOrderRef(orderId)
     }.onFailure { Log.e(TAG, "❌ clearTable failed: ${it.message}") }
 }

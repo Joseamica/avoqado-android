@@ -333,12 +333,25 @@ class ComandaDispatcher @Inject constructor(
         /** Folios cuyo papel de respaldo NO se marca: van en más de un tiempo de la ronda ([despacharEnFondo], Codex 3.6 #1). */
         noMarcar: (String) -> Boolean = { false },
         /**
-         * «No lleva comanda» (10-nov): `true` SÓLO en las ventas del POS. Lo de estaciones creadas sin comanda no se rutea:
+         * «No lleva comanda» (10-nov): `true` en las ventas del POS. Lo de estaciones creadas sin comanda no se rutea:
          * si era todo, devuelve [EstadoDeComanda.SinComanda] sin papel, libreta ni entregas; si era una mezcla, sigue lo de
-         * siempre con lo demás. Uber/Rappi, pedidos en línea y el KDS llaman con `false` y no cambian. Va al final para no
-         * mover los argumentos posicionales de nadie.
+         * siempre con lo demás. Uber/Rappi (Bloque 2, 13-nov) lo prenden SÓLO cuando su ticket de empaque, que lleva esos
+         * renglones, ya imprimió, y siempre con `callarSinCocina = false` ([com.avoqado.pos.kds.data.ImpresionDeComandasDeReparto]).
+         * Pedidos en línea y el papel de la pantalla de cocina llaman con `false` y no cambian. Va al final para no mover los
+         * argumentos posicionales de nadie.
          */
         omitirSinComanda: Boolean = false,
+        /**
+         * Reparto (Task 7): si es el id de una estación ACTIVA y con comanda de la config usada, TODOS los renglones salen en
+         * UN solo plan a esa estación (el pedido de delivery no se reparte). Inexistente, inactiva o «Sin comanda» se ignora
+         * y se rutea como siempre.
+         */
+        estacionFija: String? = null,
+        /**
+         * `false` = un negocio sin cocina NO calla el «no salió» (el delivery llama `omitirSinComanda = true,
+         * callarSinCocina = false`: quita lo de «Sin comanda» pero no esconde un fallo). Default `null` = [omitirSinComanda], lo de siempre (no un default derivado: MockK lo registra como `eq(<azar>)` y vuelve flaky los stubs con `any()`).
+         */
+        callarSinCocina: Boolean? = null,
     ): EstadoDeComanda? {
         // Sin renglones no hay nada que imprimir — y nos ahorramos hasta el refresh, igual que el
         // mostrador, que salía antes de tocar la red. No es un guard de configuración: es que
@@ -387,7 +400,7 @@ class ComandaDispatcher @Inject constructor(
         }
 
         val ruteo = PrintRoutingMapper.rutear(lines, config, omitirSinComanda)
-        val plans = ruteo.plans
+        val plans = fusionarEnEstacionFija(ruteo.plans, estacionFija, config, lines)
         // «No lleva comanda»: todo era de estaciones sin comanda. No hacía falta papel: ni libreta, ni entregas, ni aviso.
         if (plans.isEmpty() && ruteo.omitidasSinComanda > 0) {
             alCambiarEstado(EstadoDeComanda.SinComanda)
@@ -439,7 +452,7 @@ class ComandaDispatcher @Inject constructor(
                 // D2 con «No lleva comanda» (Codex código r1 #2 y r2): la tienda sin cocina que crea sólo «Sin comanda» ya no
                 // entra al legado; lo que dejó sin asignar cae en «SIN ESTACIÓN» y, sin impresora de cocina, no sale. Es el
                 // negocio sin cocina de D2: ni aviso al cajero ni FAILED al gerente. Con una estación con comanda, sí.
-                negocioSinCocina = { omitirSinComanda && sinImpresoraDeCocina(printerService.savedPrinters.value, config) },
+                negocioSinCocina = { (callarSinCocina ?: omitirSinComanda) && sinImpresoraDeCocina(printerService.savedPrinters.value, config) },
                 alCambiarEstado = alCambiarEstado,
                 encabezado = encabezado,
             )
@@ -455,6 +468,17 @@ class ComandaDispatcher @Inject constructor(
         }
         cerrarLasDecididas(entregas, acusadas, estado)
         return estado
+    }
+
+    /**
+     * Junta todos los planes en UNO a [estacionFija] si es una estación activa que manda comanda de [config]; si no, los deja
+     * como están. Los renglones vuelven al orden del carrito ([lines]), no al agrupado por estación.
+     */
+    private fun fusionarEnEstacionFija(plans: List<TicketPlan>, estacionFija: String?, config: PrintConfig, lines: List<RoutableItem>): List<TicketPlan> {
+        if (estacionFija == null || plans.isEmpty() || config.stations.none { it.id == estacionFija && it.active && it.sendsComanda }) return plans
+        val orden = lines.withIndex().associate { (i, l) -> l.orderItemId to i }
+        val juntas = plans.flatMap { it.lines }.sortedBy { l -> l.orderItemIds.minOfOrNull { orden[it] ?: Int.MAX_VALUE } ?: Int.MAX_VALUE }
+        return listOf(TicketPlan(stationId = estacionFija, unrouted = false, lines = juntas))
     }
 
     /** El despacho no llegó a decidir el papel (truena o se cancela): todas sus filas guardadas sin acuse se sueltan. */
@@ -589,6 +613,8 @@ class ComandaDispatcher @Inject constructor(
          * hace aparte para revalidar la sucursal ANTES y DESPUÉS del refresco: aquí no se vuelve a refrescar.
          */
         refrescar: Boolean = true,
+        /** Reparto (Task 7): con valor, imprime con ESTA config (heredando el respaldo del trabajo) y no con la vigente. */
+        configFija: PrintConfig? = null,
     ): EstadoDeComanda {
         // 🔴 Se congela QUÉ imprimir, no DÓNDE. La config vieja llevaba la dirección de la
         // impresora en el momento del fallo, así que corregir la IP en Ajustes y tocar «Volver
@@ -600,7 +626,7 @@ class ComandaDispatcher @Inject constructor(
         if (refrescar) trabajo.venueId?.let { refrescarConfig(it) }
         // Etapa 3 del KDS (3.4): la config vigente, pero con las estaciones que iban de RESPALDO marcadas otra vez — si
         // no, «Volver a imprimir» sacaría la hoja sin su encabezado y sin la impresora de la default.
-        val configVigente = KitchenDeliveryPolicy.heredarRespaldo(de = trabajo.config, en = printConfigRepository.getCurrentConfig())
+        val configVigente = KitchenDeliveryPolicy.heredarRespaldo(de = trabajo.config, en = configFija ?: printConfigRepository.getCurrentConfig())
         val estado = reintentoDeComanda.reintentar(
             trabajo.copy(config = configVigente),
             alCambiarEstado = alCambiarEstado,

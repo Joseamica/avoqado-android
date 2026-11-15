@@ -94,6 +94,15 @@ class SaldoSinRedTest {
             FilaDeLaOrden("c1", "PAY_CASH", "PENDING", 5000)), outbox(dao).filasSinResolverDeLaOrden("v1", setOf("L-1")))
     }
 
+    @Test fun `D75 liberar la mesa que nombra su cuenta no es fila de la orden`() = runTest {
+        val dao = mockk<SyncIntentDao>(relaxed = true)
+        coEvery { dao.filasSinResolver("v1") } returns listOf(
+            FilaSinResolver("c1", "PAY_CASH", "PENDING", """{"localOrderId":"L-1","amountCents":5000}"""),
+            FilaSinResolver("libera", "CLEAR_TABLE", "PENDING", """{"tableId":"t1","localOrderId":"L-1"}"""),
+        )
+        assertEquals(listOf(FilaDeLaOrden("c1", "PAY_CASH", "PENDING", 5000)), outbox(dao).filasSinResolverDeLaOrden("v1", setOf("L-1")))
+    }
+
     @Test fun `efectivo ilegible en la cola falla en vez de leerse como cero`() = runTest {
         val dao = mockk<SyncIntentDao>(relaxed = true)
         coEvery { dao.filasSinResolver("v1") } returns listOf(FilaSinResolver("c1", "PAY_CASH", "PENDING", """{"localOrderId":"L-1","amountCents":"5000"}"""))

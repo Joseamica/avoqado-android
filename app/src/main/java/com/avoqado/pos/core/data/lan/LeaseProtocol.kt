@@ -1,5 +1,7 @@
 package com.avoqado.pos.core.data.lan
 
+import kotlinx.serialization.EncodeDefault
+import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -56,6 +58,9 @@ object LeaseProtocol {
     /** D12 · Opción D: el nombre visible de la caja («Caja 1 · Barra»); una etiqueta, nunca la identidad. */
     const val TXT_CAJA = "caja"
 
+    /** Hub D3 (mesa declarada): `1` si el aparato habla [OP_ESTADO] (cada caja declara en qué mesa está). Ausente = habla acquire/renew/release. */
+    const val TXT_PRESENCIA = "pm"
+
     val json = Json {
         ignoreUnknownKeys = true // un peer más nuevo puede mandar campos extra
         encodeDefaults = true
@@ -83,6 +88,12 @@ object LeaseProtocol {
     const val OP_RELEASE = "release"
     const val OP_LIST = "list"
 
+    /** Hub D3: la caja declara su estado (mesas en las que está y aperturas que pide); el árbitro contesta [STATUS_OK]. */
+    const val OP_ESTADO = "estado"
+    const val APERTURA_CONCEDIDA = "concedida"
+    const val APERTURA_OCUPADA = "ocupada"
+    const val APERTURA_ESPERAR = "esperar"
+
     const val STATUS_GRANTED = "granted"
     const val STATUS_DENIED = "denied"
     const val STATUS_STALE = "stale"
@@ -107,6 +118,9 @@ object LeaseProtocol {
 
     /** Rechazo explícito a un peer que habla otra versión del protocolo. */
     const val ERROR_VERSION_MISMATCH = "VERSION_MISMATCH"
+
+    /** Hub D3: acquire/renew/release de un aparato que ya declara su estado (sus permisos viejos se adoptaron). */
+    const val ERROR_EN_PRESENCIA = "en presencia"
 }
 
 /** Lease tal como viaja por el cable (plano, sin lógica). */
@@ -124,6 +138,15 @@ fun TableLease.toWire(): WireLease = WireLease(tableId, holderDeviceId, holderSt
 
 fun WireLease.toDomain(): TableLease = TableLease(tableId, holderDeviceId, holderStaffId, holderName, epoch, expiresAtMillis)
 
+/** Hub D3: una apertura de mesa que la caja pide (`id` la identifica al contestar). */
+@Serializable
+data class WireApertura(val id: String, val tableId: String)
+
+/** Hub D3: el veredicto del árbitro a una [WireApertura]: concedida, ocupada (`quien`) o esperar (`esperarMs`). */
+@Serializable
+data class WireResultadoApertura(val id: String, val resultado: String, val quien: String? = null, val esperarMs: Long? = null)
+
+@OptIn(ExperimentalSerializationApi::class)
 @Serializable
 data class LeaseRequest(
     @SerialName("v") val version: Int = LeaseProtocol.PROTOCOL_VERSION,
@@ -146,8 +169,14 @@ data class LeaseRequest(
      * desde su fila tras irse el flujo): la dueña lo toma como abono, nunca como «Cobrada».
      */
     val conAbono: Boolean? = null,
+    /** Hub D3 (sólo `estado`): generación, número de secuencia, mesas en las que está la caja y aperturas que pide. Fuera del cable de las ops viejas. */
+    @EncodeDefault(EncodeDefault.Mode.NEVER) val gen: Long = 0,
+    @EncodeDefault(EncodeDefault.Mode.NEVER) val seq: Long = 0,
+    @EncodeDefault(EncodeDefault.Mode.NEVER) val mesas: List<String>? = null,
+    @EncodeDefault(EncodeDefault.Mode.NEVER) val aperturas: List<WireApertura>? = null,
 )
 
+@OptIn(ExperimentalSerializationApi::class)
 @Serializable
 data class LeaseResponse(
     @SerialName("v") val version: Int = LeaseProtocol.PROTOCOL_VERSION,
@@ -163,4 +192,7 @@ data class LeaseResponse(
     val faltaSubirla: Boolean? = null,
     /** D12 · tubería: la respuesta a [LeaseProtocol.OP_QUIEN], el TXT del anuncio tal cual (`did`, `venue`, `boot`, `hub`, `d`, `caja`…). */
     val txt: Map<String, String>? = null,
+    /** Hub D3 (sólo `estado`): quién arbitra y el veredicto de cada apertura pedida. Fuera del cable de las ops viejas. */
+    @EncodeDefault(EncodeDefault.Mode.NEVER) val arbitro: String? = null,
+    @EncodeDefault(EncodeDefault.Mode.NEVER) val aperturas: List<WireResultadoApertura>? = null,
 )

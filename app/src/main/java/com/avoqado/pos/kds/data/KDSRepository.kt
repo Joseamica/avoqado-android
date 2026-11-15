@@ -6,6 +6,7 @@ import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.data.network.ApiConstants
 import com.avoqado.pos.core.data.network.ForbiddenInterceptor
 import com.avoqado.pos.kds.domain.CanalReparto
+import com.avoqado.pos.kds.domain.ImpresionReparto
 import com.avoqado.pos.kds.domain.KDSOrder
 import com.avoqado.pos.kds.domain.KDSOrderItem
 import com.avoqado.pos.kds.domain.KDSOrderStatus
@@ -305,6 +306,14 @@ class KDSRepository @Inject constructor(
                 sourceKey = json.optString("sourceKey", "").takeIf { it.isNotEmpty() && it != "null" },
                 printStationId = json.optString("printStationId", "").takeIf { it.isNotEmpty() && it != "null" },
                 preparationVersion = json.optInt("preparationVersion", 0),
+                impresionReparto = json.optJSONObject("impresionReparto")?.let { r ->
+                    ImpresionReparto(
+                        proveedor = r.optString("proveedor", "").takeIf { it.isNotBlank() && it != "null" },
+                        estacionUnicaId = r.optString("estacionUnicaId", "").takeIf { it.isNotBlank() && it != "null" },
+                        empaque = r.optBoolean("empaque", true),
+                        empaqueEstacionId = r.optString("empaqueEstacionId", "").takeIf { it.isNotBlank() && it != "null" },
+                    )
+                },
             )
         } catch (e: Exception) {
             Log.e(TAG, "Parse order error: ${e.message}")

@@ -219,6 +219,15 @@ class VigilanteDeRepartoTest {
     }
 
     @Test
+    fun `nombre de un proveedor`() {
+        assertEquals("Rappi", nombreDeProveedor("RAPPI"))
+        assertEquals("Uber Eats", nombreDeProveedor("UBER_EATS"))
+        assertEquals("DiDi Food", nombreDeProveedor("DIDI_FOOD"))
+        assertEquals("delivery", nombreDeProveedor("DELIVERECT"))
+        assertEquals("delivery", nombreDeProveedor(null))
+    }
+
+    @Test
     fun `lo apuntado mientras la app estaba en segundo plano se ve al volver`() = runTest {
         val f = armar { canales = Result.success(listOf(canal())); comandas = Result.success(listOf(comanda("k1", needsPrint = false))) }
         f.vigilante.onStop(owner)

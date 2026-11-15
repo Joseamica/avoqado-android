@@ -141,6 +141,14 @@ class LeaseRegistry(
         return true
     }
 
+    /**
+     * Hub D3 (adopción): el aparato ya declara su estado, así que sus permisos viejos sobran. [highestEpoch] se conserva: un
+     * zombi con una época vieja sigue fuera.
+     */
+    fun soltarDe(deviceId: String) {
+        leases.values.removeAll { it.holderDeviceId == deviceId }
+    }
+
     /** Leases vivos ahora — el plano los pinta como "Mesa de {mesero}". */
     fun activeLeases(nowMillis: Long): List<TableLease> = leases.values.filter { it.isLiveAt(nowMillis) }.sortedBy { it.tableId }
 
