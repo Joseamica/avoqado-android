@@ -477,12 +477,13 @@ fun TimeClockSheet(
                         scope.launch {
                             isLoading = true
                             error = null
-                            repository.clockIn(pin, note.ifBlank { null }, selfie).fold(
-                                onSuccess = {
-                                    acuse = if (selfie != null) {
-                                        "Entrada registrada a las ${horaActual()}, con tu foto."
-                                    } else {
-                                        "Entrada registrada a las ${horaActual()}, sin foto (este aparato no pudo tomarla)."
+                            repository.clockInConSelfie(pin, note.ifBlank { null }, selfie).fold(
+                                onSuccess = { guardada ->
+                                    acuse = when {
+                                        guardada -> "Entrada registrada a las ${horaActual()}, con tu foto."
+                                        selfie != null ->
+                                            "Entrada registrada a las ${horaActual()}. Tu foto no se pudo guardar: tu gerente la verá «Sin foto»."
+                                        else -> "Entrada registrada a las ${horaActual()}, sin foto (este aparato no pudo tomarla)."
                                     }
                                 },
                                 onFailure = { error = it.message },

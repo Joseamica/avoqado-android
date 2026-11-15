@@ -12,6 +12,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.put
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -71,19 +72,27 @@ class TimeEntryRepository @Inject constructor(
         }
     }
 
+    suspend fun clockIn(pin: String, note: String? = null): Result<Unit> =
+        postTimeAction("clock-in", pin, note = note).map { }
+
     /**
-     * Marca Entrada. [selfieJpeg] es la foto de entrada (JPEG) cuando el negocio la pide: viaja en base64 en la misma
-     * petición y el servidor la guarda en su almacén privado. Sin red no hay checada (el PIN lo valida el servidor), así
-     * que la foto tampoco se guarda en el aparato: se toma otra vez al reintentar.
+     * Marca Entrada con la foto de entrada (JPEG) cuando el negocio la pide: viaja en base64 en la misma petición y el
+     * servidor la guarda en su almacén privado. Sin red no hay checada (el PIN lo valida el servidor), así que la foto
+     * tampoco se guarda en el aparato: se toma otra vez al reintentar.
+     *
+     * Devuelve si el servidor de verdad GUARDÓ la foto: si su almacén falla, registra la entrada sin ella, y el acuse no
+     * puede decir «con tu foto» (visto en el banco del encargo b0c1a1).
      */
-    suspend fun clockIn(pin: String, note: String? = null, selfieJpeg: ByteArray? = null): Result<Unit> =
-        postTimeAction("clock-in", pin, note = note, selfieJpeg = selfieJpeg)
+    suspend fun clockInConSelfie(pin: String, note: String?, selfieJpeg: ByteArray?): Result<Boolean> =
+        postTimeAction("clock-in", pin, note = note, selfieJpeg = selfieJpeg).map { body ->
+            selfieJpeg != null && fotoGuardada(body)
+        }
     suspend fun clockOut(pin: String, note: String? = null): Result<Unit> =
-        postTimeAction("clock-out", pin, note = note)
+        postTimeAction("clock-out", pin, note = note).map { }
     suspend fun startBreak(pin: String, breakType: String? = null): Result<Unit> =
-        postTimeAction("break/start", pin, breakType)
+        postTimeAction("break/start", pin, breakType).map { }
     suspend fun endBreak(pin: String, note: String? = null): Result<Unit> =
-        postTimeAction("break/end", pin, note = note)
+        postTimeAction("break/end", pin, note = note).map { }
 
     private suspend fun postTimeAction(
         action: String,
@@ -91,7 +100,7 @@ class TimeEntryRepository @Inject constructor(
         breakType: String? = null,
         note: String? = null,
         selfieJpeg: ByteArray? = null,
-    ): Result<Unit> {
+    ): Result<String> {
         val venueId = secureStorage.venueId ?: return Result.failure(Exception("No venue"))
         val normalizedPin = pin.trim()
 
@@ -118,7 +127,7 @@ class TimeEntryRepository @Inject constructor(
             }
             if (responseCode in 200..299) {
                 Log.d("⏰", "✅ Time clock action: $action")
-                Result.success(Unit)
+                Result.success(responseBody)
             } else {
                 Result.failure(Exception(parseErrorMessage(responseBody, "Error en acción: $action")))
             }
@@ -149,6 +158,13 @@ private fun humanNetworkMessage(e: Exception): String = when (e) {
     else -> e.message?.takeIf { it.isNotBlank() && !it.contains("Failed to connect", ignoreCase = true) }
         ?: "No se pudo completar la acción. Inténtalo de nuevo."
 }
+
+/** `{"timeEntry":{"checkInPhotoUrl":"private/…"}}` → true. Cualquier otra forma (o null) → false. */
+internal fun fotoGuardada(body: String): Boolean = runCatching {
+    val entrada = timeClockErrorJson.parseToJsonElement(body).jsonObject["timeEntry"]?.jsonObject
+    val foto = entrada?.get("checkInPhotoUrl")
+    foto is kotlinx.serialization.json.JsonPrimitive && foto.isString && foto.content.isNotBlank()
+}.getOrDefault(false)
 
 @Serializable
 private data class TimeClockErrorResponse(

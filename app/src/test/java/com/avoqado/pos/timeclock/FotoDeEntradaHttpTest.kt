@@ -74,9 +74,11 @@ class FotoDeEntradaHttpTest {
     @Test
     fun `la Entrada con selfie manda checkInPhoto en base64 junto con el PIN`() = runBlocking {
         val jpeg = byteArrayOf(0xFF.toByte(), 0xD8.toByte(), 0xFF.toByte(), 0xE0.toByte(), 1, 2, 3)
-        server.enqueue(MockResponse().setResponseCode(201).setBody("""{"success":true}"""))
+        server.enqueue(MockResponse().setResponseCode(201).setBody(
+            """{"success":true,"timeEntry":{"id":"te-1","checkInPhotoUrl":"private/dev/attendance/v/s/1_entrada.jpg"}}""",
+        ))
 
-        assertTrue(repository.clockIn("1234", selfieJpeg = jpeg).isSuccess)
+        assertEquals(true, repository.clockInConSelfie("1234", null, jpeg).getOrThrow())
 
         val enviado = cuerpoEnviado()
         assertEquals("1234", enviado["pin"])
@@ -95,8 +97,21 @@ class FotoDeEntradaHttpTest {
     @Test
     fun `un rechazo del servidor llega con su mensaje`() = runBlocking {
         server.enqueue(MockResponse().setResponseCode(400).setBody("""{"message":"La foto de entrada no es válida."}"""))
-        val r = repository.clockIn("1234", selfieJpeg = byteArrayOf(1, 2, 3))
+        val r = repository.clockInConSelfie("1234", null, byteArrayOf(1, 2, 3))
         assertTrue(r.isFailure)
         assertEquals("La foto de entrada no es válida.", r.exceptionOrNull()?.message)
+    }
+
+    @Test
+    fun `si el servidor no pudo guardar la foto el acuse no dice con tu foto`() = runBlocking {
+        server.enqueue(MockResponse().setResponseCode(201).setBody("""{"success":true,"timeEntry":{"id":"te-1","checkInPhotoUrl":null}}"""))
+        assertEquals(false, repository.clockInConSelfie("1234", null, byteArrayOf(1, 2, 3)).getOrThrow())
+    }
+
+    @Test
+    fun `sin foto - aparato sin camara - la entrada sale bien y no hay foto guardada`() = runBlocking {
+        server.enqueue(MockResponse().setResponseCode(201).setBody("""{"success":true,"timeEntry":{"id":"te-1"}}"""))
+        assertEquals(false, repository.clockInConSelfie("1234", "nota", null).getOrThrow())
+        assertFalse(cuerpoEnviado().containsKey("checkInPhoto"))
     }
 }
