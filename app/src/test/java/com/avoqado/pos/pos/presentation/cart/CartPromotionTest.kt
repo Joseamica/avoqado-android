@@ -682,4 +682,16 @@ class CartPromotionTest {
         assertTrue(linea.comboConExtras)
         assertEquals(19500, vm.cartState.value.subtotalCents)
     }
+
+    @Test
+    fun `extras de una pieza sin marca no viajan al renglon`() {
+        val vm = createViewModel()
+
+        vm.aplicarPromocion(comboDeUnaPieza, emptyMap(), emptyMap(), extras = mapOf("g-ham" to listOf(queso)), piezasConExtras = emptySet())
+
+        val linea = vm.cartState.value.items.single()
+        assertTrue(linea.selectedModifiers.isEmpty())
+        assertFalse(linea.comboConExtras)
+        assertEquals(18000, vm.cartState.value.subtotalCents)
+    }
 }

@@ -573,7 +573,7 @@ class TableOrderViewModel @Inject constructor(
                 type = CartItemType.ProductItem(selection.opcion.productId), name = selection.opcion.productName.ifBlank { promotion.name },
                 subtitle = "${promotion.name} · ${snapshot.label}", unitPrice = prices[index], quantity = selection.opcion.quantity.coerceAtLeast(1),
                 categoryId = product?.categoryId, imageUrl = product?.imageUrl,
-                selectedModifiers = extras[selection.grupo.id].orEmpty(), comboConExtras = selection.grupo.id in piezasConExtras,
+                selectedModifiers = if (selection.grupo.id in piezasConExtras) extras[selection.grupo.id].orEmpty() else emptyList(), comboConExtras = selection.grupo.id in piezasConExtras,
                 promotionInstanceId = instance, promotionId = promotion.id, promotionName = promotion.name,
                 promotionGroupId = selection.grupo.id, promotionOptionId = selection.opcion.id, serviceCourse = snapshot,
             ), course = snapshot.legacyCourse)

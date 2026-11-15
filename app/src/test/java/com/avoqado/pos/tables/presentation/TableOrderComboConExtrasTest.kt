@@ -100,4 +100,13 @@ class TableOrderComboConExtrasTest {
         assertFalse(item.comboConExtras)
         subject.viewModelScope.cancel()
     }
+
+    @Test fun `extras de una pieza sin marca no viajan al renglon`() = runTest {
+        val subject = vm()
+        assertTrue(subject.addPromotion(combo, emptyMap(), mapOf("g-ham" to alMomento), mapOf("g-ham" to listOf(queso)), emptySet()))
+        val item = subject.pending.value.single().item
+        assertTrue(item.selectedModifiers.isEmpty())
+        assertFalse(item.comboConExtras)
+        subject.viewModelScope.cancel()
+    }
 }

@@ -1711,12 +1711,10 @@ class CartViewModel @Inject constructor(
         val precios = preciosUnitariosDePromocion(promotion, elegidas)
         val instanceId = UUID.randomUUID().toString()
         val nuevas = elegidas.mapIndexed { index, elegida ->
-            val producto = productsRepository.products.value.firstOrNull { it.id == elegida.opcion.productId }
             CartItem(
                 type = CartItemType.ProductItem(elegida.opcion.productId),
-                categoryId = producto?.categoryId,
-                imageUrl = producto?.imageUrl,
-                selectedModifiers = extras[elegida.grupo.id].orEmpty(),
+                // Extras sólo si la pieza manda su lista: sin la marca el SERVIDOR nunca los recibiría.
+                selectedModifiers = if (elegida.grupo.id in piezasConExtras) extras[elegida.grupo.id].orEmpty() else emptyList(),
                 comboConExtras = elegida.grupo.id in piezasConExtras,
                 name = elegida.opcion.productName.ifBlank { promotion.name },
                 // El carrito ya pinta `subtitle` bajo el nombre: es donde se lee

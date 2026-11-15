@@ -234,8 +234,10 @@ fun PromotionSheet(
     val incluidos = remember(promocion.id) { gruposIncluidos(promocion) }
     val completa = opcionesElegidas(promocion, selecciones) != null
     val estimado = estimadoDePromocion(promocion, selecciones)
-    val faltantes = faltantesDelCombo(promocion, selecciones, extras, gruposDeLaPieza)
-    val extrasDelCombo = extrasCents(extras)
+    // Sólo cuentan los extras de piezas que hoy mandan su lista: si una deja de tenerla (catálogo, capacidad), se podan.
+    val extrasVigentes = extras.filterKeys { it in piezasConExtras(promocion, selecciones, gruposDeLaPieza) }
+    val faltantes = faltantesDelCombo(promocion, selecciones, extrasVigentes, gruposDeLaPieza)
+    val extrasDelCombo = extrasCents(extrasVigentes)
     // Techo explícito: dentro de una hoja la altura llega sin acotar, y un
     // `weight` sobre altura infinita truena. Mismo recurso que AvoqadoDialog.
     val alturaMaximaLista = (LocalConfiguration.current.screenHeightDp * 0.55f).dp
@@ -337,7 +339,7 @@ fun PromotionSheet(
             PrimaryButton(
                 // Sin estimado no se escribe un precio inventado.
                 text = if (estimado != null) "Agregar al carrito · ${pesos(estimado + extrasDelCombo)}" else "Agregar al carrito",
-                onClick = { onConfirmWithCourses?.invoke(selecciones, tiempos, extras) ?: onConfirm(selecciones, extras) },
+                onClick = { onConfirmWithCourses?.invoke(selecciones, tiempos, extrasVigentes) ?: onConfirm(selecciones, extrasVigentes) },
                 enabled = completa && faltantes.isEmpty(),
                 fullWidth = true,
             )
@@ -376,8 +378,7 @@ private fun ExtrasDeLaPieza(
             group = grupo,
             selectedModifiers = extras[grupoDelComboId].orEmpty(),
             onModifierToggled = { extra, seleccionado ->
-                val nuevos = alternarExtra(extras[grupoDelComboId].orEmpty(), grupo, extra, seleccionado)
-                onCambio(extras + (grupoDelComboId to nuevos))
+                onCambio(extras + (grupoDelComboId to alternarExtra(extras[grupoDelComboId].orEmpty(), grupo, extra, seleccionado)))
             },
         )
     }
