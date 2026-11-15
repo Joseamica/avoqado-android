@@ -1,6 +1,9 @@
 package com.avoqado.pos.timeclock.presentation
 
 import android.Manifest
+import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
@@ -46,6 +49,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -124,12 +128,16 @@ fun SelfieDeEntrada(
             }
 
             !permiso -> {
-                Aviso("Este negocio pide una foto al marcar tu entrada. Permite que la app use la cámara.")
+                Aviso("Para tomarla, permite que la app use la cámara.")
                 PrimaryButton(
                     text = "Permitir cámara",
                     onClick = {
-                        if (pedido) {
-                            // Negado para siempre: Android ya no muestra la ventana; se abre la página de la app.
+                        // Tras el primer «No permitir» Android todavía pregunta otra vez (rationale = true); tras el
+                        // segundo ya no muestra la ventana: entonces se abre la página de la app en Ajustes.
+                        val actividad = context.actividad()
+                        val negadoParaSiempre = pedido && actividad != null &&
+                            !ActivityCompat.shouldShowRequestPermissionRationale(actividad, Manifest.permission.CAMERA)
+                        if (negadoParaSiempre) {
                             context.startActivity(
                                 Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", context.packageName, null))
                                     .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
@@ -193,6 +201,13 @@ fun SelfieDeEntrada(
         }
         TextButton(onClick = onCancelar, enabled = !enviando) { Text("Cancelar") }
     }
+}
+
+/** La Activity detrás del contexto de Compose (puede venir envuelto en ContextWrapper). */
+private tailrec fun Context.actividad(): Activity? = when (this) {
+    is Activity -> this
+    is ContextWrapper -> baseContext.actividad()
+    else -> null
 }
 
 @Composable
