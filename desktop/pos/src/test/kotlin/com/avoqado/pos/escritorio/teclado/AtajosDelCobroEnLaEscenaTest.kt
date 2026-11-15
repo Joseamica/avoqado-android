@@ -17,6 +17,7 @@ import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.getValue
@@ -230,10 +231,19 @@ class AtajosDelCobroEnLaEscenaTest {
         tenderTypes = listOf(tipoDelNegocio("Tarjeta de crédito", "CREDIT_CARD"), tipoDelNegocio("SPEI", "BANK_TRANSFER")),
     )
 
+    /**
+     * El aviso es un `AvoqadoDialog`, que topa su altura al 85 % de `LocalConfiguration.screenHeightDp`: sin una pantalla de
+     * verdad (aquí vale 0) saldría sin altura (Codex r2). Como `FolioPorPagarEnLaEscenaTest`, una ventana de 1280×800.
+     */
+    @Composable
+    private fun EnWindowsConPantalla(contenido: @Composable () -> Unit) = CompositionLocalProvider(
+        androidx.compose.ui.platform.LocalConfiguration provides com.avoqado.escritorio.configuracionDeAndroid(1280.dp, 800.dp, 1f),
+    ) { EnWindows(contenido) }
+
     @Test fun `P1 D57 Tarjeta en «Ya pagó de otra forma» pregunta por la terminal de Avoqado antes de registrar`() = runComposeUiTest {
         val cobro = Cobro()
         val aviso = com.avoqado.pos.payment.domain.AvisoDeTerminalDeAvoqado
-        setContent { EnWindows { SelectorConTipos(cobro) } }
+        setContent { EnWindowsConPantalla { SelectorConTipos(cobro) } }
         onNodeWithText("Ya pagó de otra forma").performClick()
         onNodeWithText("Tarjeta de crédito").performClick()
         onNodeWithText(aviso.TITULO).assertExists()
