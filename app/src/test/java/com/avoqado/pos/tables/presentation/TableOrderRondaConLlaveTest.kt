@@ -772,6 +772,19 @@ class TableOrderRondaConLlaveTest {
         } finally { vm.viewModelScope.cancel() }
     }
 
+    /** D59 (Codex r2): tras releer una cuenta que el servidor ya marcó pagada, el botón dice «Ya pagada» (no «Pagar $0.00»). */
+    @Test
+    fun `D59 la cuenta que el servidor ya marco pagada pinta Ya pagada en el boton`() = runTest {
+        val vm = vm()
+        try {
+            coEvery { repository.getOrderDetail(any(), any()) } returns
+                Result.success(OrderDetail(id = "o1", orderNumber = "ORD-1", paymentStatus = "PAID", items = emptyList()))
+            vm.loadCheck()
+            advanceUntilIdle()
+            assertEquals(MESA_YA_PAGADA, vm.motivoCobradaAqui)
+        } finally { vm.viewModelScope.cancel() }
+    }
+
     /**
      * D72 (D3, 13-nov): «Borrar nuevos artículos» salió con el círculo ROJO y «Esa estación no tiene impresora…» aunque borró
      * bien. Ese rojo y esa pista eran de la comanda anterior que no salió: un aviso escrito a mano no los limpiaba.

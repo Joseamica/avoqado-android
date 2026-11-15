@@ -25,6 +25,12 @@ object ServerErrorText {
         "Este producto debe crearse o activarse desde el Catálogo maestro."
 
     /**
+     * D59: el SERVIDOR rechaza un cobro NUEVO sobre una cuenta ya pagada con «Order is already paid» (400, sin código). El texto
+     * en inglés se queda así en el servidor: las apps viejas lo comparan (cola sin red, tarjetas de regalo). Aquí sólo se dice.
+     */
+    const val CUENTA_YA_PAGADA = "Esta cuenta ya está pagada. Este cobro no se registró: revisa la cuenta y no la cobres otra vez."
+
+    /**
      * Versión para una excepción, que es lo que llega a la mayoría de los `catch`.
      *
      * Cubre los dos idiomas ajenos que veía el usuario: el del SISTEMA — un
@@ -202,6 +208,9 @@ object ServerErrorText {
                 "No tienes permiso para hacer esto. Pídele a un administrador que te dé permiso para esta acción."
             }
         }
+
+        // D59: cobrar una cuenta que otro aparato (o la cola sin red) ya pagó.
+        if (text.equals("Order is already paid", ignoreCase = true)) return CUENTA_YA_PAGADA
 
         // Otros errores que el server manda en inglés y no significan nada para quien
         // está en el piso.
