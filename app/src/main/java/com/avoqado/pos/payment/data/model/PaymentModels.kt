@@ -421,13 +421,6 @@ const val DESCUENTO_CON_APROBACION_SIN_RED =
 const val DESCUENTO_CON_APROBACION_LO_APLICA_UN_GERENTE =
     "Este descuento o ajuste de precio necesita la aprobación de un gerente. Pide a alguien con el permiso «Aplicar descuentos en TPV» que cobre con su sesión, o quítalo."
 
-/**
- * Encargo 1afe04 (Codex r1 #2): el cobro con saldo de tarjeta de regalo no tiene teclado de PIN; sin el permiso, ese descuento o
- * ajuste no sale por ahí (antes lo rechazaba el SERVIDOR con su texto).
- */
-const val DESCUENTO_CON_APROBACION_CON_SALDO =
-    "Este descuento o ajuste de precio necesita la aprobación de un gerente y el cobro con saldo no puede pedir su PIN. Cobra con efectivo o tarjeta para pedirlo, o quítalo."
-
 /** D4: el SERVIDOR pidió la aprobación aunque la app no lo esperaba (catálogo o permisos de otro momento). No se creó nada. */
 const val DESCUENTO_CON_APROBACION_PIDE_PIN =
     "Este descuento o ajuste de precio necesita la aprobación de un gerente. Vuelve a cobrar para pedir su PIN, o quítalo."

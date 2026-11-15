@@ -47,7 +47,6 @@ import com.avoqado.pos.payment.data.model.SincronizacionDelCobro
 import com.avoqado.pos.payment.data.model.CORTESIA_DE_CUENTA_LA_DA_UN_GERENTE
 import com.avoqado.pos.payment.data.model.CORTESIA_DE_CUENTA_PIDE_PIN
 import com.avoqado.pos.payment.data.model.CORTESIA_DE_CUENTA_SIN_RED
-import com.avoqado.pos.payment.data.model.DESCUENTO_CON_APROBACION_CON_SALDO
 import com.avoqado.pos.payment.data.model.DESCUENTO_CON_APROBACION_LO_APLICA_UN_GERENTE
 import com.avoqado.pos.payment.data.model.DESCUENTO_CON_APROBACION_PIDE_PIN
 import com.avoqado.pos.payment.data.model.DESCUENTO_CON_APROBACION_SIN_RED
@@ -2381,11 +2380,6 @@ class PaymentFlowViewModel @Inject constructor(
                     return DesenlaceDeCobro.NoSalio(
                         com.avoqado.pos.pos.presentation.cart.textoNoPuedeAplicarDescuentoDelCliente(_attachedCustomerName.value),
                     ).also { resultadoDeSaldo.value = it }
-                }
-                // Encargo 1afe04 (Codex r1 #2): el cobro con saldo crea la venta sin teclado de PIN (como D4). Un descuento que pide
-                // aprobación o un «Ajuste de precio», sin «Aplicar descuentos en TPV», no sale: se dice por qué ANTES de mandar nada.
-                if (snapshot.pideAprobacionDeGerente && rolesDeSaldo?.canApproveDiscounts == false) {
-                    return DesenlaceDeCobro.NoSalio(DESCUENTO_CON_APROBACION_CON_SALDO).also { resultadoDeSaldo.value = it }
                 }
                 val foto = fotoDeSaldo?.invoke() ?: return DesenlaceDeCobro.NoSalio(TextosDeTarjetas.NO_SE_PUDO_PREPARAR_EL_COBRO)
                 val vaciar = vaciarDeSaldo ?: return DesenlaceDeCobro.NoSalio(TextosDeTarjetas.NO_SE_PUDO_PREPARAR_EL_COBRO)
