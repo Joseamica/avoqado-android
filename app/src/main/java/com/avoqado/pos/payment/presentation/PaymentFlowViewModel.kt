@@ -47,6 +47,7 @@ import com.avoqado.pos.payment.data.model.SincronizacionDelCobro
 import com.avoqado.pos.payment.data.model.CORTESIA_DE_CUENTA_LA_DA_UN_GERENTE
 import com.avoqado.pos.payment.data.model.CORTESIA_DE_CUENTA_PIDE_PIN
 import com.avoqado.pos.payment.data.model.CORTESIA_DE_CUENTA_SIN_RED
+import com.avoqado.pos.payment.data.model.DESCUENTO_CON_APROBACION_CON_SALDO
 import com.avoqado.pos.payment.data.model.DESCUENTO_CON_APROBACION_LO_APLICA_UN_GERENTE
 import com.avoqado.pos.payment.data.model.DESCUENTO_CON_APROBACION_PIDE_PIN
 import com.avoqado.pos.payment.data.model.DESCUENTO_CON_APROBACION_SIN_RED
@@ -940,7 +941,9 @@ class PaymentFlowViewModel @Inject constructor(
     /** D4: los nombres de los descuentos de esta venta que piden aprobación, para el teclado del gerente. */
     private fun nombresQuePidenAprobacion(cart: CartState): String? =
         (listOfNotNull(cart.orderDiscount?.takeIf { it.pideAprobacion }?.name) +
-            cart.items.filter { it.itemDiscountPideAprobacion && !it.isCortesia }.mapNotNull { it.itemDiscountName })
+            cart.items.filter { it.itemDiscountPideAprobacion && !it.isCortesia }.mapNotNull { it.itemDiscountName } +
+            // Encargo 1afe04: el encargado ve también que aprueba un «Ajuste de precio».
+            listOfNotNull(AJUSTE_DE_PRECIO.takeIf { cart.llevaAjusteDePrecio }))
             .distinct().joinToString(" · ").takeIf { it.isNotBlank() }
 
     /** Los tokens de este intento: los toma la venta que sale ahora y nadie más. */
@@ -2378,6 +2381,11 @@ class PaymentFlowViewModel @Inject constructor(
                     return DesenlaceDeCobro.NoSalio(
                         com.avoqado.pos.pos.presentation.cart.textoNoPuedeAplicarDescuentoDelCliente(_attachedCustomerName.value),
                     ).also { resultadoDeSaldo.value = it }
+                }
+                // Encargo 1afe04 (Codex r1 #2): el cobro con saldo crea la venta sin teclado de PIN (como D4). Un descuento que pide
+                // aprobación o un «Ajuste de precio», sin «Aplicar descuentos en TPV», no sale: se dice por qué ANTES de mandar nada.
+                if (snapshot.pideAprobacionDeGerente && rolesDeSaldo?.canApproveDiscounts == false) {
+                    return DesenlaceDeCobro.NoSalio(DESCUENTO_CON_APROBACION_CON_SALDO).also { resultadoDeSaldo.value = it }
                 }
                 val foto = fotoDeSaldo?.invoke() ?: return DesenlaceDeCobro.NoSalio(TextosDeTarjetas.NO_SE_PUDO_PREPARAR_EL_COBRO)
                 val vaciar = vaciarDeSaldo ?: return DesenlaceDeCobro.NoSalio(TextosDeTarjetas.NO_SE_PUDO_PREPARAR_EL_COBRO)
@@ -6940,6 +6948,9 @@ class PaymentFlowViewModel @Inject constructor(
         private const val PERMISO_DE_CORTESIA = "orders:comp"
         /** D4: el que aprueba un % o fijo con «Requiere aprobación» («Aplicar descuentos en TPV»). */
         private const val PERMISO_DE_APROBACION = "tpv-orders:discount"
+
+        /** Encargo 1afe04: el nombre del ajuste en el teclado del encargado («Descuento: Ajuste de precio»). */
+        private const val AJUSTE_DE_PRECIO = "Ajuste de precio"
 
         /** D15: por qué una venta en $0 es sólo efectivo. Mismo texto que iOS (`PaymentFlowViewModel.TEXTO_VENTA_EN_CERO`). */
         const val TEXTO_VENTA_EN_CERO = "Venta en \$0: no hay nada que cobrar con tarjeta."

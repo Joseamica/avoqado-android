@@ -183,7 +183,16 @@ data class CartState(
      */
     val pideAprobacionDeGerente: Boolean
         get() = (orderDiscount?.pideAprobacion == true && orderDiscountCents > 0) ||
-            items.any { it.itemDiscountPideAprobacion && !it.itemDiscountId.isNullOrBlank() && !it.isCortesia }
+            items.any { it.itemDiscountPideAprobacion && !it.itemDiscountId.isNullOrBlank() && !it.isCortesia } ||
+            llevaAjusteDePrecio
+
+    /**
+     * Encargo 1afe04 (founder «A», 15-nov, como Toast): un producto con «Ajuste de precio» que viaja al SERVIDOR (lo mismo que
+     * `adjustedUnitPrice`: [buildOrderItemRequests]). Pide lo mismo que un descuento con aprobación: «Aplicar descuentos en TPV» o
+     * el PIN del encargado al cobrar, y sin red no se cobra.
+     */
+    val llevaAjusteDePrecio: Boolean
+        get() = items.any { it.priceAdjustment != null } && buildOrderItemRequests(items).any { it.adjustedUnitPrice != null }
 
     /**
      * D4: el id del descuento de CUENTA del catálogo. Viaja como etiqueta junto al importe (`discount`, que no cambia) para que el
@@ -2677,6 +2686,16 @@ class CartViewModel @Inject constructor(
         }
         ponerDescuentoDelClienteSiToca()
     }
+
+    /**
+     * Encargo 1afe04 (founder «A», como Toast): qué hace la fila «Ajuste de precio» para ESTA sesión. Con «Aplicar descuentos en
+     * TPV», directo; sin él, con el PIN del encargado al cobrar (si el negocio lo prendió) o no se puede. Se lee al momento.
+     */
+    fun accesoAlAjusteDePrecio(): com.avoqado.pos.pos.domain.AccesoAlAjuste =
+        com.avoqado.pos.pos.domain.accesoAlAjuste(
+            puedeAprobar = com.avoqado.pos.core.domain.RoleManager(secureStorage).canApproveDiscounts,
+            pinPrendido = pinPrendido(),
+        )
 
     // MARK: - D2 · el descuento del cliente
 

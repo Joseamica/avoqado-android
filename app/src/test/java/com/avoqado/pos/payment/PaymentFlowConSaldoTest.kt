@@ -245,6 +245,23 @@ class PaymentFlowConSaldoTest {
         assertTrue(vm().cobrarConSaldo(identified,8000) is DesenlaceDeCobro.Cobrado)
         assertTrue(server.takeRequest(1,TimeUnit.SECONDS)!!.path!!.endsWith("/gift-cards/pay-new-order"))
     }
+    /**
+     * Encargo 1afe04 (Codex r1 #2): el cobro con saldo no tiene teclado de PIN. Un «Ajuste de precio» (o un descuento que pide
+     * aprobación) sin «Aplicar descuentos en TPV» no sale por ahí y lo dice, antes de mandar nada; con el permiso, sale como hoy.
+     */
+    @Test fun ajusteDePrecioSinPermisoNoCreaLaCuentaConSaldo()=runTest {
+        every { roles.canApproveDiscounts } returns false
+        cart=cart.copy(items=cart.items.map { it.copy(priceAdjustment=8000) })
+        val r=vm().cobrarConSaldo(identified,8000)
+        assertEquals(DesenlaceDeCobro.NoSalio(com.avoqado.pos.payment.data.model.DESCUENTO_CON_APROBACION_CON_SALDO),r)
+        assertEquals(0,server.requestCount);assertEquals(0,cleared);assertFalse(cart.isEmpty)
+
+        every { roles.canApproveDiscounts } returns true
+        server.enqueue(response())
+        assertTrue(vm().cobrarConSaldo(identified,8000) is DesenlaceDeCobro.Cobrado)
+        val body=Json.parseToJsonElement(server.takeRequest(1,TimeUnit.SECONDS)!!.body.readUtf8()).jsonObject
+        assertEquals(8000,body.getValue("items").jsonArray.first().jsonObject.getValue("adjustedUnitPrice").jsonPrimitive.int)
+    }
     /** D2 · 7b: `pay-new-order` crea la venta con el mismo cuerpo que el cobro: la etiqueta y el PIN en el CUERPO, nunca en el encabezado. */
     @Test fun descuentoDelClienteViajaConSuEtiquetaYSuTokenAPayNewOrder()=runTest {
         every { roles.canApplyDiscounts } returns false

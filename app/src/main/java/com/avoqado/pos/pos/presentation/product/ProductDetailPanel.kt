@@ -78,7 +78,9 @@ import com.avoqado.pos.pos.data.model.Product
 import com.avoqado.pos.pos.data.model.SelectedModifier
 import com.avoqado.pos.pos.domain.MENSAJE_SUBIR_PRECIO
 import com.avoqado.pos.pos.domain.ajusteAGuardar
+import com.avoqado.pos.pos.domain.AccesoAlAjuste
 import com.avoqado.pos.pos.domain.ajusteDePrecioPermitido
+import com.avoqado.pos.pos.domain.avisoDeLaFilaDeAjuste
 
 /**
  * Product detail panel matching iOS.
@@ -101,6 +103,8 @@ fun ProductDetailPanel(
         discountId: String?,
     ) -> Unit,
     onDismiss: () -> Unit,
+    /** Encargo 1afe04: qué hace la fila «Ajuste de precio» (permiso / PIN del encargado; en Mesas no sale). */
+    ajusteDePrecio: AccesoAlAjuste = AccesoAlAjuste.LIBRE,
 ) {
     if (isTablet) {
         // iPad-style: side panel overlay from right
@@ -128,6 +132,7 @@ fun ProductDetailPanel(
                     discounts = discounts,
                     onAddToCart = onAddToCart,
                     onDismiss = onDismiss,
+                    ajusteDePrecio = ajusteDePrecio,
                 )
             }
         }
@@ -144,6 +149,7 @@ fun ProductDetailPanel(
                 discounts = discounts,
                 onAddToCart = onAddToCart,
                 onDismiss = onDismiss,
+                ajusteDePrecio = ajusteDePrecio,
                 // En Windows la hoja ya trae su X, que sigue a la vista en Nota, Cortesía, Precio y Descuentos (Codex r1 #3).
                 conX = !com.avoqado.pos.designsystem.components.LocalEsEscritorio.current,
             )
@@ -166,6 +172,7 @@ private fun ProductDetailContent(
     onAddToCart: (Int, List<SelectedModifier>, String?, Boolean, String?, Int?, String?) -> Unit,
     onDismiss: () -> Unit,
     conX: Boolean = true,
+    ajusteDePrecio: AccesoAlAjuste = AccesoAlAjuste.LIBRE,
 ) {
     val addToCartTapThrottleMs = 800L
     val selectedModifiers = remember { mutableStateListOf<SelectedModifier>() }
@@ -216,6 +223,7 @@ private fun ProductDetailContent(
                         missingRequiredGroups = missingRequiredGroups,
                         onDismiss = onDismiss,
                         conX = conX,
+                        ajusteDePrecio = ajusteDePrecio,
                         onQuantityChange = { quantity = it.coerceAtLeast(1) },
                         onModifierToggled = { modifier, isSelected, group ->
                             if (isSelected) {
@@ -339,6 +347,7 @@ private fun MainDetailView(
     missingRequiredGroups: List<String> = emptyList(),
     onDismiss: () -> Unit,
     conX: Boolean = true,
+    ajusteDePrecio: AccesoAlAjuste = AccesoAlAjuste.LIBRE,
     onQuantityChange: (Int) -> Unit,
     onModifierToggled: (com.avoqado.pos.pos.data.model.Modifier, Boolean, com.avoqado.pos.pos.data.model.ProductModifierGroup) -> Unit,
     onNavigate: (DetailSubView) -> Unit,
@@ -494,15 +503,19 @@ private fun MainDetailView(
             )
             HorizontalDivider(modifier = Modifier.padding(start = 56.dp))
 
-            ToggleOptionRow(
-                icon = Icons.Filled.AttachMoney,
-                title = "Ajuste de precio",
-                subtitle = priceAdjustment?.let {
-                    formatMoney(it / 100.0)
-                },
-                onClick = { onNavigate(DetailSubView.PRICE_ADJUST) },
-            )
-            HorizontalDivider(modifier = Modifier.padding(start = 56.dp))
+            // Encargo 1afe04 (founder «A», como Toast): bajar un precio a mano pide «Aplicar descuentos en TPV» o el PIN del encargado
+            // al cobrar. Sin permiso ni PIN, la fila se ve y dice por qué (no abre). En Mesas no sale: la cuenta no guarda el ajuste.
+            if (ajusteDePrecio != AccesoAlAjuste.NO_APLICA) {
+                ToggleOptionRow(
+                    icon = Icons.Filled.AttachMoney,
+                    title = "Ajuste de precio",
+                    subtitle = priceAdjustment?.let { formatMoney(it / 100.0) } ?: avisoDeLaFilaDeAjuste(ajusteDePrecio),
+                    onClick = {
+                        if (ajusteDePrecio != AccesoAlAjuste.LO_APLICA_UN_GERENTE) onNavigate(DetailSubView.PRICE_ADJUST)
+                    },
+                )
+                HorizontalDivider(modifier = Modifier.padding(start = 56.dp))
+            }
 
             ToggleOptionRow(
                 icon = Icons.Filled.CardGiftcard,

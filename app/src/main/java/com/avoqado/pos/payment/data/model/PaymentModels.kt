@@ -415,15 +415,22 @@ const val CORTESIA_DE_CUENTA_PIDE_PIN =
  * permiso). Sin red no entra para nadie: la cola lo subiría sin aprobar. Se quita o se cobra al volver la red.
  */
 const val DESCUENTO_CON_APROBACION_SIN_RED =
-    "Sin conexión: este descuento necesita internet para que lo apruebe un gerente. Quita el descuento o cobra cuando vuelva la red."
+    "Sin conexión: este descuento o ajuste de precio necesita internet para que lo apruebe un gerente. Quítalo o cobra cuando vuelva la red."
 
 /** D4: el negocio tiene apagado el PIN de gerente; ese descuento sólo lo aplica alguien con el permiso, con su propia sesión. */
 const val DESCUENTO_CON_APROBACION_LO_APLICA_UN_GERENTE =
-    "Este descuento necesita la aprobación de un gerente. Pide a alguien con el permiso «Aplicar descuentos en TPV» que cobre con su sesión, o quita el descuento."
+    "Este descuento o ajuste de precio necesita la aprobación de un gerente. Pide a alguien con el permiso «Aplicar descuentos en TPV» que cobre con su sesión, o quítalo."
+
+/**
+ * Encargo 1afe04 (Codex r1 #2): el cobro con saldo de tarjeta de regalo no tiene teclado de PIN; sin el permiso, ese descuento o
+ * ajuste no sale por ahí (antes lo rechazaba el SERVIDOR con su texto).
+ */
+const val DESCUENTO_CON_APROBACION_CON_SALDO =
+    "Este descuento o ajuste de precio necesita la aprobación de un gerente y el cobro con saldo no puede pedir su PIN. Cobra con efectivo o tarjeta para pedirlo, o quítalo."
 
 /** D4: el SERVIDOR pidió la aprobación aunque la app no lo esperaba (catálogo o permisos de otro momento). No se creó nada. */
 const val DESCUENTO_CON_APROBACION_PIDE_PIN =
-    "Este descuento necesita la aprobación de un gerente. Vuelve a cobrar para pedir su PIN, o quita el descuento."
+    "Este descuento o ajuste de precio necesita la aprobación de un gerente. Vuelve a cobrar para pedir su PIN, o quítalo."
 
 /** El SERVIDOR calculó otro total que el de la pantalla (el cupón cambió de valor mientras tanto) y el efectivo ya no alcanza. */
 fun avisoDeEfectivoCortoPorCupon(totalRealCents: Int, recibidoCents: Int): String {

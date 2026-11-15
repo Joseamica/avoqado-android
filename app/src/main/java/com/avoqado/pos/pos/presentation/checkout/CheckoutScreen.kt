@@ -1117,6 +1117,8 @@ fun CheckoutScreen(
                 selectedProduct = null
             },
             onDismiss = { selectedProduct = null },
+            // Encargo 1afe04: se lee al abrir el producto (otra persona pudo entrar con su PIN).
+            ajusteDePrecio = remember(product.id) { cartViewModel.accesoAlAjusteDePrecio() },
         )
     }
 
