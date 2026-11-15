@@ -861,8 +861,11 @@ fun TableOrderScreen(
             onConfirm = { targetId ->
                 showMoveDialog = false
                 viewModel.moveTable(targetId) { ok, msg ->
-                    viewModel.showMessage(msg)
-                    if (ok) exitOnce()
+                    // D2: el rechazo ya salió en rojo desde el ViewModel; la palomita es sólo para lo que sí se hizo.
+                    if (ok) {
+                        viewModel.showMessage(msg)
+                        exitOnce()
+                    }
                 }
             },
         )
@@ -1253,8 +1256,11 @@ fun TableOrderScreen(
             onPorPuesto = {
                 showSplitModes = false
                 viewModel.splitBySeat { ok, msg ->
-                    viewModel.showMessage(msg)
-                    if (ok) exitOnce()
+                    // D2: el rechazo ya salió en rojo desde el ViewModel; la palomita es sólo para lo que sí se hizo.
+                    if (ok) {
+                        viewModel.showMessage(msg)
+                        exitOnce()
+                    }
                 }
             },
             onPorArticulo = { showSplitModes = false; showSplitCheckDialog = true },
@@ -1478,8 +1484,11 @@ fun TableOrderScreen(
             onConfirm = { reason ->
                 showAnularDialog = false
                 viewModel.anularCuenta(reason) { ok, msg ->
-                    viewModel.showMessage(msg)
-                    if (ok) exitOnce()
+                    // D2: el rechazo ya salió en rojo desde el ViewModel; la palomita es sólo para lo que sí se hizo.
+                    if (ok) {
+                        viewModel.showMessage(msg)
+                        exitOnce()
+                    }
                 }
             },
         )

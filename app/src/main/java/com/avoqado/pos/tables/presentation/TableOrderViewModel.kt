@@ -1338,6 +1338,16 @@ class TableOrderViewModel @Inject constructor(
         _actionHint.value = hint
     }
 
+    /**
+     * D2: un rechazo de «Mover», «Dividir por puesto» o «Anular cuenta» se ve como FALLO (aviso rojo con el motivo)
+     * antes de avisarle a la pantalla. Antes la pantalla mandaba ese motivo por la palomita verde de un éxito, y la
+     * cuenta seguía igual. La pantalla sólo pone la palomita cuando `ok`.
+     */
+    private fun rechazo(motivo: String, onDone: (Boolean, String) -> Unit) {
+        showError(motivo)
+        onDone(false, motivo)
+    }
+
     private val _actionIsError = MutableStateFlow(false)
     val actionIsError: StateFlow<Boolean> = _actionIsError.asStateFlow()
 
@@ -1619,7 +1629,7 @@ class TableOrderViewModel @Inject constructor(
                     val target = repository.tables.value.firstOrNull { it.id == targetTableId }
                     onDone(true, "Cuenta movida a Mesa ${target?.number ?: ""}".trim())
                 },
-                onFailure = { e -> onDone(false, com.avoqado.pos.core.data.network.ServerErrorText.humanize(e, "No se pudo mover la cuenta")) },
+                onFailure = { e -> rechazo(com.avoqado.pos.core.data.network.ServerErrorText.humanize(e, "No se pudo mover la cuenta"), onDone) },
             )
         }
     }
@@ -2044,7 +2054,7 @@ class TableOrderViewModel @Inject constructor(
     fun splitBySeat(onDone: (Boolean, String) -> Unit) {
         val session = tableSession.current() ?: return
         val vId = venueId ?: return
-        bloqueoDeSaldo(vId, session)?.let { onDone(false, it); return }
+        bloqueoDeSaldo(vId, session)?.let { rechazo(it, onDone); return }
         // Un id local por asiento con artículos: sin red, cada cheque creado
         // necesita el suyo para que un cobro posterior aterrice en el correcto.
         val seats = (_check.value?.items ?: emptyList()).mapNotNull { it.seat }.distinct().sorted()
@@ -2056,7 +2066,7 @@ class TableOrderViewModel @Inject constructor(
                     tableSession.finalizar(vId, session.idsDeLaOrden, contextoDeSesion)
                     onDone(true, if (offline) "Cuenta dividida por puesto — se sincroniza al volver la señal" else "Cuenta dividida por puesto")
                 },
-                onFailure = { e -> onDone(false, com.avoqado.pos.core.data.network.ServerErrorText.humanize(e, "No se pudo dividir por puesto")) },
+                onFailure = { e -> rechazo(com.avoqado.pos.core.data.network.ServerErrorText.humanize(e, "No se pudo dividir por puesto"), onDone) },
             )
         }
     }
@@ -2132,7 +2142,7 @@ class TableOrderViewModel @Inject constructor(
     fun anularCuenta(reason: String, onDone: (Boolean, String) -> Unit) {
         val session = tableSession.current() ?: return
         val vId = venueId ?: return
-        bloqueoDeSaldo(vId, session)?.let { onDone(false, it); return }
+        bloqueoDeSaldo(vId, session)?.let { rechazo(it, onDone); return }
         viewModelScope.launch {
             mutarCuenta(vId, session) { mutar { repository.cancelOrder(vId, session.orderId, reason)  }}.fold(
                 onSuccess = {
@@ -2143,10 +2153,10 @@ class TableOrderViewModel @Inject constructor(
                 },
                 onFailure = { e ->
                     repository.refresh(vId)
-                    onDone(
-                        false,
+                    rechazo(
                         com.avoqado.pos.core.data.network.ServerErrorText
                             .humanizeCancelacionDeCuenta(e, "No se pudo anular la cuenta"),
+                        onDone,
                     )
                 },
             )
