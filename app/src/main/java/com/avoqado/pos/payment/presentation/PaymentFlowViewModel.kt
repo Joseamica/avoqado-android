@@ -1564,6 +1564,14 @@ class PaymentFlowViewModel @Inject constructor(
         set(value) { savedStateHandle[KEY_UNDETERMINED_REQUEST] = value }
 
     private var lastPaymentId: String? = null
+
+    /**
+     * 🔴 D14 (16-nov): la solicitud a la terminal de la venta cobrada con tarjeta en pantalla. Cuando el cobro se aplicó sin
+     * su pago (el «SÍ pasó» tras cancelar con la reconsulta caída: `Success(requestId)` sin `paymentId`), «Agregar cliente»
+     * pregunta por ESTA solicitud cuál es su pago. Sin ella caía en «el último pago del mismo importe» y el cliente y su
+     * sello podían quedar en la venta igual que cobró otra caja.
+     */
+    private var cobroDeTarjetaEnPantalla: String? = null
     /** Marca y últimos 4 del cobro con tarjeta que devolvió la terminal. Van al ticket impreso. */
     private var lastCardBrand: String? = null
     private var lastCardLastFour: String? = null
@@ -2002,6 +2010,13 @@ class PaymentFlowViewModel @Inject constructor(
             return
         }
         val paymentId = lastPaymentId
+        // 🔴 D14: cobro con tarjeta cuyo pago no llegó a esta pantalla. Se liga SU pago, preguntado por su solicitud; nunca
+        // «el último del mismo importe», que puede ser la venta igual que cobró otra caja.
+        val solicitud = cobroDeTarjetaEnPantalla
+        if (paymentId.isNullOrBlank() && solicitud != null) {
+            ligarClienteAlCobroDeTarjeta(solicitud, customerId, customerName)
+            return
+        }
         val amountCents = currentBaseAmount()
         val tipCents = currentTipCents
         // 🔴 La venta de ESTA liga (auditoría A #4). Si el cajero toca «Venta nueva» con la petición en vuelo, la respuesta
@@ -2022,6 +2037,30 @@ class PaymentFlowViewModel @Inject constructor(
                 )
             }
             alResponderLaLiga(result, generacion, customerId, customerName)
+        }
+    }
+
+    /**
+     * D14: el pago de un cobro con tarjeta se pregunta por su solicitud (`GET terminal-payment/:requestId`, sin efectos). Si
+     * el servidor aún no lo dice (sin red, o el cobro no se ha conciliado), no se liga nada y se dice: el cajero vuelve a
+     * tocar «Agregar cliente» en un momento.
+     */
+    private fun ligarClienteAlCobroDeTarjeta(solicitud: String, customerId: String, customerName: String) {
+        val generacion = paymentGeneration
+        _customerAttachSending.value = true
+        _customerAttachResult.value = null
+        viewModelScope.launch {
+            val pago = terminalPaymentService.pagoDelCobro(solicitud)
+            if (pago == null) {
+                if (generacion == paymentGeneration) {
+                    _customerAttachResult.value = TextosDelSello.COBRO_SIN_CONFIRMAR_AL_AGREGAR_CLIENTE
+                    _customerAttachSending.value = false
+                }
+                return@launch
+            }
+            // La venta sigue en pantalla: su pago ya se sabe (recibo, sello y la próxima liga lo usan sin volver a preguntar).
+            if (generacion == paymentGeneration && cobroDeTarjetaEnPantalla == solicitud) lastPaymentId = pago
+            alResponderLaLiga(orderRepository.attachCustomerToPayment(pago, customerId), generacion, customerId, customerName)
         }
     }
 
@@ -2724,6 +2763,7 @@ class PaymentFlowViewModel @Inject constructor(
         selectedTerminalId = null
         _canPrintOnTerminal.value = false
         lastPaymentId = null
+        cobroDeTarjetaEnPantalla = null
         lastCardBrand = null
         lastCardLastFour = null
         lastReceiptAccessKey = null
@@ -4795,6 +4835,7 @@ class PaymentFlowViewModel @Inject constructor(
         // dejar ni pendiente ni «SÍ pasó» sobre su propio cobro.
         charged.requestId?.takeIf { it.isNotBlank() }?.let { terminalPaymentService.reconocerCobro(it) }
         lastPaymentId = charged.paymentId
+        cobroDeTarjetaEnPantalla = charged.requestId?.takeIf { it.isNotBlank() }
         lastReceiptAccessKey = charged.receiptAccessKey
         lastReceiptUrl = charged.receiptUrl
         lastCardBrand = charged.cardBrand
