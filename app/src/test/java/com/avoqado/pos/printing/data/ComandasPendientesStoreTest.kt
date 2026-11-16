@@ -189,18 +189,25 @@ class ComandasPendientesStoreTest {
         assertEquals("ORD-42", ComandasPendientesStore(almacen).leer("venue-1", ahora)?.orderNumber)
     }
 
-    /** m-8: el reloj de reintento y Cobrar leen la MEMORIA; un trabajo de otra sucursal imprimiría en el local equivocado. */
+    /**
+     * m-8: el reloj de reintento y Cobrar leen lo PUBLICADO; un trabajo de otra sucursal imprimiría en el local equivocado,
+     * así que no se publica. 🔴 D1 (Codex r3 #3): pero tampoco se tira — antes, con la ranura única, se rechazaba entero y
+     * la comanda de la sucursal anterior que seguía insistiendo al cambiar de sucursal se perdía. Ahora queda SUSPENDIDA y
+     * vuelve al regresar a su sucursal.
+     */
     @Test
-    fun `P1 un trabajo de OTRA sucursal no se publica en memoria ni se escribe`() {
+    fun `P1 un trabajo de OTRA sucursal no se publica pero queda suspendido para su sucursal`() {
         val almacen = AlmacenFalso()
         val store = ComandasPendientesStore(almacen)
         store.cargar("venue-1", ahora)
 
-        assertFalse(store.guardar(deOtraSucursal, ahora))
+        assertTrue(store.guardar(deOtraSucursal, ahora))
 
         assertNull("se publicó un trabajo de otra sucursal", store.pendiente.value)
-        // Almacén de UNA ranura: escribirlo pisaría el pendiente del venue actual (paridad con iOS).
-        assertNull("se escribió un trabajo de otra sucursal", almacen.texto)
+        assertTrue(store.vigentes(ahora).isEmpty())
+        store.cargar("venue-2", ahora)
+        assertEquals(deOtraSucursal, store.pendiente.value)
+        assertEquals("ORD-9", ComandasPendientesStore(almacen).leer("venue-2", ahora)?.orderNumber)
     }
 
     /** Un cambio de sucursal vuelve a llamar `cargar` (AppState.refreshTabs → startOfflineOutbox): la guarda sigue al venue nuevo. */
@@ -221,9 +228,10 @@ class ComandasPendientesStoreTest {
         store.cargar("venue-1", ahora)
         store.guardar(fallo, ahora)
 
-        assertFalse(store.guardar(deOtraSucursal, ahora))
+        store.guardar(deOtraSucursal, ahora)
 
         assertEquals(fallo, store.pendiente.value)
+        assertEquals(listOf(fallo), store.pendientes.value)
         assertEquals("ORD-42", ComandasPendientesStore(almacen).leer("venue-1", ahora)?.orderNumber)
     }
 
@@ -280,5 +288,365 @@ class ComandasPendientesStoreTest {
         store.limpiar()
 
         coVerify(exactly = 0) { entrega.cerrarPorPapel(any(), any(), any()) }
+    }
+
+    // MARK: - D1 (hz:033d44ca:D1, 16-nov-2026): la libreta guarda TODAS las comandas que no salieron, no sólo la última
+
+    /** Tres ventas cuya comanda no salió, con la cocina apagada en hora pico. Mismo venue; cada una con su trabajo. */
+    private fun venta(n: Int) = fallo.copy(
+        orderNumber = "ORD-$n",
+        trabajo = fallo.trabajo!!.copy(orderNumber = "ORD-$n", orderId = "order-$n"),
+    )
+
+    /**
+     * P1 El caso de la tarjeta: la impresora de cocina se apaga, fallan tres comandas seguidas y sólo se guardaba la
+     * ÚLTIMA (una sola ranura en disco): las otras dos perdían su reintento y su «Volver a imprimir».
+     */
+    @Test
+    fun `P1 tres comandas que no salen seguidas quedan las tres, en el orden en que fallaron`() {
+        val store = ComandasPendientesStore(AlmacenFalso())
+        store.cargar("venue-1", ahora)
+
+        assertTrue(store.guardar(venta(1), ahora))
+        assertTrue(store.guardar(venta(2), ahora + 60_000))
+        assertTrue(store.guardar(venta(3), ahora + 120_000))
+
+        assertEquals("se pisaron comandas", listOf("ORD-1", "ORD-2", "ORD-3"), store.pendientes.value.map { it.orderNumber })
+        // El aviso que se ve sigue siendo el más reciente, como antes.
+        assertEquals("ORD-3", store.pendiente.value?.orderNumber)
+    }
+
+    /** P1 Las tres sobreviven a que la app muera: al abrir vuelven las tres, cada una con su trabajo reenviable. */
+    @Test
+    fun `P1 tras reiniciar la app vuelven las tres comandas pendientes`() {
+        val almacen = AlmacenFalso()
+        ComandasPendientesStore(almacen).apply {
+            cargar("venue-1", ahora)
+            guardar(venta(1), ahora)
+            guardar(venta(2), ahora + 60_000)
+            guardar(venta(3), ahora + 120_000)
+        }
+
+        val tras = ComandasPendientesStore(almacen).apply { cargar("venue-1", ahora + 180_000) }
+
+        assertEquals(listOf("ORD-1", "ORD-2", "ORD-3"), tras.pendientes.value.map { it.orderNumber })
+        assertEquals(listOf("order-1", "order-2", "order-3"), tras.pendientes.value.map { it.trabajo?.orderId })
+        assertEquals("ORD-3", tras.pendiente.value?.orderNumber)
+    }
+
+    /** Un aviso guardado por la versión anterior (una sola hoja, sin lista) se sigue leyendo al actualizar la app. */
+    @Test
+    fun `lo que guardo la version anterior de una sola hoja se sigue leyendo`() {
+        val almacen = AlmacenFalso()
+        ComandasPendientesStore(almacen).apply { cargar("venue-1", ahora); guardar(fallo, ahora) }
+        // El formato viejo era el objeto suelto: la misma entrada, sin los corchetes de la lista.
+        almacen.texto = almacen.texto!!.trim().removePrefix("[").removeSuffix("]")
+
+        val tras = ComandasPendientesStore(almacen).apply { cargar("venue-1", ahora + 60_000) }
+
+        assertEquals(listOf("ORD-42"), tras.pendientes.value.map { it.orderNumber })
+        assertEquals(listOf(plan), tras.pendiente.value?.trabajo?.planes)
+    }
+
+    /** El MISMO trabajo guardado dos veces no se duplica (saldría dos veces) y conserva la hora de su primer fallo. */
+    @Test
+    fun `el mismo trabajo guardado dos veces no se duplica ni renueva su vigencia`() {
+        val almacen = AlmacenFalso()
+        val store = ComandasPendientesStore(almacen).apply { cargar("venue-1", ahora) }
+        store.guardar(venta(1), ahora)
+        store.guardar(venta(2), ahora)
+        store.guardar(venta(1), ahora + 7L * 60 * 60 * 1000)
+
+        assertEquals(listOf("ORD-1", "ORD-2"), store.pendientes.value.map { it.orderNumber })
+        val ochoHorasYUnMinuto = ahora + 8L * 60 * 60 * 1000 + 60_000
+        assertEquals("volver a guardarla renovó su vigencia", emptyList<String>(), store.vigentes(ochoHorasYUnMinuto).map { it.orderNumber })
+    }
+
+    /** P1 Soltar la que salió no borra las demás, ni en memoria ni en disco. */
+    @Test
+    fun `P1 soltar una comanda no borra las otras`() {
+        val almacen = AlmacenFalso()
+        val store = ComandasPendientesStore(almacen).apply { cargar("venue-1", ahora) }
+        store.guardar(venta(1), ahora)
+        store.guardar(venta(2), ahora)
+        store.guardar(venta(3), ahora)
+
+        assertTrue(store.soltarSi(venta(2).trabajo!!))
+
+        assertEquals(listOf("ORD-1", "ORD-3"), store.pendientes.value.map { it.orderNumber })
+        assertEquals(
+            listOf("ORD-1", "ORD-3"),
+            ComandasPendientesStore(almacen).apply { cargar("venue-1", ahora) }.pendientes.value.map { it.orderNumber },
+        )
+    }
+
+    /** «Ya la canté» resuelve la que se VE (la más reciente); la anterior aparece en su lugar, con su botón. */
+    @Test
+    fun `ya la cante resuelve la que se ve y aparece la anterior`() {
+        val almacen = AlmacenFalso()
+        val store = ComandasPendientesStore(almacen).apply { cargar("venue-1", ahora) }
+        store.guardar(venta(1), ahora)
+        store.guardar(venta(2), ahora)
+
+        store.yaLaCante()
+
+        assertEquals("ORD-1", store.pendiente.value?.orderNumber)
+        assertEquals(
+            listOf("ORD-1"),
+            ComandasPendientesStore(almacen).apply { cargar("venue-1", ahora) }.pendientes.value.map { it.orderNumber },
+        )
+    }
+
+    /** Una comanda que vence (8 h) se va sola; las que siguen vigentes se quedan. */
+    @Test
+    fun `vence una y las demas siguen`() {
+        val almacen = AlmacenFalso()
+        val store = ComandasPendientesStore(almacen).apply { cargar("venue-1", ahora) }
+        store.guardar(venta(1), ahora)
+        store.guardar(venta(2), ahora + 5L * 60 * 60 * 1000)
+        val nueveHoras = ahora + 9L * 60 * 60 * 1000
+
+        assertEquals(listOf("ORD-2"), store.vigentes(nueveHoras).map { it.orderNumber })
+        assertEquals(listOf("ORD-2"), store.pendientes.value.map { it.orderNumber })
+        assertEquals(
+            "la vencida siguió en el aparato",
+            listOf("ORD-2"),
+            ComandasPendientesStore(almacen).apply { cargar("venue-1", nueveHoras) }.pendientes.value.map { it.orderNumber },
+        )
+    }
+
+    /**
+     * P1 Lo pendiente de OTRA sucursal se SUSPENDE, no se borra: guardar en la sucursal actual no lo pisa. Con la ranura
+     * única, la comanda de la sucursal A desaparecía en cuanto fallaba una en la B.
+     */
+    @Test
+    fun `P1 guardar en la sucursal actual no pisa lo suspendido de otra sucursal`() {
+        val almacen = AlmacenFalso()
+        ComandasPendientesStore(almacen).apply { cargar("venue-1", ahora); guardar(fallo, ahora) }
+        val enB = ComandasPendientesStore(almacen).apply { cargar("venue-2", ahora) }
+        assertTrue(enB.pendientes.value.isEmpty())
+        assertTrue(enB.guardar(deOtraSucursal, ahora))
+
+        val deVueltaEnA = ComandasPendientesStore(almacen).apply { cargar("venue-1", ahora) }
+
+        assertEquals(listOf("ORD-42"), deVueltaEnA.pendientes.value.map { it.orderNumber })
+    }
+
+    // MARK: - Codex D1 r1
+
+    /** P1 (Codex D1 r1 #1) Sin tope: 250 comandas vigentes sobreviven TODAS a reiniciar (un tope tiraba la primera). */
+    @Test
+    fun `P1 muchas comandas pendientes sobreviven todas a reiniciar`() {
+        val almacen = AlmacenFalso()
+        val store = ComandasPendientesStore(almacen).apply { cargar("venue-1", ahora) }
+        (1..250).forEach { assertTrue(store.guardar(venta(it), ahora)) }
+
+        val tras = ComandasPendientesStore(almacen).apply { cargar("venue-1", ahora + 60_000) }
+
+        assertEquals(250, tras.pendientes.value.size)
+        assertEquals("ORD-1", tras.pendientes.value.first().orderNumber)
+    }
+
+    /** Un almacén cuyo disco se puede «llenar» (no acepta escribir ni borrar) y volver. */
+    private class DiscoQueFalla : AlmacenDeTexto {
+        var texto: String? = null
+        var fallar = false
+        override fun leer(): String? = texto
+        override fun escribir(texto: String): Boolean { if (fallar) return false; this.texto = texto; return true }
+        override fun borrar() { if (fallar) error("disco lleno"); texto = null }
+    }
+
+    /**
+     * P1 (Codex D1 r1 #2 y r2 #1, #2) El disco no acepta la escritura al quitar una comanda resuelta: la otra NO se pierde
+     * (sigue en memoria con su reintento) y, en cuanto el disco responde, el reloj copia la lista buena: tras reiniciar no
+     * vuelve la resuelta ni falta la pendiente.
+     */
+    @Test
+    fun `P1 con el disco sin responder al quitar una no se pierde la otra y la copia se repone sola`() {
+        val almacen = DiscoQueFalla()
+        val store = ComandasPendientesStore(almacen).apply { cargar("venue-1", ahora) }
+        store.guardar(venta(1), ahora)
+        store.guardar(venta(2), ahora)
+        almacen.fallar = true
+
+        store.yaLaCante()
+
+        assertEquals("ORD-1 se perdió de memoria", listOf("ORD-1"), store.pendientes.value.map { it.orderNumber })
+        almacen.fallar = false
+        store.vigentes(ahora + 60_000) // el tic del reloj
+        val tras = ComandasPendientesStore(almacen).apply { cargar("venue-1", ahora + 120_000) }
+        assertEquals(listOf("ORD-1"), tras.pendientes.value.map { it.orderNumber })
+    }
+
+    /**
+     * P1 (Codex D1 r2 #4) Si el disco no acepta GUARDAR una comanda nueva, igual queda en memoria —con su aviso y su
+     * reintento— y se copia al disco en cuanto responde. Antes se perdía en el acto.
+     */
+    @Test
+    fun `P1 con el disco sin responder al guardar la comanda queda en memoria y se copia despues`() {
+        val almacen = DiscoQueFalla()
+        val store = ComandasPendientesStore(almacen).apply { cargar("venue-1", ahora) }
+        almacen.fallar = true
+
+        assertFalse("dijo que quedó en el disco", store.guardar(venta(1), ahora))
+        assertEquals(listOf("ORD-1"), store.pendientes.value.map { it.orderNumber })
+        assertEquals(listOf("ORD-1"), store.vigentes(ahora + 60_000).map { it.orderNumber })
+
+        almacen.fallar = false
+        store.vigentes(ahora + 120_000)
+        assertEquals(
+            listOf("ORD-1"),
+            ComandasPendientesStore(almacen).apply { cargar("venue-1", ahora + 180_000) }.pendientes.value.map { it.orderNumber },
+        )
+    }
+
+    /**
+     * P1 (Codex D1 r3 #1) En Android `borrar` no avisa si falló. Al soltar la ÚLTIMA comanda con el disco sin responder,
+     * el reloj tiene que enterarse y reponer la copia vacía cuando el disco vuelve: si no, tras reiniciar regresaba la
+     * comanda ya cantada.
+     */
+    @Test
+    fun `P1 soltar la ultima con el disco sin responder se repone y no revive al reiniciar`() {
+        val almacen = object : AlmacenDeTexto {
+            var texto: String? = null
+            var fallar = false
+            override fun leer(): String? = texto
+            override fun escribir(texto: String): Boolean { if (fallar) return false; this.texto = texto; return true }
+            override fun borrar() { if (!fallar) texto = null } // como `PrefsComoAlmacen`: falla callado
+        }
+        val store = ComandasPendientesStore(almacen).apply { cargar("venue-1", ahora) }
+        store.guardar(venta(1), ahora)
+        almacen.fallar = true
+
+        store.yaLaCante()
+        almacen.fallar = false
+        store.vigentes(ahora + 60_000) // el tic del reloj
+
+        assertTrue(
+            "volvió la comanda ya cantada",
+            ComandasPendientesStore(almacen).apply { cargar("venue-1", ahora + 120_000) }.pendientes.value.isEmpty(),
+        )
+    }
+
+    /**
+     * P1 (Codex D1 r4 #1) «Ya la canté» tacha la comanda que la persona VIO. Si entre verla y tocar llegó otra, antes se
+     * tachaba la nueva (sin haber salido) y la cantada seguía viva para el reloj.
+     */
+    @Test
+    fun `P1 ya la cante tacha la que se vio aunque haya llegado otra`() {
+        val store = ComandasPendientesStore(AlmacenFalso()).apply { cargar("venue-1", ahora) }
+        store.guardar(venta(1), ahora)
+        val vista = store.pendiente.value
+        store.guardar(venta(2), ahora) // llega mientras el cajero toca
+
+        store.yaLaCante(vista)
+
+        assertEquals(listOf("ORD-2"), store.pendientes.value.map { it.orderNumber })
+    }
+
+    /**
+     * P1 (Codex D1 r6 #1) La pantalla pintó A (Cocina + Barra); un reintento parcial la dejó en A′ (sólo Barra) antes del
+     * toque. «Ya la canté» sobre A resuelve A′: es la MISMA comanda. Antes se quedaba viva y el reloj imprimía Barra.
+     */
+    @Test
+    fun `P1 ya la cante reconoce la comanda aunque un reintento parcial la haya cambiado`() {
+        val store = ComandasPendientesStore(AlmacenFalso()).apply { cargar("venue-1", ahora) }
+        val a = venta(1)
+        store.guardar(a, ahora)
+        store.guardar(venta(2), ahora)
+        val pintadoA = store.pendientes.value.first() // lo que la pantalla pintó
+        val aPrima = a.copy(causa = "sin papel otra vez", trabajo = a.trabajo!!.copy(copiasPendientes = mapOf("st_barra" to 1)))
+        assertTrue(store.reemplazar(a.trabajo!!, aPrima, ahora))
+
+        assertTrue(store.contiene(pintadoA))
+        assertTrue(store.mismaComanda(pintadoA, store.pendientes.value.first()))
+        assertFalse(store.mismaComanda(pintadoA, store.pendientes.value.last()))
+        store.yaLaCante(pintadoA)
+
+        assertEquals(listOf("ORD-2"), store.pendientes.value.map { it.orderNumber })
+    }
+
+    /**
+     * P2 (Codex D1 r7 #2) La identidad es el aviso PUBLICADO (el mismo objeto), no uno igual: una copia con el mismo
+     * contenido no tacha nada. Y dos cursos que quedan sin nada reenviable con avisos idénticos se juntan en uno.
+     */
+    @Test
+    fun `la identidad es el aviso publicado y dos avisos identicos sin trabajo se juntan`() {
+        val store = ComandasPendientesStore(AlmacenFalso()).apply { cargar("venue-1", ahora) }
+        val cursoA = venta(1)
+        val cursoB = venta(1).copy(trabajo = venta(1).trabajo!!.copy(orderType = "En tienda · Postre"))
+        store.guardar(cursoA, ahora)
+        store.guardar(cursoB, ahora)
+        assertFalse("una copia igual no es la comanda publicada", store.contiene(store.pendientes.value.first().copy()))
+        assertTrue(store.contiene(store.pendientes.value.first()))
+
+        val sinTrabajo = EstadoDeComanda.NoSalio(listOf("Barra"), ReintentoDeComanda.CAUSA_SIN_IMPRESORA, "ORD-1", trabajo = null)
+        store.reemplazar(cursoA.trabajo!!, sinTrabajo, ahora)
+        store.reemplazar(cursoB.trabajo!!, sinTrabajo.copy(), ahora)
+
+        assertEquals("dos avisos idénticos sin nada que reimprimir", 1, store.pendientes.value.size)
+        store.yaLaCante(store.pendiente.value)
+        assertTrue(store.pendientes.value.isEmpty())
+    }
+
+    /** Un reintento que falla igual (aviso nuevo, mismo contenido) no cambia la comanda: la que se pintó sigue siendo ella. */
+    @Test
+    fun `un reintento que falla igual conserva el aviso publicado`() {
+        val store = ComandasPendientesStore(AlmacenFalso()).apply { cargar("venue-1", ahora) }
+        val a = venta(1)
+        store.guardar(a, ahora)
+        val pintado = store.pendiente.value
+
+        store.reemplazar(a.trabajo!!, a.copy(), ahora)
+
+        assertTrue("cambió el aviso publicado", store.pendiente.value === pintado)
+        store.yaLaCante(pintado)
+        assertTrue(store.pendientes.value.isEmpty())
+    }
+
+    /**
+     * P1 (Codex D1 r8 #1) Guardar otra vez el MISMO trabajo (un aviso nuevo con el mismo contenido) no le cambia la llave:
+     * «Ya la canté» sobre lo que se pintó antes sigue tachándola.
+     */
+    @Test
+    fun `P1 guardar otra vez el mismo trabajo no le cambia la llave`() {
+        val store = ComandasPendientesStore(AlmacenFalso()).apply { cargar("venue-1", ahora) }
+        val a = venta(1)
+        store.guardar(a, ahora)
+        val pintado = store.pendiente.value!!
+        store.guardar(a.copy(), ahora + 1)
+
+        store.yaLaCante(pintado)
+
+        assertTrue("la comanda cantada siguió viva", store.pendientes.value.isEmpty())
+    }
+
+    /** P2 (Codex D1 r8 #2) Dos avisos idénticos sin trabajo de sucursales DISTINTAS no se juntan. */
+    @Test
+    fun `P2 avisos identicos de sucursales distintas no se juntan`() {
+        val store = ComandasPendientesStore(AlmacenFalso()).apply { cargar("venue-1", ahora) }
+        val enA = venta(1)
+        val enB = venta(1).copy(trabajo = venta(1).trabajo!!.copy(venueId = "venue-2"))
+        store.guardar(enA, ahora)
+        store.guardar(enB, ahora) // llega tarde de B: queda suspendida
+        val sinTrabajo = EstadoDeComanda.NoSalio(listOf("Barra"), ReintentoDeComanda.CAUSA_SIN_IMPRESORA, "ORD-1", trabajo = null)
+        store.reemplazar(enA.trabajo!!, sinTrabajo, ahora)
+        store.reemplazar(enB.trabajo!!, sinTrabajo.copy(), ahora)
+
+        assertEquals(1, store.pendientes.value.size)
+        store.cargar("venue-2", ahora)
+        assertEquals("se perdió el aviso de la otra sucursal", 1, store.pendientes.value.size)
+    }
+
+    /** `sigueVigente`: presente, no vencida y de la sucursal cargada; una vencida se suelta. */
+    @Test
+    fun `sigue vigente dice si se puede mandar ya`() {
+        val store = ComandasPendientesStore(AlmacenFalso()).apply { cargar("venue-1", ahora) }
+        store.guardar(venta(1), ahora)
+
+        assertTrue(store.sigueVigente(venta(1).trabajo!!, ahora + 60_000))
+        assertFalse("una que no está", store.sigueVigente(venta(2).trabajo!!, ahora))
+        assertFalse("vencida", store.sigueVigente(venta(1).trabajo!!, ahora + 9L * 60 * 60 * 1000))
+        assertTrue("la vencida no se soltó", store.pendientes.value.isEmpty())
     }
 }

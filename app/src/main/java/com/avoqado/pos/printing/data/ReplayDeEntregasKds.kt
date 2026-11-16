@@ -214,8 +214,9 @@ class ReplayDeEntregasKds @Inject constructor(
                     Log.w(TAG, "🧾 ${fila.entregaId}: su estación no tiene impresora — se da por decidida y se borra")
                     dao.borrar(fila.entregaId)
                 }
-                // 🔴 Sin papel no se marca (escondería una comanda que nadie vio). La libreta es de UNA ranura: sólo se
-                // guarda si está libre (M4: pisarla le quitaría el reintento a otra comanda). La fila se queda.
+                // 🔴 Sin papel no se marca (escondería una comanda que nadie vio). Sólo se guarda en la libreta si está
+                // libre (M4); si no, la fila se queda y este replay insiste por su cuenta. (D1: la libreta ya es una
+                // lista y no pisaría a nadie; se conserva la regla para no cambiar este camino aquí.)
                 comandasPendientesStore.pendiente.value == null -> comandasPendientesStore.guardar(estado)
                 else -> Log.d(TAG, "🧾 ${fila.entregaId} no salió y la libreta está ocupada: el siguiente tic insiste")
             }
@@ -231,14 +232,18 @@ class ReplayDeEntregasKds @Inject constructor(
         return false
     }
 
-    /** ¿La libreta guarda el papel de esta fila? Mismo venue, misma orden y el MISMO plan (renglón por renglón). */
-    private fun laLibretaLoTiene(trabajo: TrabajoPendiente): Boolean {
-        val enLibreta = comandasPendientesStore.pendiente.value?.trabajo ?: return false
-        return trabajo.planes.isNotEmpty() &&
+    /**
+     * ¿La libreta guarda el papel de esta fila? Mismo venue, misma orden y el MISMO plan (renglón por renglón).
+     * 🔴 D1: se mira CADA comanda de la libreta, no sólo la que se enseña: con la lista, el papel puede estar en una
+     * anterior, y su reloj también lo imprime (saldría dos veces).
+     */
+    private fun laLibretaLoTiene(trabajo: TrabajoPendiente): Boolean =
+        trabajo.planes.isNotEmpty() && comandasPendientesStore.pendientes.value.any { aviso ->
+            val enLibreta = aviso.trabajo ?: return@any false
             enLibreta.venueId == trabajo.venueId &&
-            enLibreta.orderNumber == trabajo.orderNumber &&
-            trabajo.planes.all { it in enLibreta.planes }
-    }
+                enLibreta.orderNumber == trabajo.orderNumber &&
+                trabajo.planes.all { it in enLibreta.planes }
+        }
 
     private suspend fun marcar(venueId: String, sourceKey: String, stationId: String, label: String) {
         try {

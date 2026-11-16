@@ -1155,6 +1155,7 @@ class ComandaDispatcherTest {
         coEvery { cliente.entregar(pantallaBarra, any(), any()) } returns true
         val libreta = mockk<ComandasPendientesStore>(relaxed = true) {
             every { pendiente } returns MutableStateFlow<EstadoDeComanda.NoSalio?>(null)
+            every { pendientes } returns MutableStateFlow<List<EstadoDeComanda.NoSalio>>(emptyList())
         }
         val sesion = mockk<SecureStorage>(relaxed = true) { every { venueId } returns "venue-1" }
         val replay = ReplayDeEntregasKds(tabla, wifi, despachador, cola, libreta, sesion, transporteLan)

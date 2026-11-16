@@ -48,7 +48,16 @@ sealed interface EstadoDeComanda {
          * soltar y que otro aparato lo intente) de «salió una parte» (soltarlo repetiría lo que ya salió).
          */
         val algoSalio: Boolean = false,
-    ) : EstadoDeComanda
+    ) : EstadoDeComanda {
+        /**
+         * D1 (16-nov-2026): la llave de ESTA comanda en `ComandasPendientesStore` — su folio interno, fijo aunque un
+         * reintento parcial cambie su contenido o haya otro aviso idéntico. La pone la libreta en el aviso que PUBLICA (una
+         * copia; nunca toca el del llamador) y con ella «Ya la canté» y ocultar saben cuál comanda tocó el cajero.
+         * 🔴 Va en el cuerpo a propósito: no cuenta para `equals`, `hashCode` ni `copy`.
+         */
+        var llaveEnLaLibreta: String? = null
+            internal set
+    }
 }
 
 /**

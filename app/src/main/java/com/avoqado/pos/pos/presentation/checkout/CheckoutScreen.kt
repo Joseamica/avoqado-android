@@ -1770,9 +1770,10 @@ fun CheckoutScreen(
             onPrimary = { paymentFlowViewModel.reintentarComanda() }.takeIf { aviso.trabajo != null },
             primaryLoading = reintentandoFueraDelCobro,
             secondaryLabel = "Ya la canté",
-            onDismiss = { paymentFlowViewModel.clearComandaWarning() },
+            // D1: con el aviso que se PINTÓ, no el que haya en la libreta al tocar (pudo llegar otra comanda).
+            onDismiss = { paymentFlowViewModel.clearComandaWarning(aviso) },
             // Un dedazo fuera del recuadro NO es «ya la canté»: oculta, no resuelve.
-            onCerrarSinResolver = { paymentFlowViewModel.ocultarAvisoDeComanda() },
+            onCerrarSinResolver = { paymentFlowViewModel.ocultarAvisoDeComanda(aviso) },
         )
     }
 

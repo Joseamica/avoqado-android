@@ -6,7 +6,10 @@ import com.avoqado.pos.printing.routing.PrintConfig
 import com.avoqado.pos.printing.routing.PrinterInfo
 import com.avoqado.pos.printing.routing.StationInfo
 import com.avoqado.pos.printing.routing.TicketPlan
+import io.mockk.Runs
 import io.mockk.coEvery
+import io.mockk.coVerify
+import io.mockk.just
 import io.mockk.mockk
 import io.mockk.slot
 import kotlinx.coroutines.CompletableDeferred
@@ -59,8 +62,8 @@ class ReplayDeComandasPendientesTest {
     @Test
     fun `cuando por fin sale, el pendiente se borra del aparato`() = runTest {
         val (store, almacen) = conPendiente()
-        val dispatcher = mockk<ComandaDispatcher>()
-        coEvery { dispatcher.reintentar(any(), any()) } returns EstadoDeComanda.Salio
+        val dispatcher = mockk<ComandaDispatcher> { coEvery { refrescarConfig(any()) } just Runs }
+        coEvery { dispatcher.reintentar(any(), any(), any()) } returns EstadoDeComanda.Salio
 
         val estado = ReplayDeComandasPendientes(store, dispatcher).intentarAhora()
 
@@ -76,8 +79,8 @@ class ReplayDeComandasPendientesTest {
     @Test
     fun `si sigue fallando, el pendiente se conserva para el siguiente intento`() = runTest {
         val (store, almacen) = conPendiente()
-        val dispatcher = mockk<ComandaDispatcher>()
-        coEvery { dispatcher.reintentar(any(), any()) } returns fallo
+        val dispatcher = mockk<ComandaDispatcher> { coEvery { refrescarConfig(any()) } just Runs }
+        coEvery { dispatcher.reintentar(any(), any(), any()) } returns fallo
 
         ReplayDeComandasPendientes(store, dispatcher).intentarAhora()
 
@@ -89,8 +92,8 @@ class ReplayDeComandasPendientesTest {
     fun `sin nada pendiente no molesta a la impresora`() = runTest {
         val store = ComandasPendientesStore(AlmacenFalsoReplay())
         var llamadas = 0
-        val dispatcher = mockk<ComandaDispatcher>()
-        coEvery { dispatcher.reintentar(any(), any()) } coAnswers { llamadas++; EstadoDeComanda.Salio }
+        val dispatcher = mockk<ComandaDispatcher> { coEvery { refrescarConfig(any()) } just Runs }
+        coEvery { dispatcher.reintentar(any(), any(), any()) } coAnswers { llamadas++; EstadoDeComanda.Salio }
 
         assertNull(ReplayDeComandasPendientes(store, dispatcher).intentarAhora())
         assertEquals(0, llamadas)
@@ -107,8 +110,8 @@ class ReplayDeComandasPendientesTest {
         val (store, _) = conPendiente()
         val puerta = CompletableDeferred<Unit>()
         var envios = 0
-        val dispatcher = mockk<ComandaDispatcher>()
-        coEvery { dispatcher.reintentar(any(), any()) } coAnswers {
+        val dispatcher = mockk<ComandaDispatcher> { coEvery { refrescarConfig(any()) } just Runs }
+        coEvery { dispatcher.reintentar(any(), any(), any()) } coAnswers {
             envios++
             puerta.await()
             EstadoDeComanda.Salio
@@ -163,9 +166,9 @@ class ReplayDeComandasPendientesTest {
         val store = ComandasPendientesStore(almacen)
         store.guardar(falloDos)
         val enviados = mutableListOf<List<String?>>()
-        val dispatcher = mockk<ComandaDispatcher>()
+        val dispatcher = mockk<ComandaDispatcher> { coEvery { refrescarConfig(any()) } just Runs }
         val visto = slot<TrabajoPendiente>()
-        coEvery { dispatcher.reintentar(capture(visto), any()) } coAnswers {
+        coEvery { dispatcher.reintentar(capture(visto), any(), any()) } coAnswers {
             enviados += visto.captured.planes.map { it.stationId }
             soloBarra
         }
@@ -185,8 +188,8 @@ class ReplayDeComandasPendientesTest {
         val almacen = AlmacenFalsoReplay()
         val store = ComandasPendientesStore(almacen)
         store.guardar(falloDos)
-        val dispatcher = mockk<ComandaDispatcher>()
-        coEvery { dispatcher.reintentar(any(), any()) } returns soloBarra
+        val dispatcher = mockk<ComandaDispatcher> { coEvery { refrescarConfig(any()) } just Runs }
+        coEvery { dispatcher.reintentar(any(), any(), any()) } returns soloBarra
 
         ReplayDeComandasPendientes(store, dispatcher).intentarAhora()
 
@@ -207,8 +210,8 @@ class ReplayDeComandasPendientesTest {
         val t0 = System.currentTimeMillis() - 7L * 60 * 60 * 1000
         store.guardar(falloDos, ahora = t0)
         var llamadas = 0
-        val dispatcher = mockk<ComandaDispatcher>()
-        coEvery { dispatcher.reintentar(any(), any()) } coAnswers { llamadas++; soloBarra }
+        val dispatcher = mockk<ComandaDispatcher> { coEvery { refrescarConfig(any()) } just Runs }
+        coEvery { dispatcher.reintentar(any(), any(), any()) } coAnswers { llamadas++; soloBarra }
 
         ReplayDeComandasPendientes(store, dispatcher).intentarAhora()
 
@@ -230,8 +233,8 @@ class ReplayDeComandasPendientesTest {
         val store = ComandasPendientesStore(almacen)
         store.guardar(falloDos)
         var llamadas = 0
-        val dispatcher = mockk<ComandaDispatcher>()
-        coEvery { dispatcher.reintentar(any(), any()) } coAnswers {
+        val dispatcher = mockk<ComandaDispatcher> { coEvery { refrescarConfig(any()) } just Runs }
+        coEvery { dispatcher.reintentar(any(), any(), any()) } coAnswers {
             llamadas++
             EstadoDeComanda.NoSalio(listOf("Barra"), ReintentoDeComanda.CAUSA_SIN_IMPRESORA, "ORD-7", trabajo = null, algoSalio = true)
         }
@@ -252,8 +255,8 @@ class ReplayDeComandasPendientesTest {
         val almacen = AlmacenFalsoReplay()
         val store = ComandasPendientesStore(almacen)
         store.guardar(falloDos)
-        val dispatcher = mockk<ComandaDispatcher>()
-        coEvery { dispatcher.reintentar(any(), any()) } coAnswers {
+        val dispatcher = mockk<ComandaDispatcher> { coEvery { refrescarConfig(any()) } just Runs }
+        coEvery { dispatcher.reintentar(any(), any(), any()) } coAnswers {
             store.guardar(fallo) // la venta ORD-5 falla mientras se reimprime la ORD-7
             soloBarra
         }
@@ -317,8 +320,8 @@ class ReplayDeComandasPendientesTest {
         val almacen = AlmacenFalsoReplay()
         val store = ComandasPendientesStore(almacen)
         store.guardar(falloDos)
-        val dispatcher = mockk<ComandaDispatcher>()
-        coEvery { dispatcher.reintentar(any(), any()) } coAnswers {
+        val dispatcher = mockk<ComandaDispatcher> { coEvery { refrescarConfig(any()) } just Runs }
+        coEvery { dispatcher.reintentar(any(), any(), any()) } coAnswers {
             store.guardar(fallo)
             EstadoDeComanda.Salio
         }
@@ -339,8 +342,8 @@ class ReplayDeComandasPendientesTest {
         val nueveHoras = 9L * 60 * 60 * 1000
         store.guardar(falloDos, ahora = System.currentTimeMillis() - nueveHoras)
         var llamadas = 0
-        val dispatcher = mockk<ComandaDispatcher>()
-        coEvery { dispatcher.reintentar(any(), any()) } coAnswers { llamadas++; EstadoDeComanda.Salio }
+        val dispatcher = mockk<ComandaDispatcher> { coEvery { refrescarConfig(any()) } just Runs }
+        coEvery { dispatcher.reintentar(any(), any(), any()) } coAnswers { llamadas++; EstadoDeComanda.Salio }
 
         assertNull(ReplayDeComandasPendientes(store, dispatcher).intentarAhora())
 
@@ -358,5 +361,156 @@ class ReplayDeComandasPendientesTest {
 
         assertNotNull("a las 7 h sigue vigente", store.vigente())
         assertNull("a las 8 h y un minuto ya venció", store.vigente(ahora = t0 + 8L * 60 * 60 * 1000 + 60_000))
+    }
+
+    // MARK: - D1 (hz:033d44ca:D1, 16-nov-2026): cuando vuelve la impresora salen TODAS, no sólo la última
+
+    private fun venta(n: Int) = fallo.copy(orderNumber = "ORD-$n", trabajo = trabajo.copy(orderNumber = "ORD-$n", orderId = "order-$n"))
+
+    /**
+     * P1 El recorrido de la tarjeta: cocina apagada, tres rondas que no salen, se prende la impresora. Antes salía sólo la
+     * tercera (la única que quedaba en la libreta). Ahora salen las tres, en el orden en que fallaron.
+     */
+    @Test
+    fun `P1 al prender la impresora salen las tres comandas pendientes en orden`() = runTest {
+        val almacen = AlmacenFalsoReplay()
+        val store = ComandasPendientesStore(almacen).apply { cargar("venue-1") }
+        store.guardar(venta(1))
+        store.guardar(venta(2))
+        store.guardar(venta(3))
+        val salieron = mutableListOf<String>()
+        val visto = slot<TrabajoPendiente>()
+        val dispatcher = mockk<ComandaDispatcher> { coEvery { refrescarConfig(any()) } just Runs }
+        coEvery { dispatcher.reintentar(capture(visto), any(), any()) } coAnswers {
+            salieron += visto.captured.orderNumber
+            EstadoDeComanda.Salio
+        }
+
+        ReplayDeComandasPendientes(store, dispatcher).intentarAhora()
+
+        assertEquals(listOf("ORD-1", "ORD-2", "ORD-3"), salieron)
+        assertTrue(store.pendientes.value.isEmpty())
+        assertNull(store.pendiente.value)
+        assertNull("quedó basura en el aparato", almacen.leer())
+    }
+
+    /** Si una sigue sin salir (su estación sigue apagada), las demás salen igual y sólo ella se queda. */
+    @Test
+    fun `si una sigue fallando las demas salen y solo ella se queda`() = runTest {
+        val store = ComandasPendientesStore(AlmacenFalsoReplay()).apply { cargar("venue-1") }
+        store.guardar(venta(1))
+        store.guardar(venta(2))
+        store.guardar(venta(3))
+        val visto = slot<TrabajoPendiente>()
+        val dispatcher = mockk<ComandaDispatcher> { coEvery { refrescarConfig(any()) } just Runs }
+        coEvery { dispatcher.reintentar(capture(visto), any(), any()) } coAnswers {
+            if (visto.captured.orderNumber == "ORD-2") venta(2) else EstadoDeComanda.Salio
+        }
+
+        ReplayDeComandasPendientes(store, dispatcher).intentarAhora()
+
+        assertEquals(listOf("ORD-2"), store.pendientes.value.map { it.orderNumber })
+    }
+
+    /** Una que ya salió no se vuelve a mandar en el siguiente tic (la cocina no recibe dos). */
+    @Test
+    fun `P1 la que ya salio no se manda otra vez en el siguiente tic`() = runTest {
+        val store = ComandasPendientesStore(AlmacenFalsoReplay()).apply { cargar("venue-1") }
+        store.guardar(venta(1))
+        store.guardar(venta(2))
+        val salieron = mutableListOf<String>()
+        val visto = slot<TrabajoPendiente>()
+        val dispatcher = mockk<ComandaDispatcher> { coEvery { refrescarConfig(any()) } just Runs }
+        coEvery { dispatcher.reintentar(capture(visto), any(), any()) } coAnswers {
+            salieron += visto.captured.orderNumber
+            if (visto.captured.orderNumber == "ORD-2") venta(2) else EstadoDeComanda.Salio
+        }
+        val replay = ReplayDeComandasPendientes(store, dispatcher)
+
+        replay.intentarAhora()
+        replay.intentarAhora()
+
+        assertEquals("ORD-1 salió dos veces", listOf("ORD-1", "ORD-2", "ORD-2"), salieron)
+    }
+
+    // MARK: - Codex D1 r1
+
+    /**
+     * P1 (Codex D1 r1 #3) Una comanda que vence MIENTRAS espera detrás de otra (la impresora tarda) ya no se manda: la
+     * vigencia se vuelve a mirar justo antes de cada una.
+     */
+    @Test
+    fun `P1 una que vence esperando su turno en la pasada ya no se manda`() = runTest {
+        val store = ComandasPendientesStore(AlmacenFalsoReplay()).apply { cargar("venue-1") }
+        val casiOcho = System.currentTimeMillis() - 8L * 60 * 60 * 1000 + 2_000
+        store.guardar(venta(1), ahora = casiOcho)
+        store.guardar(venta(2), ahora = casiOcho)
+        val salieron = mutableListOf<String>()
+        val visto = slot<TrabajoPendiente>()
+        val dispatcher = mockk<ComandaDispatcher> { coEvery { refrescarConfig(any()) } just Runs }
+        coEvery { dispatcher.reintentar(capture(visto), any(), any()) } coAnswers {
+            salieron += visto.captured.orderNumber
+            Thread.sleep(3_000) // la impresora tarda: mientras, ORD-2 cumple 8 h
+            venta(1)
+        }
+
+        ReplayDeComandasPendientes(store, dispatcher).intentarAhora()
+
+        assertEquals("se mandó una comanda vencida", listOf("ORD-1"), salieron)
+        assertTrue(store.pendientes.value.none { it.orderNumber == "ORD-2" })
+    }
+
+    /** P1 (Codex D1 r1 #6) «Ya la canté» mientras se refresca la config: esa comanda ya no se manda. */
+    @Test
+    fun `P1 ya la cante durante el refresco y esa comanda no se manda`() = runTest {
+        val store = ComandasPendientesStore(AlmacenFalsoReplay()).apply { cargar("venue-1") }
+        store.guardar(venta(1))
+        var llamadas = 0
+        val dispatcher = mockk<ComandaDispatcher>()
+        coEvery { dispatcher.refrescarConfig(any()) } coAnswers { store.yaLaCante(); Unit }
+        coEvery { dispatcher.reintentar(any(), any(), any()) } coAnswers { llamadas++; EstadoDeComanda.Salio }
+
+        assertNull(ReplayDeComandasPendientes(store, dispatcher).intentarAhora())
+
+        assertEquals("se imprimió lo que una persona ya cantó", 0, llamadas)
+    }
+
+    /**
+     * P1 (Codex D1 r1 #5) Cambian de sucursal mientras se refresca la config: la comanda de la sucursal anterior no se
+     * manda con las impresoras de la nueva (queda suspendida en disco).
+     */
+    @Test
+    fun `P1 cambiar de sucursal durante el refresco no manda la comanda a la otra sucursal`() = runTest {
+        val almacen = AlmacenFalsoReplay()
+        val store = ComandasPendientesStore(almacen).apply { cargar("venue-1") }
+        store.guardar(venta(1))
+        var llamadas = 0
+        val dispatcher = mockk<ComandaDispatcher>()
+        coEvery { dispatcher.refrescarConfig(any()) } coAnswers { store.cargar("venue-2"); Unit }
+        coEvery { dispatcher.reintentar(any(), any(), any()) } coAnswers { llamadas++; EstadoDeComanda.Salio }
+
+        ReplayDeComandasPendientes(store, dispatcher).intentarAhora()
+
+        assertEquals("se imprimió en la otra sucursal", 0, llamadas)
+        assertEquals("ORD-1", ComandasPendientesStore(almacen).apply { cargar("venue-1") }.pendiente.value?.orderNumber)
+    }
+
+    /**
+     * La config se refresca antes de CADA comanda y el despachador ya no refresca otra vez (Codex D1 r7 #1: una vez por
+     * pasada dejaba salir la siguiente con la config de otra sucursal si cambiaban y regresaban a media pasada).
+     */
+    @Test
+    fun `la config se refresca antes de cada comanda y el despachador no vuelve a refrescar`() = runTest {
+        val store = ComandasPendientesStore(AlmacenFalsoReplay()).apply { cargar("venue-1") }
+        store.guardar(venta(1))
+        store.guardar(venta(2))
+        store.guardar(venta(3))
+        val dispatcher = mockk<ComandaDispatcher> { coEvery { refrescarConfig(any()) } just Runs }
+        coEvery { dispatcher.reintentar(any(), any(), false) } returns EstadoDeComanda.Salio
+
+        ReplayDeComandasPendientes(store, dispatcher).intentarAhora()
+
+        coVerify(exactly = 3) { dispatcher.refrescarConfig("venue-1") }
+        coVerify(exactly = 3) { dispatcher.reintentar(any(), any(), false) }
     }
 }
