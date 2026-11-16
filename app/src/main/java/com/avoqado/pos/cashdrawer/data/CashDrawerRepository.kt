@@ -147,7 +147,7 @@ private data class PayOutRequest(
 )
 
 /** La hora de un ingreso o retiro de la cola para el SERVIDOR: cuándo se hizo (ISO-8601) y cuánto lleva esperando. */
-data class HoraDelMovimiento(val createdAt: String, val edadMs: Long?)
+data class HoraDelMovimiento(val createdAt: String?, val edadMs: Long?)
 
 /** El instante de un movimiento en el reloj que no se mueve a mano: el arranque del aparato y su `elapsedRealtime`. */
 data class InstanteMonotonico(val arranque: String, val ms: Long)
@@ -164,9 +164,15 @@ private const val HORA_MINIMA_CREIBLE_MS = 1_577_836_800_000L // 2020-01-01T00:0
  * El SERVIDOR la acota a la vida de la caja.
  */
 fun horaDelMovimientoParaElServidor(at: Long, entonces: InstanteMonotonico?, ahora: InstanteMonotonico): HoraDelMovimiento? {
-    if (at < HORA_MINIMA_CREIBLE_MS) return null
-    val espera = entonces?.takeIf { it.arranque == ahora.arranque }?.let { ahora.ms - it.ms }?.takeIf { it >= 0 }
-    return HoraDelMovimiento(java.time.Instant.ofEpochMilli(at).toString(), espera)
+    // Codex r4 #3: el arranque de respaldo (`t<minuto>`, cuando no se pudo leer el boot_id) sale de la hora de pared y dos arranques
+    // pueden compartirlo: con él no se acredita una espera. Un boot_id real es hexadecimal y nunca empieza con «t».
+    val espera = entonces
+        ?.takeIf { it.arranque == ahora.arranque && !it.arranque.startsWith("t") }
+        ?.let { ahora.ms - it.ms }
+        ?.takeIf { it >= 0 }
+    // Codex r4 #1: una hora de pared imposible (antes de 2020) no viaja, pero una espera medida sí: el SERVIDOR usa «llegada − espera».
+    val hora = at.takeIf { it >= HORA_MINIMA_CREIBLE_MS }?.let { java.time.Instant.ofEpochMilli(it).toString() }
+    return if (hora == null && espera == null) null else HoraDelMovimiento(hora, espera)
 }
 
 /** El instante monotónico de ESTE momento (arranque + `elapsedRealtime`). */
