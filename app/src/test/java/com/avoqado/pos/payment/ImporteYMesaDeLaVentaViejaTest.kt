@@ -283,8 +283,9 @@ class ImporteYMesaDeLaVentaViejaTest {
     }
 
     /**
-     * D87, control (Codex r1 #2): el abono de la venta vieja fue PARCIAL y otro aparato movió esa cuenta a otra mesa. Que ya no esté
-     * en la mesa 5 no prueba que se saldó: el SERVIDOR no la tiene cobrada, así que su sesión sigue como hoy.
+     * D87, control: si el SERVIDOR no tiene la cuenta cobrada (un abono PARCIAL; Codex r1 #2: también si otro aparato la movió a otra
+     * mesa, que ya no esté en la 5 no prueba que se saldó), su sesión sigue como hoy. Sólo prueba la reacción a esa respuesta: quién
+     * contesta «cobrada» lo prueba `LiberarMesaConSuCuentaTest` (sólo COMPLETED de ESA cuenta).
      */
     @Test
     fun `D87 control la mesa de una venta vieja cuya cuenta sigue viva conserva su sesion`() = runTest {
