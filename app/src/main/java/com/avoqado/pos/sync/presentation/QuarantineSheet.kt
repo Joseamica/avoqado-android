@@ -86,6 +86,7 @@ fun QuarantineSheet(
     val leyendoHistorial by historial.cargando.collectAsState()
     val nombres by historial.nombres.collectAsState() // se LEE en «Revisado por»: así repinta al llegar los nombres
     val mensajeHistorial by historial.mensaje.collectAsState()
+    val resumenSinPermiso by historial.resumenSinPermiso.collectAsState()
     val items by viewModel.items.collectAsState()
     val failedPayments by viewModel.failedPayments.collectAsState()
     val failedReservations by viewModel.failedReservationActions.collectAsState()
@@ -159,7 +160,9 @@ fun QuarantineSheet(
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     } else {
-                        Text("Un gerente debe revisar este pago.", style = MaterialTheme.typography.bodyMedium)
+                        // D1/A4 (ensayo 16-nov): sin permiso no se ve el historial, pero sí qué espera a un gerente y cuánto se cobró
+                        // de más. Antes decía «Un gerente debe revisar este pago.» aunque no hubiera ningún pago (o fuera una ronda).
+                        resumenSinPermiso?.let { Text(it, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium) }
                     }
                     if (historial.canRead) mensajeHistorial?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
                     HorizontalDivider()

@@ -5,6 +5,7 @@ import com.avoqado.pos.core.data.local.database.*
 import com.avoqado.pos.core.domain.RoleManager
 import com.avoqado.pos.tables.data.TableSession
 import com.avoqado.pos.sync.presentation.HistorialDelCobroViewModel
+import com.avoqado.pos.sync.presentation.RevisionParaQuienNoRevisa
 import io.mockk.*
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -177,5 +178,51 @@ class Q15HistorialViewModelTest {
         assertEquals("Folio caf6c0a3",vm().referencia(row(id).copy(capturedOrderRef=id)))
         assertEquals("Folio caf6c0a3",vm().referencia(row(id).copy(capturedOrderRef=null)))
         assertEquals("Folio caf6c0a3 · cuenta cmvffzy9",vm().referencia(row(id).copy(capturedOrderRef="cmvffzy9b00djwa3zmbgnnfkp")))
+    }
+
+    // MARK: - D1/A4 (ensayo 16-nov, `hz:033d44ca:D9`): la mesera sin permiso abría la lista y sólo leía «Un gerente debe revisar este pago.»
+
+    @Test fun D1_sin_permiso_dice_cuanto_se_cobro_de_mas_sin_leer_el_historial()=runTest {
+        role="CASHIER"
+        coEvery { dao.contarRevisionesQ15("FULLTEST-A",false,"") } returns 1
+        coEvery { dao.resultadosPorRevisarQ15("FULLTEST-A") } returns listOf("""{"camposDiferentes":["saldoDeLaMesa"],"cobradoDeMasCents":2500}""")
+        val subject=vm();subject.cargar();advanceUntilIdle()
+        val texto=subject.resumenSinPermiso.value
+        assertNotNull(texto)
+        assertTrue(texto!!,texto.startsWith("Hay 1 cobro por revisar"))
+        assertTrue(texto,texto.contains("\$25.00 de más"))
+        assertTrue(texto,texto.contains("Más › Cambiar usuario"))
+        assertTrue("el historial sigue siendo del gerente",subject.filas.value.isEmpty())
+        coVerify(exactly=0) { dao.paginaRevisionesQ15(any(),any(),any(),any(),any(),any()) }
+    }
+    @Test fun D1_sin_permiso_y_sin_cobros_por_revisar_no_inventa_un_pago()=runTest {
+        role="CASHIER"
+        coEvery { dao.contarRevisionesQ15("FULLTEST-A",false,"") } returns 0
+        val subject=vm();subject.cargar();advanceUntilIdle()
+        assertNull(subject.resumenSinPermiso.value)
+        coVerify(exactly=0) { dao.resultadosPorRevisarQ15(any()) }
+    }
+    @Test fun D1_el_gerente_no_usa_el_resumen()=runTest {
+        coEvery { dao.contarRevisionesQ15(any(),any(),any()) } returns 1
+        coEvery { dao.paginaRevisionesQ15(any(),any(),any(),any(),any(),any()) } returns listOf(row("p1"))
+        val subject=vm();subject.cargar();advanceUntilIdle()
+        assertNull(subject.resumenSinPermiso.value)
+        coVerify(exactly=0) { dao.resultadosPorRevisarQ15(any()) }
+    }
+    @Test fun D1_textos_para_quien_no_revisa() {
+        assertNull(RevisionParaQuienNoRevisa.texto(0,emptyList()))
+        val diferencia=RevisionParaQuienNoRevisa.texto(1,listOf("""{"camposDiferentes":["importe"]}"""))!!
+        assertTrue(diferencia,diferencia.contains("distinto de como se cobró aquí"))
+        assertFalse(diferencia,diferencia.contains("de más"))
+        val dos=RevisionParaQuienNoRevisa.texto(2,listOf("""{"cobradoDeMasCents":2500}""","""{"cobradoDeMasCents":1000}"""))!!
+        assertTrue(dos,dos.startsWith("Hay 2 cobros por revisar: se cobraron \$35.00 de más"))
+        assertTrue(dos,dos.contains("los revisa"))
+        // Leídos menos de los que hay (tope de 200): la suma no se presenta como total.
+        val tope=RevisionParaQuienNoRevisa.texto(201,listOf("""{"cobradoDeMasCents":2500}"""))!!
+        assertTrue(tope,tope.contains("\$25.00 o más de más"))
+        // Basura o centavos negativos no suman.
+        assertNull(RevisionParaQuienNoRevisa.cobradoDeMasCents("no es json"))
+        assertNull(RevisionParaQuienNoRevisa.cobradoDeMasCents("""{"cobradoDeMasCents":-5}"""))
+        assertNull(RevisionParaQuienNoRevisa.cobradoDeMasCents("""{"cobradoDeMasCents":"25"}"""))
     }
 }

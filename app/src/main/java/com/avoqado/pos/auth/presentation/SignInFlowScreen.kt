@@ -26,6 +26,7 @@ import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.Fingerprint
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
+import androidx.compose.material.icons.filled.WifiOff
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -353,27 +354,30 @@ private fun PasswordStepContent(
 
 @Composable
 private fun AuthErrorCard(errorMessage: String) {
+    // C2 (16-nov): sin internet no es un error: el aviso va en gris, como el resto de los avisos de «Sin conexión».
+    val sinConexion = errorMessage == com.avoqado.pos.auth.data.AuthRepository.SIN_CONEXION_PARA_ENTRAR
+    val color = if (sinConexion) MaterialTheme.colorScheme.onSurfaceVariant else Error
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .background(
-                Error.copy(alpha = 0.1f),
+                if (sinConexion) MaterialTheme.colorScheme.surfaceVariant else Error.copy(alpha = 0.1f),
                 RoundedCornerShape(AvoqadoTheme.cornerRadius.md),
             )
             .padding(AvoqadoTheme.spacing.md),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Icon(
-            Icons.Filled.ErrorOutline,
+            if (sinConexion) Icons.Filled.WifiOff else Icons.Filled.ErrorOutline,
             contentDescription = null,
-            tint = Error,
+            tint = color,
             modifier = Modifier.size(20.dp),
         )
         Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.sm))
         Text(
             text = errorMessage,
             style = MaterialTheme.typography.bodySmall,
-            color = Error,
+            color = color,
         )
     }
 }

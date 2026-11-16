@@ -519,6 +519,39 @@ class MesaDelServidorSinRedTest {
         subject.viewModelScope.cancel()
     }
 
+    /** A3 (ensayo 16-nov, `hz:033d44ca:D9`): la caja entra sin internet a una mesa que nunca leyó con internet (la abrió la N86). */
+    private fun abrirDesdeElPlanoConSaldo(cents: Int) =
+        session.abrirDesdePiso(venue, TableSession.Active("table-F", "1", null, "order-F", "F-1", 3, cents, TableSession.Mode.ORDERING))
+
+    @Test fun `A3 la caja que nunca leyo la cuenta con internet dice que la tomo otra tablet`() = runTest {
+        conInternet = false
+        abrirDesdeElPlanoConSaldo(2500)
+        val subject = vm()
+        leer(subject)
+        assertFalse("no se ve toda la cuenta", subject.cuentaCompletaAqui)
+        assertEquals(TOMADA_EN_OTRA_TABLET, subject.motivoParaNoPagarSinCargos(cargando = false))
+        subject.viewModelScope.cancel()
+    }
+
+    @Test fun `A3 con el piloto apagado la caja dice el aviso de siempre`() = runTest {
+        piloto = false
+        conInternet = false
+        abrirDesdeElPlanoConSaldo(2500)
+        val subject = vm()
+        leer(subject)
+        assertEquals(motivoSinArticulos(cuentaCompletaAqui = false, cargando = false), subject.motivoParaNoPagarSinCargos(cargando = false))
+        subject.viewModelScope.cancel()
+    }
+
+    @Test fun `A3 la tablet que le mando una ronda no dice que la tomo otra`() = runTest {
+        // Con internet leyó la cuenta y le mandó su ronda (la tomó); luego se fue la red. Sin la cuenta al día, nunca «la tomó otra».
+        val subject = mesaConFoto()
+        conInternet = false
+        leer(subject)
+        assertTrue(subject.motivoParaNoPagarSinCargos(cargando = false) != TOMADA_EN_OTRA_TABLET)
+        subject.viewModelScope.cancel()
+    }
+
     @Test fun `no se toma foto con algo pendiente de la orden en otra cola`() = runTest {
         abrir()
         val subject = vm()

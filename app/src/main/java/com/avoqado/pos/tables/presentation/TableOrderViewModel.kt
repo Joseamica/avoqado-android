@@ -2540,6 +2540,18 @@ class TableOrderViewModel @Inject constructor(
         }
     }
 
+    /**
+     * A3 (ensayo del 16-nov, `hz:033d44ca:D9`): por qué «Pagar» sigue en gris cuando aquí no se ve ningún cargo. Con el piloto, si la
+     * cuenta no se pudo leer y la tomó otra tablet (su saldo sin red está en gris por eso), se dice: esa tablet SÍ la puede cobrar sin
+     * internet. Lo demás, el aviso de siempre ([motivoSinArticulos]). Sólo cambia el texto: el botón sigue en gris igual.
+     */
+    internal fun motivoParaNoPagarSinCargos(cargando: Boolean): String {
+        val s = tableSession.current()
+        if (s != null && !cuentaCompletaAqui && !cargando && estadoSinRedVigente(s) == SaldoSinRed.EnGris(TOMADA_EN_OTRA_TABLET))
+            return TOMADA_EN_OTRA_TABLET
+        return motivoSinArticulos(cuentaCompletaAqui, cargando)
+    }
+
     suspend fun preparePagar(): Boolean {
         // B3 (visto 1): la cuenta ya se cerró (su cobro y su liberación subieron) con la pantalla abierta: se dice, no se calla.
         if (tableSession.current() == null) { showBlockedReason(CUENTA_CERRADA); return false }
@@ -2640,7 +2652,7 @@ class TableOrderViewModel @Inject constructor(
                 // 🔴 Ninguno de estos tres dice ya "no tiene cargos" a lo bruto.
                 // Ese texto era falso en DOS de los tres casos, y el mesero se
                 // quedaba sin saber qué hacer.
-                articulos <= 0 -> showBlockedReason(motivoSinArticulos(cuentaCompletaAqui, _isLoadingCheck.value))
+                articulos <= 0 -> showBlockedReason(motivoParaNoPagarSinCargos(_isLoadingCheck.value))
                 totalDelCheque > 0 ->
                     // Tiene cargos y su total NO es 0: el saldo llegó a 0 porque
                     // YA se pagó. Ofrecer "Pagar" aquí termina en un rechazo del
