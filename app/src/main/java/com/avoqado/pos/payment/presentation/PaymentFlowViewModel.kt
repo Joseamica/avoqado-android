@@ -2373,7 +2373,9 @@ class PaymentFlowViewModel @Inject constructor(
             combine(conexionDelSaldo, servidorDelSaldo) { conectado, servidor -> conectado && servidor }.collect { enLinea ->
                 val volvio = antes == false && enLinea
                 antes = enLinea
-                val eligiendo = _state.value is PaymentFlowState.SelectingPaymentMethod || _state.value is PaymentFlowState.CollectingTip
+                // Codex r1 #3: también mientras el cliente califica (la pantalla de «¿cómo paga?» viene después).
+                val eligiendo = _state.value is PaymentFlowState.SelectingPaymentMethod || _state.value is PaymentFlowState.CollectingTip ||
+                    _state.value is PaymentFlowState.CollectingRating
                 if (volvio && eligiendo && _terminalAvailability.value != TerminalAvailability.CHECKING) probeTerminalAvailability()
             }
         }

@@ -132,17 +132,26 @@ class CashDrawerViewModel @Inject constructor(
     /** D68 #13: la lectura del desglose en vuelo, y cuál es la última (una vieja que llega tarde no pisa a la nueva). */
     private var cargandoDesglose = false
     private var generacionDelDesglose = 0
+    /** D68 #13 (Codex r1 #2): la red volvió mientras una lectura seguía en vuelo; si ésa falla, se pide otra vez al terminar. */
+    private var reintentoPendiente: Pair<Long, Long>? = null
 
     /** Fetch the payment-method breakdown for a session's window (corte de caja). */
     fun loadTenderBreakdown(fromMillis: Long, toMillis: Long) {
         val generacion = ++generacionDelDesglose
         cargandoDesglose = true
+        reintentoPendiente = null
         viewModelScope.launch {
+            var desglose: List<CashDrawerRepository.TenderRow>? = null
             try {
-                val desglose = repository.getTenderBreakdown(fromMillis, toMillis)
+                desglose = repository.getTenderBreakdown(fromMillis, toMillis)
                 if (generacion == generacionDelDesglose) _tenderBreakdown.value = desglose
             } finally {
-                if (generacion == generacionDelDesglose) cargandoDesglose = false
+                if (generacion == generacionDelDesglose) {
+                    cargandoDesglose = false
+                    val otra = reintentoPendiente
+                    reintentoPendiente = null
+                    if (desglose == null && otra != null) loadTenderBreakdown(otra.first, otra.second)
+                }
             }
         }
     }
@@ -153,7 +162,8 @@ class CashDrawerViewModel @Inject constructor(
      * falta (nunca borra uno bueno al cortarse la red).
      */
     fun recargarDesgloseSiFalta(fromMillis: Long, toMillis: Long) {
-        if (_tenderBreakdown.value == null && !cargandoDesglose) loadTenderBreakdown(fromMillis, toMillis)
+        if (_tenderBreakdown.value != null) return
+        if (cargandoDesglose) reintentoPendiente = fromMillis to toMillis else loadTenderBreakdown(fromMillis, toMillis)
     }
 
     /** D68 #13: con red y servidor; lo observa sólo la pantalla del corte (perezoso: las pruebas que no lo leen no lo arman). */
@@ -763,7 +773,14 @@ class CashDrawerViewModel @Inject constructor(
             val tenders = runCatching {
                 repository.getTenderBreakdown(session.openedAt, System.currentTimeMillis())
             }.getOrNull()
-            _tenderBreakdown.value = tenders
+            // D68 #13 (Codex r1 #1): imprimir sin red ya no borra de la pantalla un desglose bueno, y lo nuevo deja atrás a
+            // cualquier lectura vieja que siga en vuelo (el papel con `null` dice que no se pudo consultar).
+            if (tenders != null) {
+                generacionDelDesglose++
+                cargandoDesglose = false
+                reintentoPendiente = null
+                _tenderBreakdown.value = tenders
+            }
             printCorte(
                 session = session,
                 events = frescos,

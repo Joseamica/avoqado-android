@@ -59,4 +59,17 @@ class CorteDesgloseAlVolverLaRedTest {
         coVerify(exactly = 1) { repo.getTenderBreakdown(1L, 2L) }
         assertEquals(efectivo, vm.tenderBreakdown.value)
     }
+
+    @Test fun `Codex r1 2 la red vuelve durante una lectura que falla y al terminar se pide otra vez`() {
+        val repo = mockk<CashDrawerRepository>(relaxed = true)
+        val primera = CompletableDeferred<List<CashDrawerRepository.TenderRow>?>()
+        var llamadas = 0
+        coEvery { repo.getTenderBreakdown(1L, 2L) } coAnswers { llamadas++; if (llamadas == 1) primera.await() else efectivo }
+        val vm = pantalla(repo)
+        vm.loadTenderBreakdown(1L, 2L)
+        vm.recargarDesgloseSiFalta(1L, 2L) // volvió la red con la lectura en vuelo
+        primera.complete(null) // y esa lectura falló
+        assertEquals(2, llamadas)
+        assertEquals(efectivo, vm.tenderBreakdown.value)
+    }
 }
