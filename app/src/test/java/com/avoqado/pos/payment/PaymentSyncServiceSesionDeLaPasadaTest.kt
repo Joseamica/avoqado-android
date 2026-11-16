@@ -110,7 +110,7 @@ class PaymentSyncServiceSesionDeLaPasadaTest {
 
         service.start()
 
-        coVerify(timeout = 5_000) { client.newCall(match { it.url.encodedPath.endsWith("/sync/recovery") }) }
+        esperarA("la recuperación") { pedidas.any { it.url.encodedPath.endsWith("/sync/recovery") } }
         val recuperacion = pedidas.first { it.url.encodedPath.endsWith("/sync/recovery") }
         assertEquals(7L, recuperacion.sello)
     }
@@ -123,7 +123,7 @@ class PaymentSyncServiceSesionDeLaPasadaTest {
 
         service.start()
 
-        coVerify(timeout = 5_000) { client.newCall(match { it.url.encodedPath.contains("/payments/by-key/") }) }
+        esperarA("la consulta por llave") { pedidas.any { it.url.encodedPath.contains("/payments/by-key/") } }
         assertEquals(7L, pedidas.first { it.url.encodedPath.contains("/payments/by-key/") }.sello)
     }
 
@@ -161,7 +161,7 @@ class PaymentSyncServiceSesionDeLaPasadaTest {
 
         service.start()
 
-        coVerify(timeout = 5_000) { outbox.replayNow(VENUE) }
+        esperarA("el outbox") { delOutbox.isNotEmpty() }
         assertEquals(7L, delCajon.first())
         assertEquals(7L, delOutbox.first())
     }
@@ -176,15 +176,29 @@ class PaymentSyncServiceSesionDeLaPasadaTest {
             emptyList()
         }
         service.start()
-        coVerify(timeout = 5_000) { dao.getPendingPayments(any()) }
+        esperarA("la pasada de A") { lecturas.isNotEmpty() }
 
         // Cierre automático: sale A, entra B y `AppState.onLoginSuccess` vuelve a llamar `start()` (el servicio nunca se detuvo).
         entraOtraPersona()
         service.start()
         suelta.complete(Unit)
 
-        coVerify(timeout = 5_000, exactly = 2) { dao.getPendingPayments(any()) }
+        esperarA("la pasada de B") { lecturas.size >= 2 }
+        coVerify(exactly = 2) { dao.getPendingPayments(any()) }
         assertEquals("La segunda pasada es la de B", listOf(7L, 8L), lecturas.toList())
+    }
+
+    /**
+     * D6 (15-nov): MockK da la llamada por hecha (`coVerify(timeout)`) antes de que su respuesta termine de anotarla en la lista,
+     * que corre en el hilo del servicio. Leer la lista justo después tronaba a veces (1 de 8,911 en la suite). Se espera a lo
+     * anotado, no al mock.
+     */
+    private fun esperarA(que: String, listo: () -> Boolean) {
+        val hasta = System.nanoTime() + 5_000_000_000L
+        while (!listo()) {
+            check(System.nanoTime() < hasta) { "No llegó a tiempo: $que" }
+            Thread.sleep(10)
+        }
     }
 
     private companion object {
