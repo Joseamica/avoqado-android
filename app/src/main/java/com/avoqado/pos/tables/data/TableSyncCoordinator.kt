@@ -60,6 +60,8 @@ class TableSyncCoordinator @Inject constructor(
         if (tableSession.contextoActual() != sessionEpoch) return
         if (!ack.isAcked) {
             Log.w(TAG, "🚫 Intent rechazado (${ack.errorCode}): ${ack.message}")
+            // D8 (Codex r2 #1): si era de una mesa soltada sin red, vuelve a verse ocupada ya, aunque se vaya otra vez el internet.
+            secureStorage.venueId?.let { repository.reconciliarMarcasSinRed(it) }
             return
         }
         val result = ack.result ?: return

@@ -114,7 +114,8 @@ class TablesVersionPoller(
             }
             ConsultaDeVersiones.ErrorDelServidor -> mesas.refresh(venueId)
             // Sin red: lo guardado se queda; el aviso «Sin conexión» ya lo pone el banner de conectividad.
-            ConsultaDeVersiones.SinRespuesta -> Unit
+            // D8 (Codex r2 #1): sin red, la cola ya pudo saber de un rechazo de una mesa soltada: vuelve a verse ocupada.
+            ConsultaDeVersiones.SinRespuesta -> mesas.reconciliarMarcasSinRed(venueId)
         }
     }
 

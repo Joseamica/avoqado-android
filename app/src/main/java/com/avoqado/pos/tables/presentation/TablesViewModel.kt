@@ -748,13 +748,15 @@ class TablesViewModel @Inject constructor(
                     soltarSinRed = { todoPorLaColaDeMesas(vId, session.orderId) })
             }.isSuccess ||
                 repository.cuentaCobradaEnServidor(vId, session.orderId)
-            repository.refresh(vId)
+            // D8 (Codex r2 #5): la sesión se cierra ANTES del refresco. Sin red el GET puede tardar (WiFi sin internet) y «Venta nueva»
+            // cancela esta corrutina: la sesión cobrada quedaba en PAYING y «Cobrar» la volvía a ofrecer, con la mesa ya libre.
             if (cleared) {
                 tableSession.finalizar(vId, session.idsDeLaOrden, sessionEpoch)
                 // 🛰️ Soltar el lease: si no, la mesa queda "de este mesero"
                 // hasta que caduque el TTL y nadie más la puede abrir en 30s.
                 lanHub.release(session.tableId)
             }
+            repository.refresh(vId)
         }
     }
 

@@ -36,7 +36,7 @@ class MesaCobradaSinRedLibreTest {
 
     private class Mundo(val repo: TableServiceRepository, val api: ApiService, val outbox: SyncOutbox, val filas: MutableMap<String, CachedPayloadEntity>,
         val estados: MutableMap<String, MutableStateFlow<String?>>, val trabajo: MutableMap<String, TrabajoSinResolver>,
-        val encolados: MutableList<Pair<String, JsonObject>>)
+        val encolados: MutableList<Pair<String, JsonObject>>, val promovidas: MutableMap<String, String>)
 
     private fun mundo(
         respuesta: TablesResponse,
@@ -64,10 +64,14 @@ class MesaCobradaSinRedLibreTest {
             val ids = secondArg<Set<String>>()
             ids.firstNotNullOfOrNull { trabajo[it] } ?: TrabajoSinResolver(0, 0, emptySet(), 0)
         }
+        // El borrador lleva del id local al del servidor una vez que su OPEN_TABLE subió.
+        val promovidas = mutableMapOf<String, String>()
         val drafts = mockk<TableRoundDraftStore>()
-        every { drafts.loadResolved(venue, any()) } answers { secondArg<String>() to TableRoundDraftStore.Snapshot() }
+        every { drafts.loadResolved(venue, any()) } answers {
+            (promovidas[secondArg<String>()] ?: secondArg<String>()) to TableRoundDraftStore.Snapshot()
+        }
         val repo = TableServiceRepository(api, PayloadCache(dao), outbox, sesion, mockk(relaxed = true), drafts)
-        return Mundo(repo, api, outbox, filas, estados, trabajo, encolados)
+        return Mundo(repo, api, outbox, filas, estados, trabajo, encolados, promovidas)
     }
 
     private fun sesionDe(cuenta: OpenCheckSummary, provisional: Boolean = false) = TableSession().also {
@@ -139,7 +143,7 @@ class MesaCobradaSinRedLibreTest {
         assertTrue(m.repo.tables.value.single().isOccupied)
     }
 
-    @Test fun `otra cuenta de la misma mesa sigue: se quita sólo la cobrada`() = prueba {
+    @Test fun `otra cuenta de la misma mesa sigue - se quita sólo la cobrada`() = prueba {
         val otra = OpenCheckSummary(id = "orden-c", orderNumber = "C-1", total = 30.0)
         val m = mundo(TablesResponse(data = listOf(ocupada.copy(openOrders = listOf(cuentaA, otra))), capabilities = conCapacidad),
             sesion = sesionDe(cuentaA))
@@ -163,7 +167,7 @@ class MesaCobradaSinRedLibreTest {
         assertTrue(m.repo.abrirComoVisitaNueva(venue, "t7"))
     }
 
-    @Test fun `la cola subió todo: la marca se borra y manda el servidor`() = prueba {
+    @Test fun `la cola subió todo - la marca se borra y manda el servidor`() = prueba {
         val m = mundo(TablesResponse(data = listOf(ocupada), capabilities = conCapacidad, tablesVersion = "v1"), sesion = sesionDe(cuentaA))
         m.repo.refresh(venue).getOrThrow()
         m.repo.liberarTrasCobro(venue, "t7", "orden-a", setOf("orden-a")) { true }.getOrThrow()
@@ -177,7 +181,7 @@ class MesaCobradaSinRedLibreTest {
         assertEquals("v2", m.repo.tablesVersion)
     }
 
-    @Test fun `el servidor rechazó el cobro de A: con red, A vuelve al plano`() = prueba {
+    @Test fun `el servidor rechazó el cobro de A - con red, A vuelve al plano`() = prueba {
         val m = mundo(TablesResponse(data = listOf(ocupada), capabilities = conCapacidad), sesion = sesionDe(cuentaA))
         m.repo.refresh(venue).getOrThrow()
         m.cobroEnCamino("orden-a")
@@ -190,11 +194,12 @@ class MesaCobradaSinRedLibreTest {
         assertFalse(m.repo.abrirComoVisitaNueva(venue, "t7"))
     }
 
-    @Test fun `el servidor rechazó el liberar y el siguiente GET falla: A vuelve al plano desde la copia (Codex r1 #4)`() = prueba {
+    @Test fun `el servidor rechazó el cobro y el siguiente GET falla - A vuelve al plano desde la copia (Codex r1 #4)`() = prueba {
         val m = mundo(TablesResponse(data = listOf(ocupada), capabilities = conCapacidad), sesion = sesionDe(cuentaA))
         m.repo.refresh(venue).getOrThrow()
+        m.cobroEnCamino("orden-a")
         m.repo.liberarTrasCobro(venue, "t7", "orden-a", setOf("orden-a")) { true }.getOrThrow()
-        m.estados["intent-1"]!!.value = SyncIntentEntity.STATUS_REJECTED
+        m.trabajo["orden-a"] = TrabajoSinResolver(1, 1, setOf("PAY_CASH"), 4500)
         coEvery { m.api.getTables(venue) } throws java.net.ConnectException("se volvió a caer")
 
         assertTrue(m.repo.refresh(venue).isFailure)
@@ -205,21 +210,91 @@ class MesaCobradaSinRedLibreTest {
         assertFalse(m.repo.abrirComoVisitaNueva(venue, "t7"))
     }
 
-    @Test fun `la provisional rechazada vuelve una sola vez aunque el servidor ya la conozca por su id real`() = prueba {
+    @Test fun `Codex r2 #1 - el rechazo vuelve a pintar la mesa sin ningún refresco (lo dispara la cola o el sondeo)`() = prueba {
+        val m = mundo(TablesResponse(data = listOf(ocupada), capabilities = conCapacidad), sesion = sesionDe(cuentaA))
+        m.repo.refresh(venue).getOrThrow()
+        m.cobroEnCamino("orden-a")
+        m.repo.liberarTrasCobro(venue, "t7", "orden-a", setOf("orden-a")) { true }.getOrThrow()
+        m.trabajo["orden-a"] = TrabajoSinResolver(1, 1, setOf("PAY_CASH"), 4500)
+
+        m.repo.reconciliarMarcasSinRed(venue)
+
+        assertEquals(listOf("orden-a"), m.repo.tables.value.single().openOrders.map { it.id })
+        coVerify(exactly = 1) { m.api.getTables(venue) } // sólo el del arranque
+    }
+
+    @Test fun `Codex r2 #3 - sólo se rechazó el liberar (el cobro entró) - no se vuelve a pintar una cuenta pagada`() = prueba {
+        val m = mundo(TablesResponse(data = listOf(ocupada), capabilities = conCapacidad), sesion = sesionDe(cuentaA))
+        m.repo.refresh(venue).getOrThrow()
+        m.repo.liberarTrasCobro(venue, "t7", "orden-a", setOf("orden-a")) { true }.getOrThrow()
+        m.estados["intent-1"]!!.value = SyncIntentEntity.STATUS_REJECTED // el cobro subió bien (sin trabajo de la cuenta)
+
+        m.repo.reconciliarMarcasSinRed(venue)
+        assertTrue("Sin red: la cuenta ya pagada no regresa", m.repo.tables.value.single().isAvailable)
+
+        coEvery { m.api.getTables(venue) } returns TablesResponse(data = listOf(mesa), capabilities = conCapacidad, tablesVersion = "v3")
+        m.repo.refresh(venue).getOrThrow()
+        assertTrue("Con red manda el servidor: libre", m.repo.tables.value.single().isAvailable)
+        assertFalse(m.repo.abrirComoVisitaNueva(venue, "t7"))
+    }
+
+    @Test fun `Codex r2 #2 - otra caja movió A a otra mesa - allá se ve ocupada y esta mesa queda libre`() = prueba {
+        val m = mundo(TablesResponse(data = listOf(ocupada, otraMesa), capabilities = conCapacidad), sesion = sesionDe(cuentaA))
+        m.repo.refresh(venue).getOrThrow()
+        m.cobroEnCamino("orden-a")
+        m.repo.liberarTrasCobro(venue, "t7", "orden-a", setOf("orden-a")) { true }.getOrThrow()
+        coEvery { m.api.getTables(venue) } returns TablesResponse(capabilities = conCapacidad,
+            data = listOf(mesa, otraMesa.copy(status = "OCCUPIED", openOrders = listOf(cuentaA))))
+
+        m.repo.refresh(venue).getOrThrow()
+
+        assertTrue(m.repo.tables.value.first { it.id == "t7" }.isAvailable)
+        assertEquals(listOf("orden-a"), m.repo.tables.value.first { it.id == "t8" }.openOrders.map { it.id })
+        assertFalse(m.repo.abrirComoVisitaNueva(venue, "t8"))
+    }
+
+    @Test fun `Codex r2 #4 - el servidor dejó de anunciar la visita nueva - las marcas se anulan y la mesa se ve como hoy`() = prueba {
+        val m = mundo(TablesResponse(data = listOf(ocupada), capabilities = conCapacidad), sesion = sesionDe(cuentaA))
+        m.repo.refresh(venue).getOrThrow()
+        m.cobroEnCamino("orden-a")
+        m.repo.liberarTrasCobro(venue, "t7", "orden-a", setOf("orden-a")) { true }.getOrThrow()
+        coEvery { m.api.getTables(venue) } returns TablesResponse(data = listOf(ocupada))
+
+        m.repo.refresh(venue).getOrThrow()
+
+        assertTrue(m.repo.tables.value.single().isOccupied)
+        assertFalse(m.repo.abrirComoVisitaNueva(venue, "t7"))
+    }
+
+    @Test fun `la provisional rechazada no se duplica cuando el servidor ya la trae con su id real`() = prueba {
         val local = OpenCheckSummary(id = "local-a", orderNumber = "L-1", total = 45.0, isProvisional = true)
         val m = mundo(TablesResponse(data = listOf(mesa), capabilities = conCapacidad), sesion = sesionDe(local, provisional = true))
         m.repo.refresh(venue).getOrThrow()
         m.repo.markTableOccupiedLocally("t7")
         assertTrue(m.repo.liberarTrasCobro(venue, "t7", "local-a", setOf("local-a")) { true }.getOrThrow())
         assertTrue(m.repo.tables.value.single().isAvailable)
-        // El OPEN subió (local → real) y el cobro se rechazó; el servidor trae la cuenta real.
+        // El OPEN subió (local-a → real-a) y el cobro se rechazó; el servidor trae la cuenta con su id REAL.
+        m.promovidas["local-a"] = "real-a"
         m.trabajo["local-a"] = TrabajoSinResolver(1, 1, setOf("PAY_CASH"), 4500)
-        coEvery { m.api.getTables(venue) } returns TablesResponse(data = listOf(mesa.copy(status = "OCCUPIED",
-            openOrders = listOf(OpenCheckSummary(id = "local-a", orderNumber = "A-9", total = 45.0)))), capabilities = conCapacidad)
+        coEvery { m.api.getTables(venue) } returns TablesResponse(capabilities = conCapacidad, data = listOf(mesa.copy(status = "OCCUPIED",
+            openOrders = listOf(OpenCheckSummary(id = "real-a", orderNumber = "A-9", total = 45.0)))))
 
         m.repo.refresh(venue).getOrThrow()
 
-        assertEquals(1, m.repo.tables.value.single().openOrders.size)
+        assertEquals(listOf("real-a"), m.repo.tables.value.single().openOrders.map { it.id })
+    }
+
+    @Test fun `la provisional rechazada que el servidor no conoce vuelve desde la copia`() = prueba {
+        val local = OpenCheckSummary(id = "local-b", orderNumber = "L-2", total = 45.0, isProvisional = true)
+        val m = mundo(TablesResponse(data = listOf(mesa), capabilities = conCapacidad), sesion = sesionDe(local, provisional = true))
+        m.repo.refresh(venue).getOrThrow()
+        m.repo.markTableOccupiedLocally("t7")
+        m.repo.liberarTrasCobro(venue, "t7", "local-b", setOf("local-b")) { true }.getOrThrow()
+        m.trabajo["local-b"] = TrabajoSinResolver(1, 1, setOf("OPEN_TABLE"), 0) // su apertura se rechazó
+
+        m.repo.refresh(venue).getOrThrow()
+
+        assertEquals(listOf("local-b"), m.repo.tables.value.single().openOrders.map { it.id })
     }
 
     @Test fun `tras reiniciar la app sin red, el plano guardado ya no trae A y recuerda la marca`() = prueba {

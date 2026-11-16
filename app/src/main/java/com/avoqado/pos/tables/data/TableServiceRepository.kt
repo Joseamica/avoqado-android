@@ -299,10 +299,13 @@ class TableServiceRepository @Inject constructor(
             }
             floorWrites.withLock {
                 check(loadedVenueId == venueId) { "La sucursal cambió" }
+                val conVisitaNueva = response.capabilities?.openTableNewVisit == true
                 val (tables, vivas) = aplicarMarcas(venueId,
                     preserveLocalChecks(venueId, response.data, cachedFloor(venueId)?.tables ?: _tables.value, cerradas),
-                    // Una marca escrita mientras tanto (otro cobro soltado durante el GET) se conserva tal cual.
-                    liberadas.associateWith { estadoDeMarcas[it] ?: EstadoDeMarca.EN_CAMINO })
+                    // Una marca escrita mientras tanto (otro cobro soltado durante el GET) se conserva tal cual. Codex r2 #4: si este
+                    // servidor ya no anuncia la visita nueva (lo regresaron a una versión vieja), ninguna marca sigue: lo soltado se
+                    // vuelve a ver como hoy y la siguiente cuenta de esa mesa se abre como siempre.
+                    liberadas.associateWith { if (!conVisitaNueva) EstadoDeMarca.ANULADA else estadoDeMarcas[it] ?: EstadoDeMarca.EN_CAMINO })
                 val ownership = TableOwnership(response.settings?.enforceTableOwnership == true,
                     response.viewer?.staffId, response.viewer?.canManageAllTables ?: true, roleManager.canSettleAnyTable)
                 // Con cuentas provisionales la lista no está reconciliada: sin versión, la siguiente vuelta vuelve a pedir
@@ -313,10 +316,9 @@ class TableServiceRepository @Inject constructor(
                 // muere aquí, lo que el mesero vio ya está guardado y su versión también.
                 payloadCache.save(com.avoqado.pos.core.data.local.PayloadCache.TYPE_TABLES, venueId,
                     cacheJson.encodeToString(TablesCacheBlob.serializer(), TablesCacheBlob(tables, ownership.enforced, ownership.staffId,
-                        ownership.canManageAll, versionGuardada, response.floorPlanVersion, vivas,
-                        response.capabilities?.openTableNewVisit == true)))
+                        ownership.canManageAll, versionGuardada, response.floorPlanVersion, vivas, conVisitaNueva)))
                 liberadas = vivas
-                servidorConVisitaNueva = response.capabilities?.openTableNewVisit == true
+                servidorConVisitaNueva = conVisitaNueva
                 tablesVersion = versionGuardada
                 _floorPlanVersionFromTables.value = response.floorPlanVersion
                 _tables.value = tables
@@ -356,40 +358,52 @@ class TableServiceRepository @Inject constructor(
 
     // MARK: - D8 · la mesa cobrada sin red queda libre en este aparato
 
-    internal enum class EstadoDeMarca { EN_CAMINO, RECHAZADA, RESUELTA }
-
     /**
-     * El trabajo de la cuenta soltada: su cobro (y lo demás de la cuenta) y su «liberar mesa». Un rechazo de cualquiera ⇒ RECHAZADA (la
-     * cuenta vuelve al plano). Algo pendiente o retenido ⇒ EN_CAMINO (sigue escondida). Nada sin resolver ⇒ RESUELTA (manda el servidor).
-     * Si no se puede leer, EN_CAMINO: lo que ya se soltó no reaparece por un fallo de disco.
+     * EN_CAMINO: sigue escondida. RECHAZADA: el SERVIDOR rechazó trabajo de DINERO o de la cuenta (su cobro, su apertura, una ronda):
+     * la cuenta vuelve. RESUELTA: nada de la cuenta sin resolver (aunque el «liberar» solo se haya rechazado: el cobro sí entró, Codex r2
+     * #3); con una respuesta de /tables manda el servidor y sin ella sigue escondida. ANULADA: el servidor dejó de anunciar la visita
+     * nueva (Codex r2 #4).
      */
+    internal enum class EstadoDeMarca { EN_CAMINO, RECHAZADA, RESUELTA, ANULADA }
+
+    /** Si no se puede leer, EN_CAMINO: lo que ya se soltó no reaparece por un fallo de disco. */
     private suspend fun estadoDeLaMarca(venueId: String, marca: LiberadaSinRed): EstadoDeMarca = try {
         val trabajo = syncOutbox.trabajoSinResolverDeLaOrden(venueId, marca.ids)
         val liberar = syncOutbox.observarEstado(marca.clearIntentId).first()
         when {
-            trabajo.rechazados > 0 || liberar == com.avoqado.pos.core.data.local.database.SyncIntentEntity.STATUS_REJECTED ->
-                EstadoDeMarca.RECHAZADA
+            trabajo.rechazados > 0 -> EstadoDeMarca.RECHAZADA
             trabajo.enCamino > 0 || liberar == com.avoqado.pos.core.data.local.database.SyncIntentEntity.STATUS_PENDING ||
                 liberar == com.avoqado.pos.core.data.local.database.SyncIntentEntity.STATUS_HELD -> EstadoDeMarca.EN_CAMINO
             else -> EstadoDeMarca.RESUELTA
         }
     } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (_: Exception) { EstadoDeMarca.EN_CAMINO }
 
-    /** Esconde las cuentas EN_CAMINO, devuelve las provisionales RECHAZADAS y suelta las marcas que ya no hacen falta. */
+    /**
+     * Con una respuesta de /tables: esconde las cuentas EN_CAMINO SÓLO en la mesa de su marca (Codex r2 #2: si otra caja la movió de
+     * mesa, allá se ve ocupada, que es la verdad), y de lo demás manda el servidor. Lo único que se devuelve desde la copia es una cuenta
+     * PROVISIONAL de una marca RECHAZADA o ANULADA que el servidor no trae en ninguna mesa (no la conoce): la del servidor llega sola.
+     */
     private fun aplicarMarcas(venueId: String, tables: List<DiningTable>, estados: Map<LiberadaSinRed, EstadoDeMarca>):
         Pair<List<DiningTable>, List<LiberadaSinRed>> {
         val vivas = estados.filterValues { it == EstadoDeMarca.EN_CAMINO }.keys.toList()
-        val rechazadas = estados.filterValues { it == EstadoDeMarca.RECHAZADA }.keys
-        // La provisional pudo recibir su id del servidor DESPUÉS de soltarse (su OPEN_TABLE ya subió): se esconde con los dos.
-        val escondidas = vivas.flatMap { it.ids }.let { ids -> ids + ids.map { idDelServidor(venueId, it) } }.toSet()
-        return devolver(venueId, tables.map { sinCuentas(it, escondidas) }, rechazadas) to vivas
+        val aDevolver = estados.filterValues { it == EstadoDeMarca.RECHAZADA || it == EstadoDeMarca.ANULADA }.keys
+        val escondidas = tables.map { table ->
+            // La provisional pudo recibir su id del servidor DESPUÉS de soltarse (su OPEN_TABLE ya subió): se esconde con los dos.
+            val ids = vivas.filter { it.tableId == table.id }.flatMap { it.ids }.let { ids -> ids + ids.map { idDelServidor(venueId, it) } }.toSet()
+            sinCuentas(table, ids)
+        }
+        val enElServidor = escondidas.flatMap { t -> t.openOrders.map { it.id } + listOfNotNull(t.currentOrder?.id) }.toSet()
+        return devolver(venueId, escondidas, aDevolver) { cuenta ->
+            cuenta.isProvisional && cuenta.id !in enElServidor && idDelServidor(venueId, cuenta.id) !in enElServidor
+        } to vivas
     }
 
-    /** Las cuentas quitadas por marcas RECHAZADAS vuelven a su mesa (sin duplicar la que ya trae el servidor). */
-    private fun devolver(venueId: String, tables: List<DiningTable>, rechazadas: Collection<LiberadaSinRed>): List<DiningTable> =
+    /** Las cuentas quitadas de [marcas] que pasan [cual] vuelven a su mesa (sin duplicar la que ya está ahí). */
+    private fun devolver(venueId: String, tables: List<DiningTable>, marcas: Collection<LiberadaSinRed>,
+        cual: (OpenCheckSummary) -> Boolean): List<DiningTable> =
         tables.map { table ->
             var t = table
-            rechazadas.filter { it.tableId == table.id }.flatMap { it.cuentas }.forEach { cuenta ->
+            marcas.filter { it.tableId == table.id }.flatMap { it.cuentas }.filter(cual).forEach { cuenta ->
                 val real = idDelServidor(venueId, cuenta.id)
                 if (t.openOrders.none { it.id == cuenta.id || it.id == real }) t = t.copy(status = "OCCUPIED", openOrders = t.openOrders + cuenta)
             }
@@ -397,13 +411,19 @@ class TableServiceRepository @Inject constructor(
         }
 
     /**
-     * D8 (Codex r1 #4): sin respuesta del servidor, la cola ya puede saber que se rechazó el cobro o el «liberar» de una cuenta soltada:
-     * vuelve al plano desde la copia guardada y la marca se borra, en una escritura a disco. Siempre dentro de `floorWrites`.
+     * D8 (Codex r1 #4, r2 #1): sin respuesta del servidor, la cola ya puede saber que se rechazó trabajo de una cuenta soltada: vuelve al
+     * plano desde la copia guardada (la del servidor también: sin red no hay otra fuente) y la marca se borra, en una escritura a disco.
+     * Lo llaman el refresco fallido, la entrada al plano, el sondeo sin respuesta y el aviso de un rechazo de la cola.
      */
+    suspend fun reconciliarMarcasSinRed(venueId: String) = floorWrites.withLock {
+        if (loadedVenueId == venueId) devolverRechazadas(venueId)
+    }
+
+    /** Siempre dentro de `floorWrites`. */
     private suspend fun devolverRechazadas(venueId: String) {
         val rechazadas = liberadas.filter { estadoDeLaMarca(venueId, it) == EstadoDeMarca.RECHAZADA }
         if (rechazadas.isEmpty()) return
-        val tables = devolver(venueId, _tables.value, rechazadas)
+        val tables = devolver(venueId, _tables.value, rechazadas) { true }
         val nuevas = liberadas - rechazadas.toSet()
         payloadCache.saveDurable(com.avoqado.pos.core.data.local.PayloadCache.TYPE_TABLES, venueId,
             cacheJson.encodeToString(TablesCacheBlob.serializer(), TablesCacheBlob(tables, _ownership.value.enforced, _ownership.value.staffId,
@@ -479,7 +499,7 @@ class TableServiceRepository @Inject constructor(
      * mete en otra cuenta de la mesa). Si no, se abre como siempre.
      */
     fun abrirComoVisitaNueva(venueId: String, tableId: String): Boolean =
-        loadedVenueId == venueId && liberadas.any { it.tableId == tableId }
+        loadedVenueId == venueId && servidorConVisitaNueva && liberadas.any { it.tableId == tableId }
 
     private suspend fun hydrateFromCache(venueId: String) {
         if (_tables.value.isNotEmpty()) return
