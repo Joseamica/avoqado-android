@@ -125,6 +125,17 @@ data class CreationRejection(
  * Sólo el estado durable del server resuelve, y ante la duda se dice que hay duda.
  */
 object CardChargeDecision {
+    /**
+     * D14 (16-nov): el pago que el servidor ACREDITA para esta solicitud, o null. Misma regla que [decide] para «cobró»:
+     * `COMPLETED` con `paymentId`. Un `paymentId` en una fila `UNKNOWN`/`FAILED`/en curso puede ser un puntero viejo de otra
+     * solicitud (el servidor los limpia después): ligar al cliente ahí lo mandaría a otra venta (Codex r1 #1).
+     */
+    fun pagoAcreditado(probe: ChargeStatusProbe): String? =
+        (probe as? ChargeStatusProbe.Known)
+            ?.takeIf { it.status == "COMPLETED" }
+            ?.paymentId
+            ?.takeIf { it.isNotBlank() }
+
     /** La terminal ya quedó libre y la venta sigue en duda. 🔴 Libera el aparato, no la venta: sólo cambia las palabras. Igual en iOS. */
     fun terminalLibreVentaEnDuda(probe: ChargeStatusProbe): Boolean =
         probe is ChargeStatusProbe.Known && probe.status == "TIMED_OUT" &&

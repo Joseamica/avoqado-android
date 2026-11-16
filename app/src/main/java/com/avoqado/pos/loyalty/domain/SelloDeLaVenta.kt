@@ -22,6 +22,13 @@ object TextosDelSello {
     const val VENTA_SIN_SINCRONIZAR =
         "Esta venta aún no se sincroniza. Agrega el cliente cuando aparezca «Venta sincronizada»."
 
+    /**
+     * D14: cobro con tarjeta que sí pasó, pero el servidor aún no dice cuál es su pago (la tablet perdió la red al
+     * confirmarlo). Sin su pago no se liga a nada: «el último del mismo importe» podía ser otra venta.
+     */
+    const val COBRO_SIN_CONFIRMAR_AL_AGREGAR_CLIENTE =
+        "Este cobro aún no se confirma con el servidor. Vuelve a tocar «Agregar cliente» en un momento."
+
     fun selloSumado(stampsEarned: Int, stampsRequired: Int): String =
         "✓ +1 sello · $stampsEarned de $stampsRequired"
 
