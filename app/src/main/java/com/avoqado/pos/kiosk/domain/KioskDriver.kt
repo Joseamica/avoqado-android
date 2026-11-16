@@ -3,6 +3,8 @@ package com.avoqado.pos.kiosk.domain
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.designsystem.components.Countries
 import com.avoqado.pos.core.util.VenueDateTimeFormatter
+import com.avoqado.pos.kiosk.data.KioskPhone
+import com.avoqado.pos.kiosk.data.KioskQr
 import com.avoqado.pos.kiosk.data.KioskRosterDto
 import com.avoqado.pos.kiosk.data.KioskTap
 import com.avoqado.pos.kiosk.data.PackStatus
@@ -22,6 +24,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import javax.inject.Inject
 import javax.inject.Singleton
+import java.time.Instant
+import java.util.UUID
 
 /**
  * Quien CONDUCE el kiosco. Su idea central: **la pantalla la manda el reloj, no
@@ -74,6 +78,7 @@ class KioskDriver @Inject constructor(
     private var work: Job? = null
     private var refreshJob: Job? = null
     private var expiry: Job? = null
+    private var qrJob: Job? = null
 
     /** Turno de cada consulta: sólo la más reciente pinta; una respuesta vieja se descarta (Codex r2). */
     private var refreshGen = 0
@@ -151,9 +156,51 @@ class KioskDriver @Inject constructor(
                 delay(POLL_MS)
             }
         }
+        qrJob = scope.launch {
+            while (isActive) {
+                // El QR nunca tumba al kiosco: una falla aquí deja el QR como estaba y se reintenta en la siguiente vuelta.
+                try {
+                    pintarQr()
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    android.util.Log.w("🪪", "No se pudo pintar el QR de llegada: ${e.message}")
+                }
+                delay(QR_TICK_MS)
+            }
+        }
     }
 
+    /**
+     * Asistencia verificada (16-nov-2026): el QR de la llegada, firmado por ESTE aparato con su llave. Sin llave guardada
+     * (o de otra sucursal) la pide; con ella, pinta el paso de rotación vigente sin tocar la red: así sigue saliendo aunque
+     * se caiga el internet del local. La hora es la del SERVIDOR estimada (ancla + reloj monótono); sin ancla, la del
+     * aparato (si está mal, el servidor contesta «venció» y nunca marca otra clase).
+     */
+    private suspend fun pintarQr() {
+        val venueId = secureStorage.venueId ?: return kiosk.setQr(null)
+        var llave = KioskQr.leer(secureStorage.kioskQrKey)?.takeIf { it.venueId == venueId }
+        if (llave == null) {
+            // Codex r3 #3: antes de esperar la red, se quita el QR de otra sucursal que pudiera seguir a la vista.
+            kiosk.setQr(null)
+            val ahora = nowMs()
+            if (ahora - ultimaPeticionDeLlave < KEY_RETRY_MS && ultimaPeticionDeLlave != 0L) return kiosk.setQr(null)
+            ultimaPeticionDeLlave = ahora
+            llave = kioskCheckIn.qrKey(secureStorage.kioskDeviceKey).getOrNull() ?: return kiosk.setQr(null)
+            if (secureStorage.venueId != venueId) return
+            secureStorage.kioskQrKey = KioskQr.guardar(llave)
+        }
+        val ahoraMs = kioskCheckIn.horaDelServidorMs() ?: System.currentTimeMillis()
+        // La sucursal pudo cambiar mientras se pedía la llave: sólo se pinta si sigue siendo la misma.
+        if (secureStorage.venueId != llave.venueId) return kiosk.setQr(null)
+        kiosk.setQr(KioskQr.url(llave, KioskQr.paso(ahoraMs, llave.rotateSeconds)))
+    }
+
+    /** Cuándo se pidió la llave por última vez (ms monótonos): sin red no se pide en cada vuelta. */
+    private var ultimaPeticionDeLlave = 0L
+
     private fun stop() {
+        qrJob?.cancel(); qrJob = null
         ticker?.cancel(); ticker = null
         work?.cancel(); work = null
         refreshJob?.cancel(); refreshJob = null
@@ -223,6 +270,8 @@ class KioskDriver @Inject constructor(
 
         // 🔴 Disparador (Codex 0.e r1 #2): la cola general sólo se vacía cuando vuelve la red, y con WiFi sin datos nunca
         // «vuelve». Una respuesta buena de la lista acaba de probar que hay red, haya clase o no.
+        // Asistencia verificada: los teléfonos tecleados sin red salen por el mismo mensajero.
+        if (pendingDao.countPending(KioskPhone.ACTION, ReservationRepository.MAX_ATTEMPTS) > 0) retrier.drain(KioskPhone.ACTION)
         if (pendingDao.countPending(KioskTap.ACTION, ReservationRepository.MAX_ATTEMPTS) > 0) {
             retrier.drain(KioskTap.ACTION)
             // Lo que se pintó arriba con la cola puede haber salido rechazado en este envío.
@@ -298,6 +347,9 @@ class KioskDriver @Inject constructor(
                 // Alfabético es el único orden que no se mueve cuando alguien confirma, y
                 // es como uno busca su propio nombre en una lista.
                 people = sortRoster(roster.people.map { if (it.reservationId in enCola) it.copy(checkedIn = true) else it }),
+                // Asistencia verificada: el servidor ya no manda nombres; si es uno viejo, se cuentan de su lista.
+                arrivedCount = roster.arrivedCount ?: roster.people.count { it.checkedIn },
+                expectedCount = roster.expectedCount ?: roster.people.size,
             ),
         )
         caducarAlCerrar(Ventana(pedidaAt, roster.closesAt, roster.closesInMs))
@@ -329,6 +381,7 @@ class KioskDriver @Inject constructor(
                 national = transform(current.national).take(nationalDigitsFor(current.country).last),
                 notFound = false,
                 failed = false,
+                rejection = null,
             ),
         )
     }
@@ -347,6 +400,7 @@ class KioskDriver @Inject constructor(
                 national = "",
                 notFound = false,
                 failed = false,
+                rejection = null,
             ),
         )
     }
@@ -361,13 +415,34 @@ class KioskDriver @Inject constructor(
     private fun identify() {
         val current = kiosk.content.value as? KioskContent.Identify ?: return
         if (!current.canSearch) return
+        val venueId = secureStorage.venueId ?: return
 
         work?.cancel()
-        kiosk.show(current.copy(searching = true, notFound = false, failed = false))
+        kiosk.show(current.copy(searching = true, notFound = false, failed = false, rejection = null))
 
         work = scope.launch {
+            // 🔴 Asistencia verificada (D-D): la llegada se GUARDA antes de tocar la red, con la hora del SERVIDOR estimada y
+            // su id. Si el proceso muere o no hay red, el reintentador la manda sola. Sin ancla (el aparato no ha oído al
+            // servidor desde que arrancó) no se guarda: su hora podía caer en la clase de ayer (Codex r1 #4).
+            val horaMs = kioskCheckIn.horaDelServidorMs()
+            val opId = UUID.randomUUID().toString()
+            val guardada = horaMs?.let { Instant.ofEpochMilli(it).toString() }
+            val rowId = guardada?.let {
+                withContext(NonCancellable) {
+                    pendingDao.insert(
+                        PendingReservationActionEntity(
+                            reservationId = "phone:$opId",
+                            action = KioskPhone.ACTION,
+                            payloadJson = KioskPhone.payload(KioskPhone.Saved(venueId, current.phone, it, opId)),
+                        ),
+                    )
+                }
+            }
             // Con la lada: el servidor compara los últimos 10, y con otra lada de 8 dígitos ésta completa la búsqueda.
-            val result = kioskCheckIn.checkIn(current.phone)
+            val result = kioskCheckIn.checkIn(current.phone, venueId, guardada, if (guardada != null) opId else null)
+            val outcome = KioskPhone.outcome(result)
+            // Ya salió (o el servidor dijo que no): la fila sobra. Sin red o 5xx se queda y la manda el reintentador.
+            if (rowId != null && outcome !is KioskTap.Outcome.Kept) withContext(NonCancellable) { pendingDao.delete(rowId) }
             val base = kiosk.content.value as? KioskContent.Identify ?: return@launch
 
             result.fold(
@@ -381,9 +456,9 @@ class KioskDriver @Inject constructor(
                                 timeLabel = "",
                                 staffLabel = c.staffLabel,
                                 alreadyCheckedIn = c.alreadyCheckedIn,
-                                // El servidor no manda el lugar; la lista de la clase sí lo
-                                // tiene. Igual que al tocar su nombre: «Tapete 4 · con María».
-                                spotLabel = kiosk.lastRoster?.people
+                                // Desde la asistencia verificada el lugar viene en la respuesta; con un servidor viejo, de
+                                // la lista que ya se tenía.
+                                spotLabel = c.spotLabel ?: kiosk.lastRoster?.people
                                     ?.firstOrNull { it.reservationId == c.reservationId }
                                     ?.spotLabel,
                             ),
@@ -391,13 +466,37 @@ class KioskDriver @Inject constructor(
                     )
                 },
                 onFailure = { err ->
+                    if (rowId != null && outcome == KioskTap.Outcome.Kept) {
+                        // Sin red NO es error: quedó guardada y se manda sola (regla «sin red»).
+                        kiosk.show(
+                            KioskContent.CheckedIn(
+                                customerName = "",
+                                session = KioskSession(reservationId = "", title = "", timeLabel = "", staffLabel = null),
+                                offline = true,
+                                // Con internet y el servidor pidiendo esperar (429 o falla suya) no es «sin conexión» (Codex r9 #2).
+                                waiting = err !is java.io.IOException,
+                            ),
+                        )
+                        return@fold
+                    }
                     // "No encontramos nada" y "se cayó la red" NO son lo mismo para quien
                     // está parado ahí: uno se arregla tecleando otra vez, el otro no.
+                    // Y «el servidor dijo que no» tampoco es «sin conexión» (Codex r8 #5): se enseña su motivo.
+                    val rechazo = when (err) {
+                        is com.avoqado.pos.kiosk.data.KioskCheckInApi.TooManyAttempts ->
+                            "Demasiados intentos. Espera un minuto y vuelve a intentar."
+                        is com.avoqado.pos.kiosk.data.KioskCheckInApi.Rejected,
+                        is com.avoqado.pos.kiosk.data.KioskCheckInApi.OutsideWindow,
+                        -> err.message?.takeIf { it.isNotBlank() } ?: "No pudimos registrar tu llegada. Pide ayuda en el mostrador."
+                        else -> null
+                    }
+                    val noEncontrada = err is com.avoqado.pos.kiosk.data.KioskCheckInApi.NotFound
                     kiosk.show(
                         base.copy(
                             searching = false,
-                            notFound = err is com.avoqado.pos.kiosk.data.KioskCheckInApi.NotFound,
-                            failed = err !is com.avoqado.pos.kiosk.data.KioskCheckInApi.NotFound,
+                            notFound = noEncontrada,
+                            failed = !noEncontrada && rechazo == null,
+                            rejection = rechazo,
                         ),
                     )
                 },
@@ -610,6 +709,12 @@ class KioskDriver @Inject constructor(
 
         /** Cuánto se queda abierto el renglón con el lugar y el instructor. */
         const val CONFIRMED_EXPANDED_MS = 8_000L
+
+        /** Cada cuánto se revisa si toca un QR nuevo (el QR cambia cada 30 s; esto sólo es la revisión). */
+        const val QR_TICK_MS = 5_000L
+
+        /** Sin llave y sin red: cada cuánto se vuelve a pedir. */
+        const val KEY_RETRY_MS = 30_000L
     }
 }
 

@@ -3,6 +3,7 @@ package com.avoqado.pos.reservations.data
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.util.ConnectivityMonitor
 import com.avoqado.pos.kiosk.data.KioskCheckInApi
+import com.avoqado.pos.kiosk.data.KioskPhone
 import com.avoqado.pos.kiosk.data.KioskTap
 import com.avoqado.pos.reservations.data.model.CancelReservationRequest
 import com.avoqado.pos.reservations.data.model.CreateReservationRequest
@@ -80,6 +81,33 @@ class ReservationActionsRetrier @Inject constructor(
                     "Acción de reserva EN CUARENTENA tras $maxAttempts intentos: " +
                         "${entry.action} sobre ${entry.reservationId} — nunca llegó al server",
                 )
+                continue
+            }
+            // 🔴 Asistencia verificada: un teléfono tecleado sin red. ANTES de `valueOf` por lo mismo que la lista.
+            if (entry.action == KioskPhone.ACTION) {
+                val saved = KioskPhone.parse(entry.payloadJson)
+                if (saved == null) {
+                    pendingDao.incrementAttempt(entry.rowId, "Llegada sin datos guardados")
+                    continue
+                }
+                if (saved.venueId != secureStorage.venueId) continue
+                if (kioskSinRed) continue
+                val result = kioskApi.checkIn(saved.phone, saved.venueId, saved.occurredAt, saved.opId)
+                val outcome = KioskPhone.outcome(result)
+                when (outcome) {
+                    KioskTap.Outcome.Sent -> {
+                        withContext(NonCancellable) { pendingDao.delete(entry.rowId) }
+                        anySuccess = true
+                    }
+                    // 🔴 Codex r3 #4: sin red, 5xx, 408 o 429 son pasajeros y NO gastan intento: la llegada se le prometió a la
+                    // alumna («se registra sola»). Lo que la acota es el SERVIDOR: pasadas 72 h contesta 422 y va a cuarentena.
+                    // Se corta la vuelta (las demás esperan a la siguiente), como sin red.
+                    KioskTap.Outcome.Kept -> kioskSinRed = true
+                    // El servidor dijo que no (no hay reserva de ese teléfono en esa hora, más de 72 h): a la cuarentena,
+                    // con su texto, a la vista del gerente.
+                    is KioskTap.Outcome.Refused -> pendingDao.quarantine(entry.rowId, maxAttempts, outcome.message)
+                }
+                kiosk[entry.rowId] = outcome
                 continue
             }
             // 🔴 ANTES de `valueOf`: una acción desconocida se BORRA ahí abajo, y una llegada no se puede perder.

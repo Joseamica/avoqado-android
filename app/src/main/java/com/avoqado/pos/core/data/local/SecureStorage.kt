@@ -127,6 +127,19 @@ class SecureStorage @Inject constructor(
         get() = prefs.getString(KEY_VENUE_SLUG, null)
         set(value) = prefs.edit().putString(KEY_VENUE_SLUG, value).apply()
 
+    /**
+     * Asistencia verificada (16-nov-2026): la llave con la que el kiosco firma su QR de llegada, en JSON
+     * ([com.avoqado.pos.kiosk.data.KioskQr.Llave]). Cifrada como todo lo de aquí: es lo que permite pintar el QR sin red.
+     */
+    var kioskQrKey: String?
+        get() = prefs.getString(KEY_KIOSK_QR_KEY, null)
+        set(value) = prefs.edit().putString(KEY_KIOSK_QR_KEY, value).apply()
+
+    /** Identidad de ESTE aparato para su llave del QR: pedir otra llave revoca la anterior del mismo aparato. */
+    val kioskDeviceKey: String
+        get() = prefs.getString(KEY_KIOSK_DEVICE_KEY, null)
+            ?: java.util.UUID.randomUUID().toString().also { prefs.edit().putString(KEY_KIOSK_DEVICE_KEY, it).apply() }
+
     var venueTimezone: String?
         get() = prefs.getString(KEY_VENUE_TIMEZONE, null)
         set(value) {
@@ -996,6 +1009,8 @@ class SecureStorage @Inject constructor(
         private const val KEY_VENUE_ID = "venueId"
         private const val KEY_VENUE_NAME = "venueName"
         private const val KEY_VENUE_SLUG = "venueSlug"
+        private const val KEY_KIOSK_QR_KEY = "kioskQrKey"
+        private const val KEY_KIOSK_DEVICE_KEY = "kioskDeviceKey"
         private const val KEY_VENUE_TIMEZONE = "venueTimezone"
         private const val KEY_VENUE_MODE = "venueMode"
         /** La llave ÚNICA de antes del 25-sep y su contexto: sólo los lee [migrarLlaveUnica]. */
