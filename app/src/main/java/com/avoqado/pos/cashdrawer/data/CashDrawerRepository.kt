@@ -123,10 +123,40 @@ private data class OpenDrawerRequest(
  * y todo se comporta como hoy. Mandar la llave nunca puede impedir registrar dinero.
  */
 @Serializable
-private data class PayInRequest(val amount: Double, val note: String? = null, val localId: String, val sessionId: String? = null)
+private data class PayInRequest(
+    val amount: Double,
+    val note: String? = null,
+    val localId: String,
+    val sessionId: String? = null,
+    /** Encargo 921513: la hora REAL del movimiento (ISO-8601), sólo si esperó en la cola. Nula no viaja; un SERVIDOR viejo la ignora. */
+    val createdAt: String? = null,
+)
 
 @Serializable
-private data class PayOutRequest(val amount: Double, val note: String? = null, val localId: String, val sessionId: String? = null)
+private data class PayOutRequest(
+    val amount: Double,
+    val note: String? = null,
+    val localId: String,
+    val sessionId: String? = null,
+    /** Encargo 921513: la hora REAL del movimiento (ISO-8601), sólo si esperó en la cola. Nula no viaja; un SERVIDOR viejo la ignora. */
+    val createdAt: String? = null,
+)
+
+/**
+ * Encargo 921513 (founder 16-nov «A»): cuánto tiene que haber esperado un movimiento en la cola para mandar su hora. Por debajo es un
+ * envío con red (o un reintento inmediato) y el SERVIDOR pone la de llegada, como siempre (Codex r1 #4: con internet, como hoy).
+ */
+const val ESPERA_PARA_MANDAR_LA_HORA_MS = 60_000L
+
+/**
+ * La hora REAL de un ingreso o retiro para el SERVIDOR (ISO-8601), o `null` si no esperó en la cola. [at] y [ahora] salen del MISMO
+ * reloj del aparato, así que un reloj desfasado no cambia la decisión; el SERVIDOR acota la hora a la vida de la caja.
+ */
+fun horaDelMovimientoParaElServidor(at: Long, ahora: Long): String? {
+    if (at <= 0 || at > ahora) return null
+    if (ahora - at < ESPERA_PARA_MANDAR_LA_HORA_MS) return null
+    return java.time.Instant.ofEpochMilli(at).toString()
+}
 
 @Serializable
 private data class CloseDrawerRequest(val actualAmount: Double, val note: String? = null, val sessionId: String? = null)
@@ -2166,12 +2196,14 @@ class CashDrawerRepository @Inject constructor(
      * la pantalla del retiro ([ResultadoDelRetiro.Rechazado]) o el aviso de Caja (el replay lo marca). Sólo el que trae
      * [PendingDrawerOp.autorizacion] lleva el token del gerente. El PAY_IN sale como siempre.
      */
-    private fun peticionDelMovimiento(op: PendingDrawerOp, localId: String, sucursal: String = venueId): Request {
+    private fun peticionDelMovimiento(op: PendingDrawerOp, localId: String, sucursal: String = venueId, esReenvio: Boolean = false): Request {
         val dollars = op.amountCents / 100.0
+        // Encargo 921513: sólo el REENVÍO de la cola manda la hora real, y sólo si el movimiento esperó (sin red). El primer POST, no.
+        val hora = if (esReenvio) horaDelMovimientoParaElServidor(op.at, System.currentTimeMillis()) else null
         val (path, body) = if (op.kind == "PAY_IN") {
-            "pay-in" to json.encodeToString(PayInRequest.serializer(), PayInRequest(amount = dollars, note = op.note, localId = localId, sessionId = op.sessionId))
+            "pay-in" to json.encodeToString(PayInRequest.serializer(), PayInRequest(amount = dollars, note = op.note, localId = localId, sessionId = op.sessionId, createdAt = hora))
         } else {
-            "pay-out" to json.encodeToString(PayOutRequest.serializer(), PayOutRequest(amount = dollars, note = op.note, localId = localId, sessionId = op.sessionId))
+            "pay-out" to json.encodeToString(PayOutRequest.serializer(), PayOutRequest(amount = dollars, note = op.note, localId = localId, sessionId = op.sessionId, createdAt = hora))
         }
         return Request.Builder().url("${baseUrlDe(sucursal)}/$path").post(body.toRequestBody("application/json".toMediaType())).apply {
             if (op.kind == "PAY_OUT") {
@@ -3112,7 +3144,7 @@ class CashDrawerRepository @Inject constructor(
         // migrada por `completarLlavesLegadas`; esto cubre la entrada que llega por `ademas`.
         val localId = op.localId?.takeIf { it.isNotBlank() } ?: localIdLegado(op)
         return try {
-            val request = peticionDelMovimiento(op, localId).newBuilder().conSello(selloDeLaPasadaEnCurso()).build()
+            val request = peticionDelMovimiento(op, localId, esReenvio = true).newBuilder().conSello(selloDeLaPasadaEnCurso()).build()
             val (code, resp) = withContext(Dispatchers.IO) {
                 val response = client.newCall(request).execute()
                 response.code to (response.body?.string() ?: "")
