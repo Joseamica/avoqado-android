@@ -128,8 +128,10 @@ private data class PayInRequest(
     val note: String? = null,
     val localId: String,
     val sessionId: String? = null,
-    /** Encargo 921513: la hora REAL del movimiento (ISO-8601), sólo si esperó en la cola. Nula no viaja; un SERVIDOR viejo la ignora. */
+    /** Encargo 921513: la hora REAL del movimiento (ISO-8601), sólo del reenvío de la cola. Nula no viaja; un SERVIDOR viejo la ignora. */
     val createdAt: String? = null,
+    /** Encargo 921513 (Codex r2): cuánto esperó en la cola, con el reloj del aparato. El SERVIDOR calcula «llegada − espera». */
+    val edadMs: Long? = null,
 )
 
 @Serializable
@@ -138,24 +140,27 @@ private data class PayOutRequest(
     val note: String? = null,
     val localId: String,
     val sessionId: String? = null,
-    /** Encargo 921513: la hora REAL del movimiento (ISO-8601), sólo si esperó en la cola. Nula no viaja; un SERVIDOR viejo la ignora. */
+    /** Encargo 921513: la hora REAL del movimiento (ISO-8601), sólo del reenvío de la cola. Nula no viaja; un SERVIDOR viejo la ignora. */
     val createdAt: String? = null,
+    /** Encargo 921513 (Codex r2): cuánto esperó en la cola, con el reloj del aparato. El SERVIDOR calcula «llegada − espera». */
+    val edadMs: Long? = null,
 )
 
-/**
- * Encargo 921513 (founder 16-nov «A»): cuánto tiene que haber esperado un movimiento en la cola para mandar su hora. Por debajo es un
- * envío con red (o un reintento inmediato) y el SERVIDOR pone la de llegada, como siempre (Codex r1 #4: con internet, como hoy).
- */
-const val ESPERA_PARA_MANDAR_LA_HORA_MS = 60_000L
+/** La hora de un ingreso o retiro de la cola para el SERVIDOR: cuándo se hizo (ISO-8601) y cuánto lleva esperando. */
+data class HoraDelMovimiento(val createdAt: String, val edadMs: Long?)
+
+/** Antes de esto no hay movimientos reales: una cola legada trae `at = 1` y esa hora no se manda (quedaría en la apertura). */
+private const val HORA_MINIMA_CREIBLE_MS = 1_577_836_800_000L // 2020-01-01T00:00:00Z
 
 /**
- * La hora REAL de un ingreso o retiro para el SERVIDOR (ISO-8601), o `null` si no esperó en la cola. [at] y [ahora] salen del MISMO
- * reloj del aparato, así que un reloj desfasado no cambia la decisión; el SERVIDOR acota la hora a la vida de la caja.
+ * Encargo 921513 (founder 16-nov «A»): la hora REAL de un ingreso o retiro que se REENVÍA desde la cola. [at] y [ahora] salen del
+ * MISMO reloj del aparato: la espera (`ahora − at`) no depende de que ese reloj esté bien, y el SERVIDOR guarda «llegada − espera»
+ * (Codex r2 #1: antes un umbral de 60 s perdía la hora si el reloj se movía durante la espera). Si el reloj se movió hacia atrás, la
+ * espera sale negativa y sólo viaja la hora. `null` sólo para una cola legada sin hora creíble. El SERVIDOR la acota a la caja.
  */
-fun horaDelMovimientoParaElServidor(at: Long, ahora: Long): String? {
-    if (at <= 0 || at > ahora) return null
-    if (ahora - at < ESPERA_PARA_MANDAR_LA_HORA_MS) return null
-    return java.time.Instant.ofEpochMilli(at).toString()
+fun horaDelMovimientoParaElServidor(at: Long, ahora: Long): HoraDelMovimiento? {
+    if (at < HORA_MINIMA_CREIBLE_MS) return null
+    return HoraDelMovimiento(java.time.Instant.ofEpochMilli(at).toString(), (ahora - at).takeIf { it >= 0 })
 }
 
 @Serializable
@@ -2198,12 +2203,18 @@ class CashDrawerRepository @Inject constructor(
      */
     private fun peticionDelMovimiento(op: PendingDrawerOp, localId: String, sucursal: String = venueId, esReenvio: Boolean = false): Request {
         val dollars = op.amountCents / 100.0
-        // Encargo 921513: sólo el REENVÍO de la cola manda la hora real, y sólo si el movimiento esperó (sin red). El primer POST, no.
+        // Encargo 921513: sólo el REENVÍO de la cola manda la hora real (y cuánto esperó). El primer POST, no: el SERVIDOR pone la llegada.
         val hora = if (esReenvio) horaDelMovimientoParaElServidor(op.at, System.currentTimeMillis()) else null
         val (path, body) = if (op.kind == "PAY_IN") {
-            "pay-in" to json.encodeToString(PayInRequest.serializer(), PayInRequest(amount = dollars, note = op.note, localId = localId, sessionId = op.sessionId, createdAt = hora))
+            "pay-in" to json.encodeToString(
+                PayInRequest.serializer(),
+                PayInRequest(amount = dollars, note = op.note, localId = localId, sessionId = op.sessionId, createdAt = hora?.createdAt, edadMs = hora?.edadMs),
+            )
         } else {
-            "pay-out" to json.encodeToString(PayOutRequest.serializer(), PayOutRequest(amount = dollars, note = op.note, localId = localId, sessionId = op.sessionId, createdAt = hora))
+            "pay-out" to json.encodeToString(
+                PayOutRequest.serializer(),
+                PayOutRequest(amount = dollars, note = op.note, localId = localId, sessionId = op.sessionId, createdAt = hora?.createdAt, edadMs = hora?.edadMs),
+            )
         }
         return Request.Builder().url("${baseUrlDe(sucursal)}/$path").post(body.toRequestBody("application/json".toMediaType())).apply {
             if (op.kind == "PAY_OUT") {
