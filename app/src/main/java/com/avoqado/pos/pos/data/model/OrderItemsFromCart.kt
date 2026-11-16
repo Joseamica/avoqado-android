@@ -115,6 +115,9 @@ private fun CartItem.toOrderItemRequest(): OrderItemRequest {
         isCortesia = isCortesia,
         cortesiaReason = cortesiaReason?.trim()?.takeIf { isCortesia && it.isNotEmpty() },
         discountId = itemDiscountId.takeUnless { isCortesia },
+        // f998c8: sólo con un descuento o ajuste que lo pide; la cortesía lleva su propio motivo.
+        discountReason = discountReason?.trim()?.takeIf { it.isNotEmpty() && descuentoPideMotivo },
+        discountReasonComment = discountReasonComment?.trim()?.takeIf { it.isNotEmpty() && descuentoPideMotivo && !discountReason.isNullOrBlank() },
         weightQuantity = weightKg,
         serviceCourse = serviceCourse,
         externalId = id.takeIf { isCortesia || delCatalogo || serviceCourse?.preparationVersion == 1 },
@@ -124,8 +127,5 @@ private fun CartItem.toOrderItemRequest(): OrderItemRequest {
         adjustedUnitPrice = priceAdjustment.takeIf {
             type is CartItemType.ProductItem && !isCortesia && it != null && it < unitPrice
         },
-        // f998c8: sólo con un descuento o ajuste que lo pide; la cortesía lleva su propio motivo.
-        discountReason = discountReason?.trim()?.takeIf { it.isNotEmpty() && descuentoPideMotivo },
-        discountReasonComment = discountReasonComment?.trim()?.takeIf { it.isNotEmpty() && descuentoPideMotivo && !discountReason.isNullOrBlank() },
     )
 }
