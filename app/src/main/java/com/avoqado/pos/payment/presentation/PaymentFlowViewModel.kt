@@ -1,6 +1,5 @@
 package com.avoqado.pos.payment.presentation
 
-import com.avoqado.pos.pos.presentation.cart.cuentaPideMotivo
 import com.avoqado.pos.giftcards.data.*
 import com.avoqado.pos.giftcards.domain.*
 import kotlinx.serialization.json.*
@@ -6408,9 +6407,9 @@ class PaymentFlowViewModel @Inject constructor(
             // D4: la etiqueta del descuento de cuenta del catálogo (el importe sigue en `discount`).
             descuentoDeCatalogoId = cart.descuentoDeCatalogoQueViaja,
             descuentoDeCatalogoPideAprobacion = cart.orderDiscount?.pideAprobacion == true,
-            // f998c8: el motivo del descuento de la cuenta (sólo si es de los que lo piden).
-            orderDiscountReason = cart.orderDiscountReason?.takeIf { cart.cuentaPideMotivo && it.isNotBlank() },
-            orderDiscountReasonComment = cart.orderDiscountReasonComment?.takeIf { cart.cuentaPideMotivo && it.isNotBlank() && !cart.orderDiscountReason.isNullOrBlank() },
+            // f998c8: el motivo del descuento de la cuenta (o la razón de la cortesía de la cuenta); se suelta al cambiar el descuento.
+            orderDiscountReason = cart.orderDiscountReason?.takeIf { it.isNotBlank() && cart.orderDiscount != null },
+            orderDiscountReasonComment = cart.orderDiscountReasonComment?.takeIf { it.isNotBlank() && !cart.orderDiscountReason.isNullOrBlank() },
         )
     }
 

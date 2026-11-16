@@ -1171,8 +1171,6 @@ private fun CortesiaSubView(
     val cartState by cartViewModel.cartState.collectAsState()
     var cortesiaReason by remember { mutableStateOf("") }
     var showConfirmation by remember { mutableStateOf(false) }
-    // f998c8: con «Pedir motivo», la cortesía de la cuenta espera su motivo de la lista.
-    var cortesiaEsperandoMotivo by remember { mutableStateOf<Discount?>(null) }
 
     Column(modifier = Modifier.fillMaxSize()) {
         BreadcrumbHeader(title = "Cortesía", onBack = onBack)
@@ -1262,21 +1260,17 @@ private fun CortesiaSubView(
                     onClick = {
                         showConfirmation = false
                         val discount = Discount(
-                            id = "cortesia_${System.currentTimeMillis()}",
+                            id = "${com.avoqado.pos.pos.presentation.cart.CORTESIA_DE_CUENTA_PREFIJO}${System.currentTimeMillis()}",
                             name = "Cortesía",
                             value = 100.0,
                             type = "PERCENTAGE",
                             scope = "ORDER",
                         )
-                        // f998c8: la razón escrita ya no se tira: sin «Pedir motivo» viaja como motivo; con él, se elige de la lista
-                        // y lo escrito va como comentario.
-                        if (cartViewModel.motivosDeDescuento.sePide) {
-                            cortesiaEsperandoMotivo = discount
-                        } else {
-                            val escrita = cortesiaReason.trim().takeIf { it.isNotEmpty() }
-                            cartViewModel.applyOrderDiscount(discount, escrita?.let { com.avoqado.pos.pos.domain.MotivoElegido.de(it.take(60), null) })
-                            onBack()
-                        }
+                        // f998c8 (Codex r2 #2): la cortesía trae su propia razón y no pide otra de la lista. Antes la razón escrita
+                        // se tiraba; ahora viaja como su motivo (y sale en Reportes → Descuentos).
+                        val escrita = cortesiaReason.trim().takeIf { it.isNotEmpty() }
+                        cartViewModel.applyOrderDiscount(discount, escrita?.let { com.avoqado.pos.pos.domain.MotivoElegido.de(it.take(60), null) })
+                        onBack()
                     },
                     fullWidth = true,
                 )
@@ -1288,21 +1282,6 @@ private fun CortesiaSubView(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-    }
-    cortesiaEsperandoMotivo?.let { pendiente ->
-        com.avoqado.pos.pos.presentation.components.DialogoMotivoDeDescuento(
-            motivos = cartViewModel.motivosDeDescuento.lista,
-            titulo = "Motivo de la cortesía",
-            detalle = listOf("Cortesía de toda la cuenta"),
-            textoConfirmar = "Aplicar cortesía",
-            onConfirmar = { motivo ->
-                val escrita = cortesiaReason.trim().takeIf { it.isNotEmpty() }
-                cartViewModel.applyOrderDiscount(pendiente, motivo.copy(comentario = motivo.comentario ?: escrita))
-                cortesiaEsperandoMotivo = null
-                onBack()
-            },
-            onCancelar = { cortesiaEsperandoMotivo = null },
-        )
     }
 }
 

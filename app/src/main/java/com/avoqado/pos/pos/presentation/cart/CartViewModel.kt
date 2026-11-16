@@ -3419,9 +3419,9 @@ class CartViewModel @Inject constructor(
                 autorizacionDelDescuento = venta.autorizacionQueViaja,
                 descuentoDeCatalogoId = venta.descuentoDeCatalogoQueViaja,
                 descuentoDeCatalogoPideAprobacion = venta.orderDiscount?.pideAprobacion == true,
-                // f998c8: el motivo del descuento de la cuenta (sólo si es de los que lo piden).
-                orderDiscountReason = venta.orderDiscountReason?.takeIf { venta.cuentaPideMotivo && it.isNotBlank() },
-                orderDiscountReasonComment = venta.orderDiscountReasonComment?.takeIf { venta.cuentaPideMotivo && it.isNotBlank() && !venta.orderDiscountReason.isNullOrBlank() },
+                // f998c8: el motivo del descuento de la cuenta (o la razón de la cortesía de la cuenta); se suelta al cambiar el descuento.
+                orderDiscountReason = venta.orderDiscountReason?.takeIf { it.isNotBlank() && venta.orderDiscount != null },
+                orderDiscountReasonComment = venta.orderDiscountReasonComment?.takeIf { it.isNotBlank() && !venta.orderDiscountReason.isNullOrBlank() },
             )
             if (!OrderRepository.hasProductItems(request)) {
                 return ResultadoPagarDespues.Error("No hay productos válidos para crear la orden")

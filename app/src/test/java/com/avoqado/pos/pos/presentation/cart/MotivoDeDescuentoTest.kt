@@ -63,6 +63,8 @@ class MotivoDeDescuentoTest {
         assertFalse(base.copy(orderDiscount = diezPorCiento.copy(source = DESCUENTO_DEL_CLIENTE_SOURCE)).cuentaPideMotivo)
         assertFalse(base.copy(orderDiscount = diezPorCiento.copy(source = "REFERRAL_NEW_CUSTOMER")).cuentaPideMotivo)
         assertFalse(base.cuentaPideMotivo)
+        // Codex r2 #2: la cortesía de toda la cuenta ya trae su propia razón.
+        assertFalse(base.copy(orderDiscount = diezPorCiento.copy(id = "${CORTESIA_DE_CUENTA_PREFIJO}1", value = 100.0)).cuentaPideMotivo)
     }
 
     // MARK: - La última puerta antes de cobrar (Codex r1 #4: carrito restaurado)

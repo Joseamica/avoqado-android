@@ -19,11 +19,17 @@ val CartItem.descuentoPideMotivo: Boolean
         ((!itemDiscountId.isNullOrBlank() && !descuentoSugerido) || priceAdjustment != null)
 
 /**
- * El descuento de la CUENTA lo eligió una persona: de la lista, uno manual o la cortesía de toda la cuenta. No el cupón (lo trae el
- * cliente), ni el del cliente o un referido (se ponen solos: traen `source`).
+ * El descuento de la CUENTA lo eligió una persona: de la lista o uno manual. No el cupón (lo trae el cliente), ni el del cliente o un
+ * referido (se ponen solos: traen `source`), ni la cortesía de toda la cuenta (Codex r2 #2: ya trae su propia razón, que viaja como
+ * su motivo).
  */
 val CartState.cuentaPideMotivo: Boolean
-    get() = orderDiscount?.let { it.couponCode.isNullOrBlank() && it.source == null } == true && orderDiscountCents > 0
+    get() = orderDiscount?.let {
+        it.couponCode.isNullOrBlank() && it.source == null && !it.id.startsWith(CORTESIA_DE_CUENTA_PREFIJO)
+    } == true && orderDiscountCents > 0
+
+/** El id con que nace la cortesía de toda la cuenta (`ShortcutsGridView`, «Cortesía»). */
+const val CORTESIA_DE_CUENTA_PREFIJO = "cortesia_"
 
 /** Lo que pide motivo y todavía no lo trae, en palabras para la ventana («Playera · Ajuste de precio», «Descuento de la cuenta»). */
 fun CartState.descuentosSinMotivo(motivos: MotivosDeDescuento): List<String> {
