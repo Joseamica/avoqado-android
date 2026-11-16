@@ -15,6 +15,7 @@ import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import okhttp3.ResponseBody.Companion.toResponseBody
 import org.junit.Assert.*
 import org.junit.Rule
 import org.junit.Test
@@ -130,7 +131,7 @@ class MesaCobradaSinRedLibreTest {
     @Test fun `un rechazo de negocio del liberar sube tal cual y no encola`() = prueba {
         val m = mundo(TablesResponse(data = listOf(ocupada), capabilities = conCapacidad), sesion = sesionDe(cuentaA))
         coEvery { m.api.clearTable(venue, "t7") } throws retrofit2.HttpException(
-            retrofit2.Response.error<Any>(409, okhttp3.ResponseBody.create(null, "{}")))
+            retrofit2.Response.error<Any>(409, "{}".toResponseBody(null)))
         m.repo.refresh(venue).getOrThrow()
 
         assertTrue(m.repo.liberarTrasCobro(venue, "t7", "orden-a", setOf("orden-a")) { true }.isFailure)
