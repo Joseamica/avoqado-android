@@ -93,7 +93,7 @@ fun KioskScreen(
             .background(MaterialTheme.colorScheme.surface),
     ) {
         when (val c = content) {
-            is KioskContent.Welcome -> Welcome(venueName, qr)
+            is KioskContent.Welcome -> Welcome(venueName, qr, onIdentify = state.onStart?.let { cb -> { cb() } })
 
             is KioskContent.Roster -> Roster(
                 content = c,
@@ -148,7 +148,7 @@ fun KioskScreen(
  * lado.
  */
 @Composable
-private fun Welcome(venueName: String?, qr: String? = null) {
+private fun Welcome(venueName: String?, qr: String? = null, onIdentify: (() -> Unit)? = null) {
     // Asistencia verificada (16-nov-2026): el QR sale también en reposo. Si la red se cayó antes de abrir la clase, la
     // alumna con datos registra su llegada igual: el SERVIDOR decide si ya es su hora y se lo dice en su celular.
     if (qr != null) {
@@ -168,6 +168,8 @@ private fun Welcome(venueName: String?, qr: String? = null) {
             Spacer(Modifier.height(AvoqadoTheme.spacing.lg))
             Sub("¿Vienes a clase? Escanea con tu celular para registrar tu llegada.")
             Spacer(Modifier.weight(1f))
+            // Codex r3 #2: si la red se cayó antes de abrir la clase, quien no trae celular también tiene salida.
+            if (onIdentify != null) FooterAction("¿No traes celular? Escribe tu teléfono", onClick = onIdentify)
         }
         return
     }

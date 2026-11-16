@@ -294,4 +294,58 @@ class ReservationActionsRetrierKioskTest {
         assertEquals(mapOf(primera to KioskTap.Outcome.Kept), mandadas)
         assertEquals(listOf(0, 0), listOf(fila(primera).attemptCount, fila(segunda).attemptCount))
     }
+
+    // MARK: - Asistencia verificada (16-nov-2026): el teléfono tecleado sin red
+
+    private suspend fun telefono(op: String = "op-12345678", venue: String = "v1"): Long =
+        dao.insert(
+            PendingReservationActionEntity(
+                reservationId = "phone:$op",
+                action = com.avoqado.pos.kiosk.data.KioskPhone.ACTION,
+                payloadJson = com.avoqado.pos.kiosk.data.KioskPhone.payload(
+                    com.avoqado.pos.kiosk.data.KioskPhone.Saved(venue, "+525512345678", "2026-11-16T18:00:00Z", op),
+                ),
+            ),
+        )
+
+    @Test
+    fun `teléfono - sale con su hora y su opId a la sucursal de la fila, y se borra`() = runTest {
+        val id = telefono()
+        coEvery { kioskApi.checkIn("+525512345678", "v1", "2026-11-16T18:00:00Z", "op-12345678") } returns
+            Result.success(KioskCheckInApi.Confirmed("r1", false, "Ana R.", "Yoga", null))
+
+        val mandadas = retrier.drain(com.avoqado.pos.kiosk.data.KioskPhone.ACTION)
+
+        assertEquals(mapOf(id to KioskTap.Outcome.Sent), mandadas)
+        assertEquals(emptyList<Long>(), dao.rows.map { it.rowId })
+    }
+
+    @Test
+    fun `P1 teléfono - un 503 no gasta intento ni lo manda a cuarentena (Codex r3 #4)`() = runTest {
+        val id = telefono()
+        coEvery { kioskApi.checkIn(any(), any(), any(), any()) } returns Result.failure(KioskCheckInApi.Rejected(503, "caído"))
+
+        repeat(MAX + 2) { retrier.drain(com.avoqado.pos.kiosk.data.KioskPhone.ACTION) }
+
+        assertEquals(0, fila(id).attemptCount)
+    }
+
+    @Test
+    fun `teléfono - sin reserva para esa hora va a cuarentena de una vez`() = runTest {
+        val id = telefono()
+        coEvery { kioskApi.checkIn(any(), any(), any(), any()) } returns Result.failure(KioskCheckInApi.NotFound())
+
+        retrier.drain(com.avoqado.pos.kiosk.data.KioskPhone.ACTION)
+
+        assertEquals(MAX, fila(id).attemptCount)
+    }
+
+    @Test
+    fun `teléfono de otra sucursal se queda sin gastar intento`() = runTest {
+        val id = telefono(venue = "v2")
+
+        retrier.drain(com.avoqado.pos.kiosk.data.KioskPhone.ACTION)
+
+        assertEquals(0, fila(id).attemptCount)
+    }
 }

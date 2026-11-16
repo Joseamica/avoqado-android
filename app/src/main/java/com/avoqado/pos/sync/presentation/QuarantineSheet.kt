@@ -363,6 +363,10 @@ fun QuarantineSheet(
                             Column(Modifier.fillMaxWidth().padding(vertical = AvoqadoTheme.spacing.md), verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
                                 Text(viewModel.describeReservationAction(entry.action), style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
                                 Text(formatTime(entry.createdAt, viewModel.zonaDe(KioskTap.venueOf(entry.payloadJson))), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                // Asistencia verificada (Codex r3 #8): de un teléfono tecleado sin red, el número, para saber a quién marcar.
+                                com.avoqado.pos.kiosk.data.KioskPhone.parse(entry.payloadJson)?.takeIf { entry.action == com.avoqado.pos.kiosk.data.KioskPhone.ACTION }?.let {
+                                    Text("Teléfono que tecleó: ${it.phone}", style = MaterialTheme.typography.bodyMedium)
+                                }
                                 if (viewModel.isCorrectionNotice(entry)) {
                                     // D4: el SERVIDOR corrigió solo la llegada y dejó algo pendiente; se resuelve allá.
                                     viewModel.correctionNoticeLines(entry).forEach { Text(it, style = MaterialTheme.typography.bodyMedium) }

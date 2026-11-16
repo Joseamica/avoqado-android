@@ -198,6 +198,8 @@ class KioskState @Inject constructor() {
      */
     fun forgetRoster() {
         epoch++
+        // Asistencia verificada (Codex r3 #3): el QR es de la sucursal anterior; nunca se deja a la vista de la nueva.
+        _qr.value = null
         restart()
     }
 

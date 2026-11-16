@@ -99,10 +99,10 @@ class ReservationActionsRetrier @Inject constructor(
                         withContext(NonCancellable) { pendingDao.delete(entry.rowId) }
                         anySuccess = true
                     }
-                    KioskTap.Outcome.Kept -> {
-                        val error = result.exceptionOrNull()
-                        if (error is IOException) kioskSinRed = true else pendingDao.incrementAttempt(entry.rowId, error?.message)
-                    }
+                    // 🔴 Codex r3 #4: sin red, 5xx, 408 o 429 son pasajeros y NO gastan intento: la llegada se le prometió a la
+                    // alumna («se registra sola»). Lo que la acota es el SERVIDOR: pasadas 72 h contesta 422 y va a cuarentena.
+                    // Se corta la vuelta (las demás esperan a la siguiente), como sin red.
+                    KioskTap.Outcome.Kept -> kioskSinRed = true
                     // El servidor dijo que no (no hay reserva de ese teléfono en esa hora, más de 72 h): a la cuarentena,
                     // con su texto, a la vista del gerente.
                     is KioskTap.Outcome.Refused -> pendingDao.quarantine(entry.rowId, maxAttempts, outcome.message)

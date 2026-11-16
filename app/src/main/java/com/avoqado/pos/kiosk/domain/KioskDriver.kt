@@ -181,6 +181,8 @@ class KioskDriver @Inject constructor(
         val venueId = secureStorage.venueId ?: return kiosk.setQr(null)
         var llave = KioskQr.leer(secureStorage.kioskQrKey)?.takeIf { it.venueId == venueId }
         if (llave == null) {
+            // Codex r3 #3: antes de esperar la red, se quita el QR de otra sucursal que pudiera seguir a la vista.
+            kiosk.setQr(null)
             val ahora = nowMs()
             if (ahora - ultimaPeticionDeLlave < KEY_RETRY_MS && ultimaPeticionDeLlave != 0L) return kiosk.setQr(null)
             ultimaPeticionDeLlave = ahora
@@ -189,6 +191,8 @@ class KioskDriver @Inject constructor(
             secureStorage.kioskQrKey = KioskQr.guardar(llave)
         }
         val ahoraMs = kioskCheckIn.horaDelServidorMs() ?: System.currentTimeMillis()
+        // La sucursal pudo cambiar mientras se pedía la llave: sólo se pinta si sigue siendo la misma.
+        if (secureStorage.venueId != llave.venueId) return kiosk.setQr(null)
         kiosk.setQr(KioskQr.url(llave, KioskQr.paso(ahoraMs, llave.rotateSeconds)))
     }
 
