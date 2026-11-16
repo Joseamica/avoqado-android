@@ -106,6 +106,10 @@ fun QuarantineSheet(
     // Con red Y servidor (el mismo dato que ya decide «Revisar cortesía»): «Sí llegó» y resolver un aviso son en línea.
     val enLinea = courtesyReviewOnline
     var cuentaPorDescartar by androidx.compose.runtime.remember { mutableStateOf<com.avoqado.pos.payment.data.PayLaterRow?>(null) }
+    // D63: «Dejar para soporte» pregunta antes de guardar (folio e importe del cobro elegido).
+    val notasSoporte by viewModel.notasParaSoporte.collectAsState()
+    val dejandoParaSoporte by viewModel.dejandoParaSoporte.collectAsState()
+    var cobroParaSoporte by androidx.compose.runtime.remember { mutableStateOf<Pair<String, Int?>?>(null) }
     // Cancelaciones de cobro que no se pudieron confirmar: viven fuera del flujo de pago, así que
     // sin esta sección el cajero salía de la venta y nadie volvía a enterarse.
     val cancelacionesViewModel: com.avoqado.pos.payment.presentation.CancelacionesPendientesViewModel = hiltViewModel()
@@ -206,6 +210,13 @@ fun QuarantineSheet(
                                 Text("El pago se conserva hasta comprobar su resultado. No vuelvas a cobrar.", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
                                 if (viewModel.canResolve && row.origen == "PAYMENT" && (row.estado == "FAILED" || consultarRetenidoCero)) {
                                     AccionDeRevision(text = "Consultar intento", onClick = { viewModel.retryPayment(row.id) }, enabled = retryingPaymentId == null, isLoading = retryingPaymentId == row.id)
+                                }
+                                // D63: la salida de gerente, con rastro; el cobro se queda aquí.
+                                val nota = if (row.origen == "PAYMENT") viewModel.notaParaSoporte(row.id, notasSoporte) else null
+                                if (nota != null) NotaDeSoporte(nota)
+                                else if (viewModel.puedeDejarParaSoporte(row)) {
+                                    AccionDeRevision(text = "Dejar para soporte", onClick = { cobroParaSoporte = row.id to captura?.amountCents },
+                                        enabled = dejandoParaSoporte == null, isLoading = dejandoParaSoporte == row.id)
                                 }
                             }
                             if (abierto) Column(verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.xs)) {
@@ -335,7 +346,8 @@ fun QuarantineSheet(
                                 if (viewModel.canResolve) {
                                     Text("El pago sigue conservado. No vuelvas a cobrar.", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
                                     val soloConsulta = payment.paymentType == "ORDER" && payment.amountCents == 0 && payment.tipCents == 0
-                                    AccionDeRevision(text = if (soloConsulta) {
+                                    // D63: una fila vieja sin sucursal retenida (no FAILED) no se reintenta desde aquí.
+                                    if (payment.syncStatus == "FAILED") AccionDeRevision(text = if (soloConsulta) {
                                         if (retryingPaymentId == payment.id) "Consultando…" else "Consultar intento"
                                     } else if (retryingPaymentId == payment.id) "Reintentando…" else "Reintentar",
                                         onClick = { viewModel.retryPayment(payment.id) }, enabled = retryingPaymentId == null)
@@ -353,6 +365,13 @@ fun QuarantineSheet(
                                         }
                                         unavailable?.let { Text(it,style=MaterialTheme.typography.bodyMedium,color=MaterialTheme.colorScheme.onSurfaceVariant) }
                                     }
+                                }
+                                // D63: si el servidor la rechaza siempre, «Reintentar» no basta: la salida de gerente, con rastro.
+                                val nota = viewModel.notaParaSoporte(payment.id, notasSoporte)
+                                if (nota != null) NotaDeSoporte(nota)
+                                else if (viewModel.puedeDejarParaSoporte(payment)) {
+                                    AccionDeRevision(text = "Dejar para soporte", onClick = { cobroParaSoporte = payment.id to payment.amountCents },
+                                        enabled = dejandoParaSoporte == null && retryingPaymentId != payment.id, isLoading = dejandoParaSoporte == payment.id)
                                 }
                                 if (abierto) Text("Folio ${payment.id}", style = MaterialTheme.typography.bodySmall)
                             }
@@ -433,6 +452,27 @@ fun QuarantineSheet(
                     isLoading=retryingPaymentId!=null)
             },
         ) { Text("El intento permanecerá en el historial con su folio y la comprobación del servidor.",style=MaterialTheme.typography.bodyMedium) }
+    }
+
+    // D63: dos toques, nunca uno: abrir y responder. La respuesta queda en la nota; no sube ni borra el cobro.
+    cobroParaSoporte?.let { (id, importe) ->
+        com.avoqado.pos.designsystem.components.AvoqadoDialog(
+            title = "Dejar para soporte",
+            onDismiss = { cobroParaSoporte = null },
+            description = TEXTO_DEJAR_PARA_SOPORTE,
+        ) {
+            Column(verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
+                Text(listOfNotNull(importe?.let { formatMoney(it) }, "Folio ${id.take(8)}").joinToString(" · "),
+                    style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                Text("¿El cliente pagó?", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                com.avoqado.pos.payment.data.CobrosParaSoporte.Declaracion.entries.forEach { declaracion ->
+                    AccionDeRevision(declaracion.texto, {
+                        viewModel.dejarParaSoporte(id, declaracion)
+                        cobroParaSoporte = null
+                    }, Modifier.fillMaxWidth())
+                }
+            }
+        }
     }
 
     // Descartar pide confirmación: una RECHAZADA no existe en el servidor y se pierde; una REVISAR sí existe.
@@ -566,6 +606,21 @@ private fun BannerDeRevision(texto: String, necesitaAtencion: Boolean, onClick: 
         Text(texto, Modifier.weight(1f), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurface)
         Text(actionLabel, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurface)
     }
+}
+
+/** D63: lo que promete «Dejar para soporte», en llano. */
+internal const val TEXTO_DEJAR_PARA_SOPORTE =
+    "El cobro se queda guardado en este aparato: no se sube ni se borra, y ya no impide cerrar sesión. Soporte lo revisa con tu respuesta."
+
+/** D63: «Dejado para soporte por <nombre> · <hora> · «<respuesta>»». PURA. */
+internal fun textoDeNotaDeSoporte(nota: com.avoqado.pos.payment.data.CobrosParaSoporte.Nota, hora: String): String =
+    "Dejado para soporte por ${nota.actorNombre ?: "un gerente"} · $hora · «${nota.declaracion.texto}»"
+
+@Composable
+private fun NotaDeSoporte(nota: com.avoqado.pos.payment.data.CobrosParaSoporte.Nota) {
+    Text(textoDeNotaDeSoporte(nota, formatTime(nota.marcadoEn)), style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
+    Text("Sigue guardado en este aparato y ya no impide cerrar sesión.", style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant)
 }
 
 @Composable

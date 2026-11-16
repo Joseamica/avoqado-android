@@ -42,7 +42,57 @@ class QuarantineViewModel @Inject constructor(
     private val payLaterQueue: com.avoqado.pos.payment.data.PayLaterQueue? = null,
     /** Paquetes cobrados sin entregar (D4, 5-nov). Default para las pruebas que construyen este ViewModel a mano. */
     private val pendingGrantQueue: com.avoqado.pos.customers.data.PendingGrantQueue? = null,
+    /** D63: las notas de «Dejar para soporte». Default para las pruebas que construyen este ViewModel a mano. */
+    private val cobrosParaSoporte: com.avoqado.pos.payment.data.CobrosParaSoporte? = null,
 ) : ViewModel() {
+
+    /** D63: las notas de «Dejar para soporte» del aparato, por folio del cobro. */
+    val notasParaSoporte: StateFlow<Map<String, com.avoqado.pos.payment.data.CobrosParaSoporte.Nota>> =
+        cobrosParaSoporte?.notas ?: MutableStateFlow(emptyMap())
+
+    /** D63: la nota de este cobro, si un gerente ya lo dejó para soporte. */
+    fun notaParaSoporte(id: String, notas: Map<String, com.avoqado.pos.payment.data.CobrosParaSoporte.Nota> = notasParaSoporte.value) =
+        notas[id]
+
+    /** D63: ¿le enseño «Dejar para soporte» a este cobro fallido? Sólo gerente, de esta sucursal y si la regla lo deja. */
+    fun puedeDejarParaSoporte(payment: PendingPaymentEntity): Boolean = canResolve && cobrosParaSoporte != null &&
+        secureStorage.venueId?.let { com.avoqado.pos.payment.data.CobrosParaSoporte.aplica(payment, it) } == true
+
+    /** D63: lo mismo para un renglón de «Cobros por revisar» (Q15). El servicio vuelve a revisar la fila real antes de escribir. */
+    fun puedeDejarParaSoporte(row: com.avoqado.pos.core.data.local.database.RevisionDelCobroRecord): Boolean = canResolve &&
+        cobrosParaSoporte != null && row.origen == "PAYMENT" && row.venueId == secureStorage.venueId && row.q15ReviewedAt == null &&
+        row.estado in setOf("FAILED", "EN_VUELO", "PENDING")
+
+    private val _dejandoParaSoporte = MutableStateFlow<String?>(null)
+    val dejandoParaSoporte: StateFlow<String?> = _dejandoParaSoporte.asStateFlow()
+
+    /**
+     * D63: «Dejar para soporte». Guarda quién, cuándo, qué cobro y lo que dijo el gerente; desde ahí ese cobro ya no frena «Cerrar
+     * sesión». 🔴 No lo borra ni lo sube: sigue guardado y a la vista con su nota.
+     */
+    fun dejarParaSoporte(id: String, declaracion: com.avoqado.pos.payment.data.CobrosParaSoporte.Declaracion) {
+        if (!canResolve || _dejandoParaSoporte.value != null) return
+        _dejandoParaSoporte.value = id
+        viewModelScope.launch {
+            try {
+                when (paymentSyncService.dejarParaSoporte(id, declaracion)) {
+                    com.avoqado.pos.payment.data.CobrosParaSoporte.Resultado.GUARDADA ->
+                        _successMessage.value = "Cobro dejado para soporte"
+                    com.avoqado.pos.payment.data.CobrosParaSoporte.Resultado.YA_ESTABA ->
+                        _errorMessage.value = "Este cobro ya estaba dejado para soporte. Su nota no cambia."
+                    com.avoqado.pos.payment.data.CobrosParaSoporte.Resultado.NO_APLICA ->
+                        _errorMessage.value = "Este cobro cambió mientras lo revisabas. Revisa la lista otra vez. No vuelvas a cobrar."
+                    com.avoqado.pos.payment.data.CobrosParaSoporte.Resultado.SIN_PERMISO ->
+                        _errorMessage.value = "Sólo un gerente puede dejarlo para soporte."
+                    com.avoqado.pos.payment.data.CobrosParaSoporte.Resultado.NO_SE_PUDO ->
+                        _errorMessage.value = "No se pudo guardar la nota. Libera espacio en el aparato e intenta de nuevo. El cobro sigue guardado."
+                }
+                load()
+            } finally {
+                _dejandoParaSoporte.value = null
+            }
+        }
+    }
 
     /**
      * Paquetes que una persona tiene que ver: los que el servidor rechazó («Reintentar» o «Descartar») y aquéllos de cuyo cobro no se
@@ -255,7 +305,9 @@ class QuarantineViewModel @Inject constructor(
         val epoch = syncOutbox.contextoDeSesionQ15()
         viewModelScope.launch {
             val items = syncOutbox.rejectedIntents(venueId)
-            val failed = paymentSyncService.failedPayments().filter {it.venueId==venueId}
+            // D63 (Codex r1 #1): también las filas viejas SIN sucursal, que el freno cuenta como de ésta y nadie veía.
+            val failed = (paymentSyncService.failedPayments().filter { it.venueId == venueId || it.venueId.isBlank() } +
+                paymentSyncService.retenidasSinSucursal()).distinctBy { it.id }
             val reservations = reservationRepository.quarantinedActions()
             // D52: lo pendiente de OTRAS sucursales de este aparato, con su nombre; se resuelve sólo con su sucursal abierta.
             val nombres = secureStorage.venuesList.associate { it.id to it.name }
