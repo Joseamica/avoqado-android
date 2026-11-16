@@ -359,10 +359,10 @@ class TableServiceRepository @Inject constructor(
     // MARK: - D8 · la mesa cobrada sin red queda libre en este aparato
 
     /**
-     * EN_CAMINO: sigue escondida. RECHAZADA: el SERVIDOR rechazó trabajo de DINERO o de la cuenta (su cobro, su apertura, una ronda):
-     * la cuenta vuelve. RESUELTA: nada de la cuenta sin resolver (aunque el «liberar» solo se haya rechazado: el cobro sí entró, Codex r2
-     * #3); con una respuesta de /tables manda el servidor y sin ella sigue escondida. ANULADA: el servidor dejó de anunciar la visita
-     * nueva (Codex r2 #4).
+     * EN_CAMINO: sigue escondida. RECHAZADA: el SERVIDOR rechazó algo de la cuenta (su cobro, su apertura, una ronda o su «liberar»):
+     * el aparato ya no puede probar que se cerró y la cuenta vuelve; con /tables manda el servidor (Codex r2 #3: nunca se le contradice).
+     * RESUELTA: nada sin resolver; con /tables manda el servidor y sin ella sigue escondida. ANULADA: el servidor dejó de anunciar la
+     * visita nueva (Codex r2 #4).
      */
     internal enum class EstadoDeMarca { EN_CAMINO, RECHAZADA, RESUELTA, ANULADA }
 
@@ -371,7 +371,10 @@ class TableServiceRepository @Inject constructor(
         val trabajo = syncOutbox.trabajoSinResolverDeLaOrden(venueId, marca.ids)
         val liberar = syncOutbox.observarEstado(marca.clearIntentId).first()
         when {
-            trabajo.rechazados > 0 -> EstadoDeMarca.RECHAZADA
+            // Codex r3 #1: un «liberar» rechazado tampoco prueba que la cuenta se cerró (el cobro pudo entrar como parcial): vuelve, y con
+            // la siguiente respuesta de /tables manda el servidor (una cuenta pagada ya no viene).
+            trabajo.rechazados > 0 || liberar == com.avoqado.pos.core.data.local.database.SyncIntentEntity.STATUS_REJECTED ->
+                EstadoDeMarca.RECHAZADA
             trabajo.enCamino > 0 || liberar == com.avoqado.pos.core.data.local.database.SyncIntentEntity.STATUS_PENDING ||
                 liberar == com.avoqado.pos.core.data.local.database.SyncIntentEntity.STATUS_HELD -> EstadoDeMarca.EN_CAMINO
             else -> EstadoDeMarca.RESUELTA
@@ -423,7 +426,11 @@ class TableServiceRepository @Inject constructor(
     private suspend fun devolverRechazadas(venueId: String) {
         val rechazadas = liberadas.filter { estadoDeLaMarca(venueId, it) == EstadoDeMarca.RECHAZADA }
         if (rechazadas.isEmpty()) return
-        val tables = devolver(venueId, _tables.value, rechazadas) { true }
+        // Codex r3 #2: nunca una cuenta que el plano ya trae en alguna mesa (otra caja la movió y un refresco ya la puso allá).
+        val enElPlano = _tables.value.flatMap { t -> t.openOrders.map { it.id } + listOfNotNull(t.currentOrder?.id) }.toSet()
+        val tables = devolver(venueId, _tables.value, rechazadas) { cuenta ->
+            cuenta.id !in enElPlano && idDelServidor(venueId, cuenta.id) !in enElPlano
+        }
         val nuevas = liberadas - rechazadas.toSet()
         payloadCache.saveDurable(com.avoqado.pos.core.data.local.PayloadCache.TYPE_TABLES, venueId,
             cacheJson.encodeToString(TablesCacheBlob.serializer(), TablesCacheBlob(tables, _ownership.value.enforced, _ownership.value.staffId,
@@ -445,30 +452,21 @@ class TableServiceRepository @Inject constructor(
         return table.copy(openOrders = restantes, currentOrder = puntero, status = if (libre) "AVAILABLE" else table.status)
     }
 
+    /** D8: el `CLEAR_TABLE` que [clearTable] acaba de encolar sin red, por `venue|mesa|cuenta` (sólo en memoria: lo usa el mismo cobro). */
+    private val clearEncolado = java.util.concurrent.ConcurrentHashMap<String, String>()
+    private fun llaveDelLiberar(venueId: String, tableId: String, orderId: String) = "$venueId|$tableId|$orderId"
+
     /**
-     * D8: «Liberar mesa» tras un cobro COMPLETO. En línea, como siempre (devuelve `false`). Sin red, el `CLEAR_TABLE` va a la cola y, si
-     * [soltarSinRed] (quien llama ya comprobó que todo el dinero de la cuenta va por la cola de mesas), la cuenta se quita del plano de
-     * este aparato junto con su marca, en UNA escritura a disco, y devuelve `true`. Si esa escritura falla, el «liberar» ya quedó en la
-     * cola y la mesa se queda como antes («Por sincronizar»): `false`.
+     * D8: tras un cobro COMPLETO cuyo «liberar mesa» ([clearTable]) quedó en la cola sin red, quita la cuenta del plano de este aparato
+     * junto con su marca, en UNA escritura a disco, si [soltarSinRed] (quien llama comprobó que todo el dinero de la cuenta va por la cola
+     * de mesas) y el SERVIDOR anunció la visita nueva. Si el «liberar» fue en línea, o algo falla, `false`: la mesa queda como antes.
      */
-    suspend fun liberarTrasCobro(venueId: String, tableId: String, orderId: String, idsDeLaCuenta: Set<String>,
-        soltarSinRed: suspend () -> Boolean): Result<Boolean> {
-        val enLinea = runCatching { apiService.clearTable(venueId, tableId); Unit }
-        val error = enLinea.exceptionOrNull() ?: return Result.success(false)
-        if (error is kotlinx.coroutines.CancellationException) throw error
-        if (!isNetworkError(error)) { Log.e(TAG, "❌ clearTable failed: ${error.message}"); return Result.failure(error) }
-        val intentId = try {
-            syncOutbox.enqueue(venueId, "CLEAR_TABLE", kotlinx.serialization.json.buildJsonObject {
-                put("tableId", kotlinx.serialization.json.JsonPrimitive(tableId))
-                putOrderRef(orderId)
-            })
-        } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) {
-            Log.e(TAG, "❌ clearTable no se pudo encolar: ${e.message}"); return Result.failure(e)
-        }
-        Log.w(TAG, "📴 CLEAR_TABLE sin red — encolado al outbox")
-        return Result.success(try { servidorConVisitaNueva && soltarSinRed() && soltarEnElPlano(venueId, tableId, idsDeLaCuenta, intentId) }
-            catch (e: kotlinx.coroutines.CancellationException) { throw e }
-            catch (e: Exception) { Log.e(TAG, "❌ No se pudo soltar la mesa en el plano: ${e.message}"); false })
+    suspend fun soltarTrasCobroSinRed(venueId: String, tableId: String, orderId: String, idsDeLaCuenta: Set<String>,
+        soltarSinRed: suspend () -> Boolean): Boolean {
+        val intentId = clearEncolado.remove(llaveDelLiberar(venueId, tableId, orderId)) ?: return false
+        return try { servidorConVisitaNueva && soltarSinRed() && soltarEnElPlano(venueId, tableId, idsDeLaCuenta, intentId) }
+        catch (e: kotlinx.coroutines.CancellationException) { throw e }
+        catch (e: Exception) { Log.e(TAG, "❌ No se pudo soltar la mesa en el plano: ${e.message}"); false }
     }
 
     private suspend fun soltarEnElPlano(venueId: String, tableId: String, idsDeLaCuenta: Set<String>, clearIntentId: String): Boolean =
@@ -839,10 +837,17 @@ class TableServiceRepository @Inject constructor(
      * de dejar una «operación por revisar». La cuenta no vuelve el intent trabajo de esa cuenta ([SyncOutbox.tocaLaOrden]).
      */
     suspend fun clearTable(venueId: String, tableId: String, orderId: String): Result<Unit> = runCatching {
+        clearEncolado.remove(llaveDelLiberar(venueId, tableId, orderId))
         apiService.clearTable(venueId, tableId)
         Unit
-    }.orQueueOffline(venueId, "CLEAR_TABLE", Unit) {
-        put("tableId", kotlinx.serialization.json.JsonPrimitive(tableId))
-        putOrderRef(orderId)
+    }.recoverCatching { e ->
+        if (!isNetworkError(e)) throw e
+        // D8: se recuerda el intent para que [soltarTrasCobroSinRed] lo ligue a la marca de la mesa.
+        clearEncolado[llaveDelLiberar(venueId, tableId, orderId)] = syncOutbox.enqueue(venueId, "CLEAR_TABLE",
+            kotlinx.serialization.json.buildJsonObject {
+                put("tableId", kotlinx.serialization.json.JsonPrimitive(tableId))
+                putOrderRef(orderId)
+            })
+        Log.w(TAG, "📴 CLEAR_TABLE sin red — encolado al outbox")
     }.onFailure { Log.e(TAG, "❌ clearTable failed: ${it.message}") }
 }

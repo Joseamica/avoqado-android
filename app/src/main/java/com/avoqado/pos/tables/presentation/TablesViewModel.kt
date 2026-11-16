@@ -744,8 +744,11 @@ class TablesViewModel @Inject constructor(
             // D8 (hz:033d44ca:D8): sin red, la mesa se suelta en ESTE plano si todo su dinero va por la cola de mesas, detrás de su
             // «liberar» (nada en la cola de COBROS, D62): así se le puede abrir otra cuenta, que sale después por la misma cola.
             val cleared = cobroEnCola || mutarCuenta(vId, session.idsDeLaOrden) {
-                repository.liberarTrasCobro(vId, session.tableId, session.orderId, session.idsDeLaOrden,
-                    soltarSinRed = { todoPorLaColaDeMesas(vId, session.orderId) })
+                repository.clearTable(vId, session.tableId, session.orderId).also { liberada ->
+                    if (liberada.isSuccess) repository.soltarTrasCobroSinRed(vId, session.tableId, session.orderId, session.idsDeLaOrden) {
+                        todoPorLaColaDeMesas(vId, session.orderId)
+                    }
+                }
             }.isSuccess ||
                 repository.cuentaCobradaEnServidor(vId, session.orderId)
             // D8 (Codex r2 #5): la sesión se cierra ANTES del refresco. Sin red el GET puede tardar (WiFi sin internet) y «Venta nueva»

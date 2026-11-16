@@ -82,6 +82,12 @@ class MesaCobradaSinRedLibreTest {
 
     private fun prueba(block: suspend TestScope.() -> Unit) = runTest { block() }
 
+    /** Lo que hace `finishTableAfterPayment`: liberar la mesa (sin red va a la cola) y, si quedó en la cola, soltarla en el plano. */
+    private suspend fun Mundo.cobrarYSoltar(orden: String, soltar: suspend () -> Boolean = { true }): Boolean {
+        repo.clearTable(venue, "t7", orden).getOrThrow()
+        return repo.soltarTrasCobroSinRed(venue, "t7", orden, setOf(orden), soltar)
+    }
+
     /** El cobro de A ya va en la cola de mesas (lo que pasa al confirmar el efectivo sin red). */
     private fun Mundo.cobroEnCamino(vararg ids: String) { ids.forEach { trabajo[it] = TrabajoSinResolver(1, 0, setOf("PAY_CASH"), 4500) } }
 
@@ -90,7 +96,7 @@ class MesaCobradaSinRedLibreTest {
         m.repo.refresh(venue).getOrThrow()
         m.cobroEnCamino("orden-a")
 
-        val soltada = m.repo.liberarTrasCobro(venue, "t7", "orden-a", setOf("orden-a")) { true }.getOrThrow()
+        val soltada = m.cobrarYSoltar("orden-a")
 
         assertTrue(soltada)
         assertEquals(listOf("CLEAR_TABLE"), m.encolados.map { it.first })
@@ -106,7 +112,7 @@ class MesaCobradaSinRedLibreTest {
         val m = mundo(TablesResponse(data = listOf(ocupada)), sesion = sesionDe(cuentaA))
         m.repo.refresh(venue).getOrThrow()
 
-        val soltada = m.repo.liberarTrasCobro(venue, "t7", "orden-a", setOf("orden-a")) { true }.getOrThrow()
+        val soltada = m.cobrarYSoltar("orden-a")
 
         assertFalse(soltada)
         assertEquals("El liberar igual va a la cola (D75)", listOf("CLEAR_TABLE"), m.encolados.map { it.first })
@@ -118,7 +124,7 @@ class MesaCobradaSinRedLibreTest {
         val m = mundo(TablesResponse(data = listOf(ocupada), capabilities = conCapacidad), sesion = sesionDe(cuentaA))
         m.repo.refresh(venue).getOrThrow()
 
-        assertFalse(m.repo.liberarTrasCobro(venue, "t7", "orden-a", setOf("orden-a")) { false }.getOrThrow())
+        assertFalse(m.cobrarYSoltar("orden-a") { false })
         assertTrue(m.repo.tables.value.single().isOccupied)
     }
 
@@ -127,7 +133,7 @@ class MesaCobradaSinRedLibreTest {
         coEvery { m.api.clearTable(venue, "t7") } returns SimpleSuccessResponse()
         m.repo.refresh(venue).getOrThrow()
 
-        assertFalse(m.repo.liberarTrasCobro(venue, "t7", "orden-a", setOf("orden-a")) { error("no se pregunta") }.getOrThrow())
+        assertFalse(m.cobrarYSoltar("orden-a") { error("no se pregunta") })
         assertTrue(m.encolados.isEmpty())
         assertFalse(m.repo.abrirComoVisitaNueva(venue, "t7"))
     }
@@ -138,7 +144,8 @@ class MesaCobradaSinRedLibreTest {
             retrofit2.Response.error<Any>(409, "{}".toResponseBody(null)))
         m.repo.refresh(venue).getOrThrow()
 
-        assertTrue(m.repo.liberarTrasCobro(venue, "t7", "orden-a", setOf("orden-a")) { true }.isFailure)
+        assertTrue(m.repo.clearTable(venue, "t7", "orden-a").isFailure)
+        assertFalse(m.repo.soltarTrasCobroSinRed(venue, "t7", "orden-a", setOf("orden-a")) { true })
         assertTrue(m.encolados.isEmpty())
         assertTrue(m.repo.tables.value.single().isOccupied)
     }
@@ -149,7 +156,7 @@ class MesaCobradaSinRedLibreTest {
             sesion = sesionDe(cuentaA))
         m.repo.refresh(venue).getOrThrow()
 
-        assertTrue(m.repo.liberarTrasCobro(venue, "t7", "orden-a", setOf("orden-a")) { true }.getOrThrow())
+        assertTrue(m.cobrarYSoltar("orden-a"))
         assertEquals(listOf("orden-c"), m.repo.tables.value.single().openOrders.map { it.id })
         assertTrue(m.repo.tables.value.single().isOccupied)
     }
@@ -158,7 +165,7 @@ class MesaCobradaSinRedLibreTest {
         val m = mundo(TablesResponse(data = listOf(ocupada), capabilities = conCapacidad, tablesVersion = "v1"), sesion = sesionDe(cuentaA))
         m.repo.refresh(venue).getOrThrow()
         m.cobroEnCamino("orden-a")
-        m.repo.liberarTrasCobro(venue, "t7", "orden-a", setOf("orden-a")) { true }.getOrThrow()
+        m.cobrarYSoltar("orden-a")
 
         m.repo.refresh(venue).getOrThrow() // el servidor todavía trae A
 
@@ -170,7 +177,7 @@ class MesaCobradaSinRedLibreTest {
     @Test fun `la cola subió todo - la marca se borra y manda el servidor`() = prueba {
         val m = mundo(TablesResponse(data = listOf(ocupada), capabilities = conCapacidad, tablesVersion = "v1"), sesion = sesionDe(cuentaA))
         m.repo.refresh(venue).getOrThrow()
-        m.repo.liberarTrasCobro(venue, "t7", "orden-a", setOf("orden-a")) { true }.getOrThrow()
+        m.cobrarYSoltar("orden-a")
         m.estados["intent-1"]!!.value = SyncIntentEntity.STATUS_ACKED // el liberar subió; el cobro también (sin trabajo)
         coEvery { m.api.getTables(venue) } returns TablesResponse(data = listOf(mesa), capabilities = conCapacidad, tablesVersion = "v2")
 
@@ -185,7 +192,7 @@ class MesaCobradaSinRedLibreTest {
         val m = mundo(TablesResponse(data = listOf(ocupada), capabilities = conCapacidad), sesion = sesionDe(cuentaA))
         m.repo.refresh(venue).getOrThrow()
         m.cobroEnCamino("orden-a")
-        m.repo.liberarTrasCobro(venue, "t7", "orden-a", setOf("orden-a")) { true }.getOrThrow()
+        m.cobrarYSoltar("orden-a")
         m.trabajo["orden-a"] = TrabajoSinResolver(1, 1, setOf("PAY_CASH"), 4500) // rechazado
 
         m.repo.refresh(venue).getOrThrow()
@@ -198,7 +205,7 @@ class MesaCobradaSinRedLibreTest {
         val m = mundo(TablesResponse(data = listOf(ocupada), capabilities = conCapacidad), sesion = sesionDe(cuentaA))
         m.repo.refresh(venue).getOrThrow()
         m.cobroEnCamino("orden-a")
-        m.repo.liberarTrasCobro(venue, "t7", "orden-a", setOf("orden-a")) { true }.getOrThrow()
+        m.cobrarYSoltar("orden-a")
         m.trabajo["orden-a"] = TrabajoSinResolver(1, 1, setOf("PAY_CASH"), 4500)
         coEvery { m.api.getTables(venue) } throws java.net.ConnectException("se volvió a caer")
 
@@ -214,7 +221,7 @@ class MesaCobradaSinRedLibreTest {
         val m = mundo(TablesResponse(data = listOf(ocupada), capabilities = conCapacidad), sesion = sesionDe(cuentaA))
         m.repo.refresh(venue).getOrThrow()
         m.cobroEnCamino("orden-a")
-        m.repo.liberarTrasCobro(venue, "t7", "orden-a", setOf("orden-a")) { true }.getOrThrow()
+        m.cobrarYSoltar("orden-a")
         m.trabajo["orden-a"] = TrabajoSinResolver(1, 1, setOf("PAY_CASH"), 4500)
 
         m.repo.reconciliarMarcasSinRed(venue)
@@ -223,26 +230,57 @@ class MesaCobradaSinRedLibreTest {
         coVerify(exactly = 1) { m.api.getTables(venue) } // sólo el del arranque
     }
 
-    @Test fun `Codex r2 #3 - sólo se rechazó el liberar (el cobro entró) - no se vuelve a pintar una cuenta pagada`() = prueba {
+    @Test fun `Codex r3 #1 - el cobro entró como parcial y el liberar se rechazó - sin red la cuenta vuelve, con red manda el servidor`() = prueba {
         val m = mundo(TablesResponse(data = listOf(ocupada), capabilities = conCapacidad), sesion = sesionDe(cuentaA))
         m.repo.refresh(venue).getOrThrow()
-        m.repo.liberarTrasCobro(venue, "t7", "orden-a", setOf("orden-a")) { true }.getOrThrow()
-        m.estados["intent-1"]!!.value = SyncIntentEntity.STATUS_REJECTED // el cobro subió bien (sin trabajo de la cuenta)
+        m.cobrarYSoltar("orden-a")
+        m.estados["intent-1"]!!.value = SyncIntentEntity.STATUS_REJECTED // el cobro subió (ACKED), el liberar no: A debe todavía
 
         m.repo.reconciliarMarcasSinRed(venue)
-        assertTrue("Sin red: la cuenta ya pagada no regresa", m.repo.tables.value.single().isAvailable)
+        assertEquals("Sin red: no se puede probar que se cerró", listOf("orden-a"), m.repo.tables.value.single().openOrders.map { it.id })
+        assertNull(m.repo.tablesVersion)
 
+        // Si en realidad estaba pagada (el liberar se rechazó por otra cosa), la siguiente respuesta del servidor la deja libre.
         coEvery { m.api.getTables(venue) } returns TablesResponse(data = listOf(mesa), capabilities = conCapacidad, tablesVersion = "v3")
         m.repo.refresh(venue).getOrThrow()
-        assertTrue("Con red manda el servidor: libre", m.repo.tables.value.single().isAvailable)
+        assertTrue(m.repo.tables.value.single().isAvailable)
         assertFalse(m.repo.abrirComoVisitaNueva(venue, "t7"))
+    }
+
+    @Test fun `Codex r2 #3 - con red, una marca rechazada nunca contradice al servidor (cuenta ya pagada no regresa)`() = prueba {
+        val m = mundo(TablesResponse(data = listOf(ocupada), capabilities = conCapacidad), sesion = sesionDe(cuentaA))
+        m.repo.refresh(venue).getOrThrow()
+        m.cobrarYSoltar("orden-a")
+        m.estados["intent-1"]!!.value = SyncIntentEntity.STATUS_REJECTED
+        coEvery { m.api.getTables(venue) } returns TablesResponse(data = listOf(mesa), capabilities = conCapacidad, tablesVersion = "v3")
+
+        m.repo.refresh(venue).getOrThrow()
+
+        assertTrue(m.repo.tables.value.single().isAvailable)
+        assertEquals("v3", m.repo.tablesVersion)
+    }
+
+    @Test fun `Codex r3 #2 - sin red no se duplica una cuenta que el plano ya trae en otra mesa`() = prueba {
+        val m = mundo(TablesResponse(data = listOf(ocupada, otraMesa), capabilities = conCapacidad), sesion = sesionDe(cuentaA))
+        m.repo.refresh(venue).getOrThrow()
+        m.cobroEnCamino("orden-a")
+        m.cobrarYSoltar("orden-a")
+        coEvery { m.api.getTables(venue) } returns TablesResponse(capabilities = conCapacidad,
+            data = listOf(mesa, otraMesa.copy(status = "OCCUPIED", openOrders = listOf(cuentaA))))
+        m.repo.refresh(venue).getOrThrow() // otra caja la movió a M8: allá se ve
+        m.trabajo["orden-a"] = TrabajoSinResolver(1, 1, setOf("PAY_CASH"), 4500) // y luego su cobro se rechazó, ya sin red
+
+        m.repo.reconciliarMarcasSinRed(venue)
+
+        assertTrue(m.repo.tables.value.first { it.id == "t7" }.isAvailable)
+        assertEquals(listOf("orden-a"), m.repo.tables.value.first { it.id == "t8" }.openOrders.map { it.id })
     }
 
     @Test fun `Codex r2 #2 - otra caja movió A a otra mesa - allá se ve ocupada y esta mesa queda libre`() = prueba {
         val m = mundo(TablesResponse(data = listOf(ocupada, otraMesa), capabilities = conCapacidad), sesion = sesionDe(cuentaA))
         m.repo.refresh(venue).getOrThrow()
         m.cobroEnCamino("orden-a")
-        m.repo.liberarTrasCobro(venue, "t7", "orden-a", setOf("orden-a")) { true }.getOrThrow()
+        m.cobrarYSoltar("orden-a")
         coEvery { m.api.getTables(venue) } returns TablesResponse(capabilities = conCapacidad,
             data = listOf(mesa, otraMesa.copy(status = "OCCUPIED", openOrders = listOf(cuentaA))))
 
@@ -257,7 +295,7 @@ class MesaCobradaSinRedLibreTest {
         val m = mundo(TablesResponse(data = listOf(ocupada), capabilities = conCapacidad), sesion = sesionDe(cuentaA))
         m.repo.refresh(venue).getOrThrow()
         m.cobroEnCamino("orden-a")
-        m.repo.liberarTrasCobro(venue, "t7", "orden-a", setOf("orden-a")) { true }.getOrThrow()
+        m.cobrarYSoltar("orden-a")
         coEvery { m.api.getTables(venue) } returns TablesResponse(data = listOf(ocupada))
 
         m.repo.refresh(venue).getOrThrow()
@@ -271,7 +309,7 @@ class MesaCobradaSinRedLibreTest {
         val m = mundo(TablesResponse(data = listOf(mesa), capabilities = conCapacidad), sesion = sesionDe(local, provisional = true))
         m.repo.refresh(venue).getOrThrow()
         m.repo.markTableOccupiedLocally("t7")
-        assertTrue(m.repo.liberarTrasCobro(venue, "t7", "local-a", setOf("local-a")) { true }.getOrThrow())
+        assertTrue(m.cobrarYSoltar("local-a"))
         assertTrue(m.repo.tables.value.single().isAvailable)
         // El OPEN subió (local-a → real-a) y el cobro se rechazó; el servidor trae la cuenta con su id REAL.
         m.promovidas["local-a"] = "real-a"
@@ -289,7 +327,7 @@ class MesaCobradaSinRedLibreTest {
         val m = mundo(TablesResponse(data = listOf(mesa), capabilities = conCapacidad), sesion = sesionDe(local, provisional = true))
         m.repo.refresh(venue).getOrThrow()
         m.repo.markTableOccupiedLocally("t7")
-        m.repo.liberarTrasCobro(venue, "t7", "local-b", setOf("local-b")) { true }.getOrThrow()
+        m.cobrarYSoltar("local-b")
         m.trabajo["local-b"] = TrabajoSinResolver(1, 1, setOf("OPEN_TABLE"), 0) // su apertura se rechazó
 
         m.repo.refresh(venue).getOrThrow()
@@ -302,7 +340,7 @@ class MesaCobradaSinRedLibreTest {
         val m = mundo(TablesResponse(data = listOf(ocupada), capabilities = conCapacidad), filas, sesionDe(cuentaA))
         m.repo.refresh(venue).getOrThrow()
         m.cobroEnCamino("orden-a")
-        m.repo.liberarTrasCobro(venue, "t7", "orden-a", setOf("orden-a")) { true }.getOrThrow()
+        m.cobrarYSoltar("orden-a")
 
         val otra = mundo(TablesResponse(), filas)
         otra.cobroEnCamino("orden-a")
