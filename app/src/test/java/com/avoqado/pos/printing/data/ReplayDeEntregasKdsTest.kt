@@ -47,6 +47,7 @@ class ReplayDeEntregasKdsTest {
     /** La libreta arranca vacía; las pruebas que la necesitan ocupada la re-stubbean. */
     private val pendientes = mockk<ComandasPendientesStore>(relaxed = true) {
         every { pendiente } returns MutableStateFlow<EstadoDeComanda.NoSalio?>(null)
+        every { this@mockk.pendientes } returns MutableStateFlow<List<EstadoDeComanda.NoSalio>>(emptyList())
     }
     /** La sucursal vigente (I1 de la revisión de la Task 7): las pruebas que la cambian a media pasada la re-stubbean. */
     private var sucursalVigente = "venue-1"
@@ -317,6 +318,7 @@ class ReplayDeEntregasKdsTest {
         val plan = TicketPlan("st_barra", false, listOf(ConsolidatedLine("Café", 1, emptyList(), null, listOf("oi_2"))))
         val conPlan = trabajo.copy(planes = listOf(plan))
         every { pendientes.pendiente } returns MutableStateFlow(EstadoDeComanda.NoSalio(listOf("Barra"), "offline", "1234", conPlan))
+        every { pendientes.pendientes } returns MutableStateFlow(listOf(EstadoDeComanda.NoSalio(listOf("Barra"), "offline", "1234", conPlan)))
         coEvery { dao.delVenue("venue-1") } returns listOf(
             fila("sale:vieja:st_barra", 0).copy(trabajoJson = Json.encodeToString(TrabajoPendiente.serializer(), conPlan)),
         )

@@ -66,11 +66,17 @@ class ReplayDeComandasPendientes @Inject constructor(
     }
 
     /**
-     * Intenta UNA vez la comanda pendiente, si la hay.
+     * Intenta UNA vez cada comanda pendiente y vigente, de la más vieja a la más nueva (D1, 16-nov-2026: antes sólo
+     * había una; con la impresora de cocina de vuelta, ahora salen todas y en el orden en que la cocina las debía
+     * recibir).
      *
-     * @return el estado del intento, o `null` si no había nada que mandar (o si otro intento
-     *   estaba en curso — el candado no espera: si el reloj ya está adentro, el toque del cajero
-     *   no encola un segundo envío).
+     * Cada una se intenta UNA vez por pasada: si una sigue sin salir (su estación sigue apagada), las demás no la
+     * esperan, y el siguiente tic la vuelve a intentar. Las comandas que entran a la libreta mientras corre la pasada
+     * esperan al siguiente tic.
+     *
+     * @return el estado del intento de la MÁS RECIENTE (la que el aviso enseña), o `null` si no había nada que mandar
+     *   (o si otro intento estaba en curso — el candado no espera: si el reloj ya está adentro, el toque del cajero no
+     *   encola un segundo envío).
      */
     suspend fun intentarAhora(): EstadoDeComanda? {
         if (!candado.tryLock()) {
@@ -78,25 +84,34 @@ class ReplayDeComandasPendientes @Inject constructor(
             return null
         }
         try {
-            // `vigente`, no `pendiente.value`: con la app abierta más de 8 h la comanda vence aquí también (Codex D11 r1 #3).
-            val trabajo = store.vigente()?.trabajo ?: return null
-            Log.d(TAG, "Reintentando la comanda del pedido ${trabajo.orderNumber}")
-            val estado = comandaDispatcher.reintentar(trabajo)
-            if (estado is EstadoDeComanda.Salio || estado is EstadoDeComanda.SinComanda) {
-                // 🔴 Se suelta SÓLO cuando ya no falta nada, y sólo si la libreta sigue siendo ESTA comanda: si mientras
-                // se imprimía falló otra venta, la suya no se borra (Codex D11 r1 #2).
-                store.soltarSi(trabajo)
-                Log.d(TAG, "✅ La comanda del pedido ${trabajo.orderNumber} por fin salió")
-            } else if (estado is EstadoDeComanda.NoSalio) {
-                // 🔴 D11 (16-nov-2026): el `NoSalio` trae SÓLO lo que sigue faltando. Si Cocina salió y Barra no, el
-                // pendiente se queda con Barra; dejar el viejo hacía que el siguiente tic le mandara a Cocina el mismo
-                // ticket otra vez. Ver [ComandasPendientesStore.reemplazar].
-                store.reemplazar(trabajo, estado)
+            // `vigentes`, no `pendientes.value`: con la app abierta más de 8 h la comanda vence aquí también (Codex D11 r1 #3).
+            val trabajos = store.vigentes().mapNotNull { it.trabajo }
+            var ultimo: EstadoDeComanda? = null
+            for (trabajo in trabajos) {
+                // Una persona pudo resolverla («Ya la canté») mientras salían las anteriores: ésa ya no se manda.
+                if (store.pendientes.value.none { it.trabajo == trabajo }) continue
+                ultimo = intentarUna(trabajo)
             }
-            return estado
+            return ultimo
         } finally {
             candado.unlock()
         }
+    }
+
+    private suspend fun intentarUna(trabajo: TrabajoPendiente): EstadoDeComanda {
+        Log.d(TAG, "Reintentando la comanda del pedido ${trabajo.orderNumber}")
+        val estado = comandaDispatcher.reintentar(trabajo)
+        if (estado is EstadoDeComanda.Salio || estado is EstadoDeComanda.SinComanda) {
+            // 🔴 Se suelta SÓLO cuando ya no falta nada, y sólo ESTA comanda: las de otras ventas siguen (Codex D11 r1 #2).
+            store.soltarSi(trabajo)
+            Log.d(TAG, "✅ La comanda del pedido ${trabajo.orderNumber} por fin salió")
+        } else if (estado is EstadoDeComanda.NoSalio) {
+            // 🔴 D11 (16-nov-2026): el `NoSalio` trae SÓLO lo que sigue faltando. Si Cocina salió y Barra no, el
+            // pendiente se queda con Barra; dejar el viejo hacía que el siguiente tic le mandara a Cocina el mismo
+            // ticket otra vez. Ver [ComandasPendientesStore.reemplazar].
+            store.reemplazar(trabajo, estado)
+        }
+        return estado
     }
 
     private companion object {

@@ -6119,7 +6119,8 @@ class PaymentFlowViewModel @Inject constructor(
             }
             if (esDeEstaVenta) {
                 _avisoEnCurso.value = null
-                comandasPendientesStore.limpiar()
+                // D1: sólo lo de ESTA venta. La libreta es una lista; `limpiar()` vaciaba las comandas de las demás.
+                comandasPendientesStore.soltarPorFolio(orderNumber)
             }
         } else if (estado is EstadoDeComanda.NoSalio && estado.trabajo != null) {
             // El veredicto final CON algo que reenviar va al almacén, que es lo que ven TODAS
