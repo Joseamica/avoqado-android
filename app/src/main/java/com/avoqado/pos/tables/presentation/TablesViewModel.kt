@@ -70,7 +70,14 @@ class TablesViewModel @Inject constructor(
     private val transporteLan: com.avoqado.pos.core.data.lan.TransporteLan? = null,
     /** D6: el disco de las cajas recordadas del D12 (sólo lectura, para [avisoDeIsla]). */
     private val payloadCache: com.avoqado.pos.core.data.local.PayloadCache? = null,
+    /** D62: el efectivo de cada cuenta en la cola de COBROS de este aparato («Unir mesas» no junta una cuenta con un abono sin subir). */
+    private val efectivoEnColaDeCobros: com.avoqado.pos.payment.data.CashPaymentRepository? = null,
+    /** D62: los borradores, para reconocer el id local con que nació una cuenta (su abono pudo guardarse con él). */
+    private val draftStore: com.avoqado.pos.tables.data.TableRoundDraftStore? = null,
 ) : ViewModel() {
+
+    /** D62: dónde se lee el borrador al revisar las cuentas que se unen (las pruebas lo corren en su propio hilo). */
+    internal var discoParaFusionar: kotlin.coroutines.CoroutineContext = kotlinx.coroutines.Dispatchers.IO
 
     private var generacion = 0L
     private var mutacionesEnVuelo = 0
@@ -854,7 +861,25 @@ class TablesViewModel @Inject constructor(
                 .flatMap { openOrderIds(it) }
                 .distinct()
                 .filter { it != targetOrder.id }
-            orderIds.forEach { sourceOrderId ->
+            // D62: antes de unir NADA, ninguna cuenta que se junta puede tener efectivo en la cola de COBROS (en cola, por revisar o sin
+            // poder leerla): su fila se queda con la llave de esa cuenta y la mesa destino ofrecería su total. Si una ya tiene abono, no
+            // se une ninguna (no queda una unión a medias por algo que ya se sabía).
+            for (sourceOrderId in orderIds) {
+                motivoParaFusionar(efectivoDeLaCuentaEnColaDeCobros(efectivoEnColaDeCobros, draftStore, tableSession, vId, sourceOrderId,
+                    discoParaFusionar))?.let { onDone(0, orderIds.size, it); return@launch }
+            }
+            for (sourceOrderId in orderIds) {
+                // D62 (Codex r3 #1): las fusiones van una por una y pueden tardar; mientras, la cajera puede abrir otra cuenta de la lista
+                // y abonarle. Cada cuenta se vuelve a revisar justo antes de SU fusión; si ya tiene un abono, se para ahí y se dice
+                // cuántas sí entraron (nunca se junta una cuenta con efectivo sin subir).
+                motivoParaFusionar(efectivoDeLaCuentaEnColaDeCobros(efectivoEnColaDeCobros, draftStore, tableSession, vId, sourceOrderId,
+                    discoParaFusionar))?.let { motivo ->
+                    fail += orderIds.size - ok - fail
+                    if (firstError == null) firstError = motivo
+                    repository.refresh(vId)
+                    onDone(ok, fail, firstError)
+                    return@launch
+                }
                 mutarCuenta(vId, setOf(targetOrder.id, sourceOrderId)) { repository.mergeOrders(vId, targetOrder.id, sourceOrderId) }.fold(
                     onSuccess = {
                         tableSession.finalizar(vId, setOf(sourceOrderId), sessionEpoch)

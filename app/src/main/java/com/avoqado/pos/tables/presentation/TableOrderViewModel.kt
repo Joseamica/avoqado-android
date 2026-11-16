@@ -339,6 +339,9 @@ class TableOrderViewModel @Inject constructor(
         } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (_: Exception) { null }
     }
 
+    /** D62: dónde se lee el borrador al revisar la cuenta que se fusiona (las pruebas lo corren en su propio hilo). */
+    internal var discoParaFusionar: kotlin.coroutines.CoroutineContext = kotlinx.coroutines.Dispatchers.IO
+
     private suspend fun leerTrabajo(s: TableSession.Active): TrabajoSinResolver? {
         val vId = venueId ?: return null
         val epoch = generacion
@@ -2035,6 +2038,9 @@ class TableOrderViewModel @Inject constructor(
         bloqueoDeSaldo(vId, session, sourceOrderId)?.let { onDone(false, it); return }
         val offline = !connectivityMonitor.isConnected.value
         viewModelScope.launch {
+            // D62: un cobro del ORIGEN en la cola de COBROS se queda con la llave del origen; fusionado, «Pagar» del destino no lo ve.
+            motivoParaFusionar(efectivoDeLaCuentaEnColaDeCobros(efectivoEnColaDeCobros, draftStore, tableSession, vId, sourceOrderId,
+                discoParaFusionar))?.let { onDone(false, it); return@launch }
             mutarCuenta(vId, session, sourceOrderId) { mutar { repository.mergeOrders(vId, session.orderId, sourceOrderId)  }}.fold(
                 onSuccess = {
                     tableSession.finalizar(vId, setOf(sourceOrderId), contextoDeSesion)

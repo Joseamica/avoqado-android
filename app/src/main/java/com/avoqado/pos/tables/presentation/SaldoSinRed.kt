@@ -18,6 +18,57 @@ internal const val MESA_COBRO_SIN_SINCRONIZAR = "Esta mesa tiene un cobro sin si
 internal const val MESA_COBRO_POR_REVISAR =
     "Esta mesa tiene un cobro por revisar: un gerente lo resuelve en Operaciones por revisar antes de cobrarla otra vez."
 internal const val MESA_COBROS_SIN_LEER = "No se pudo revisar si esta mesa tiene cobros sin sincronizar. Intenta de nuevo."
+/** D62: la cuenta que se quiere fusionar tiene un cobro en la cola de COBROS de ESTE aparato (la misma regla del D45). */
+internal const val FUSIONAR_COBRO_SIN_SINCRONIZAR =
+    "La cuenta que quieres fusionar tiene un cobro sin sincronizar: fusiónala cuando se sincronice."
+internal const val FUSIONAR_COBRO_POR_REVISAR =
+    "La cuenta que quieres fusionar tiene un cobro por revisar: un gerente lo resuelve en Operaciones por revisar antes de fusionarla."
+internal const val FUSIONAR_COBROS_SIN_LEER = "No se pudo revisar si la cuenta que quieres fusionar tiene cobros sin sincronizar. Intenta de nuevo."
+/** D62: los motivos de arriba ya dicen qué hacer: la pantalla no les pega la pista de «reversa su pago». */
+internal val MOTIVOS_DE_FUSIONAR_POR_COBRO_EN_COLA = setOf(FUSIONAR_COBRO_SIN_SINCRONIZAR, FUSIONAR_COBRO_POR_REVISAR, FUSIONAR_COBROS_SIN_LEER)
+
+/**
+ * D62 (Codex r1 del D45 #2): un abono de la cuenta ORIGEN en la cola de COBROS se queda con su llave (orderId = origen). Si se fusiona antes
+ * de que suba, «Pagar» de la cuenta destino mira sólo las llaves del destino y ofrece su total con ese dinero ya recibido. En cola o por
+ * revisar no se fusiona; sin poder leer la cola, tampoco (falla cerrado). PURA.
+ */
+internal fun motivoParaFusionar(efectivo: com.avoqado.pos.payment.data.EfectivoDelPedido?): String? = when (efectivo) {
+    null -> FUSIONAR_COBROS_SIN_LEER
+    com.avoqado.pos.payment.data.EfectivoDelPedido.POR_REVISAR -> FUSIONAR_COBRO_POR_REVISAR
+    com.avoqado.pos.payment.data.EfectivoDelPedido.EN_COLA -> FUSIONAR_COBRO_SIN_SINCRONIZAR
+    com.avoqado.pos.payment.data.EfectivoDelPedido.NINGUNO -> null
+}
+
+/**
+ * D62: el efectivo de una cuenta (todas las llaves que este aparato le conoce) en la cola de COBROS, con la regla de la bandeja. Lo usan
+ * las DOS entradas que fusionan cuentas: «Fusionar cuentas» de la cuenta y «Unir mesas» del plano (Codex r2 #1).
+ * Las llaves: las de la memoria (la cuenta activa o estacionada) y, en disco, el id al que lleva el borrador y los ids locales con que
+ * nació la cuenta antes de que su apertura subiera (`originalOrderIdsQ16`, que la promoción guarda): un cobro guardado con el id local
+ * sigue contando tras reiniciar la app (Codex r1 #1). El borrador se lee en [disco], fuera del hilo de la pantalla (Codex r2 #2).
+ * null = no se pudo leer (falla cerrado). Sin la cola inyectada, nada.
+ */
+internal suspend fun efectivoDeLaCuentaEnColaDeCobros(
+    cola: com.avoqado.pos.payment.data.CashPaymentRepository?,
+    borradores: com.avoqado.pos.tables.data.TableRoundDraftStore?,
+    sesion: com.avoqado.pos.tables.data.TableSession,
+    venueId: String,
+    orderId: String,
+    disco: kotlin.coroutines.CoroutineContext,
+): com.avoqado.pos.payment.data.EfectivoDelPedido? {
+    cola ?: return com.avoqado.pos.payment.data.EfectivoDelPedido.NINGUNO
+    return try {
+        val delDisco = kotlinx.coroutines.withContext(disco) {
+            borradores?.loadResolved(venueId, orderId)?.let { (canonico, borrador) -> borrador.originalOrderIdsQ16.orEmpty() + canonico }
+        }.orEmpty()
+        val estados = (sesion.idsParaPreCuenta(venueId, orderId) + delDisco).map { cola.efectivoDelPedido(it) }
+        when {
+            com.avoqado.pos.payment.data.EfectivoDelPedido.POR_REVISAR in estados -> com.avoqado.pos.payment.data.EfectivoDelPedido.POR_REVISAR
+            com.avoqado.pos.payment.data.EfectivoDelPedido.EN_COLA in estados -> com.avoqado.pos.payment.data.EfectivoDelPedido.EN_COLA
+            else -> com.avoqado.pos.payment.data.EfectivoDelPedido.NINGUNO
+        }
+    } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (_: Exception) { null }
+}
+
 /** D59: el SERVIDOR ya marcó la cuenta pagada (p. ej. la cobraron en la terminal, TPV › Mesas, mientras esta pantalla seguía abierta). */
 internal const val MESA_YA_PAGADA = "Esta mesa ya se pagó: no la cobres otra vez."
 
