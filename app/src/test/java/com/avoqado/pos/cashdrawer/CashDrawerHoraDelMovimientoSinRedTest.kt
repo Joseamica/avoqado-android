@@ -53,6 +53,23 @@ class CashDrawerHoraDelMovimientoSinRedTest {
     }
 
     @Test
+    fun `P1 Codex r4 - reloj de pared en 2019 con espera medida - viaja la espera sin la fecha`() {
+        val en2019 = java.time.Instant.parse("2019-06-01T00:00:00Z").toEpochMilli()
+        assertEquals(
+            HoraDelMovimiento(null, 8 * 60_000L),
+            horaDelMovimientoParaElServidor(en2019, InstanteMonotonico(arranque, 1_000), InstanteMonotonico(arranque, 1_000 + 8 * 60_000)),
+        )
+    }
+
+    @Test
+    fun `P1 Codex r4 - con el arranque de respaldo no se acredita espera`() {
+        assertEquals(
+            HoraDelMovimiento("2026-11-12T02:03:00Z", null),
+            horaDelMovimientoParaElServidor(veinte03, InstanteMonotonico("t29880000", 10_000), InstanteMonotonico("t29880000", 80_000)),
+        )
+    }
+
+    @Test
     fun `una cola legada sin hora creible no manda hora`() {
         assertNull(horaDelMovimientoParaElServidor(1, null, InstanteMonotonico(arranque, 5)))
         assertNull(horaDelMovimientoParaElServidor(0, InstanteMonotonico(arranque, 1), InstanteMonotonico(arranque, 5)))
