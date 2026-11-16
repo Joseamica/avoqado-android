@@ -121,8 +121,9 @@ const val Q15_HISTORY_COUNT_SQL = "SELECT COUNT(*) AS total FROM (SELECT 'PAYMEN
 /**
  * D1/A4 (ensayo 16-nov, `hz:033d44ca:D9`): sólo el resultado de los cobros que siguen por revisar, para decirle a quien NO puede
  * revisarlos cuánto se cobró de más, sin leer su historial (folios, importes de captura). Tope de 200: el texto dice «o más».
+ * Una fila sin resultado sale como "" (Room no entrega nulos en una lista): cuenta como cobro, sin importe de más.
  */
-const val Q15_RESULTADOS_POR_REVISAR_SQL = "SELECT q15ResultJson FROM pending_payments WHERE venueId=:venueId AND q15Reason IS NOT NULL AND q15ReviewedAt IS NULL UNION ALL SELECT q15ResultJson FROM pos_sync_intents WHERE venue_id=:venueId AND q15Reason IS NOT NULL AND q15ReviewedAt IS NULL LIMIT 200"
+const val Q15_RESULTADOS_POR_REVISAR_SQL = "SELECT COALESCE(q15ResultJson,'') AS resultado FROM pending_payments WHERE venueId=:venueId AND q15Reason IS NOT NULL AND q15ReviewedAt IS NULL UNION ALL SELECT COALESCE(q15ResultJson,'') AS resultado FROM pos_sync_intents WHERE venue_id=:venueId AND q15Reason IS NOT NULL AND q15ReviewedAt IS NULL LIMIT 200"
 const val Q15_PAYMENT_REVIEW_SQL = "UPDATE pending_payments SET q15ReviewedAt=:ahora,q15ReviewedBy=:actor,q15ReviewRole=:rol WHERE venueId=:venueId AND id=:id AND syncStatus='SYNCED' AND q15Reason IS NOT NULL AND q15ReviewedAt IS NULL AND :actor!='' AND UPPER(:rol) IN ('MANAGER','ADMIN','OWNER','SUPERADMIN') AND q15Reason NOT IN ('PRICE_PROOF_PENDING','CAPTURA_SIN_EVIDENCIA')"
 const val Q15_INTENT_REVIEW_SQL = "UPDATE pos_sync_intents SET q15ReviewedAt=:ahora,q15ReviewedBy=:actor,q15ReviewRole=:rol WHERE venue_id=:venueId AND id=:id AND status='ACKED' AND q15Reason IS NOT NULL AND q15ReviewedAt IS NULL AND :actor!='' AND UPPER(:rol) IN ('MANAGER','ADMIN','OWNER','SUPERADMIN') AND q15Reason NOT IN ('PRICE_PROOF_PENDING','CAPTURA_SIN_EVIDENCIA')"
 const val Q15_PAYMENT_HOLD_SQL = "UPDATE pending_payments SET q15Reason=COALESCE(q15Reason,:motivo),q15DetectedAt=COALESCE(q15DetectedAt,:ahora) WHERE venueId=:venueId AND id=:id AND syncStatus!='SYNCED'"
