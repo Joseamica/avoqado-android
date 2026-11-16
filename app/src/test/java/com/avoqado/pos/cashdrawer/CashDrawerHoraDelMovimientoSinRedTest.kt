@@ -72,7 +72,9 @@ class CashDrawerHoraDelMovimientoSinRedTest {
     @Test
     fun `una cola legada sin hora creible no manda hora`() {
         assertNull(horaDelMovimientoParaElServidor(1, null, InstanteMonotonico(arranque, 5)))
-        assertNull(horaDelMovimientoParaElServidor(0, InstanteMonotonico(arranque, 1), InstanteMonotonico(arranque, 5)))
+        assertNull(horaDelMovimientoParaElServidor(0, null, InstanteMonotonico(arranque, 5)))
+        // Con espera medida, viaja la espera aunque la hora de pared no sirva (Codex r4 #1, r5).
+        assertEquals(HoraDelMovimiento(null, 4L), horaDelMovimientoParaElServidor(0, InstanteMonotonico(arranque, 1), InstanteMonotonico(arranque, 5)))
     }
 
     @Test
