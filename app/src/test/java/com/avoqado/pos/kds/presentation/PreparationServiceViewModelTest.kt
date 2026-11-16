@@ -55,6 +55,12 @@ class PreparationServiceViewModelTest {
             assertFalse(model.state.value.loading)
         } finally { model.close() }
     }
+    @Test fun `D68 un corte a media respuesta tambien se dice en espanol`() {
+        assertEquals(SIN_RED_AL_LEER, textoDeCocina(java.net.ProtocolException("unexpected end of stream"), "x", SIN_RED_AL_LEER))
+        assertEquals(SIN_RED_AL_LEER, textoDeCocina(java.io.IOException("closed"), "x", SIN_RED_AL_LEER))
+        assertEquals("Sin conexión. Revisa la red e inténtalo de nuevo.", textoDeCocina(java.net.SocketException("Connection reset"), "x"))
+        assertEquals("Tu sesión necesita validarse", textoDeCocina(IllegalStateException("Tu sesión necesita validarse"), "x"))
+    }
     @Test fun `saved products are visible while capability HTTP waits and remain after auth rejection`() = runTest {
         val repository = mockk<KitchenPreparationRepository>(relaxed = true)
         every { repository.notice } returns MutableStateFlow(null)

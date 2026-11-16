@@ -769,17 +769,19 @@ class CashDrawerViewModel @Inject constructor(
             val confirmado = sincronizar()
             val frescos = runCatching { repository.getEvents(session.id) }.getOrDefault(events)
             loadCurrentSession()
+            // D68 #13 (Codex r1 #1 y r2 #1): esta lectura toma su turno AL EMPEZAR, como cualquier otra: una que empiece después
+            // gana aunque ésta termine al último, y sin red no borra de la pantalla un desglose bueno (el papel con `null` dice que
+            // no se pudo consultar).
+            val generacion = ++generacionDelDesglose
+            cargandoDesglose = true
+            reintentoPendiente = null
             // `null` si no se pudo consultar — NUNCA `emptyList()`, que significa "no hubo cobros".
             val tenders = runCatching {
                 repository.getTenderBreakdown(session.openedAt, System.currentTimeMillis())
             }.getOrNull()
-            // D68 #13 (Codex r1 #1): imprimir sin red ya no borra de la pantalla un desglose bueno, y lo nuevo deja atrás a
-            // cualquier lectura vieja que siga en vuelo (el papel con `null` dice que no se pudo consultar).
-            if (tenders != null) {
-                generacionDelDesglose++
+            if (generacion == generacionDelDesglose) {
                 cargandoDesglose = false
-                reintentoPendiente = null
-                _tenderBreakdown.value = tenders
+                if (tenders != null) _tenderBreakdown.value = tenders
             }
             printCorte(
                 session = session,
