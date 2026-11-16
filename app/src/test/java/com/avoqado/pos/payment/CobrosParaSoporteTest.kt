@@ -51,6 +51,25 @@ class CobrosParaSoporteTest {
         assertTrue(CobrosParaSoporte.aplica(fila(estado = "FAILED", motivo = ConciliacionDelCobro.CAPTURA_SIN_EVIDENCIA, venue = ""), aqui))
     }
 
+    @Test fun `P1 Codex r2 1 la reserva vieja sin sucursal y sin motivo tambien tiene salida`() = runTest {
+        val vieja = fila(id = "reserva-vieja", estado = "EN_VUELO", motivo = null, venue = "")
+        assertTrue(CobrosParaSoporte.aplica(vieja, aqui))
+        val sesion = mockk<SecureStorage>(relaxed = true) { every { venueId } returns aqui }
+        val pagos = servicio(daoCon(enVuelo = listOf(vieja)), CobrosParaSoporte(PrefsEnMemoria().context), sesion)
+        assertEquals(listOf("reserva-vieja"), pagos.retenidasSinSucursal().map { it.id })
+    }
+
+    @Test fun `P1 Codex r2 2 la nota conserva el rechazo que vio el gerente aunque un reintento lo borre de la fila`() = runTest {
+        val notas = CobrosParaSoporte(PrefsEnMemoria().context)
+        val rechazado = fila(estado = "FAILED", motivo = null).copy(lastError = "ORDER_ALREADY_PAID: la orden ya está pagada")
+        notas.dejar(rechazado, aqui, Declaracion.NO_SE, "u-gerente", "Luis", "MANAGER")
+
+        assertEquals("ORDER_ALREADY_PAID: la orden ya está pagada", notas.nota("cobro-1")?.error)
+        // «Reintentar» la vuelve a fallar sin el error de antes: la nota no cambia.
+        assertEquals(Resultado.YA_ESTABA, notas.dejar(rechazado.copy(lastError = null), aqui, Declaracion.SI_PAGO, "u-gerente", "Luis", "MANAGER"))
+        assertEquals("ORDER_ALREADY_PAID: la orden ya está pagada", notas.nota("cobro-1")?.error)
+    }
+
     @Test fun `P1 Codex r1 1 la fila vieja sin sucursal se ve, se deja para soporte y deja de frenar`() = runTest {
         val vieja = fila(id = "sin-sucursal", estado = "FAILED", motivo = ConciliacionDelCobro.CAPTURA_SIN_EVIDENCIA, venue = "")
         val dao = daoCon(fallidos = listOf(vieja)).also {
@@ -146,7 +165,9 @@ class CobrosParaSoporteTest {
         val disco = PrefsEnMemoria()
         CobrosParaSoporte(disco.context).dejar(fila(), aqui, Declaracion.NO_SE, "u-gerente", "Luis", "MANAGER")
 
-        val despues = CobrosParaSoporte(disco.context)
+        // Codex r2: reiniciar = sólo lo que quedó en DISCO, en unas preferencias nuevas.
+        val reiniciado = PrefsEnMemoria().apply { guardado.putAll(disco.enDisco) }
+        val despues = CobrosParaSoporte(reiniciado.context)
         assertEquals(Declaracion.NO_SE, despues.nota("cobro-1")?.declaracion)
     }
 

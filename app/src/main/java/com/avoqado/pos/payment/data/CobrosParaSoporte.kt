@@ -46,6 +46,8 @@ class CobrosParaSoporte(private val prefs: android.content.SharedPreferences) {
         val marcadoEn: Long,
         val estado: String,
         val motivo: String? = null,
+        /** Codex r2 #2: el rechazo que vio el gerente (`lastError`); un «Reintentar» después lo borra de la fila. */
+        val error: String? = null,
         val importeCents: Int,
         val propinaCents: Int,
     )
@@ -89,7 +91,7 @@ class CobrosParaSoporte(private val prefs: android.content.SharedPreferences) {
         val nota = Nota(
             paymentId = fila.id, venueId = fila.venueId, declaracion = declaracion, actorId = actor,
             actorNombre = actorNombre?.takeIf { it.isNotBlank() }, actorRol = rol, marcadoEn = ahora,
-            estado = fila.syncStatus, motivo = fila.q15Reason, importeCents = fila.amountCents, propinaCents = fila.tipCents,
+            estado = fila.syncStatus, motivo = fila.q15Reason, error = fila.lastError, importeCents = fila.amountCents, propinaCents = fila.tipCents,
         )
         if (!prefs.edit().putString(clave, json.encodeToString(Nota.serializer(), nota)).commit()) {
             // `commit()` cambia la memoria aunque el disco falle: se deshace para no prometer lo que no se guardó.
@@ -116,13 +118,15 @@ class CobrosParaSoporte(private val prefs: android.content.SharedPreferences) {
          * la abierta, Codex r1 #1), sin la revisión Q15 de un gerente y que no sea la
          * cortesía de $0 ya revisada; y además `FAILED` (con o sin motivo: «Reintentar» no sirve si el servidor la rechaza siempre) o
          * `EN_VUELO`/`PENDING` CON motivo Q15 (retenidas: la cola no las manda). Un `EN_VUELO` sin motivo es un cobro vivo o un «Cobro
-         * interrumpido» con sus propios botones. PURA.
+         * interrumpido» con sus propios botones. Codex r2 #1: un `EN_VUELO` viejo SIN sucursal y sin motivo tampoco tiene salida (la
+         * hoja de «Cobros interrumpidos» sólo lee los de la sucursal abierta y el barrido no lo toca), así que también califica. PURA.
          */
         fun aplica(fila: PendingPaymentEntity, sucursal: String): Boolean =
             sucursal.isNotBlank() && (fila.venueId == sucursal || fila.venueId.isBlank()) && fila.q15ReviewedAt == null && !RevisionCanceladoCero.revisado(fila) &&
                 when (fila.syncStatus) {
                     "FAILED" -> true
-                    "EN_VUELO", "PENDING" -> fila.q15Reason != null
+                    "EN_VUELO" -> fila.q15Reason != null || fila.venueId.isBlank()
+                    "PENDING" -> fila.q15Reason != null
                     else -> false
                 }
     }
