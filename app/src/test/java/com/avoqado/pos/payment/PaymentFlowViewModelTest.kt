@@ -5526,6 +5526,24 @@ class PaymentFlowViewModelTest {
         assertEquals("el curso que no salió se borró de la libreta", listOf("AAAA"), storeDePendientes.pendientes.value.map { it.orderNumber })
     }
 
+    /**
+     * P1 D1 (Codex r5 #1): el botón «Ya la canté» tacha el aviso que la pantalla PINTÓ. Si otra comanda llegó a la
+     * libreta entre que se pintó y el toque, antes se tachaba la nueva (sin haber salido) y la cantada seguía viva.
+     */
+    @Test
+    fun `P1 D1 Ya la cante tacha el aviso que se pinto aunque haya llegado otra comanda`() = runTest {
+        assertTrue(storeDePendientes.guardar(comandaX))
+        advanceUntilIdle()
+        val pintado = viewModel.comandaWarning.value
+        assertEquals(comandaX, pintado)
+        val otra = comandaX.copy(orderNumber = "YYYY", trabajo = comandaX.trabajo!!.copy(orderNumber = "YYYY", orderId = "order-y"))
+        assertTrue(storeDePendientes.guardar(otra)) // llega justo antes del toque
+
+        viewModel.clearComandaWarning(pintado)
+
+        assertEquals("se tachó la comanda que nadie cantó", listOf("YYYY"), storeDePendientes.pendientes.value.map { it.orderNumber })
+    }
+
     /** El cierre solo del toast (y Atrás / tocar fuera) va a `ocultarAvisoDeComanda`: la libreta y sus filas quedan. */
     @Test
     fun `P1 ocultar el aviso Reintentando no toca la libreta - su reloj y el del replay siguen`() = runTest {

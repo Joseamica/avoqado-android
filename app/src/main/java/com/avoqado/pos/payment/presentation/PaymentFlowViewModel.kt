@@ -1814,15 +1814,25 @@ class PaymentFlowViewModel @Inject constructor(
      * sólo se OCULTA. Resolver ahí la libreta cerraba las entregas de una comanda que nadie cantó: con la impresora
      * caída, esa comanda no quedaba en ningún lado.
      */
-    fun clearComandaWarning() {
-        val pendiente = comandasPendientesStore.pendiente.value
-        val visto = _avisoEnCurso.value ?: pendiente
-        if (pendiente != null && visto == pendiente) {
-            _avisoEnCurso.value = null
-            // D1 (Codex r4 #1): la que se VIO, no «la más reciente» al momento de tachar (pudo llegar otra).
-            comandasPendientesStore.yaLaCante(pendiente)
+    fun clearComandaWarning(
+        /**
+         * 🔴 D1 (Codex r4 #1 y r5 #1): el aviso que la pantalla PINTÓ cuando el cajero tocó. La libreta es una lista y otra
+         * comanda pudo llegar entre que se pintó y el toque: leerla aquí («la más reciente») tachaba la NUEVA —sin haber
+         * salido ni haberla cantado nadie— y la cantada seguía viva para el reloj. `null` = el que hay ahora (pruebas).
+         */
+        aviso: EstadoDeComanda? = null,
+    ) {
+        val enCurso = _avisoEnCurso.value
+        val visto = aviso ?: enCurso ?: comandasPendientesStore.pendiente.value
+        val deLaLibreta = (visto as? EstadoDeComanda.NoSalio)?.takeIf { v ->
+            // Sin `aviso`, como antes: sólo si lo que se ve ES la libreta (no un aviso en curso de otra venta, N-I1).
+            (aviso != null || enCurso == null) && comandasPendientesStore.pendientes.value.any { it == v }
+        }
+        if (deLaLibreta != null) {
+            if (enCurso == deLaLibreta) _avisoEnCurso.value = null
+            comandasPendientesStore.yaLaCante(deLaLibreta)
         } else {
-            ocultarAvisoDeComanda()
+            ocultarAvisoDeComanda(aviso)
         }
     }
 
@@ -1834,8 +1844,11 @@ class PaymentFlowViewModel @Inject constructor(
      * así que vuelve al siguiente arranque en vez de desaparecer para siempre por un dedazo
      * (P2 #11 de la 2ª auditoría de Codex, 2026-09-07).
      */
-    fun ocultarAvisoDeComanda() {
-        _ocultoSinResolver.value = (comandaWarning.value as? EstadoDeComanda.NoSalio)?.orderNumber
+    fun ocultarAvisoDeComanda(
+        /** D1: el aviso que la pantalla pintó (ver [clearComandaWarning]); `null` = el que hay ahora. */
+        aviso: EstadoDeComanda? = null,
+    ) {
+        _ocultoSinResolver.value = ((aviso ?: comandaWarning.value) as? EstadoDeComanda.NoSalio)?.orderNumber
         _avisoEnCurso.value = null
     }
 
