@@ -92,6 +92,8 @@ sealed interface KioskContent {
         val notFound: Boolean = false,
         /** Falló la red o el servidor. Distinto de "no existe". */
         val failed: Boolean = false,
+        /** El servidor SÍ contestó y dijo que no (permiso, horario, demasiados intentos): su motivo. Nunca «sin conexión». */
+        val rejection: String? = null,
         /**
          * No nulo ⇒ el teléfono es para COMPRAR este paquete, no para buscar una reserva: con él
          * las clases caen a su nombre (D3: sin contacto, Stripe cobraba y no se entregaba nada).

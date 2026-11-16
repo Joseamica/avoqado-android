@@ -89,7 +89,7 @@ internal fun Identify(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
-                    IdentifyHeader(content, openPicker)
+                    IdentifyHeader(content, openPicker, apilado = true)
                     Spacer(Modifier.height(AvoqadoTheme.spacing.xl))
                     IdentifyActions(content, onSearch, onBack)
                 }
@@ -119,22 +119,35 @@ internal fun Identify(
 }
 
 @Composable
-private fun IdentifyHeader(content: KioskContent.Identify, onPickCountry: () -> Unit) {
+private fun IdentifyHeader(content: KioskContent.Identify, onPickCountry: () -> Unit, apilado: Boolean = false) {
     Big("Tu teléfono")
     Spacer(Modifier.height(AvoqadoTheme.spacing.md))
 
     // La lada se ve y se cambia: con +52 fijo, un teléfono de EE.UU. caía en la ficha de otra persona (Codex r1, D3).
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.md),
-    ) {
-        CountryChip(country = content.country, onClick = onPickCountry)
+    val numero: @Composable () -> Unit = {
         Text(
             text = formatNational(content.national),
             fontSize = KDigits,
             fontWeight = FontWeight.Bold,
             color = MaterialTheme.colorScheme.onSurface,
+            // Un renglón: partido en dos, los diez dígitos se encimaban (visto en la D3, 16-nov).
+            maxLines = 1,
+            softWrap = false,
         )
+    }
+    if (apilado) {
+        // Acostada en dos mitades, la lada y los diez dígitos no caben en un renglón: la lada va arriba.
+        CountryChip(country = content.country, onClick = onPickCountry)
+        Spacer(Modifier.height(AvoqadoTheme.spacing.sm))
+        numero()
+    } else {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.md),
+        ) {
+            CountryChip(country = content.country, onClick = onPickCountry)
+            numero()
+        }
     }
 
     Spacer(Modifier.height(AvoqadoTheme.spacing.md))
@@ -146,8 +159,11 @@ private fun IdentifyHeader(content: KioskContent.Identify, onPickCountry: () -> 
         // Para comprar: no se busca a nadie, sólo se guarda a su nombre.
         content.forPack != null -> Sub("Para guardar tus clases a tu nombre.")
         content.notFound -> Note("No encontramos ese número. Pregunta en el mostrador.")
+        // El servidor contestó que no: se dice su motivo (no es falta de red).
+        content.rejection != null -> Note(content.rejection)
         // Sin red y sin poder guardarlo (el aparato nunca oyó al servidor desde que arrancó): el QR sí sirve.
-        content.failed -> Note("Sin conexión. Escanea el QR con tu celular o pide ayuda en el mostrador.")
+        // En gris: sin conexión es un estado normal, nunca el rojo de un error.
+        content.failed -> Sub("Sin conexión. Escanea el QR con tu celular o pide ayuda en el mostrador.")
         else -> Sub("Con el número que usaste al reservar.")
     }
 }

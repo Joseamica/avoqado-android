@@ -381,6 +381,7 @@ class KioskDriver @Inject constructor(
                 national = transform(current.national).take(nationalDigitsFor(current.country).last),
                 notFound = false,
                 failed = false,
+                rejection = null,
             ),
         )
     }
@@ -399,6 +400,7 @@ class KioskDriver @Inject constructor(
                 national = "",
                 notFound = false,
                 failed = false,
+                rejection = null,
             ),
         )
     }
@@ -416,7 +418,7 @@ class KioskDriver @Inject constructor(
         val venueId = secureStorage.venueId ?: return
 
         work?.cancel()
-        kiosk.show(current.copy(searching = true, notFound = false, failed = false))
+        kiosk.show(current.copy(searching = true, notFound = false, failed = false, rejection = null))
 
         work = scope.launch {
             // 🔴 Asistencia verificada (D-D): la llegada se GUARDA antes de tocar la red, con la hora del SERVIDOR estimada y
@@ -477,11 +479,22 @@ class KioskDriver @Inject constructor(
                     }
                     // "No encontramos nada" y "se cayó la red" NO son lo mismo para quien
                     // está parado ahí: uno se arregla tecleando otra vez, el otro no.
+                    // Y «el servidor dijo que no» tampoco es «sin conexión» (Codex r8 #5): se enseña su motivo.
+                    val rechazo = when (err) {
+                        is com.avoqado.pos.kiosk.data.KioskCheckInApi.TooManyAttempts ->
+                            "Demasiados intentos. Espera un minuto y vuelve a intentar."
+                        is com.avoqado.pos.kiosk.data.KioskCheckInApi.Rejected,
+                        is com.avoqado.pos.kiosk.data.KioskCheckInApi.OutsideWindow,
+                        -> err.message?.takeIf { it.isNotBlank() } ?: "No pudimos registrar tu llegada. Pide ayuda en el mostrador."
+                        else -> null
+                    }
+                    val noEncontrada = err is com.avoqado.pos.kiosk.data.KioskCheckInApi.NotFound
                     kiosk.show(
                         base.copy(
                             searching = false,
-                            notFound = err is com.avoqado.pos.kiosk.data.KioskCheckInApi.NotFound,
-                            failed = err !is com.avoqado.pos.kiosk.data.KioskCheckInApi.NotFound,
+                            notFound = noEncontrada,
+                            failed = !noEncontrada && rechazo == null,
+                            rejection = rechazo,
                         ),
                     )
                 },
