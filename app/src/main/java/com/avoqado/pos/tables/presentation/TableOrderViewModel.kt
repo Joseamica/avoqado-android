@@ -2547,10 +2547,22 @@ class TableOrderViewModel @Inject constructor(
      */
     internal fun motivoParaNoPagarSinCargos(cargando: Boolean): String {
         val s = tableSession.current()
-        if (s != null && !cuentaCompletaAqui && !cargando && estadoSinRedVigente(s) == SaldoSinRed.EnGris(TOMADA_EN_OTRA_TABLET))
-            return TOMADA_EN_OTRA_TABLET
+        if (s != null && !cuentaCompletaAqui && !cargando && estadoSinRedVigente(s) == SaldoSinRed.EnGris(TOMADA_EN_OTRA_TABLET) &&
+            otraTabletLeAgrego(s)) return TOMADA_EN_OTRA_TABLET
         return motivoSinArticulos(cuentaCompletaAqui, cargando)
     }
+
+    /**
+     * Codex r1 #3: `tomadaAqui` se prende al MANDAR una ronda, no al abrir la mesa. Si esta tablet la abrió y todavía no le mandó nada,
+     * el saldo sin red también dice «la tomó otra tablet», y sería falso. Sólo se dice con prueba de que otra le agregó algo: el plano
+     * la trae con importe, o la última cuenta leída de ESTA orden tiene renglones. Sin prueba, el aviso de que no vio la cuenta completa.
+     */
+    private fun otraTabletLeAgrego(s: TableSession.Active): Boolean =
+        s.totalCents > 0 || _check.value?.takeIf { it.id == s.orderId }?.items?.isNotEmpty() == true
+
+    /** El motivo gris del saldo sin red, sin afirmar «otra tablet» sin prueba ([otraTabletLeAgrego]). */
+    private fun motivoGrisHonesto(s: TableSession.Active, motivo: String): String =
+        if (motivo == TOMADA_EN_OTRA_TABLET && !otraTabletLeAgrego(s)) SIN_CUENTA_COMPLETA else motivo
 
     suspend fun preparePagar(): Boolean {
         // B3 (visto 1): la cuenta ya se cerró (su cobro y su liberación subieron) con la pantalla abierta: se dice, no se calla.
@@ -2599,7 +2611,7 @@ class TableOrderViewModel @Inject constructor(
             if (sinRed == null) {
                 showBlockedReason(when {
                     saldo == null -> motivo
-                    saldo is SaldoSinRed.EnGris -> saldo.motivo
+                    saldo is SaldoSinRed.EnGris -> motivoGrisHonesto(session, saldo.motivo)
                     !vigente -> CUENTA_SE_ACTUALIZA
                     else -> CUENTA_COBRADA_AQUI
                 })

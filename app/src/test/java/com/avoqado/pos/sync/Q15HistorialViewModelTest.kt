@@ -182,45 +182,63 @@ class Q15HistorialViewModelTest {
 
     // MARK: - D1/A4 (ensayo 16-nov, `hz:033d44ca:D9`): la mesera sin permiso abría la lista y sólo leía «Un gerente debe revisar este pago.»
 
+    private fun fila(motivo:String="DIFERENCIA_DE_COBRO",resultado:String="")=PorRevisarQ15(motivo,resultado)
+    private val deMas25=fila(resultado="""{"camposDiferentes":["saldoDeLaMesa"],"cobradoDeMasCents":2500}""")
+
     @Test fun D1_sin_permiso_dice_cuanto_se_cobro_de_mas_sin_leer_el_historial()=runTest {
         role="CASHIER"
-        coEvery { dao.contarRevisionesQ15("FULLTEST-A",false,"") } returns 1
-        coEvery { dao.resultadosPorRevisarQ15("FULLTEST-A") } returns listOf("""{"camposDiferentes":["saldoDeLaMesa"],"cobradoDeMasCents":2500}""")
+        every { dao.observarPorRevisarQ15("FULLTEST-A") } returns kotlinx.coroutines.flow.flowOf(listOf(deMas25))
         val subject=vm();subject.cargar();advanceUntilIdle()
         val texto=subject.resumenSinPermiso.value
         assertNotNull(texto)
-        assertTrue(texto!!,texto.startsWith("Hay 1 cobro por revisar"))
-        assertTrue(texto,texto.contains("\$25.00 de más"))
+        assertTrue(texto!!,texto.startsWith("Hay 1 operación por revisar: se cobraron \$25.00 de más"))
         assertTrue(texto,texto.contains("Más › Cambiar usuario"))
         assertTrue("el historial sigue siendo del gerente",subject.filas.value.isEmpty())
         coVerify(exactly=0) { dao.paginaRevisionesQ15(any(),any(),any(),any(),any(),any()) }
     }
-    @Test fun D1_sin_permiso_y_sin_cobros_por_revisar_no_inventa_un_pago()=runTest {
+    @Test fun D1_codex_r1_2_el_aviso_sigue_a_la_cola_con_la_hoja_abierta()=runTest {
         role="CASHIER"
-        coEvery { dao.contarRevisionesQ15("FULLTEST-A",false,"") } returns 0
+        val cola=kotlinx.coroutines.flow.MutableStateFlow(listOf(deMas25))
+        every { dao.observarPorRevisarQ15("FULLTEST-A") } returns cola
+        val subject=vm();subject.cargar();runCurrent()
+        assertTrue(subject.resumenSinPermiso.value!!.startsWith("Hay 1 operación"))
+        // Sube otro cobro con diferencia mientras la hoja sigue abierta.
+        cola.value=listOf(deMas25,fila(resultado="""{"cobradoDeMasCents":1000}"""));runCurrent()
+        assertTrue(subject.resumenSinPermiso.value!!,subject.resumenSinPermiso.value!!.startsWith("Hay 2 operaciones por revisar: se cobraron \$35.00 de más"))
+        // El gerente las revisó en otra sesión: ya no hay nada.
+        cola.value=emptyList();runCurrent()
+        assertNull(subject.resumenSinPermiso.value)
+        // Cambia la persona del aparato: el aviso de la anterior no se queda.
+        cola.value=listOf(deMas25);epoch=2;subject.cargar();runCurrent()
+        venue="FULLTEST-B";subject.cargar();runCurrent()
+        assertNull("otra sucursal sin filas",subject.resumenSinPermiso.value)
+    }
+    @Test fun D1_sin_permiso_y_sin_nada_por_revisar_no_inventa_un_pago()=runTest {
+        role="CASHIER"
+        every { dao.observarPorRevisarQ15("FULLTEST-A") } returns kotlinx.coroutines.flow.flowOf(emptyList())
         val subject=vm();subject.cargar();advanceUntilIdle()
         assertNull(subject.resumenSinPermiso.value)
-        coVerify(exactly=0) { dao.resultadosPorRevisarQ15(any()) }
     }
     @Test fun D1_el_gerente_no_usa_el_resumen()=runTest {
         coEvery { dao.contarRevisionesQ15(any(),any(),any()) } returns 1
         coEvery { dao.paginaRevisionesQ15(any(),any(),any(),any(),any(),any()) } returns listOf(row("p1"))
         val subject=vm();subject.cargar();advanceUntilIdle()
         assertNull(subject.resumenSinPermiso.value)
-        coVerify(exactly=0) { dao.resultadosPorRevisarQ15(any()) }
+        verify(exactly=0) { dao.observarPorRevisarQ15(any()) }
     }
     @Test fun D1_textos_para_quien_no_revisa() {
-        assertNull(RevisionParaQuienNoRevisa.texto(0,emptyList()))
-        val diferencia=RevisionParaQuienNoRevisa.texto(1,listOf("""{"camposDiferentes":["importe"]}"""))!!
-        assertTrue(diferencia,diferencia.contains("distinto de como se cobró aquí"))
-        assertFalse(diferencia,diferencia.contains("de más"))
-        val dos=RevisionParaQuienNoRevisa.texto(2,listOf("""{"cobradoDeMasCents":2500}""","""{"cobradoDeMasCents":1000}"""))!!
-        assertTrue(dos,dos.startsWith("Hay 2 cobros por revisar: se cobraron \$35.00 de más"))
-        assertTrue(dos,dos.contains("los revisa"))
-        // Leídos menos de los que hay (tope de 200): la suma no se presenta como total.
-        val tope=RevisionParaQuienNoRevisa.texto(201,listOf("""{"cobradoDeMasCents":2500}"""))!!
-        assertTrue(tope,tope.contains("\$25.00 o más de más"))
-        // Basura o centavos negativos no suman.
+        assertNull(RevisionParaQuienNoRevisa.texto(emptyList()))
+        // Codex r1 #1: una ronda retenida por el precio no es un cobro registrado distinto: no se dice «cobro» ni «servidor».
+        val ronda=RevisionParaQuienNoRevisa.texto(listOf(fila("PRICE_PROOF_PENDING")))!!
+        assertEquals("Hay 1 operación por revisar. Sólo un gerente puede verla y resolverla: avísale para que la revise aquí (Más › Cambiar usuario).",ronda)
+        val dos=RevisionParaQuienNoRevisa.texto(listOf(deMas25,fila("PRICE_PROOF_PENDING")))!!
+        assertTrue(dos,dos.startsWith("Hay 2 operaciones por revisar: se cobraron \$25.00 de más"))
+        assertTrue(dos,dos.contains("las revisa"))
+        // Más de las que se leen (tope de 200): la suma no se presenta como total.
+        val tope=RevisionParaQuienNoRevisa.texto(List(201) { deMas25 })!!
+        assertTrue(tope,tope.startsWith("Hay más de 200 operaciones por revisar: se cobraron \$5,000.00 o más de más"))
+        // Basura, vacío o centavos negativos no suman.
+        assertNull(RevisionParaQuienNoRevisa.cobradoDeMasCents(""))
         assertNull(RevisionParaQuienNoRevisa.cobradoDeMasCents("no es json"))
         assertNull(RevisionParaQuienNoRevisa.cobradoDeMasCents("""{"cobradoDeMasCents":-5}"""))
         assertNull(RevisionParaQuienNoRevisa.cobradoDeMasCents("""{"cobradoDeMasCents":"25"}"""))

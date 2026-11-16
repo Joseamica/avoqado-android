@@ -58,7 +58,8 @@ class HistorialDelCobroViewModel @Inject constructor(
     fun cargar() {
         val actual=contextoActual()
         if(actual!=contexto) {
-            contexto=actual;limpiar();_mensaje.value=null;_resumenSinPermiso.value=null;_cargando.value=false
+            contexto=actual;limpiar();_mensaje.value=null;observacionSinPermiso?.cancel();observacionSinPermiso=null
+            _resumenSinPermiso.value=null;_cargando.value=false
             _revisadas.value=false;_busqueda.value="";_nombres.value=emptyMap()
         }
         // Una vez por negocio/sesión (no en cada letra de la búsqueda); sin nombres, a lo más un reintento por minuto.
@@ -79,7 +80,8 @@ class HistorialDelCobroViewModel @Inject constructor(
     fun cargarMas() { if(!_cargando.value && _filas.value.size<_total.value) pagina(true) }
     private fun pagina(append:Boolean) {
         val version=++generation
-        if(!canRead) { limpiar();_cargando.value=false;_mensaje.value="Un gerente debe revisar este pago.";resumirSinPermiso(version);return }
+        if(!canRead) { limpiar();_cargando.value=false;_mensaje.value="Un gerente debe revisar este pago.";resumirSinPermiso();return }
+        observacionSinPermiso?.cancel();observacionSinPermiso=null;_resumenSinPermiso.value=null
         val snapshot=contexto
         val venue=requireNotNull(snapshot.venue);val reviewed=_revisadas.value;val search=_busqueda.value
         val previous=if(append) _filas.value else emptyList()
@@ -98,17 +100,23 @@ class HistorialDelCobroViewModel @Inject constructor(
             finally { if(version==generation) _cargando.value=false }
         }
     }
-    /** D1/A4: sin permiso no se lee el historial; sólo cuántos cobros esperan y su `cobradoDeMasCents`. */
-    private fun resumirSinPermiso(version:Long) {
+    /**
+     * D1/A4: sin permiso no se lee el historial; sólo el motivo y el resultado de lo que sigue por revisar, OBSERVADO (Codex r1 #2:
+     * un cobro con diferencia que sube con la hoja abierta cambia el aviso sin reabrirla, como la franja). Un contexto nuevo (otra
+     * persona u otra sucursal) o un permiso ganado lo apagan.
+     */
+    private var observacionSinPermiso:kotlinx.coroutines.Job?=null
+    private fun resumirSinPermiso() {
         val snapshot=contexto
+        observacionSinPermiso?.cancel()
         val venue=snapshot.venue ?: run { _resumenSinPermiso.value=null;return }
-        viewModelScope.launch {
+        observacionSinPermiso=viewModelScope.launch {
             try {
-                val cobros=dao.contarRevisionesQ15(venue,false,"")
-                val resultados=if(cobros>0) dao.resultadosPorRevisarQ15(venue) else emptyList()
-                if(version==generation && vigente(snapshot)) _resumenSinPermiso.value=RevisionParaQuienNoRevisa.texto(cobros,resultados)
+                dao.observarPorRevisarQ15(venue).collect { filas ->
+                    _resumenSinPermiso.value=if(vigente(snapshot) && !roles.canResolveQuarantine) RevisionParaQuienNoRevisa.texto(filas) else null
+                }
             } catch(e:kotlinx.coroutines.CancellationException) { throw e }
-            catch(e:Exception) { if(version==generation && vigente(snapshot)) _resumenSinPermiso.value="No se pudo leer lo que está por revisar. Avísale a un gerente." }
+            catch(e:Exception) { if(vigente(snapshot)) _resumenSinPermiso.value="No se pudo leer lo que está por revisar. Avísale a un gerente." }
         }
     }
     fun puedeMarcar(row:RevisionDelCobroRecord)=canRead && row.venueId==contexto.venue && row.q15ReviewedAt==null &&

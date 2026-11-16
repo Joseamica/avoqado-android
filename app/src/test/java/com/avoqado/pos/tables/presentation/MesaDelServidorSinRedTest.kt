@@ -552,6 +552,17 @@ class MesaDelServidorSinRedTest {
         subject.viewModelScope.cancel()
     }
 
+    @Test fun `A3 Codex r1 3 la tablet que abrio la mesa y no le mando nada no culpa a otra tablet`() = runTest {
+        // Esta tablet abrió la M1 con internet (el plano la trae en $0) y no le mandó ninguna ronda; luego se fue la red.
+        abrir()
+        val subject = vm()
+        leer(subject)
+        conInternet = false
+        leer(subject)
+        assertEquals("el botón", motivoSinArticulos(cuentaCompletaAqui = false, cargando = false), subject.motivoParaNoPagarSinCargos(cargando = false))
+        subject.viewModelScope.cancel()
+    }
+
     @Test fun `no se toma foto con algo pendiente de la orden en otra cola`() = runTest {
         abrir()
         val subject = vm()
