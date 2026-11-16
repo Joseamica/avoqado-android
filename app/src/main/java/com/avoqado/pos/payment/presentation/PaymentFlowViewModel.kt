@@ -6119,8 +6119,9 @@ class PaymentFlowViewModel @Inject constructor(
             }
             if (esDeEstaVenta) {
                 _avisoEnCurso.value = null
-                // D1: sólo lo de ESTA venta. La libreta es una lista; `limpiar()` vaciaba las comandas de las demás.
-                comandasPendientesStore.soltarPorFolio(orderNumber)
+                // 🔴 D1 (Codex r1 #4): la libreta NO se toca. Antes `limpiar()`; pero un `Salio` aquí es de UN curso (los de
+                // mostrador salen uno tras otro con el mismo folio) y no prueba que salió lo que está en la libreta: borraba
+                // el curso que no salió. Lo de la libreta lo suelta sólo su reintento al salir, o una persona.
             }
         } else if (estado is EstadoDeComanda.NoSalio && estado.trabajo != null) {
             // El veredicto final CON algo que reenviar va al almacén, que es lo que ven TODAS

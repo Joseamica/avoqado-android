@@ -389,21 +389,6 @@ class ComandasPendientesStoreTest {
         )
     }
 
-    /**
-     * El `Salio` de una venta suelta SÓLO lo de su folio. Antes `limpiar()` vaciaba la libreta entera: si el cajero había
-     * ocultado el aviso de otra venta, la siguiente venta que sí imprimía le borraba su reintento.
-     */
-    @Test
-    fun `soltar por folio no toca las comandas de otras ventas`() {
-        val store = ComandasPendientesStore(AlmacenFalso()).apply { cargar("venue-1", ahora) }
-        store.guardar(venta(1), ahora)
-        store.guardar(venta(2), ahora)
-
-        store.soltarPorFolio("ORD-2")
-
-        assertEquals(listOf("ORD-1"), store.pendientes.value.map { it.orderNumber })
-    }
-
     /** Una comanda que vence (8 h) se va sola; las que siguen vigentes se quedan. */
     @Test
     fun `vence una y las demas siguen`() {
@@ -437,5 +422,60 @@ class ComandasPendientesStoreTest {
         val deVueltaEnA = ComandasPendientesStore(almacen).apply { cargar("venue-1", ahora) }
 
         assertEquals(listOf("ORD-42"), deVueltaEnA.pendientes.value.map { it.orderNumber })
+    }
+
+    // MARK: - Codex D1 r1
+
+    /** P1 (Codex D1 r1 #1) Sin tope: 250 comandas vigentes sobreviven TODAS a reiniciar (un tope tiraba la primera). */
+    @Test
+    fun `P1 muchas comandas pendientes sobreviven todas a reiniciar`() {
+        val almacen = AlmacenFalso()
+        val store = ComandasPendientesStore(almacen).apply { cargar("venue-1", ahora) }
+        (1..250).forEach { assertTrue(store.guardar(venta(it), ahora)) }
+
+        val tras = ComandasPendientesStore(almacen).apply { cargar("venue-1", ahora + 60_000) }
+
+        assertEquals(250, tras.pendientes.value.size)
+        assertEquals("ORD-1", tras.pendientes.value.first().orderNumber)
+    }
+
+    /**
+     * P1 (Codex D1 r1 #2) Si al quitar una comanda resuelta el disco no acepta la lista que queda, se BORRA el disco: dejar
+     * el archivo viejo haría que tras reiniciar el reloj imprimiera otra vez la que una persona ya cantó.
+     */
+    @Test
+    fun `P1 si no se puede reescribir al quitar una, el disco no conserva la ya resuelta`() {
+        val almacen = object : AlmacenDeTexto {
+            var texto: String? = null
+            var fallar = false
+            override fun leer(): String? = texto
+            override fun escribir(texto: String): Boolean { if (fallar) return false; this.texto = texto; return true }
+            override fun borrar() { texto = null }
+        }
+        val store = ComandasPendientesStore(almacen).apply { cargar("venue-1", ahora) }
+        store.guardar(venta(1), ahora)
+        store.guardar(venta(2), ahora)
+        almacen.fallar = true
+
+        store.yaLaCante()
+
+        assertEquals("ORD-1 se perdió de memoria", listOf("ORD-1"), store.pendientes.value.map { it.orderNumber })
+        val tras = ComandasPendientesStore(almacen).apply { cargar("venue-1", ahora) }
+        assertTrue(
+            "tras reiniciar volvería ORD-2, que ya se cantó",
+            tras.pendientes.value.none { it.orderNumber == "ORD-2" },
+        )
+    }
+
+    /** `sigueVigente`: presente, no vencida y de la sucursal cargada; una vencida se suelta. */
+    @Test
+    fun `sigue vigente dice si se puede mandar ya`() {
+        val store = ComandasPendientesStore(AlmacenFalso()).apply { cargar("venue-1", ahora) }
+        store.guardar(venta(1), ahora)
+
+        assertTrue(store.sigueVigente(venta(1).trabajo!!, ahora + 60_000))
+        assertFalse("una que no está", store.sigueVigente(venta(2).trabajo!!, ahora))
+        assertFalse("vencida", store.sigueVigente(venta(1).trabajo!!, ahora + 9L * 60 * 60 * 1000))
+        assertTrue("la vencida no se soltó", store.pendientes.value.isEmpty())
     }
 }

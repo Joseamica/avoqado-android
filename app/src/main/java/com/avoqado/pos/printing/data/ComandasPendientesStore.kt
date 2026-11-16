@@ -124,10 +124,28 @@ class ComandasPendientesStore @Inject constructor(
         val (siguen, vencidas) = entradas.partition { e -> e.desde == null || !vencida(e.desde, ahora) }
         if (vencidas.isNotEmpty()) {
             val fuera = vencidas.mapNotNull { it.estado.trabajo }
-            if (fuera.isNotEmpty()) escribirDisco(leerDisco(ahora).filter { it.trabajo !in fuera })
+            if (fuera.isNotEmpty()) quitarDelDisco(ahora) { it.trabajo in fuera }
             publicar(siguen)
         }
         siguen.map { it.estado }
+    }
+
+    /**
+     * ¿Se puede mandar YA este trabajo? Sigue en la libreta, no venció y es de la sucursal cargada. El reloj lo pregunta
+     * justo antes de imprimir cada comanda, DESPUÉS de refrescar la config (Codex D1 r1 #3, #5 y #6): en una pasada con
+     * varias comandas, o mientras se espera el refresco, una pudo vencer, resolverse con «Ya la canté» o quedarse de otra
+     * sucursal porque cambiaron de sucursal en la tablet. Una vencida se suelta aquí.
+     */
+    fun sigueVigente(trabajo: TrabajoPendiente, ahora: Long = System.currentTimeMillis()): Boolean = synchronized(cerrojo) {
+        val e = entradas.firstOrNull { it.estado.trabajo == trabajo } ?: return false
+        val cargado = venueCargado
+        if (cargado != null && trabajo.venueId != cargado) return false
+        if (e.desde != null && vencida(e.desde, ahora)) {
+            quitarDelDisco(ahora) { it.trabajo == trabajo }
+            publicar(entradas.filter { it !== e })
+            return false
+        }
+        true
     }
 
     @Serializable
@@ -209,16 +227,15 @@ class ComandasPendientesStore @Inject constructor(
         val previa = entradas.firstOrNull { it.estado.trabajo == anterior } ?: return false
         val primerFallo = previa.desde ?: ahora
         val disco = leerDisco(ahora)
-        val sinAnterior = disco.filter { it.trabajo != anterior }
         val trabajo = resultado.trabajo
         val escrito = if (trabajo == null) {
-            escribirDisco(sinAnterior)
+            quitarDelDisco(ahora) { it.trabajo == anterior }
             true
         } else {
             val nueva = Guardada(resultado.estaciones, resultado.causa, resultado.orderNumber, trabajo, primerFallo)
             val i = disco.indexOfFirst { it.trabajo == anterior }
             val ok = escribirDisco(if (i >= 0) disco.toMutableList().also { it[i] = nueva } else disco + nueva)
-            if (!ok) escribirDisco(sinAnterior)
+            if (!ok) quitarDelDisco(ahora) { it.trabajo == anterior }
             ok
         }
         val entrada = Entrada(resultado, primerFallo)
@@ -233,22 +250,9 @@ class ComandasPendientesStore @Inject constructor(
      */
     fun soltarSi(anterior: TrabajoPendiente): Boolean = synchronized(cerrojo) {
         if (entradas.none { it.estado.trabajo == anterior }) return false
-        escribirDisco(leerDisco(null).filter { it.trabajo != anterior })
+        quitarDelDisco(null) { it.trabajo == anterior }
         publicar(entradas.filter { it.estado.trabajo != anterior })
         true
-    }
-
-    /**
-     * La comanda de la venta [orderNumber] por fin salió (el `Salio` del mostrador): se sueltan SÓLO las de ese folio.
-     * 🔴 D1: antes era `limpiar()`, que con una sola ranura daba igual; con la lista, vaciaba las comandas de las demás
-     * ventas — también la de un aviso que el cajero había ocultado sin resolver.
-     */
-    fun soltarPorFolio(orderNumber: String) = synchronized(cerrojo) {
-        val fuera = entradas.filter { it.estado.orderNumber == orderNumber }
-        if (fuera.isEmpty()) return@synchronized
-        val trabajos = fuera.mapNotNull { it.estado.trabajo }
-        if (trabajos.isNotEmpty()) escribirDisco(leerDisco(null).filter { it.trabajo !in trabajos })
-        publicar(entradas - fuera.toSet())
     }
 
     /**
@@ -304,22 +308,32 @@ class ComandasPendientesStore @Inject constructor(
     /**
      * Escribe la lista entera; vacía, borra la llave. Bajo [cerrojo].
      *
-     * Con más de [MAXIMO] comandas pendientes (una cocina apagada horas en hora pico) se queda con las más nuevas y lo
-     * dice en el log: las viejas siguen en el aviso de esta vida de la app, pero no sobreviven a un reinicio. El tope sólo
-     * protege el tamaño del archivo; la vigencia de 8 h las retira mucho antes en un día normal.
+     * Sin tope a propósito (Codex D1 r1 #1): cualquier tope tiraría una comanda vigente al reiniciar. Lo que acota el
+     * archivo es la vigencia de 8 h, que retira cada comanda sola.
      */
     private fun escribirDisco(lista: List<Guardada>): Boolean {
         if (lista.isEmpty()) {
             runCatching { almacen.borrar() }
             return true
         }
-        val acotada = if (lista.size > MAXIMO) {
-            Log.w(TAG, "Hay ${lista.size} comandas pendientes; en el aparato se guardan las $MAXIMO más nuevas")
-            lista.takeLast(MAXIMO)
-        } else lista
-        return runCatching { almacen.escribir(json.encodeToString(acotada)) }
+        return runCatching { almacen.escribir(json.encodeToString(lista)) }
             .onFailure { Log.w(TAG, "No se pudieron escribir las comandas pendientes: ${it.message}") }
             .getOrDefault(false)
+    }
+
+    /**
+     * Quita del disco lo que [sale] marca (salió, se resolvió o venció). Bajo [cerrojo].
+     *
+     * 🔴 Si la lista que queda no se puede escribir, se BORRA el disco entero (Codex D1 r1 #2): dejar el archivo viejo
+     * haría que, tras reiniciar, el reloj imprimiera otra vez lo que ya salió o lo que una persona ya cantó. Un ticket
+     * duplicado en la cocina es peor que el aviso que se pierde; las que siguen pendientes siguen en memoria y el reloj
+     * las insiste mientras la app viva.
+     */
+    private fun quitarDelDisco(ahora: Long?, sale: (Guardada) -> Boolean) {
+        if (!escribirDisco(leerDisco(ahora).filterNot(sale))) {
+            Log.w(TAG, "No se pudo quitar una comanda del aparato: se borra la libreta del disco para no imprimirla dos veces")
+            runCatching { almacen.borrar() }
+        }
     }
 
     /**
@@ -329,15 +343,15 @@ class ComandasPendientesStore @Inject constructor(
      * `ReplayDeEntregasKds` la imprimiría sola en el siguiente tic o en la próxima apertura — el ticket duplicado que
      * esta libreta existe para evitar.
      *
-     * 🔴 NO va dentro de [limpiar] ni de [soltarPorFolio]: los llama un `Salio`; cerrar ahí borraría la fila que recupera
-     * la comanda de una ronda de mesa en la próxima apertura (pérdida, no duplicado).
+     * 🔴 NO va dentro de [limpiar] ni de [soltarSi]: cerrar ahí borraría la fila que recupera la comanda de una ronda de
+     * mesa en la próxima apertura (pérdida, no duplicado).
      *
      * @return el cierre en curso (las pruebas lo esperan), o `null` si no había nada que cerrar.
      */
     fun yaLaCante(): Job? {
         val trabajo = synchronized(cerrojo) {
             val vista = entradas.lastOrNull() ?: return null
-            vista.estado.trabajo?.let { t -> escribirDisco(leerDisco(null).filter { it.trabajo != t }) }
+            vista.estado.trabajo?.let { t -> quitarDelDisco(null) { it.trabajo == t } }
             publicar(entradas.dropLast(1))
             vista.estado.trabajo
         }
@@ -359,8 +373,6 @@ class ComandasPendientesStore @Inject constructor(
         const val TAG = "ComandasPendientes"
         /** 8 horas: cubre un turno de mostrador y nunca llega al día siguiente. */
         const val VIGENCIA_MS = 8L * 60 * 60 * 1000
-        /** Tope del archivo: ver [escribirDisco]. Una cocina apagada 8 h en hora pico no llega aquí en un local normal. */
-        const val MAXIMO = 200
     }
 }
 

@@ -5497,6 +5497,35 @@ class PaymentFlowViewModelTest {
         coVerify(exactly = 0) { entregaPorWifi.cerrarPorPapel(any(), any(), any()) }
     }
 
+    /**
+     * P1 D1 (Codex r1 #4): los cursos de mostrador salen uno tras otro con el MISMO folio. Si un curso no salió (está en la
+     * libreta) y otro de la misma venta sí sale, ese `Salio` no prueba nada sobre el primero: antes `limpiar()` lo borraba
+     * de la libreta y la cocina nunca recibía ese curso.
+     */
+    @Test
+    fun `P1 D1 el Salio de un curso no borra de la libreta otro curso de la misma venta que no salio`() = runTest {
+        val cursoQueNoSalio = comandaX.copy(
+            orderNumber = "AAAA",
+            trabajo = comandaX.trabajo!!.copy(orderNumber = "AAAA", orderId = "order-AAAA"),
+        )
+        assertTrue(storeDePendientes.guardar(cursoQueNoSalio))
+        every { printConfigRepository.getCurrentConfig() } returns cocinaActivaConfig
+        coEvery { comandaPrinter.printComandas(any(), cocinaActivaConfig, any(), any(), any()) } returns
+            ComandaPrinter.Result(attempted = 1, printed = 1, skippedNoPrinter = 0, lastError = null)
+        coEvery {
+            orderRepository.createOrder(any(), any(), any(), any(), any(), capturedVenueId = any())
+        } returns Result.success(CreateOrderResponse(success = true, data = OrderData(id = "order-AAAA")))
+        coEvery {
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), capturedVenueId = any(), lineasDelTicket = any())
+        } returns Result.success(OrderRepository.CashPayResult(paymentId = "payment-A", receiptAccessKey = null))
+
+        viewModel.startPaymentFlow(cartConUnProducto())
+        viewModel.confirmCashCustom(1000)
+        advanceUntilIdle()
+
+        assertEquals("el curso que no salió se borró de la libreta", listOf("AAAA"), storeDePendientes.pendientes.value.map { it.orderNumber })
+    }
+
     /** El cierre solo del toast (y Atrás / tocar fuera) va a `ocultarAvisoDeComanda`: la libreta y sus filas quedan. */
     @Test
     fun `P1 ocultar el aviso Reintentando no toca la libreta - su reloj y el del replay siguen`() = runTest {

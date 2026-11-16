@@ -87,9 +87,14 @@ class ReplayDeComandasPendientes @Inject constructor(
             // `vigentes`, no `pendientes.value`: con la app abierta más de 8 h la comanda vence aquí también (Codex D11 r1 #3).
             val trabajos = store.vigentes().mapNotNull { it.trabajo }
             var ultimo: EstadoDeComanda? = null
+            val refrescadas = mutableSetOf<String>()
             for (trabajo in trabajos) {
-                // Una persona pudo resolverla («Ya la canté») mientras salían las anteriores: ésa ya no se manda.
-                if (store.pendientes.value.none { it.trabajo == trabajo }) continue
+                if (!store.sigueVigente(trabajo)) continue
+                // La config se refresca UNA vez por sucursal y pasada (antes, una vez por comanda: N esperas sin red).
+                trabajo.venueId?.let { if (refrescadas.add(it)) comandaDispatcher.refrescarConfig(it) }
+                // 🔴 Otra vez, DESPUÉS del refresco y de las anteriores, que pueden tardar (Codex D1 r1 #3, #5 y #6): una
+                // persona pudo resolverla («Ya la canté»), pudo vencer, o cambiaron de sucursal y la config ya es de otra.
+                if (!store.sigueVigente(trabajo)) continue
                 ultimo = intentarUna(trabajo)
             }
             return ultimo
@@ -100,7 +105,7 @@ class ReplayDeComandasPendientes @Inject constructor(
 
     private suspend fun intentarUna(trabajo: TrabajoPendiente): EstadoDeComanda {
         Log.d(TAG, "Reintentando la comanda del pedido ${trabajo.orderNumber}")
-        val estado = comandaDispatcher.reintentar(trabajo)
+        val estado = comandaDispatcher.reintentar(trabajo, refrescar = false)
         if (estado is EstadoDeComanda.Salio || estado is EstadoDeComanda.SinComanda) {
             // 🔴 Se suelta SÓLO cuando ya no falta nada, y sólo ESTA comanda: las de otras ventas siguen (Codex D11 r1 #2).
             store.soltarSi(trabajo)
