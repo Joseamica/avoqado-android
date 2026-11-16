@@ -69,10 +69,41 @@ class ComandasPendientesStore @Inject constructor(
     /** El venue del último [cargar]; `null` = nunca se cargó (sin venue conocido). Lo usa la guarda de [guardar]. */
     @Volatile private var venueCargado: String? = null
 
+    /**
+     * Cuándo falló por PRIMERA vez la comanda que está en [pendiente] (`null` = no se sabe o no hay). Con esto [vigente]
+     * aplica las 8 h también con la app abierta, no sólo al leer del disco (Codex D11 r1 #3).
+     */
+    @Volatile private var desde: Long? = null
+
+    /**
+     * 🔴 Un solo candado para todo lo que lee-y-escribe la libreta (Codex D11 r1 #1 y #2). Sin él, el reintento comprobaba
+     * «sigue siendo mi comanda» y, antes de escribir, una ronda de mesa (otro hilo) guardaba la suya: el reintento la
+     * pisaba y esa comanda desaparecía. Es de UNA ranura y escribe un JSON chico: el candado dura milisegundos.
+     */
+    private val cerrojo = Any()
+
     /** Se llama UNA vez al abrir sesión en un venue — ver `AppState.startOfflineOutbox`. */
-    fun cargar(venueIdActual: String?, ahora: Long = System.currentTimeMillis()) {
+    fun cargar(venueIdActual: String?, ahora: Long = System.currentTimeMillis()) = synchronized(cerrojo) {
         venueCargado = venueIdActual
-        _pendiente.value = leer(venueIdActual, ahora)
+        val leida = leerConFecha(venueIdActual, ahora)
+        _pendiente.value = leida?.first
+        desde = leida?.second
+    }
+
+    /**
+     * La comanda pendiente si sigue VIGENTE (8 h desde su primer fallo); si ya venció, se suelta y devuelve `null`.
+     *
+     * 🔴 Es lo que lee el reintento. `leer` sólo aplicaba la vigencia al abrir la app: con la tablet prendida nueve horas,
+     * el reloj imprimía una comanda de ayer en cuanto volvía la impresora (Codex D11 r1 #3).
+     */
+    fun vigente(ahora: Long = System.currentTimeMillis()): EstadoDeComanda.NoSalio? = synchronized(cerrojo) {
+        val actual = _pendiente.value ?: return null
+        val d = desde
+        if (d != null && (ahora - d > VIGENCIA_MS || ahora < d)) {
+            limpiar()
+            return null
+        }
+        actual
     }
 
     @Serializable
@@ -102,7 +133,7 @@ class ComandasPendientesStore @Inject constructor(
      * @return `true` si el aviso quedó de verdad en el aparato. 🔴 Un `false` NO se puede tratar
      * como éxito: significa que si la app muere ahora, esa comanda desaparece.
      */
-    fun guardar(estado: EstadoDeComanda.NoSalio, ahora: Long = System.currentTimeMillis()): Boolean {
+    fun guardar(estado: EstadoDeComanda.NoSalio, ahora: Long = System.currentTimeMillis()): Boolean = synchronized(cerrojo) {
         val trabajo = estado.trabajo ?: return false
         val cargado = venueCargado
         if (cargado != null && trabajo.venueId != cargado) return false
@@ -110,7 +141,12 @@ class ComandasPendientesStore @Inject constructor(
             val texto = json.encodeToString(
                 Guardada(estado.estaciones, estado.causa, estado.orderNumber, trabajo, ahora),
             )
-            almacen.escribir(texto).also { if (it) _pendiente.value = estado }
+            almacen.escribir(texto).also {
+                if (it) {
+                    _pendiente.value = estado
+                    desde = ahora
+                }
+            }
         }.onFailure { Log.w(TAG, "No se pudo guardar la comanda pendiente: ${it.message}") }
             .getOrDefault(false)
     }
@@ -123,8 +159,8 @@ class ComandasPendientesStore @Inject constructor(
      * del reloj, o el siguiente toque, le mandaba a Cocina el mismo ticket otra vez — la cocina podía preparar dos
      * veces el mismo plato.
      *
-     * - **Sólo si el pendiente sigue siendo [anterior].** La libreta es de UNA ranura: si mientras se imprimía entró
-     *   el fallo de OTRA venta, ése manda y no se pisa (tampoco se borra).
+     * - **Sólo si el pendiente sigue siendo [anterior]**, comprobado y escrito bajo el mismo candado que [guardar]. La
+     *   libreta es de UNA ranura: si mientras se imprimía entró el fallo de OTRA venta, ése manda y no se pisa.
      * - **Con trabajo reenviable**, se guarda la lista reducida, en memoria y en disco, **conservando la hora del
      *   primer fallo**: la vigencia de 8 h cuenta desde que la comanda no salió, no desde el último intento (si no, el
      *   reloj la renovaría cada minuto y una comanda de ayer seguiría viva).
@@ -140,7 +176,7 @@ class ComandasPendientesStore @Inject constructor(
         anterior: TrabajoPendiente,
         resultado: EstadoDeComanda.NoSalio,
         ahora: Long = System.currentTimeMillis(),
-    ): Boolean {
+    ): Boolean = synchronized(cerrojo) {
         if (_pendiente.value?.trabajo != anterior) return false
         val trabajo = resultado.trabajo
         if (trabajo == null) {
@@ -148,13 +184,27 @@ class ComandasPendientesStore @Inject constructor(
             _pendiente.value = resultado
             return true
         }
-        val desde = runCatching { almacen.leer()?.let { json.decodeFromString<Guardada>(it).guardadaEn } }.getOrNull() ?: ahora
+        val primerFallo = desde ?: ahora
         val escrito = runCatching {
-            almacen.escribir(json.encodeToString(Guardada(resultado.estaciones, resultado.causa, resultado.orderNumber, trabajo, desde)))
+            almacen.escribir(
+                json.encodeToString(Guardada(resultado.estaciones, resultado.causa, resultado.orderNumber, trabajo, primerFallo)),
+            )
         }.onFailure { Log.w(TAG, "No se pudo guardar lo que falta de la comanda: ${it.message}") }.getOrDefault(false)
         if (!escrito) runCatching { almacen.borrar() }
         _pendiente.value = resultado
+        desde = primerFallo
         return escrito
+    }
+
+    /**
+     * El reintento de [anterior] terminó sin nada pendiente (salió, o ya no lleva comanda): se suelta la libreta, pero
+     * SÓLO si sigue siendo [anterior]. 🔴 Antes `limpiar()` a secas: si mientras se reimprimía falló OTRA venta, su aviso
+     * y su reintento se borraban con el éxito de ésta (Codex D11 r1 #2).
+     */
+    fun soltarSi(anterior: TrabajoPendiente): Boolean = synchronized(cerrojo) {
+        if (_pendiente.value?.trabajo != anterior) return false
+        limpiar()
+        true
     }
 
     /**
@@ -168,7 +218,10 @@ class ComandasPendientesStore @Inject constructor(
     fun leer(
         venueIdActual: String?,
         ahora: Long = System.currentTimeMillis(),
-    ): EstadoDeComanda.NoSalio? {
+    ): EstadoDeComanda.NoSalio? = leerConFecha(venueIdActual, ahora)?.first
+
+    /** [leer], más la hora del primer fallo — la que [cargar] guarda para que [vigente] la aplique. */
+    private fun leerConFecha(venueIdActual: String?, ahora: Long): Pair<EstadoDeComanda.NoSalio, Long>? = synchronized(cerrojo) {
         val texto = almacen.leer() ?: return null
         val guardada = runCatching { json.decodeFromString<Guardada>(texto) }.getOrElse {
             // Un formato viejo o corrupto no puede dejar la app atorada arrastrándolo para
@@ -199,7 +252,7 @@ class ComandasPendientesStore @Inject constructor(
             causa = guardada.causa,
             orderNumber = guardada.orderNumber,
             trabajo = guardada.trabajo,
-        )
+        ) to guardada.guardadaEn
     }
 
     /**
@@ -214,8 +267,7 @@ class ComandasPendientesStore @Inject constructor(
      * @return el cierre en curso (las pruebas lo esperan), o `null` si no había nada que cerrar.
      */
     fun yaLaCante(): Job? {
-        val trabajo = _pendiente.value?.trabajo
-        limpiar()
+        val trabajo = synchronized(cerrojo) { _pendiente.value?.trabajo.also { limpiar() } }
         val entregas = entregaPorWifi ?: return null
         val venueId = trabajo?.venueId ?: return null
         val respaldo = trabajo.config.stations.filter { it.respaldoLocal }.map { it.id }.toSet()
@@ -224,9 +276,10 @@ class ComandasPendientesStore @Inject constructor(
         return fondo.launch { entregas.cerrarPorPapel(venueId, trabajo.orderNumber, planes) }
     }
 
-    fun limpiar() {
+    fun limpiar() = synchronized(cerrojo) {
         runCatching { almacen.borrar() }
         _pendiente.value = null
+        desde = null
     }
 
     private companion object {
