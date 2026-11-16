@@ -55,18 +55,35 @@ class ComandasPendientesStore @Inject constructor(
     private val json = Json { ignoreUnknownKeys = true }
 
     /**
-     * Una comanda pendiente en memoria: el aviso y la hora de su PRIMER fallo (`null` = no se sabe). La hora viaja con la
-     * comanda para que la vigencia de 8 h cuente desde que no salió, no desde el último reintento.
+     * Una comanda pendiente: el aviso, la hora de su PRIMER fallo (`null` = no se sabe; la vigencia de 8 h cuenta desde
+     * ahí, no desde el último reintento), su sucursal y si nació en esta vida de la app ([aqui]: sin sucursal cargada sólo
+     * se enseña lo de aquí, como antes).
      */
-    private data class Entrada(val estado: EstadoDeComanda.NoSalio, val desde: Long?)
+    private data class Entrada(
+        val estado: EstadoDeComanda.NoSalio,
+        val desde: Long?,
+        val venueId: String?,
+        val aqui: Boolean,
+    )
 
     /**
-     * 🔴 D1 (hz:033d44ca:D1, 16-nov-2026): TODAS las comandas que no salieron, en el orden en que fallaron. Antes la
-     * libreta era de UNA ranura: con la cocina apagada en hora pico, la segunda comanda pisaba a la primera y sólo la
-     * última se reintentaba sola y conservaba su «Volver a imprimir»; las demás dependían de que el cajero hubiera visto
-     * el aviso. Sólo se toca bajo [cerrojo].
+     * 🔴 D1 (hz:033d44ca:D1, 16-nov-2026): TODAS las comandas que no salieron, de todas las sucursales, en el orden en que
+     * fallaron. Antes la libreta era de UNA ranura: con la cocina apagada en hora pico, la segunda comanda pisaba a la
+     * primera y sólo la última se reintentaba sola y conservaba su «Volver a imprimir».
+     *
+     * 🔴 **La MEMORIA es la verdad; el disco es su copia** (Codex D1 r2 #1, #2 y #4). Se lee del disco una vez, la primera
+     * vez que hace falta, y desde entonces cada cambio se aplica aquí y se copia entera al disco. Si el disco no acepta la
+     * escritura (lleno), nada se pierde ni se revive mientras la app viva: la comanda sigue aquí, con su aviso y su
+     * reintento, y [vigentes] —el reloj, cada minuto— vuelve a copiar en cuanto el disco responde. Lo único que queda al
+     * azar es que la app MUERA con el disco sin responder: al abrir vuelve la última copia buena, que puede traer una ya
+     * resuelta (duplicado), nunca perder una pendiente — la misma regla que el resto de lo sin red.
+     *
+     * Sólo se toca bajo [cerrojo].
      */
     private var entradas: List<Entrada> = emptyList()
+    private var leidoDelDisco = false
+    /** La última copia al disco falló: [vigentes] la vuelve a intentar. */
+    private var discoAtrasado = false
 
     private val _pendientes = MutableStateFlow<List<EstadoDeComanda.NoSalio>>(emptyList())
     private val _pendiente = MutableStateFlow<EstadoDeComanda.NoSalio?>(null)
@@ -95,17 +112,57 @@ class ComandasPendientesStore @Inject constructor(
      */
     private val cerrojo = Any()
 
-    /** Publica [entradas]: la lista para el reloj y la más reciente para el aviso. Bajo [cerrojo]. */
-    private fun publicar(nuevas: List<Entrada>) {
-        entradas = nuevas
-        _pendientes.value = nuevas.map { it.estado }
-        _pendiente.value = nuevas.lastOrNull()?.estado
+    /**
+     * 🔴 Sólo se enseña y se reintenta lo de ESTE negocio. La app cambia de sucursal y de sesión sin reinstalarse, y un
+     * aviso guardado en la sucursal A reaparecía en la B: si las dos redes usan la misma IP privada —lo normal en un
+     * 192.168.1.x— el papel podía salir FÍSICAMENTE en el local equivocado (P1 #5 de la 2ª auditoría de Codex). Lo de
+     * otra sucursal se SUSPENDE, no se borra: al volver a su sucursal, ahí sigue (Codex, 2026-09-08).
+     */
+    private fun visible(e: Entrada): Boolean {
+        val cargado = venueCargado
+        return if (cargado != null) e.venueId == cargado else e.aqui
     }
 
-    /** Se llama UNA vez al abrir sesión en un venue — ver `AppState.startOfflineOutbox`. */
+    /** Lee el disco UNA vez (la primera operación). Lo vencido a [ahora] no entra (`null` = no se mira el reloj). */
+    private fun asegurarLeido(ahora: Long?) {
+        if (leidoDelDisco) return
+        leidoDelDisco = true
+        val delDisco = leerDisco(ahora).map { Entrada(it.aviso(), it.guardadaEn, it.trabajo?.venueId, aqui = false) }
+        entradas = delDisco.filter { d -> entradas.none { it.estado.trabajo == d.estado.trabajo } } + entradas
+    }
+
+    /** Suelta lo vencido (8 h desde su primer fallo, o un reloj que se fue hacia atrás). @return si quitó algo. */
+    private fun expirar(ahora: Long): Boolean {
+        val siguen = entradas.filter { it.desde == null || !vencida(it.desde, ahora) }
+        if (siguen.size == entradas.size) return false
+        entradas = siguen
+        return true
+    }
+
+    /** Copia al disco TODO lo que tiene trabajo reenviable (todas las sucursales). Bajo [cerrojo]. */
+    private fun persistir(ahora: Long = System.currentTimeMillis()): Boolean {
+        val lista = entradas.mapNotNull { e ->
+            e.estado.trabajo?.let { Guardada(e.estado.estaciones, e.estado.causa, e.estado.orderNumber, it, e.desde ?: ahora) }
+        }
+        val ok = escribirDisco(lista)
+        if (!ok) Log.w(TAG, "El aparato no aceptó la copia de las comandas pendientes: siguen en memoria y se reintenta")
+        discoAtrasado = !ok
+        return ok
+    }
+
+    /** Publica lo visible: la lista para el reloj y la más reciente para el aviso. Bajo [cerrojo]. */
+    private fun publicar() {
+        val visibles = entradas.filter(::visible).map { it.estado }
+        _pendientes.value = visibles
+        _pendiente.value = visibles.lastOrNull()
+    }
+
+    /** Se llama al abrir sesión en un venue (y al cambiar de sucursal) — ver `AppState.startOfflineOutbox`. */
     fun cargar(venueIdActual: String?, ahora: Long = System.currentTimeMillis()) = synchronized(cerrojo) {
+        asegurarLeido(ahora)
         venueCargado = venueIdActual
-        publicar(delVenue(leerDisco(ahora), venueIdActual).map { Entrada(it.aviso(), it.guardadaEn) })
+        if (expirar(ahora) || discoAtrasado) persistir(ahora)
+        publicar()
     }
 
     /**
@@ -114,35 +171,33 @@ class ComandasPendientesStore @Inject constructor(
     fun vigente(ahora: Long = System.currentTimeMillis()): EstadoDeComanda.NoSalio? = vigentes(ahora).lastOrNull()
 
     /**
-     * Las comandas pendientes que siguen VIGENTES (8 h desde su primer fallo), de la más vieja a la más nueva; las
-     * vencidas se sueltan aquí, de memoria y de disco.
+     * Las comandas pendientes de esta sucursal que siguen VIGENTES (8 h desde su primer fallo), de la más vieja a la más
+     * nueva; las vencidas se sueltan aquí. Si la última copia al disco falló, se vuelve a intentar aquí (lo llama el
+     * reloj cada minuto).
      *
      * 🔴 Es lo que lee el reintento. `leer` sólo aplicaba la vigencia al abrir la app: con la tablet prendida nueve horas,
      * el reloj imprimía una comanda de ayer en cuanto volvía la impresora (Codex D11 r1 #3).
      */
     fun vigentes(ahora: Long = System.currentTimeMillis()): List<EstadoDeComanda.NoSalio> = synchronized(cerrojo) {
-        val (siguen, vencidas) = entradas.partition { e -> e.desde == null || !vencida(e.desde, ahora) }
-        if (vencidas.isNotEmpty()) {
-            val fuera = vencidas.mapNotNull { it.estado.trabajo }
-            if (fuera.isNotEmpty()) quitarDelDisco(ahora) { it.trabajo in fuera }
-            publicar(siguen)
-        }
-        siguen.map { it.estado }
+        asegurarLeido(ahora)
+        if (expirar(ahora) || discoAtrasado) persistir(ahora)
+        publicar()
+        _pendientes.value
     }
 
     /**
      * ¿Se puede mandar YA este trabajo? Sigue en la libreta, no venció y es de la sucursal cargada. El reloj lo pregunta
-     * justo antes de imprimir cada comanda, DESPUÉS de refrescar la config (Codex D1 r1 #3, #5 y #6): en una pasada con
+     * justo antes de cada comanda, antes y DESPUÉS de refrescar la config (Codex D1 r1 #3, #5 y #6): en una pasada con
      * varias comandas, o mientras se espera el refresco, una pudo vencer, resolverse con «Ya la canté» o quedarse de otra
      * sucursal porque cambiaron de sucursal en la tablet. Una vencida se suelta aquí.
      */
     fun sigueVigente(trabajo: TrabajoPendiente, ahora: Long = System.currentTimeMillis()): Boolean = synchronized(cerrojo) {
         val e = entradas.firstOrNull { it.estado.trabajo == trabajo } ?: return false
-        val cargado = venueCargado
-        if (cargado != null && trabajo.venueId != cargado) return false
+        if (!visible(e)) return false
         if (e.desde != null && vencida(e.desde, ahora)) {
-            quitarDelDisco(ahora) { it.trabajo == trabajo }
-            publicar(entradas.filter { it !== e })
+            entradas = entradas.filter { it !== e }
+            persistir(ahora)
+            publicar()
             return false
         }
         true
@@ -164,38 +219,29 @@ class ComandasPendientesStore @Inject constructor(
      * pueden conservar la suya, pero la verdad vive en este almacén.
      *
      * 1. **Sin trabajo, nada.** Un `NoSalio` sin trabajo (todas las estaciones saltadas, o el camino legado) no se
-     *    puede reimprimir; guardarlo no le da nada al reloj ni al botón. Devuelve `false` sin tocar memoria ni disco.
-     * 2. **Venue ajeno, se rechaza entero.** Si `trabajo.venueId` no es el del último [cargar], NO se publica en
-     *    memoria —el reloj de reintento y Cobrar, que leen [pendientes], lo mandarían a las impresoras de la sucursal
-     *    equivocada— y tampoco se escribe a disco (igual que iOS). Lo único que se pierde es el reintento automático del
-     *    trabajo viejo; su aviso ya se mostró. Devuelve `false`.
-     * 3. **Nunca cargado** (sin venue conocido): como antes, se escribe y se publica.
+     *    puede reimprimir; guardarlo no le da nada al reloj ni al botón. Devuelve `false` sin tocar nada.
+     * 2. **Venue ajeno, se rechaza entero.** Si `trabajo.venueId` no es el del último [cargar], NO entra —el reloj de
+     *    reintento y Cobrar, que leen [pendientes], lo mandarían a las impresoras de la sucursal equivocada— (igual que
+     *    iOS). Lo único que se pierde es el reintento automático del trabajo viejo; su aviso ya se mostró. `false`.
+     * 3. **Nunca cargado** (sin venue conocido): como antes, entra y se enseña.
      *
      * 🔴 D1: se AGREGA a la lista; ya no pisa la comanda de otra venta. El MISMO trabajo guardado otra vez no se duplica
-     * (saldría dos veces) y conserva su lugar y la hora de su primer fallo. Lo suspendido de otra sucursal en disco se
-     * conserva.
+     * (saldría dos veces) y conserva su lugar y la hora de su primer fallo.
      *
-     * @return `true` si el aviso quedó de verdad en el aparato. 🔴 Un `false` NO se puede tratar
-     * como éxito: significa que si la app muere ahora, esa comanda desaparece.
+     * @return `true` si además quedó en el DISCO. 🔴 Con `false` (y trabajo de esta sucursal) la comanda SÍ queda en
+     * memoria —aviso y reintento— y el reloj reintenta la copia (Codex D1 r2 #4); sólo se perdería si la app muere antes.
      */
     fun guardar(estado: EstadoDeComanda.NoSalio, ahora: Long = System.currentTimeMillis()): Boolean = synchronized(cerrojo) {
         val trabajo = estado.trabajo ?: return false
         val cargado = venueCargado
         if (cargado != null && trabajo.venueId != cargado) return false
+        asegurarLeido(ahora)
         val previa = entradas.firstOrNull { it.estado.trabajo == trabajo }
-        val desde = previa?.desde ?: ahora
-        return runCatching {
-            val disco = leerDisco(ahora)
-            val nueva = Guardada(estado.estaciones, estado.causa, estado.orderNumber, trabajo, desde)
-            val i = disco.indexOfFirst { it.trabajo == trabajo }
-            val escrito = escribirDisco(if (i >= 0) disco.toMutableList().also { it[i] = nueva } else disco + nueva)
-            if (escrito) {
-                val entrada = Entrada(estado, desde)
-                publicar(if (previa != null) entradas.map { if (it === previa) entrada else it } else entradas + entrada)
-            }
-            escrito
-        }.onFailure { Log.w(TAG, "No se pudo guardar la comanda pendiente: ${it.message}") }
-            .getOrDefault(false)
+        val nueva = Entrada(estado, previa?.desde ?: ahora, trabajo.venueId, aqui = true)
+        entradas = if (previa != null) entradas.map { if (it === previa) nueva else it } else entradas + nueva
+        val ok = persistir(ahora)
+        publicar()
+        return ok
     }
 
     /**
@@ -208,16 +254,13 @@ class ComandasPendientesStore @Inject constructor(
      *
      * - **Sólo si [anterior] sigue en la libreta**, comprobado y escrito bajo el mismo candado que [guardar]. Se cambia en
      *   su lugar; las comandas de otras ventas que entraron mientras se imprimía no se tocan.
-     * - **Con trabajo reenviable**, se guarda la lista reducida, en memoria y en disco, **conservando la hora del
-     *   primer fallo**: la vigencia de 8 h cuenta desde que la comanda no salió, no desde el último intento (si no, el
-     *   reloj la renovaría cada minuto y una comanda de ayer seguiría viva).
+     * - **Con trabajo reenviable**, queda la lista reducida **conservando la hora del primer fallo**: la vigencia de 8 h
+     *   cuenta desde que la comanda no salió, no desde el último intento (si no, el reloj la renovaría cada minuto).
      * - **Sin nada reenviable** (lo que faltaba salió, pero lo que queda ya no tiene impresora): el aviso se sigue
-     *   VIENDO —la pantalla lo pinta sin «Volver a imprimir» y el cajero lo cierra con «Ya la canté»— pero se borra
-     *   del disco y el reloj ya no tiene qué mandar. Reenviar el trabajo viejo sólo repetiría lo que ya salió.
-     * - Si el disco no acepta la escritura, se QUITA el viejo del disco en vez de dejarlo: tras reiniciar, su «Volver a
-     *   imprimir» repetiría lo que ya salió. Un ticket duplicado en la cocina es peor que el aviso que se pierde.
+     *   VIENDO —la pantalla lo pinta sin «Volver a imprimir» y el cajero lo cierra con «Ya la canté»— pero sale del
+     *   disco y el reloj ya no tiene qué mandar. Reenviar el trabajo viejo sólo repetiría lo que ya salió.
      *
-     * @return `false` si no cambió nada ([anterior] ya no estaba) o si el disco no quedó al día.
+     * @return `false` si no cambió nada ([anterior] ya no estaba) o si el disco no quedó al día (se reintenta solo).
      */
     fun reemplazar(
         anterior: TrabajoPendiente,
@@ -225,22 +268,11 @@ class ComandasPendientesStore @Inject constructor(
         ahora: Long = System.currentTimeMillis(),
     ): Boolean = synchronized(cerrojo) {
         val previa = entradas.firstOrNull { it.estado.trabajo == anterior } ?: return false
-        val primerFallo = previa.desde ?: ahora
-        val disco = leerDisco(ahora)
-        val trabajo = resultado.trabajo
-        val escrito = if (trabajo == null) {
-            quitarDelDisco(ahora) { it.trabajo == anterior }
-            true
-        } else {
-            val nueva = Guardada(resultado.estaciones, resultado.causa, resultado.orderNumber, trabajo, primerFallo)
-            val i = disco.indexOfFirst { it.trabajo == anterior }
-            val ok = escribirDisco(if (i >= 0) disco.toMutableList().also { it[i] = nueva } else disco + nueva)
-            if (!ok) quitarDelDisco(ahora) { it.trabajo == anterior }
-            ok
-        }
-        val entrada = Entrada(resultado, primerFallo)
-        publicar(entradas.map { if (it === previa) entrada else it })
-        return escrito
+        val nueva = previa.copy(estado = resultado, desde = previa.desde ?: ahora)
+        entradas = entradas.map { if (it === previa) nueva else it }
+        val ok = persistir(ahora)
+        publicar()
+        return ok
     }
 
     /**
@@ -250,41 +282,37 @@ class ComandasPendientesStore @Inject constructor(
      */
     fun soltarSi(anterior: TrabajoPendiente): Boolean = synchronized(cerrojo) {
         if (entradas.none { it.estado.trabajo == anterior }) return false
-        quitarDelDisco(null) { it.trabajo == anterior }
-        publicar(entradas.filter { it.estado.trabajo != anterior })
+        entradas = entradas.filter { it.estado.trabajo != anterior }
+        persistir()
+        publicar()
         true
     }
 
     /**
-     * Devuelve el aviso guardado más reciente de esta sucursal, o `null` si no hay o si ya VENCIÓ.
+     * El aviso más reciente guardado para [venueIdActual], o `null` si no hay o si ya VENCIÓ (lo vencido se suelta).
      *
      * La vigencia no es cosmética: una comanda de ayer ya se resolvió de alguna forma —la
      * cocina la preparó, el cliente se fue, alguien la cantó— y ofrecer reimprimirla invita a
      * mandar comida que nadie pidió. [VIGENCIA_MS] cubre una jornada de mostrador sin llegar al
-     * día siguiente.
+     * día siguiente. Sin venue no se arriesga: `null`.
      */
     fun leer(
         venueIdActual: String?,
         ahora: Long = System.currentTimeMillis(),
-    ): EstadoDeComanda.NoSalio? = synchronized(cerrojo) { delVenue(leerDisco(ahora), venueIdActual).lastOrNull()?.aviso() }
-
-    /**
-     * 🔴 Sólo vuelve lo de ESTE negocio. La app cambia de sucursal y de sesión sin reinstalarse, y un aviso guardado en la
-     * sucursal A reaparecía en la B: si las dos redes usan la misma IP privada —lo normal en un 192.168.1.x— el papel
-     * podía salir FÍSICAMENTE en el local equivocado (P1 #5 de la 2ª auditoría de Codex, 2026-09-07). Sin venue no se
-     * arriesga.
-     *
-     * Lo de otra sucursal se SUSPENDE, no se borra: se queda en disco y vuelve al regresar a su sucursal. BORRARLO haría
-     * desaparecer una comanda pendiente real sólo porque alguien cambió de sucursal en la tablet (Codex, 2026-09-08).
-     */
-    private fun delVenue(disco: List<Guardada>, venueIdActual: String?): List<Guardada> =
-        disco.filter { it.trabajo?.venueId != null && it.trabajo.venueId == venueIdActual }
+    ): EstadoDeComanda.NoSalio? = synchronized(cerrojo) {
+        asegurarLeido(ahora)
+        if (expirar(ahora)) {
+            persistir(ahora)
+            publicar()
+        }
+        if (venueIdActual == null) return null
+        entradas.lastOrNull { it.venueId == venueIdActual && it.estado.trabajo != null }?.estado
+    }
 
     private fun vencida(desde: Long, ahora: Long) = ahora - desde > VIGENCIA_MS || ahora < desde
 
     /**
-     * Todo lo que hay en disco, de todas las sucursales, sin lo vencido a [ahora] (que se borra aquí; `null` = no se
-     * mira la vigencia, para quitar una comanda sin depender del reloj). Bajo [cerrojo].
+     * Lo que hay en disco, de todas las sucursales, sin lo vencido a [ahora] (`null` = no se mira el reloj). Bajo [cerrojo].
      *
      * Lee la lista nueva (`[…]`) y también la hoja suelta de la versión anterior (`{…}`): al actualizar la app, la comanda
      * pendiente que ya estaba guardada no se pierde. Un formato viejo o corrupto no puede dejar la app atorada
@@ -301,7 +329,7 @@ class ComandasPendientesStore @Inject constructor(
             return emptyList()
         }
         val vigentes = if (ahora == null) todas else todas.filter { !vencida(it.guardadaEn, ahora) }
-        if (vigentes.size != todas.size || !texto.startsWith("[")) escribirDisco(vigentes)
+        if (vigentes.isEmpty()) runCatching { almacen.borrar() }
         return vigentes
     }
 
@@ -312,28 +340,10 @@ class ComandasPendientesStore @Inject constructor(
      * archivo es la vigencia de 8 h, que retira cada comanda sola.
      */
     private fun escribirDisco(lista: List<Guardada>): Boolean {
-        if (lista.isEmpty()) {
-            runCatching { almacen.borrar() }
-            return true
-        }
+        if (lista.isEmpty()) return runCatching { almacen.borrar(); true }.getOrDefault(false)
         return runCatching { almacen.escribir(json.encodeToString(lista)) }
             .onFailure { Log.w(TAG, "No se pudieron escribir las comandas pendientes: ${it.message}") }
             .getOrDefault(false)
-    }
-
-    /**
-     * Quita del disco lo que [sale] marca (salió, se resolvió o venció). Bajo [cerrojo].
-     *
-     * 🔴 Si la lista que queda no se puede escribir, se BORRA el disco entero (Codex D1 r1 #2): dejar el archivo viejo
-     * haría que, tras reiniciar, el reloj imprimiera otra vez lo que ya salió o lo que una persona ya cantó. Un ticket
-     * duplicado en la cocina es peor que el aviso que se pierde; las que siguen pendientes siguen en memoria y el reloj
-     * las insiste mientras la app viva.
-     */
-    private fun quitarDelDisco(ahora: Long?, sale: (Guardada) -> Boolean) {
-        if (!escribirDisco(leerDisco(ahora).filterNot(sale))) {
-            Log.w(TAG, "No se pudo quitar una comanda del aparato: se borra la libreta del disco para no imprimirla dos veces")
-            runCatching { almacen.borrar() }
-        }
     }
 
     /**
@@ -350,9 +360,10 @@ class ComandasPendientesStore @Inject constructor(
      */
     fun yaLaCante(): Job? {
         val trabajo = synchronized(cerrojo) {
-            val vista = entradas.lastOrNull() ?: return null
-            vista.estado.trabajo?.let { t -> quitarDelDisco(null) { it.trabajo == t } }
-            publicar(entradas.dropLast(1))
+            val vista = entradas.lastOrNull(::visible) ?: return null
+            entradas = entradas.filter { it !== vista }
+            persistir()
+            publicar()
             vista.estado.trabajo
         }
         val entregas = entregaPorWifi ?: return null
@@ -365,8 +376,11 @@ class ComandasPendientesStore @Inject constructor(
 
     /** Vacía la libreta entera, en memoria y en disco (todas las sucursales). Lo normal es soltar UNA: [soltarSi]. */
     fun limpiar() = synchronized(cerrojo) {
+        leidoDelDisco = true
+        entradas = emptyList()
         runCatching { almacen.borrar() }
-        publicar(emptyList())
+        discoAtrasado = false
+        publicar()
     }
 
     private companion object {

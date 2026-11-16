@@ -439,19 +439,23 @@ class ComandasPendientesStoreTest {
         assertEquals("ORD-1", tras.pendientes.value.first().orderNumber)
     }
 
+    /** Un almacén cuyo disco se puede «llenar» (no acepta escribir ni borrar) y volver. */
+    private class DiscoQueFalla : AlmacenDeTexto {
+        var texto: String? = null
+        var fallar = false
+        override fun leer(): String? = texto
+        override fun escribir(texto: String): Boolean { if (fallar) return false; this.texto = texto; return true }
+        override fun borrar() { if (fallar) error("disco lleno"); texto = null }
+    }
+
     /**
-     * P1 (Codex D1 r1 #2) Si al quitar una comanda resuelta el disco no acepta la lista que queda, se BORRA el disco: dejar
-     * el archivo viejo haría que tras reiniciar el reloj imprimiera otra vez la que una persona ya cantó.
+     * P1 (Codex D1 r1 #2 y r2 #1, #2) El disco no acepta la escritura al quitar una comanda resuelta: la otra NO se pierde
+     * (sigue en memoria con su reintento) y, en cuanto el disco responde, el reloj copia la lista buena: tras reiniciar no
+     * vuelve la resuelta ni falta la pendiente.
      */
     @Test
-    fun `P1 si no se puede reescribir al quitar una, el disco no conserva la ya resuelta`() {
-        val almacen = object : AlmacenDeTexto {
-            var texto: String? = null
-            var fallar = false
-            override fun leer(): String? = texto
-            override fun escribir(texto: String): Boolean { if (fallar) return false; this.texto = texto; return true }
-            override fun borrar() { texto = null }
-        }
+    fun `P1 con el disco sin responder al quitar una no se pierde la otra y la copia se repone sola`() {
+        val almacen = DiscoQueFalla()
         val store = ComandasPendientesStore(almacen).apply { cargar("venue-1", ahora) }
         store.guardar(venta(1), ahora)
         store.guardar(venta(2), ahora)
@@ -460,10 +464,31 @@ class ComandasPendientesStoreTest {
         store.yaLaCante()
 
         assertEquals("ORD-1 se perdió de memoria", listOf("ORD-1"), store.pendientes.value.map { it.orderNumber })
-        val tras = ComandasPendientesStore(almacen).apply { cargar("venue-1", ahora) }
-        assertTrue(
-            "tras reiniciar volvería ORD-2, que ya se cantó",
-            tras.pendientes.value.none { it.orderNumber == "ORD-2" },
+        almacen.fallar = false
+        store.vigentes(ahora + 60_000) // el tic del reloj
+        val tras = ComandasPendientesStore(almacen).apply { cargar("venue-1", ahora + 120_000) }
+        assertEquals(listOf("ORD-1"), tras.pendientes.value.map { it.orderNumber })
+    }
+
+    /**
+     * P1 (Codex D1 r2 #4) Si el disco no acepta GUARDAR una comanda nueva, igual queda en memoria —con su aviso y su
+     * reintento— y se copia al disco en cuanto responde. Antes se perdía en el acto.
+     */
+    @Test
+    fun `P1 con el disco sin responder al guardar la comanda queda en memoria y se copia despues`() {
+        val almacen = DiscoQueFalla()
+        val store = ComandasPendientesStore(almacen).apply { cargar("venue-1", ahora) }
+        almacen.fallar = true
+
+        assertFalse("dijo que quedó en el disco", store.guardar(venta(1), ahora))
+        assertEquals(listOf("ORD-1"), store.pendientes.value.map { it.orderNumber })
+        assertEquals(listOf("ORD-1"), store.vigentes(ahora + 60_000).map { it.orderNumber })
+
+        almacen.fallar = false
+        store.vigentes(ahora + 120_000)
+        assertEquals(
+            listOf("ORD-1"),
+            ComandasPendientesStore(almacen).apply { cargar("venue-1", ahora + 180_000) }.pendientes.value.map { it.orderNumber },
         )
     }
 
