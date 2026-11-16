@@ -53,6 +53,9 @@ internal class Presencias {
         pendientes = emptySet()
     }
 
+    /** Hub D6 bandas: las cajas que hoy le declaran a este árbitro (presencia viva). Sin arbitraje asumido, ninguna. */
+    fun vivas(ahora: Long): Set<String> = if (!asumido) emptySet() else porCaja.filterValues { it.vivaEn(ahora) }.keys.toSet()
+
     fun enPresencia(caja: String, ahora: Long) = porCaja[caja]?.let { ahora - it.vistoEn < OLVIDO_MS } == true
 
     /**

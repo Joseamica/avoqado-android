@@ -253,9 +253,9 @@ fun TablesScreen(
         }
 
         // D6: gris y sin botones (estado normal del WiFi, no un error); nunca frena nada. Mismo estilo que «Arma el plano…».
-        if (avisoDeIsla) {
+        avisoDeIsla?.let { linea ->
             Text(
-                text = AvisoDeIsla.TEXTO,
+                text = linea,
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(bottom = AvoqadoTheme.spacing.sm),

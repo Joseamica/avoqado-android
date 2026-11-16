@@ -117,8 +117,11 @@ internal class FakeDiscovery(peers: List<LanPeer>) : LanDiscoveryPort {
     override val peers = MutableStateFlow(peers)
     override var cambiosDeArbitro = 0L
         private set
-    override fun conectarHub(respondTo: (String) -> LeaseResponse) {}
-    override fun desconectarHub() {}
+    /** Hub D6 bandas: lo que el coordinador engancha (para preguntarle `en_mesa` como lo haría otra caja). */
+    var hub: ((String) -> LeaseResponse)? = null
+        private set
+    override fun conectarHub(respondTo: (String) -> LeaseResponse) { hub = respondTo }
+    override fun desconectarHub() { hub = null }
 
     /** Como `TransporteLan.publicarPeers` (Codex código r2 H2): cuenta el cambio de elección ANTES de publicar. */
     @Synchronized
