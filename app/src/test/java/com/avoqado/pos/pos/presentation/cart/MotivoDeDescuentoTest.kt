@@ -46,7 +46,7 @@ class MotivoDeDescuentoTest {
     }
 
     @Test
-    fun `pide motivo el descuento de catalogo o el ajuste puesto a mano; no la cortesia, la sugerencia ni un renglon sin descuento`() {
+    fun `pide motivo el descuento de catalogo o el ajuste puesto a mano, no la cortesia, la sugerencia ni un renglon sin descuento`() {
         assertTrue(linea { copy(itemDiscountId = "d1") }.descuentoPideMotivo)
         assertTrue(linea { copy(priceAdjustment = 8000) }.descuentoPideMotivo)
         assertFalse(linea().descuentoPideMotivo)
@@ -55,7 +55,7 @@ class MotivoDeDescuentoTest {
     }
 
     @Test
-    fun `la cuenta pide motivo con un descuento de la lista, manual o cortesia; no con cupon, del cliente ni referido`() {
+    fun `la cuenta pide motivo con un descuento de la lista, manual o cortesia, no con cupon, del cliente ni referido`() {
         val base = CartState(items = listOf(linea()))
         assertTrue(base.copy(orderDiscount = diezPorCiento).cuentaPideMotivo)
         assertTrue(base.copy(orderDiscount = diezPorCiento.copy(id = "manual_1")).cuentaPideMotivo)
@@ -106,7 +106,7 @@ class MotivoDeDescuentoTest {
         Json.parseToJsonElement(OrderRepository.buildCreateOrderPayload(request, staffId = "s1")).jsonObject
 
     @Test
-    fun `el renglon lleva su motivo y comentario; sin motivo el renglon es el de siempre`() {
+    fun `el renglon lleva su motivo y comentario, sin motivo el renglon es el de siempre`() {
         val items = buildOrderItemRequests(
             listOf(
                 linea("a") { copy(priceAdjustment = 8000, discountReason = "Error de etiqueta", discountReasonComment = "etiqueta vieja") },
@@ -137,7 +137,7 @@ class MotivoDeDescuentoTest {
     private val importe = OrderItemRequest(productId = null, name = "Otro importe", quantity = 1, unitPrice = 10000)
 
     @Test
-    fun `el motivo de la cuenta viaja solo con importe; sin el, el cuerpo no cambia`() {
+    fun `el motivo de la cuenta viaja solo con importe, sin el, el cuerpo no cambia`() {
         val conMotivo = CreateOrderRequest(
             items = listOf(importe), subtotal = 10000, discount = 1000, total = 9000, paymentMethod = "CASH",
             orderDiscountReason = "Queja del cliente", orderDiscountReasonComment = "tardó",
