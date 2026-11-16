@@ -189,6 +189,8 @@ private fun Welcome(venueName: String?, qr: String? = null, onIdentify: (() -> U
         Spacer(Modifier.height(AvoqadoTheme.spacing.md))
         Sub("El registro se abre antes de cada clase.")
         Spacer(Modifier.weight(1f))
+        // Codex r4 #3: sin QR todavía (sin llave, sin red) también hay salida para registrar la llegada con el teléfono.
+        if (onIdentify != null) FooterAction("¿Vienes a clase? Escribe tu teléfono", onClick = onIdentify)
     }
 }
 
