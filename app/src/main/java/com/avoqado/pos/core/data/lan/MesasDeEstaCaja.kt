@@ -72,8 +72,23 @@ class MesasDeEstaCaja internal constructor(
      */
     data class Declaracion(val mesas: Set<String>, val aperturas: List<Apertura>)
 
-    /** Un ticket vivo: su apertura, la PRIMERA resolución (null = pendiente) y si el árbitro pidió esperar. */
-    private data class Ticket(val apertura: Apertura, val resultado: LeaseOutcome? = null, val esperando: Boolean = false)
+    /**
+     * Un ticket vivo: su apertura, la PRIMERA resolución del árbitro (null = pendiente), si el árbitro pidió esperar y, Hub D6 bandas,
+     * lo que contestaron directo las otras cajas: [directo] es la primera «ocupada» y [directoListo] dice que la pregunta terminó.
+     */
+    private data class Ticket(
+        val apertura: Apertura,
+        val resultado: LeaseOutcome? = null,
+        val esperando: Boolean = false,
+        val directo: LeaseOutcome.Taken? = null,
+        val directoListo: Boolean = true,
+    )
+
+    /**
+     * Hub D6 bandas: con un coordinador encendido (`LanHubCoordinator.start`), cada apertura nueva nace esperando la pregunta directa
+     * a las otras cajas; sin él nadie la haría, y su espera da `NoHub` de todos modos (`LanHubService.esperarApertura`).
+     */
+    @Volatile var consultaDirecta: Boolean = false
 
     /** id → ticket, en orden de apertura. */
     private val tickets = MutableStateFlow<Map<String, Ticket>>(emptyMap())
@@ -114,8 +129,44 @@ class MesasDeEstaCaja internal constructor(
 
     fun abrirApertura(tableId: String, staffId: String, staffName: String, venueId: String): Apertura {
         val a = Apertura(UUID.randomUUID().toString(), tableId, staffId, staffName, venueId, relojMs())
-        tickets.update { it + (a.id to Ticket(a)) }
+        tickets.update { it + (a.id to Ticket(a, directoListo = !consultaDirecta)) }
         return a
+    }
+
+    /** Hub D6 bandas: las aperturas vivas cuya pregunta directa no ha terminado (el coordinador las pregunta una vez cada una). */
+    fun porConsultarDirecto(): List<Apertura> = tickets.value.values.filter { !it.directoListo }.map { it.apertura }
+
+    /**
+     * Hub D6 bandas: termina la pregunta directa de [id]: [ocupada] (la primera caja que dijo «estoy») o null (nadie, o nadie contestó).
+     * Un ticket ya terminado no revive; una segunda respuesta no cambia la primera.
+     */
+    fun resolverDirecto(id: String, ocupada: LeaseOutcome.Taken?) =
+        cambiar(id) { if (it.directoListo) it else it.copy(directo = ocupada, directoListo = true) }
+
+    /**
+     * Hub D6 bandas, lo que contesta esta caja a `en_mesa`: ¿está en [tableId] de [venueId]? Sí si es su mesa actual o si tiene una apertura
+     * de esa mesa con veredicto FINAL de abrir: el árbitro la concedió (o isla) y su propia pregunta directa ya terminó sin «ocupada».
+     * Una pendiente, una que salió ocupada o una cuya pregunta directa sigue en vuelo, no: si dos cajas con árbitros distintos abren la
+     * misma mesa en el mismo instante y cada una contestara «estoy» con su veredicto a medias, se frenarían LAS DOS. Ante la duda, isla:
+     * en ese empate las dos abren y quedan dos cuentas, como hoy (límite declarado).
+     */
+    fun ocupa(tableId: String, venueId: String): Boolean {
+        // Codex r1 #2: PRIMERO los tickets, DESPUÉS la mesa actual, como [declaracion]: el éxito activa la sesión y luego termina el
+        // ticket, así que en este orden la mesa sale por una de las dos. Al revés, un traspaso entre las dos lecturas no salía por ninguna.
+        val porTicket = tickets.value.values.any {
+            it.apertura.venueId == venueId && it.apertura.tableId == tableId && veredicto(it).let { v -> v == LeaseOutcome.Granted || v == LeaseOutcome.NoHub }
+        }
+        return porTicket || mesaActual() == tableId
+    }
+
+    /**
+     * Codex r1 #1: el veredicto FINAL de un ticket, el mismo para [esperar] y para [ocupa]. Una «ocupada» (directa o del árbitro) es final
+     * en cuanto llega; «concedida» o «isla» del árbitro, sólo con la pregunta directa ya terminada. null = todavía no hay.
+     */
+    private fun veredicto(t: Ticket): LeaseOutcome? = t.directo ?: when (val r = t.resultado) {
+        is LeaseOutcome.Taken -> r
+        null -> null
+        else -> r.takeIf { t.directoListo }
     }
 
     /** Idempotente. Un ticket terminado no revive ni con una resolución tardía; su espera da `NoHub`. */
@@ -142,15 +193,23 @@ class MesasDeEstaCaja internal constructor(
     /**
      * Espera la resolución de [a]. `NoHub` (isla) si el ticket ya no está, si vencen [PLAZO_PEDIR_MESA_MS] contados desde
      * `a.creadaEnMs` o si [sigue] da `false` (se revisa cada 250 ms). [alEsperar] suena una sola vez, cuando el árbitro pide esperar.
+     * Hub D6 bandas: una «ocupada» (directa o del árbitro) sale en cuanto llega; «concedida» o «isla» del árbitro esperan a que termine la
+     * pregunta directa a las otras cajas.
      */
     suspend fun esperar(a: Apertura, alEsperar: () -> Unit = {}, sigue: () -> Boolean): LeaseOutcome {
         var avisado = false
         while (true) {
             val t = tickets.value[a.id] ?: return LeaseOutcome.NoHub
-            t.resultado?.let { return it }
+            veredicto(t)?.let { return it }
             if (t.esperando && !avisado) { avisado = true; alEsperar() }
             val restante = a.creadaEnMs + PLAZO_PEDIR_MESA_MS - relojMs()
-            if (restante <= 0 || !sigue()) return LeaseOutcome.NoHub
+            if (restante <= 0) {
+                // Codex r1 #3: al vencer, la pantalla sigue abriendo en isla. Se ANOTA en el ticket (y ya no lo cambia una respuesta tardía)
+                // para que `ocupa` conteste «estoy» mientras abre. Lo que ya estaba decidido no se pisa.
+                cambiar(a.id) { it.copy(resultado = it.resultado ?: LeaseOutcome.NoHub, directoListo = true) }
+                return tickets.value[a.id]?.let(::veredicto) ?: LeaseOutcome.NoHub
+            }
+            if (!sigue()) return LeaseOutcome.NoHub // el intento ya no vale (otra pantalla, otra sucursal): no va a abrir, no se anota
             withTimeoutOrNull(minOf(restante, REVISAR_SIGUE_MS)) { tickets.first { it[a.id] != t } }
         }
     }

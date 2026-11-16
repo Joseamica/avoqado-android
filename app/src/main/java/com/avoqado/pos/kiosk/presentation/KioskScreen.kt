@@ -85,6 +85,7 @@ fun KioskScreen(
     venueName: String?,
 ) {
     val content by state.content.collectAsState()
+    val qr by state.qr.collectAsState()
 
     Box(
         modifier = Modifier
@@ -92,11 +93,12 @@ fun KioskScreen(
             .background(MaterialTheme.colorScheme.surface),
     ) {
         when (val c = content) {
-            is KioskContent.Welcome -> Welcome(venueName)
+            is KioskContent.Welcome -> Welcome(venueName, qr, onIdentify = state.onStart?.let { cb -> { cb() } })
 
             is KioskContent.Roster -> Roster(
                 content = c,
                 venueName = venueName,
+                qr = qr,
                 onTap = { state.onCheckIn?.invoke(it) },
                 onIdentify = state.onStart?.let { cb -> { cb() } },
                 onSeePacks = state.onSeePacks?.let { cb -> { cb() } },
@@ -146,7 +148,31 @@ fun KioskScreen(
  * lado.
  */
 @Composable
-private fun Welcome(venueName: String?) {
+private fun Welcome(venueName: String?, qr: String? = null, onIdentify: (() -> Unit)? = null) {
+    // Asistencia verificada (16-nov-2026): el QR sale también en reposo. Si la red se cayó antes de abrir la clase, la
+    // alumna con datos registra su llegada igual: el SERVIDOR decide si ya es su hora y se lo dice en su celular.
+    if (qr != null) {
+        Screen {
+            Spacer(Modifier.weight(1f))
+            venueName?.let {
+                Text(
+                    text = it.uppercase(),
+                    fontSize = KSmall,
+                    fontWeight = FontWeight.Medium,
+                    letterSpacing = 3.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(AvoqadoTheme.spacing.lg))
+            }
+            QrDeLlegada(qr, tam = 220.dp)
+            Spacer(Modifier.height(AvoqadoTheme.spacing.lg))
+            Sub("¿Vienes a clase? Escanea con tu celular para registrar tu llegada.")
+            Spacer(Modifier.weight(1f))
+            // Codex r3 #2: si la red se cayó antes de abrir la clase, quien no trae celular también tiene salida.
+            if (onIdentify != null) FooterAction("¿No traes celular? Escribe tu teléfono", onClick = onIdentify)
+        }
+        return
+    }
     Screen {
         Spacer(Modifier.weight(1f))
         venueName?.let {
@@ -163,6 +189,8 @@ private fun Welcome(venueName: String?) {
         Spacer(Modifier.height(AvoqadoTheme.spacing.md))
         Sub("El registro se abre antes de cada clase.")
         Spacer(Modifier.weight(1f))
+        // Codex r4 #3: sin QR todavía (sin llave, sin red) también hay salida para registrar la llegada con el teléfono.
+        if (onIdentify != null) FooterAction("¿Vienes a clase? Escribe tu teléfono", onClick = onIdentify)
     }
 }
 
@@ -179,6 +207,7 @@ private fun Welcome(venueName: String?) {
 private fun Roster(
     content: KioskContent.Roster,
     venueName: String?,
+    qr: String? = null,
     onTap: (KioskPerson) -> Unit,
     onIdentify: (() -> Unit)? = null,
     onSeePacks: (() -> Unit)? = null,
@@ -233,10 +262,12 @@ private fun Roster(
 
         // Coach y cómo va llenándose el salón, en una sola línea tranquila. El conteo le
         // sirve a quien llega ("ya casi empieza") y a quien da la clase de un vistazo.
-        val llegados = content.people.count { it.checkedIn }
+        // Asistencia verificada: los conteos los manda el servidor (ya no hay lista que contar).
+        val llegados = if (content.people.isEmpty()) content.arrivedCount else content.people.count { it.checkedIn }
+        val esperados = if (content.people.isEmpty()) content.expectedCount else content.people.size
         val subtitulo = listOfNotNull(
             content.staffLabel,
-            if (content.people.isNotEmpty()) "$llegados de ${content.people.size} ya llegaron" else null,
+            if (esperados > 0) "$llegados de $esperados ya llegaron" else null,
         ).joinToString("  ·  ")
         if (subtitulo.isNotBlank()) {
             Spacer(Modifier.height(AvoqadoTheme.spacing.xs))
@@ -260,6 +291,28 @@ private fun Roster(
         // que no se puede sacrificar en un kiosco, porque aquí toca gente de pie, de
         // paso y a veces con las manos ocupadas. Sigue siendo Lazy: una clase de
         // veinte se desliza igual.
+        // 🔴 Asistencia verificada (16-nov-2026, decisión del founder: fijo para todos): YA NO HAY LISTA DE NOMBRES.
+        // Tocar un nombre dejaba a cualquiera marcar la llegada de otra, y Mindform paga a sus coaches por lugar ocupado.
+        // Cada alumna escanea este QR con SU celular; la que no trae, teclea su teléfono (cuenta, marcada).
+        if (content.people.isEmpty()) {
+            Box(modifier = Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    if (qr != null) {
+                        QrDeLlegada(qr, tam = if (apretado) 200.dp else 260.dp)
+                        Spacer(Modifier.height(AvoqadoTheme.spacing.md))
+                        Text(
+                            text = "Escanea con tu celular para registrar tu llegada",
+                            fontSize = tamSub,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            textAlign = TextAlign.Center,
+                        )
+                    } else {
+                        Sub("Preparando el código… Mientras, escribe tu teléfono.")
+                    }
+                }
+            }
+        } else
         BoxWithConstraints(modifier = Modifier.weight(1f).fillMaxWidth()) {
             val columnas = if (maxWidth > maxHeight) 2 else 1
             LazyVerticalGrid(
@@ -316,7 +369,7 @@ private fun Roster(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             if (onIdentify != null) {
-                FooterAction("¿No apareces?", onClick = onIdentify)
+                FooterAction(if (content.people.isEmpty()) "¿No traes celular? Escribe tu teléfono" else "¿No apareces?", onClick = onIdentify)
             } else {
                 Sub("¿No apareces? Pregunta en el mostrador.")
             }
@@ -516,6 +569,18 @@ private fun PersonRow(
 }
 
 // MARK: - Se cayó algo
+
+/** El QR de la llegada, sobre blanco para que lo lea cualquier cámara aunque el tema sea oscuro. */
+@Composable
+private fun QrDeLlegada(url: String, tam: androidx.compose.ui.unit.Dp) {
+    Box(
+        modifier = Modifier
+            .background(androidx.compose.ui.graphics.Color.White, androidx.compose.foundation.shape.RoundedCornerShape(AvoqadoTheme.spacing.md))
+            .padding(AvoqadoTheme.spacing.md),
+    ) {
+        com.avoqado.pos.customerdisplay.QrCode(content = url, size = tam)
+    }
+}
 
 @Composable
 private fun Trouble(content: KioskContent.Trouble, onRestart: () -> Unit) {

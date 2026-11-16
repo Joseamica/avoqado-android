@@ -78,6 +78,9 @@ class LeaseClient {
     suspend fun quien(peer: LanPeer): LeaseResponse? =
         preguntarCuenta(peer, LeaseRequest(op = LeaseProtocol.OP_QUIEN), PLAZO_QUIEN_MS, PLAZO_QUIEN_MS)
 
+    /** Hub D6 bandas: «¿estás en esta mesa?» con plazo ABSOLUTO de [PLAZO_EN_MESA_MS]. null = no contestó (isla con esa caja). */
+    suspend fun enMesa(peer: LanPeer, request: LeaseRequest): LeaseResponse? = intentoConVigia(peer, request, PLAZO_EN_MESA_MS)
+
     private suspend fun intentoConVigia(peer: LanPeer, request: LeaseRequest, plazoMs: Long): LeaseResponse? = withContext(Dispatchers.IO) {
         val socket = Socket()
         // Hub D3 (p14d): el vigía va FUERA del trabajo de quien llama. Si lo cancelan a media lectura, la lectura bloqueante sigue, y un
@@ -115,5 +118,8 @@ class LeaseClient {
 
         /** D12 · tubería: lo más que espera una caja el `quien` de otra (en la misma red, un aparato vivo contesta en milisegundos). */
         const val PLAZO_QUIEN_MS = 1_500L
+
+        /** Hub D6 bandas: lo más que espera la caja que abre la respuesta directa de otra (en paralelo con todas las demás). */
+        const val PLAZO_EN_MESA_MS = 1_500L
     }
 }

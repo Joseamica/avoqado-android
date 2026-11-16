@@ -746,9 +746,10 @@ fun PaymentFlowScreen(
             // el ticket de cocina, justo lo que este trabajo existe para evitar.
             primaryLoading = reintentandoComandaManualmente,
             secondaryLabel = "Ya la canté",
-            onDismiss = { viewModel.clearComandaWarning() },
+            // D1: con el aviso que se PINTÓ, no el que haya en la libreta al tocar (pudo llegar otra comanda).
+            onDismiss = { viewModel.clearComandaWarning(aviso) },
             // Un dedazo fuera del recuadro NO es «ya la canté»: oculta, no resuelve.
-            onCerrarSinResolver = { viewModel.ocultarAvisoDeComanda() },
+            onCerrarSinResolver = { viewModel.ocultarAvisoDeComanda(aviso) },
         )
         else -> Unit
     }

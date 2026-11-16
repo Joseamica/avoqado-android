@@ -68,6 +68,12 @@ sealed interface KioskContent {
          * su palomita y un aviso en gris.
          */
         val offline: Boolean = false,
+        /**
+         * Asistencia verificada (16-nov-2026): cuántos lugares ya llegaron y cuántos se esperan. Desde entonces el
+         * SERVIDOR no manda nombres ([people] vacío) y la pantalla enseña el QR en vez de la lista.
+         */
+        val arrivedCount: Int = 0,
+        val expectedCount: Int = 0,
     ) : KioskContent
 
     /**
@@ -86,6 +92,8 @@ sealed interface KioskContent {
         val notFound: Boolean = false,
         /** Falló la red o el servidor. Distinto de "no existe". */
         val failed: Boolean = false,
+        /** El servidor SÍ contestó y dijo que no (permiso, horario, demasiados intentos): su motivo. Nunca «sin conexión». */
+        val rejection: String? = null,
         /**
          * No nulo ⇒ el teléfono es para COMPRAR este paquete, no para buscar una reserva: con él
          * las clases caen a su nombre (D3: sin contacto, Stripe cobraba y no se entregaba nada).
@@ -116,6 +124,13 @@ sealed interface KioskContent {
     data class CheckedIn(
         val customerName: String,
         val session: KioskSession,
+        /**
+         * Tecleó su teléfono SIN RED: la llegada quedó guardada en el aparato y se manda sola. No es error (regla «sin red»):
+         * la persona pasa, y la pantalla lo dice en gris, sin nombre (sin red el aparato no sabe de quién es el teléfono).
+         */
+        val offline: Boolean = false,
+        /** Con [offline]: quedó guardada pero NO por falta de red; el servidor contestó que espere (tope o falla suya). */
+        val waiting: Boolean = false,
     ) : KioskContent
 
     /**

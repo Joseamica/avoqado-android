@@ -1797,12 +1797,16 @@ class PaymentFlowViewModel @Inject constructor(
      */
     private val _avisoEnCurso = MutableStateFlow<EstadoDeComanda?>(null)
 
-    /** El pedido cuyo aviso el cajero se quitó de encima sin resolverlo (toque fuera / Atrás). */
-    private val _ocultoSinResolver = MutableStateFlow<String?>(null)
+    /**
+     * La comanda cuyo aviso el cajero se quitó de encima sin resolverlo (toque fuera / Atrás).
+     * 🔴 D1 (Codex r6 #2): la comanda, no su folio. Los cursos de una venta comparten folio y la libreta ya guarda varias:
+     * ocultar uno por folio escondía también el aviso de otro curso que nadie ocultó.
+     */
+    private val _ocultoSinResolver = MutableStateFlow<EstadoDeComanda.NoSalio?>(null)
 
     val comandaWarning: StateFlow<EstadoDeComanda?> =
         combine(_avisoEnCurso, comandasPendientesStore.pendiente, _ocultoSinResolver) { enCurso, pendiente, oculto ->
-            enCurso ?: pendiente?.takeIf { it.orderNumber != oculto }
+            enCurso ?: pendiente?.takeIf { oculto == null || !comandasPendientesStore.mismaComanda(it, oculto) }
         }.stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
     /**
@@ -1814,14 +1818,25 @@ class PaymentFlowViewModel @Inject constructor(
      * sólo se OCULTA. Resolver ahí la libreta cerraba las entregas de una comanda que nadie cantó: con la impresora
      * caída, esa comanda no quedaba en ningún lado.
      */
-    fun clearComandaWarning() {
-        val pendiente = comandasPendientesStore.pendiente.value
-        val visto = _avisoEnCurso.value ?: pendiente
-        if (pendiente != null && visto == pendiente) {
-            _avisoEnCurso.value = null
-            comandasPendientesStore.yaLaCante()
+    fun clearComandaWarning(
+        /**
+         * 🔴 D1 (Codex r4 #1 y r5 #1): el aviso que la pantalla PINTÓ cuando el cajero tocó. La libreta es una lista y otra
+         * comanda pudo llegar entre que se pintó y el toque: leerla aquí («la más reciente») tachaba la NUEVA —sin haber
+         * salido ni haberla cantado nadie— y la cantada seguía viva para el reloj. `null` = el que hay ahora (pruebas).
+         */
+        aviso: EstadoDeComanda? = null,
+    ) {
+        val enCurso = _avisoEnCurso.value
+        val visto = aviso ?: enCurso ?: comandasPendientesStore.pendiente.value
+        val deLaLibreta = (visto as? EstadoDeComanda.NoSalio)?.takeIf { v ->
+            // Sin `aviso`, como antes: sólo si lo que se ve ES la libreta (no un aviso en curso de otra venta, N-I1).
+            (aviso != null || enCurso == null) && comandasPendientesStore.contiene(v)
+        }
+        if (deLaLibreta != null) {
+            if (enCurso == deLaLibreta) _avisoEnCurso.value = null
+            comandasPendientesStore.yaLaCante(deLaLibreta)
         } else {
-            ocultarAvisoDeComanda()
+            ocultarAvisoDeComanda(aviso)
         }
     }
 
@@ -1833,9 +1848,14 @@ class PaymentFlowViewModel @Inject constructor(
      * así que vuelve al siguiente arranque en vez de desaparecer para siempre por un dedazo
      * (P2 #11 de la 2ª auditoría de Codex, 2026-09-07).
      */
-    fun ocultarAvisoDeComanda() {
-        _ocultoSinResolver.value = (comandaWarning.value as? EstadoDeComanda.NoSalio)?.orderNumber
-        _avisoEnCurso.value = null
+    fun ocultarAvisoDeComanda(
+        /** D1: el aviso que la pantalla pintó (ver [clearComandaWarning]); `null` = el que hay ahora. */
+        aviso: EstadoDeComanda? = null,
+    ) {
+        val visto = aviso ?: comandaWarning.value
+        _ocultoSinResolver.value = visto as? EstadoDeComanda.NoSalio
+        // D1 (Codex r6 #2): sólo el aviso en curso que se tocó; uno que llegó después del toque se queda.
+        if (aviso == null || _avisoEnCurso.value == aviso) _avisoEnCurso.value = null
     }
 
     // 🔴 Ya NO se lee el disco aquí: lo pendiente lo carga `AppState` una sola vez al abrir
@@ -6119,7 +6139,9 @@ class PaymentFlowViewModel @Inject constructor(
             }
             if (esDeEstaVenta) {
                 _avisoEnCurso.value = null
-                comandasPendientesStore.limpiar()
+                // 🔴 D1 (Codex r1 #4): la libreta NO se toca. Antes `limpiar()`; pero un `Salio` aquí es de UN curso (los de
+                // mostrador salen uno tras otro con el mismo folio) y no prueba que salió lo que está en la libreta: borraba
+                // el curso que no salió. Lo de la libreta lo suelta sólo su reintento al salir, o una persona.
             }
         } else if (estado is EstadoDeComanda.NoSalio && estado.trabajo != null) {
             // El veredicto final CON algo que reenviar va al almacén, que es lo que ven TODAS

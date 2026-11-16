@@ -1579,11 +1579,10 @@ class TableOrderViewModel @Inject constructor(
     private fun avisarComandaDeRonda(estado: com.avoqado.pos.printing.data.EstadoDeComanda) {
         if (estado !is com.avoqado.pos.printing.data.EstadoDeComanda.NoSalio) return
         // m-2 (Task 9 review, ronda 1): `despacharEnFondo` vive en el ámbito de la app y puede seguir insistiendo
-        // minutos después de que el mesero cambie de sucursal. Guardar un trabajo de la sucursal VIEJA en el
-        // almacén EN MEMORIA de la sucursal ACTUAL se saltaría el filtro por venue que `leer()` sí aplica al
-        // releer de disco (P1 #5 de Codex): con dos locales en el mismo 192.168.1.x el papel saldría en el
-        // equivocado. `venueId` se lee EN VIVO de `secureStorage`, no el de cuando se mandó la ronda.
-        if (estado.trabajo != null && estado.trabajo.venueId == venueId) comandasPendientesStore.guardar(estado)
+        // minutos después de que el mesero cambie de sucursal. 🔴 D1 (Codex r3 #3): la libreta ya separa por sucursal
+        // (un trabajo de la sucursal VIEJA queda suspendido: no se enseña ni se imprime en la nueva, y vuelve al
+        // regresar). Antes no se guardaba para no saltarse ese filtro, y la comanda se perdía.
+        if (estado.trabajo != null) comandasPendientesStore.guardar(estado)
         // m-1 (Task 9 review, ronda 1): `showError` escribe tres StateFlow por separado y no es atómico;
         // `despacharEnFondo` llama esto desde `Dispatchers.Default`, así que sin saltar a Main un
         // showMessage/showError concurrente del hilo principal podía mezclarse a medias (el texto de esta

@@ -478,6 +478,7 @@ class QuarantineViewModel @Inject constructor(
         "CREATE" -> "Crear reserva"
         "UPDATE" -> "Editar reserva"
         com.avoqado.pos.kiosk.data.KioskTap.ACTION -> "Llegada en el kiosco (sin conexión)"
+        com.avoqado.pos.kiosk.data.KioskPhone.ACTION -> "Teléfono tecleado en el kiosco (sin conexión)"
         KioskTap.CORRECTION -> "Llegada del kiosco corregida"
         else -> action
     }
@@ -499,6 +500,8 @@ class QuarantineViewModel @Inject constructor(
         "CHECK_IN" -> "La llegada no quedó registrada. Márcala a mano si el cliente sí llegó."
         // El texto del servidor (renglón de arriba) ya dice quién llegó, a qué hora y qué pasó; aquí sólo a dónde ir.
         com.avoqado.pos.kiosk.data.KioskTap.ACTION -> "Revisa la reserva en Reservaciones."
+        // Asistencia verificada: si la alumna sí llegó, se marca a mano (cuenta «a mano por» quien la marque).
+        com.avoqado.pos.kiosk.data.KioskPhone.ACTION -> "Si la clienta sí llegó, márcala a mano en Reservaciones."
         else -> "La operación nunca llegó al servidor. Revisa la reserva y vuelve a hacerla si sigue aplicando."
     }
 
