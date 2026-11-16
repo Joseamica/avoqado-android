@@ -571,6 +571,9 @@ class PaymentFlowViewModel @Inject constructor(
         // D5: sin orden todavía, el cupón no se aparta: el apartado se sube como venta de la cola, donde el cupón no se valida.
         val ordenExistente = ordenCapturada?.takeIf { it.isNotBlank() }
         if (cart.couponCode != null && ordenExistente == null) return Apartado.NINGUNO
+        // Encargo 1afe04 (Codex r2 #2): un descuento que pide aprobación o un «Ajuste de precio» tampoco: sin red no se cobra ni se
+        // encola (D4 r2 #1), así que un apartado que sobreviviera a la caída se subiría como cobrado al reiniciar, sin aprobación.
+        if ((cart.pideAprobacionDeGerente || pideAprobacionPorElServidor) && ordenExistente == null) return Apartado.NINGUNO
         try {
             cashPaymentRepository.reservarCobro(
                 orderRequest = pedido,
