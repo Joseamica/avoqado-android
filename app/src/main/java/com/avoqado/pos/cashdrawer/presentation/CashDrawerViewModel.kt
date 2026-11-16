@@ -130,61 +130,41 @@ class CashDrawerViewModel @Inject constructor(
     val tenderBreakdown: StateFlow<List<CashDrawerRepository.TenderRow>?> = _tenderBreakdown.asStateFlow()
 
     /**
-     * D68 #13: la lectura del desglose de la PANTALLA del corte (abrir y volver la red). Codex r1–r4 encontraron la misma familia
-     * cuatro veces; la raíz era que un desglose se reconocía sólo por la apertura de la caja y que imprimir escribía en la pantalla.
-     * Las reglas, todas aquí:
-     * - un desglose ES de su ventana exacta (apertura y fin): el parcial no pasa por el definitivo ni el de otra caja por éste;
-     * - cada lectura toma su turno AL EMPEZAR: una que empezó después manda aunque ésta termine al último;
-     * - si falla (sin red), sólo se conserva lo que ya estaba en pantalla de ESA misma ventana; lo de otra ventana se quita;
-     * - si la red volvió mientras estaba en vuelo y falló, al terminar se pide otra vez;
-     * - imprimir lee aparte y no toca la pantalla ([printPartialCorte]).
-     * Todo corre en el hilo principal (`viewModelScope`), así que estas marcas no se pisan entre hilos.
+     * D68 #13 (prueba final del 13-nov): el corte hecho sin red seguía diciendo «No se pudo consultar el desglose por método de
+     * pago…» después de volver la red, hasta tocar «Reintentar». Lo que se arregla es SÓLO eso: con el desglose en «No se pudo
+     * consultar», al volver la red se pide otra vez ([recargarDesgloseSiFalta]). Codex r1–r5 encontraron carreras más viejas en
+     * esta pieza (otra caja a media carga, la impresión que escribe en la pantalla); no son de esta tarjeta y quedaron anotadas
+     * en el pizarrón. Aquí sólo: la última lectura que se pidió es la que se publica, y si la red volvió con una lectura en
+     * vuelo que después falla, se pide otra vez al terminar.
      */
     private var cargandoDesglose = false
     private var generacionDelDesglose = 0
     private var reintentoPendiente: Pair<Long, Long>? = null
-    /** La ventana del desglose que está en pantalla (`null` = ninguno). */
-    private var ventanaDelDesglose: Pair<Long, Long>? = null
-
-    private suspend fun leerDesglose(fromMillis: Long, toMillis: Long) {
-        val ventana = fromMillis to toMillis
-        val generacion = ++generacionDelDesglose
-        cargandoDesglose = true
-        reintentoPendiente = null
-        val desglose = try {
-            repository.getTenderBreakdown(fromMillis, toMillis)
-        } catch (e: kotlinx.coroutines.CancellationException) {
-            if (generacion == generacionDelDesglose) cargandoDesglose = false
-            throw e
-        } catch (_: Exception) {
-            null
-        }
-        if (generacion != generacionDelDesglose) return // una lectura más nueva manda en la pantalla
-        cargandoDesglose = false
-        if (desglose != null) {
-            _tenderBreakdown.value = desglose
-            ventanaDelDesglose = ventana
-        } else if (ventanaDelDesglose != ventana) {
-            _tenderBreakdown.value = null
-            ventanaDelDesglose = null
-        }
-        val otra = reintentoPendiente
-        reintentoPendiente = null
-        if (desglose == null && otra != null) viewModelScope.launch { leerDesglose(otra.first, otra.second) }
-    }
 
     /** Fetch the payment-method breakdown for a session's window (corte de caja). */
     fun loadTenderBreakdown(fromMillis: Long, toMillis: Long) {
-        viewModelScope.launch { leerDesglose(fromMillis, toMillis) }
+        val generacion = ++generacionDelDesglose
+        cargandoDesglose = true
+        reintentoPendiente = null
+        viewModelScope.launch {
+            var desglose: List<CashDrawerRepository.TenderRow>? = null
+            try {
+                desglose = repository.getTenderBreakdown(fromMillis, toMillis)
+            } finally {
+                if (generacion == generacionDelDesglose) {
+                    _tenderBreakdown.value = desglose
+                    cargandoDesglose = false
+                    val otra = reintentoPendiente
+                    reintentoPendiente = null
+                    if (desglose == null && otra != null) loadTenderBreakdown(otra.first, otra.second)
+                }
+            }
+        }
     }
 
-    /**
-     * D68 #13 (prueba final del 13-nov): el corte hecho sin red seguía diciendo «No se pudo consultar el desglose por método de
-     * pago…» después de volver la red, hasta tocar «Reintentar». Al volver la red, la pantalla del corte lo pide otra vez SÓLO si
-     * falta el de ESA ventana (nunca borra uno bueno al cortarse la red). Con una lectura en vuelo, se pide al terminar si falla.
-     */
+    /** D68 #13: al volver la red, si el corte está en «No se pudo consultar», se pide otra vez (o al terminar la que va en vuelo). */
     fun recargarDesgloseSiFalta(fromMillis: Long, toMillis: Long) {
-        if (_tenderBreakdown.value != null && ventanaDelDesglose == (fromMillis to toMillis)) return
+        if (_tenderBreakdown.value != null) return
         if (cargandoDesglose) reintentoPendiente = fromMillis to toMillis else loadTenderBreakdown(fromMillis, toMillis)
     }
 
@@ -791,12 +771,11 @@ class CashDrawerViewModel @Inject constructor(
             val confirmado = sincronizar()
             val frescos = runCatching { repository.getEvents(session.id) }.getOrDefault(events)
             loadCurrentSession()
-            // `null` si no se pudo consultar — NUNCA `emptyList()`, que significa "no hubo cobros"; el papel lo dice. D68 #13 (Codex
-            // r1 #1 y r4 #2): el papel lee aparte y NO toca la pantalla: una impresión vieja (de otra caja, o sin red) no borra ni
-            // reemplaza el desglose que la pantalla tiene de su propia ventana.
+            // `null` si no se pudo consultar — NUNCA `emptyList()`, que significa "no hubo cobros".
             val tenders = runCatching {
                 repository.getTenderBreakdown(session.openedAt, System.currentTimeMillis())
             }.getOrNull()
+            _tenderBreakdown.value = tenders
             printCorte(
                 session = session,
                 events = frescos,
