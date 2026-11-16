@@ -473,6 +473,8 @@ class KioskDriver @Inject constructor(
                                 customerName = "",
                                 session = KioskSession(reservationId = "", title = "", timeLabel = "", staffLabel = null),
                                 offline = true,
+                                // Con internet y el servidor pidiendo esperar (429 o falla suya) no es «sin conexión» (Codex r9 #2).
+                                waiting = err !is java.io.IOException,
                             ),
                         )
                         return@fold

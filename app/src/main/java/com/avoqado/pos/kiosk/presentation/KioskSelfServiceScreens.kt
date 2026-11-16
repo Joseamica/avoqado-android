@@ -272,7 +272,7 @@ internal fun CheckedIn(content: KioskContent.CheckedIn) {
             Spacer(Modifier.height(AvoqadoTheme.spacing.xl))
             Big("Tu llegada quedó guardada")
             Spacer(Modifier.height(AvoqadoTheme.spacing.md))
-            Sub("Sin conexión · Se registra sola cuando vuelva el internet.")
+            Sub(if (content.waiting) "Se registra sola en un momento." else "Sin conexión · Se registra sola cuando vuelva el internet.")
             Spacer(Modifier.height(AvoqadoTheme.spacing.md))
             Text("Puedes pasar", fontSize = KBody, fontWeight = FontWeight.SemiBold, color = Success)
             Spacer(Modifier.weight(1f))

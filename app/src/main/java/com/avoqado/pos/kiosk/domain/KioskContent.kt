@@ -129,6 +129,8 @@ sealed interface KioskContent {
          * la persona pasa, y la pantalla lo dice en gris, sin nombre (sin red el aparato no sabe de quién es el teléfono).
          */
         val offline: Boolean = false,
+        /** Con [offline]: quedó guardada pero NO por falta de red; el servidor contestó que espere (tope o falla suya). */
+        val waiting: Boolean = false,
     ) : KioskContent
 
     /**
