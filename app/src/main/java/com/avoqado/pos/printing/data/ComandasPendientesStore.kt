@@ -71,7 +71,11 @@ class ComandasPendientesStore @Inject constructor(
          */
         val antes: List<EstadoDeComanda.NoSalio> = emptyList(),
     ) {
-        fun es(aviso: EstadoDeComanda.NoSalio) = estado == aviso || aviso in antes
+        /**
+         * 🔴 Por IDENTIDAD (el mismo objeto que se publicó y la pantalla pintó), no por contenido (Codex D1 r7 #2): dos
+         * cursos de un folio pueden terminar con avisos idénticos y se confundían al ocultar o tachar.
+         */
+        fun es(aviso: EstadoDeComanda.NoSalio) = estado === aviso || antes.any { it === aviso }
     }
 
     /**
@@ -216,9 +220,9 @@ class ComandasPendientesStore @Inject constructor(
         entradas.any { visible(it) && it.es(aviso) }
     }
 
-    /** ¿[a] y [b] son la MISMA comanda de la libreta (iguales, o una es la versión anterior de la otra)? */
+    /** ¿[a] y [b] son la MISMA comanda de la libreta (el mismo aviso, o una es la versión anterior de la otra)? */
     fun mismaComanda(a: EstadoDeComanda.NoSalio, b: EstadoDeComanda.NoSalio): Boolean = synchronized(cerrojo) {
-        a == b || entradas.any { it.es(a) && it.es(b) }
+        a === b || entradas.any { it.es(a) && it.es(b) }
     }
 
     @Serializable
@@ -285,8 +289,19 @@ class ComandasPendientesStore @Inject constructor(
         ahora: Long = System.currentTimeMillis(),
     ): Boolean = synchronized(cerrojo) {
         val previa = entradas.firstOrNull { it.estado.trabajo == anterior } ?: return false
+        // Un reintento que falló igual devuelve un aviso NUEVO con el mismo contenido: la comanda se queda con el suyo (su
+        // identidad es ese objeto, el que la pantalla pinta) y su historia no crece cada minuto.
+        if (resultado == previa.estado) return !discoAtrasado
         val nueva = previa.copy(estado = resultado, desde = previa.desde ?: ahora, antes = previa.antes + previa.estado)
-        entradas = entradas.map { if (it === previa) nueva else it }
+        // Sin nada reenviable y con un aviso IDÉNTICO a otro que ya se enseña (mismo folio, estaciones y causa): al cajero
+        // le dicen exactamente lo mismo y ninguno tiene qué reintentar, así que se queda uno (Codex D1 r7 #2: dos avisos
+        // iguales no se pueden distinguir en pantalla ni al tocarlos).
+        val gemela = if (resultado.trabajo == null) entradas.firstOrNull { it !== previa && it.estado == resultado } else null
+        entradas = if (gemela != null) {
+            entradas.filter { it !== previa }.map { if (it === gemela) it.copy(antes = it.antes + nueva.antes) else it }
+        } else {
+            entradas.map { if (it === previa) nueva else it }
+        }
         val ok = persistir(ahora)
         publicar()
         return ok

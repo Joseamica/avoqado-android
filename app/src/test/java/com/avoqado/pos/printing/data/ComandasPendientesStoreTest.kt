@@ -565,6 +565,43 @@ class ComandasPendientesStoreTest {
         assertEquals(listOf("ORD-2"), store.pendientes.value.map { it.orderNumber })
     }
 
+    /**
+     * P2 (Codex D1 r7 #2) La identidad es el aviso PUBLICADO (el mismo objeto), no uno igual: una copia con el mismo
+     * contenido no tacha nada. Y dos cursos que quedan sin nada reenviable con avisos idénticos se juntan en uno.
+     */
+    @Test
+    fun `la identidad es el aviso publicado y dos avisos identicos sin trabajo se juntan`() {
+        val store = ComandasPendientesStore(AlmacenFalso()).apply { cargar("venue-1", ahora) }
+        val cursoA = venta(1)
+        val cursoB = venta(1).copy(trabajo = venta(1).trabajo!!.copy(orderType = "En tienda · Postre"))
+        store.guardar(cursoA, ahora)
+        store.guardar(cursoB, ahora)
+        assertFalse("una copia igual no es la comanda publicada", store.contiene(cursoA.copy()))
+
+        val sinTrabajo = EstadoDeComanda.NoSalio(listOf("Barra"), ReintentoDeComanda.CAUSA_SIN_IMPRESORA, "ORD-1", trabajo = null)
+        store.reemplazar(cursoA.trabajo!!, sinTrabajo, ahora)
+        store.reemplazar(cursoB.trabajo!!, sinTrabajo.copy(), ahora)
+
+        assertEquals("dos avisos idénticos sin nada que reimprimir", 1, store.pendientes.value.size)
+        store.yaLaCante(store.pendiente.value)
+        assertTrue(store.pendientes.value.isEmpty())
+    }
+
+    /** Un reintento que falla igual (aviso nuevo, mismo contenido) no cambia la comanda: la que se pintó sigue siendo ella. */
+    @Test
+    fun `un reintento que falla igual conserva el aviso publicado`() {
+        val store = ComandasPendientesStore(AlmacenFalso()).apply { cargar("venue-1", ahora) }
+        val a = venta(1)
+        store.guardar(a, ahora)
+        val pintado = store.pendiente.value
+
+        store.reemplazar(a.trabajo!!, a.copy(), ahora)
+
+        assertTrue("cambió el aviso publicado", store.pendiente.value === pintado)
+        store.yaLaCante(pintado)
+        assertTrue(store.pendientes.value.isEmpty())
+    }
+
     /** `sigueVigente`: presente, no vencida y de la sucursal cargada; una vencida se suelta. */
     @Test
     fun `sigue vigente dice si se puede mandar ya`() {

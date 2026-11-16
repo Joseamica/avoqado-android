@@ -495,9 +495,12 @@ class ReplayDeComandasPendientesTest {
         assertEquals("ORD-1", ComandasPendientesStore(almacen).apply { cargar("venue-1") }.pendiente.value?.orderNumber)
     }
 
-    /** Sin red el refresco de la config espera: con varias comandas, se refresca UNA vez por pasada, no una por comanda. */
+    /**
+     * La config se refresca antes de CADA comanda y el despachador ya no refresca otra vez (Codex D1 r7 #1: una vez por
+     * pasada dejaba salir la siguiente con la config de otra sucursal si cambiaban y regresaban a media pasada).
+     */
     @Test
-    fun `la config se refresca una vez por pasada y cada comanda se manda sin volver a refrescar`() = runTest {
+    fun `la config se refresca antes de cada comanda y el despachador no vuelve a refrescar`() = runTest {
         val store = ComandasPendientesStore(AlmacenFalsoReplay()).apply { cargar("venue-1") }
         store.guardar(venta(1))
         store.guardar(venta(2))
@@ -507,7 +510,7 @@ class ReplayDeComandasPendientesTest {
 
         ReplayDeComandasPendientes(store, dispatcher).intentarAhora()
 
-        coVerify(exactly = 1) { dispatcher.refrescarConfig("venue-1") }
+        coVerify(exactly = 3) { dispatcher.refrescarConfig("venue-1") }
         coVerify(exactly = 3) { dispatcher.reintentar(any(), any(), false) }
     }
 }

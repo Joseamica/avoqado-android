@@ -87,11 +87,12 @@ class ReplayDeComandasPendientes @Inject constructor(
             // `vigentes`, no `pendientes.value`: con la app abierta más de 8 h la comanda vence aquí también (Codex D11 r1 #3).
             val trabajos = store.vigentes().mapNotNull { it.trabajo }
             var ultimo: EstadoDeComanda? = null
-            val refrescadas = mutableSetOf<String>()
             for (trabajo in trabajos) {
                 if (!store.sigueVigente(trabajo)) continue
-                // La config se refresca UNA vez por sucursal y pasada (antes, una vez por comanda: N esperas sin red).
-                trabajo.venueId?.let { if (refrescadas.add(it)) comandaDispatcher.refrescarConfig(it) }
+                // 🔴 Antes de CADA comanda, no una vez por pasada (Codex D1 r7 #1): si a media pasada cambian de sucursal y
+                // regresan, la config en memoria puede ser la de la otra; sin refresco, la siguiente comanda salía con
+                // ella (o, sin su estación, se daba por «sin impresora» y perdía su reintento). Tiene tope (falla abierto).
+                trabajo.venueId?.let { comandaDispatcher.refrescarConfig(it) }
                 // 🔴 Otra vez, DESPUÉS del refresco y de las anteriores, que pueden tardar (Codex D1 r1 #3, #5 y #6): una
                 // persona pudo resolverla («Ya la canté»), pudo vencer, o cambiaron de sucursal y la config ya es de otra.
                 if (!store.sigueVigente(trabajo)) continue
