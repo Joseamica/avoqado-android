@@ -215,8 +215,9 @@ class ReplayDeComandasPendientesTest {
         assertEquals("el reintento no corrió", 1, llamadas)
         assertEquals(listOf("st_barra"), store.leer("venue-1", ahora = t0 + 60_000)?.trabajo?.planes?.map { it.stationId })
         val ochoHorasYUnMinuto = 8L * 60 * 60 * 1000 + 60_000
-        assertNull("guardar lo reducido renovó la vigencia", store.leer("venue-1", ahora = t0 + ochoHorasYUnMinuto))
-        assertNull("con la app abierta tampoco vence a su hora", store.vigente(ahora = t0 + ochoHorasYUnMinuto))
+        // Dos lecturas independientes: el disco (otra instancia, como tras reiniciar) y la memoria de ESTA instancia.
+        assertNull("guardar lo reducido renovó la vigencia en disco", ComandasPendientesStore(almacen).leer("venue-1", ahora = t0 + ochoHorasYUnMinuto))
+        assertNull("guardar lo reducido renovó la vigencia en memoria", store.vigente(ahora = t0 + ochoHorasYUnMinuto))
     }
 
     /**
