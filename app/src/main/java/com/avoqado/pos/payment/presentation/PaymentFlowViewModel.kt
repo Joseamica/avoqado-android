@@ -1819,7 +1819,8 @@ class PaymentFlowViewModel @Inject constructor(
         val visto = _avisoEnCurso.value ?: pendiente
         if (pendiente != null && visto == pendiente) {
             _avisoEnCurso.value = null
-            comandasPendientesStore.yaLaCante()
+            // D1 (Codex r4 #1): la que se VIO, no «la más reciente» al momento de tachar (pudo llegar otra).
+            comandasPendientesStore.yaLaCante(pendiente)
         } else {
             ocultarAvisoDeComanda()
         }

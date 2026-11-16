@@ -362,11 +362,16 @@ class ComandasPendientesStore @Inject constructor(
      * 🔴 NO va dentro de [limpiar] ni de [soltarSi]: cerrar ahí borraría la fila que recupera la comanda de una ronda de
      * mesa en la próxima apertura (pérdida, no duplicado).
      *
+     * 🔴 [aviso] es la comanda que la persona VIO al tocar (Codex D1 r4 #1): si entre leerla y tocar llegó otra, «la más
+     * reciente» ya sería la nueva, y se tachaba ésa —sin haber salido ni haberla cantado nadie— mientras la cantada seguía
+     * viva. `null` = la que se enseña ahora.
+     *
      * @return el cierre en curso (las pruebas lo esperan), o `null` si no había nada que cerrar.
      */
-    fun yaLaCante(): Job? {
+    fun yaLaCante(aviso: EstadoDeComanda.NoSalio? = null): Job? {
         val trabajo = synchronized(cerrojo) {
-            val vista = entradas.lastOrNull(::visible) ?: return null
+            val vista = (if (aviso != null) entradas.lastOrNull { visible(it) && it.estado == aviso } else entradas.lastOrNull(::visible))
+                ?: return null
             entradas = entradas.filter { it !== vista }
             persistir()
             publicar()

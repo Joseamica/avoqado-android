@@ -528,6 +528,22 @@ class ComandasPendientesStoreTest {
         )
     }
 
+    /**
+     * P1 (Codex D1 r4 #1) «Ya la canté» tacha la comanda que la persona VIO. Si entre verla y tocar llegó otra, antes se
+     * tachaba la nueva (sin haber salido) y la cantada seguía viva para el reloj.
+     */
+    @Test
+    fun `P1 ya la cante tacha la que se vio aunque haya llegado otra`() {
+        val store = ComandasPendientesStore(AlmacenFalso()).apply { cargar("venue-1", ahora) }
+        store.guardar(venta(1), ahora)
+        val vista = store.pendiente.value
+        store.guardar(venta(2), ahora) // llega mientras el cajero toca
+
+        store.yaLaCante(vista)
+
+        assertEquals(listOf("ORD-2"), store.pendientes.value.map { it.orderNumber })
+    }
+
     /** `sigueVigente`: presente, no vencida y de la sucursal cargada; una vencida se suelta. */
     @Test
     fun `sigue vigente dice si se puede mandar ya`() {
