@@ -74,3 +74,16 @@ class KioskQrTest {
         assertTrue(KioskPhone.outcome(Result.failure<Unit>(KioskCheckInApi.Rejected(422, "muy vieja", "CHECK_IN_TOO_OLD"))) is KioskTap.Outcome.Refused)
     }
 }
+
+class KioskPhonePendientesTest {
+    @org.junit.Test
+    fun `el teléfono guardado sin red frena el cambio de sucursal igual que un toque de la lista`() {
+        val fila = com.avoqado.pos.reservations.data.PendingReservationActionEntity(
+            reservationId = "phone:op-12345678",
+            action = KioskPhone.ACTION,
+            payloadJson = KioskPhone.payload(KioskPhone.Saved("v1", "+525512345678", "2026-11-16T18:00:00Z", "op-12345678")),
+        )
+        org.junit.Assert.assertEquals(1, KioskTap.pendingFor(listOf(fila), "v1", 5))
+        org.junit.Assert.assertEquals(0, KioskTap.pendingFor(listOf(fila), "v2", 5))
+    }
+}
