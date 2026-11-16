@@ -571,9 +571,10 @@ class PaymentFlowViewModel @Inject constructor(
         // D5: sin orden todavía, el cupón no se aparta: el apartado se sube como venta de la cola, donde el cupón no se valida.
         val ordenExistente = ordenCapturada?.takeIf { it.isNotBlank() }
         if (cart.couponCode != null && ordenExistente == null) return Apartado.NINGUNO
-        // Encargo 1afe04 (Codex r2 #2): un descuento que pide aprobación o un «Ajuste de precio» tampoco: sin red no se cobra ni se
-        // encola (D4 r2 #1), así que un apartado que sobreviviera a la caída se subiría como cobrado al reiniciar, sin aprobación.
-        if ((cart.pideAprobacionDeGerente || pideAprobacionPorElServidor) && ordenExistente == null) return Apartado.NINGUNO
+        // Encargo 1afe04 (Codex r2 #2 y r3): con un descuento que pide aprobación o un «Ajuste de precio» el apartado se guarda igual
+        // (si la app muere tras crear la venta, el efectivo no se pierde), pero NO se da por cobrado solo: sin red esa venta no se
+        // cobra ni se encola (D4 r2 #1), así que subirlo al reiniciar la registraría sin aprobar. Queda «sin confirmar» para una persona.
+        val seDaPorCobrada = !((cart.pideAprobacionDeGerente || pideAprobacionPorElServidor) && ordenExistente == null)
         try {
             cashPaymentRepository.reservarCobro(
                 orderRequest = pedido,
@@ -600,6 +601,7 @@ class PaymentFlowViewModel @Inject constructor(
                 enLugarDe = if (generacion == paymentGeneration) anterioresDeEstaVenta else emptyList(),
                 restanteEsperadoCents = restanteEsperadoCents,
                 antesDeGuardar = antesDeGuardar,
+                seDaPorCobradaAlAbandonar = seDaPorCobrada,
             )
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e

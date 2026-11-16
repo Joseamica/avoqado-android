@@ -148,7 +148,11 @@ class DescuentoConAprobacionCobroTest {
     }
 
     private fun nadaSeAparto() = coVerify(exactly = 0) {
-        cashPaymentRepository.reservarCobro(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), venueId = any(), lineasDelTicket = any())
+        cashPaymentRepository.reservarCobro(
+            any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(),
+            venueId = any(), capturadaEn = any(), cajaDelCobro = any(), enLugarDe = any(), lineasDelTicket = any(),
+            restanteEsperadoCents = any(), antesDeGuardar = any(), seDaPorCobradaAlAbandonar = any(),
+        )
     }
 
     private fun nadaSeEncolo() = coVerify(exactly = 0) {
@@ -207,8 +211,17 @@ class DescuentoConAprobacionCobroTest {
         nadaSeEncolo()
     }
 
+    /** El apartado de esta venta: sólo uno, y con la marca que dice si se da por cobrado solo. */
+    private fun seAparto(seDaPorCobrada: Boolean) = coVerify(exactly = 1) {
+        cashPaymentRepository.reservarCobro(
+            any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(),
+            venueId = any(), capturadaEn = any(), cajaDelCobro = any(), enLugarDe = any(), lineasDelTicket = any(),
+            restanteEsperadoCents = any(), antesDeGuardar = any(), seDaPorCobradaAlAbandonar = seDaPorCobrada,
+        )
+    }
+
     @Test
-    fun `encargo 1afe04 Codex r2 #2 - con aprobacion el efectivo no se aparta antes de crear la venta (al reiniciar no se sube)`() = runTest {
+    fun `encargo 1afe04 Codex r2 #2 y r3 - con aprobacion el apartado se guarda pero NO se da por cobrado solo`() = runTest {
         every { roles.canApproveDiscounts } returns true
         coEvery { orderRepository.createOrder(any(), any(), any(), any(), any(), any(), any(), any(), any()) } returns
             Result.failure(java.io.IOException("se cayó la red"))
@@ -216,8 +229,17 @@ class DescuentoConAprobacionCobroTest {
         advanceUntilIdle()
 
         assertEquals(DESCUENTO_CON_APROBACION_SIN_RED, (vm.state.value as PaymentFlowState.Error).message)
-        nadaSeAparto()
+        // Si la app muere, el efectivo no se pierde (queda «sin confirmar»); al reiniciar no se sube como cobrado sin aprobar.
+        seAparto(seDaPorCobrada = false)
         nadaSeEncolo()
+    }
+
+    @Test
+    fun `regresion - sin aprobacion el apartado se da por cobrado como siempre`() = runTest {
+        coEvery { orderRepository.createOrder(any(), any(), any(), any(), any(), any(), any(), any(), any()) } returns creada()
+        cobrarEnEfectivo(CartState(items = listOf(playera)))
+        advanceUntilIdle()
+        seAparto(seDaPorCobrada = true)
     }
 
     @Test
@@ -228,7 +250,7 @@ class DescuentoConAprobacionCobroTest {
 
         coVerify(exactly = 1) { coordinador.preauthorize("tpv-orders:discount", null, "Descuento: Ajuste de precio") }
         coVerify(exactly = 1) { orderRepository.createOrder(any(), any(), any(), any(), any(), any(), any(), any(), "token-aprobacion") }
-        nadaSeAparto()
+        seAparto(seDaPorCobrada = false)
     }
 
     @Test

@@ -463,6 +463,28 @@ class CobroRechazadoSinConfirmarTest {
         assertEquals(0, disco.borrados)
     }
 
+    // MARK: - Encargo 1afe04 (Codex r2 #2 y r3): con aprobación el apartado se guarda, pero no se da por cobrado solo
+
+    @Test
+    fun `1afe04 ajuste de precio - la red cae al crear, se cierra la pantalla - queda sin confirmar y el barrido no lo sube`() = runTest {
+        coEvery { orderRepository.createOrder(any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any()) } returns
+            Result.failure(IOException("se cayó la red"))
+        vm.startPaymentFlow(CartState(items = listOf(cafe("e1").copy(priceAdjustment = 4000))))
+        vm.selectPaymentMethod(PaymentMethod.CASH)
+        vm.processCashPayment(10_000)
+        advanceUntilIdle()
+        assertTrue(vm.state.value is PaymentFlowState.Error)
+        val llave = enVuelo().single()
+        assertEquals("sin la marca: no se da por cobrado solo", null, marca(llave))
+
+        androidx.lifecycle.ViewModelStore().apply { put("cobro", vm) }.clear()
+
+        assertEquals("el barrido no lo sube sin aprobar", 0, caja.darPorCobradasLasAbandonadas())
+        assertEquals("EN_VUELO", disco.filas[llave]?.syncStatus)
+        assertEquals("lo decide una persona", listOf(llave), caja.cobrosSinConfirmar().map { it.id })
+        assertEquals(0, disco.borrados)
+    }
+
     // MARK: - El barrido sólo toma lo que apartó la app nueva (decisión del coordinador, 24-oct)
 
     @Test
