@@ -23,13 +23,16 @@ interface ApiService {
     @retrofit2.http.POST("mobile/venues/{venueId}/sync/intents")
     fun syncIntentsAdmittedQ16(@retrofit2.http.Path("venueId") venueId: String,
         @retrofit2.http.Body body: com.avoqado.pos.core.data.sync.SyncIntentsRequest,
-        @retrofit2.http.Tag priceAdmissionQ16: Any? = null): retrofit2.Call<com.avoqado.pos.core.data.sync.SyncIntentsResponse>
+        @retrofit2.http.Tag priceAdmissionQ16: Any? = null,
+        /** D80: la sesión de la pasada que lo manda; `AuthInterceptor` no lo deja salir con la de otra persona. */
+        @retrofit2.http.Tag sello: SelloDePeticion? = null): retrofit2.Call<com.avoqado.pos.core.data.sync.SyncIntentsResponse>
 
     /** Readonly: never runs the reducer or creates an order. */
     @retrofit2.http.Headers("X-Avoqado-Background: 1")
     @retrofit2.http.POST("mobile/venues/{venueId}/sync/recovery")
     suspend fun recoverSyncQ16(@retrofit2.http.Path("venueId") venueId: String,
-        @retrofit2.http.Body body: kotlinx.serialization.json.JsonObject): kotlinx.serialization.json.JsonObject
+        @retrofit2.http.Body body: kotlinx.serialization.json.JsonObject,
+        @retrofit2.http.Tag sello: SelloDePeticion? = null): kotlinx.serialization.json.JsonObject
 
 
     // MARK: - Auth
@@ -292,6 +295,8 @@ interface ApiService {
     suspend fun syncIntents(
         @Path("venueId") venueId: String,
         @Body request: com.avoqado.pos.core.data.sync.SyncIntentsRequest,
+        /** D80: la sesión de la pasada que lo manda; `AuthInterceptor` no lo deja salir con la de otra persona. */
+        @retrofit2.http.Tag sello: SelloDePeticion? = null,
     ): com.avoqado.pos.core.data.sync.SyncIntentsResponse
 
     // MARK: - Table Service (TABLE_SERVICE, PRO)

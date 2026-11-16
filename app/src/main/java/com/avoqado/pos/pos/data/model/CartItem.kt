@@ -154,6 +154,13 @@ data class CartItem(
     val itemDiscountCents: Int
         get() = if (isCortesia) 0 else descuentoDeLineaCents(itemDiscountType, itemDiscountValue, lineBeforeDiscountCents, itemDiscountMax)
 
+    /**
+     * D15 (hz:87f4b879:D15): esta línea REGALA el producto: es cortesía, o lleva un descuento de catálogo tipo cortesía (`COMP`). El
+     * SERVIDOR pide `orders:comp` al crear una venta así (`cortesiaPidePermiso.middleware.ts`: `isCortesia` o `discountId` COMP).
+     */
+    val regalaElProducto: Boolean
+        get() = isCortesia || (itemDiscountType.equals("COMP", ignoreCase = true) && !itemDiscountId.isNullOrBlank())
+
     /** Lo que de verdad se cobra por esta línea: bruto menos su descuento. */
     val totalPrice: Int
         get() = grossPrice - itemDiscountCents

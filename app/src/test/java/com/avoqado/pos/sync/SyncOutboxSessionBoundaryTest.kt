@@ -110,7 +110,7 @@ class SyncOutboxSessionBoundaryTest {
         val f = Fixture()
         val entered = CompletableDeferred<Unit>()
         val reply = CompletableDeferred<SyncIntentsResponse>()
-        coEvery { f.api.syncIntents(VENUE, any()) } coAnswers { entered.complete(Unit); reply.await() }
+        coEvery { f.api.syncIntents(VENUE, any(), any()) } coAnswers { entered.complete(Unit); reply.await() }
         f.add()
         val emitted = async(Dispatchers.Default, start = CoroutineStart.UNDISPATCHED) { f.outbox.acks.first() }
         try {
@@ -132,7 +132,7 @@ class SyncOutboxSessionBoundaryTest {
 
     @Test fun `ACK emitido antes del logout conserva contexto aunque consumidor lo retenga`() = runTest {
         val f = Fixture()
-        coEvery { f.api.syncIntents(VENUE, any()) } returns SyncIntentsResponse(data = listOf(ack(version = 9)))
+        coEvery { f.api.syncIntents(VENUE, any(), any()) } returns SyncIntentsResponse(data = listOf(ack(version = 9)))
         f.add()
         val emitted = async(Dispatchers.Default, start = CoroutineStart.UNDISPATCHED) { f.outbox.acks.first() }
         try {
@@ -149,7 +149,7 @@ class SyncOutboxSessionBoundaryTest {
 
     @Test fun `ACK vigente que espera DAO no cruza cambio de contexto durante la lectura`() = runTest {
         val f = Fixture()
-        coEvery { f.api.syncIntents(VENUE, any()) } returns SyncIntentsResponse(data = listOf(ack(version = 9)))
+        coEvery { f.api.syncIntents(VENUE, any(), any()) } returns SyncIntentsResponse(data = listOf(ack(version = 9)))
         f.add()
         val emitted = async(Dispatchers.Default, start = CoroutineStart.UNDISPATCHED) { f.outbox.acks.first() }
         val reading = CompletableDeferred<Unit>()
@@ -174,7 +174,7 @@ class SyncOutboxSessionBoundaryTest {
         val initial = active().copy(isProvisional = true, valorRondasSinRedCents = 11000)
         f.session.start(initial, VENUE); assertTrue(f.session.estacionar(VENUE, initial))
         f.add(SyncIntentTypes.OPEN_TABLE, """{"localOrderId":"order"}""")
-        coEvery { f.api.syncIntents(VENUE, any()) } returns SyncIntentsResponse(data = listOf(SyncAck("owned-intent", "ACKED", result = buildJsonObject {
+        coEvery { f.api.syncIntents(VENUE, any(), any()) } returns SyncIntentsResponse(data = listOf(SyncAck("owned-intent", "ACKED", result = buildJsonObject {
             put("localOrderId", "order"); put("orderId", "real-order"); put("orderNumber", "REAL"); put("version", 9)
         })))
         val emitted = async(Dispatchers.Default, start = CoroutineStart.UNDISPATCHED) { f.outbox.acks.first() }
@@ -193,7 +193,7 @@ class SyncOutboxSessionBoundaryTest {
 
     @Test fun `rama RETRY lleva contexto local sin resolver ni retirar intent pendiente`() = runTest {
         val f = Fixture()
-        coEvery { f.api.syncIntents(VENUE, any()) } returns SyncIntentsResponse(data = listOf(ack(status = "RETRY")))
+        coEvery { f.api.syncIntents(VENUE, any(), any()) } returns SyncIntentsResponse(data = listOf(ack(status = "RETRY")))
         f.add()
         val emitted = async(Dispatchers.Default, start = CoroutineStart.UNDISPATCHED) { f.outbox.acks.first() }
         try {
@@ -211,7 +211,7 @@ class SyncOutboxSessionBoundaryTest {
         val digest = MessageDigest.getInstance("SHA-256").digest("$VENUE\u0000real-order".toByteArray()).joinToString("") { "%02x".format(it) }
         File(File(f.directory, "table-round-drafts"), "$digest.json").apply { mkdirs(); resolve("owned-blocker").writeText("OWNED") }
         f.add(SyncIntentTypes.OPEN_TABLE, """{"localOrderId":"order"}""")
-        coEvery { f.api.syncIntents(VENUE, any()) } returns SyncIntentsResponse(data = listOf(SyncAck("owned-intent", "ACKED", result = buildJsonObject {
+        coEvery { f.api.syncIntents(VENUE, any(), any()) } returns SyncIntentsResponse(data = listOf(SyncAck("owned-intent", "ACKED", result = buildJsonObject {
             put("localOrderId", "order"); put("orderId", "real-order")
         })))
         val emitted = async(Dispatchers.Default, start = CoroutineStart.UNDISPATCHED) { f.outbox.acks.first() }
@@ -264,7 +264,7 @@ class SyncOutboxSessionBoundaryTest {
             assertEquals(2, reads) // contexto idéntico mantiene el único observador
             assertEquals(1, f.releases.get())
             coVerify(exactly = 1) { f.dao.deleteOldAcked(any()) }
-            coVerify(exactly = 0) { f.api.syncIntents(any(), any()) }
+            coVerify(exactly = 0) { f.api.syncIntents(any(), any(), any()) }
         } finally { f.close(); runCurrent() }
     }
 

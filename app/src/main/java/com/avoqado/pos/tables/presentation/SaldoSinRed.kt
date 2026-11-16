@@ -69,6 +69,9 @@ internal suspend fun efectivoDeLaCuentaEnColaDeCobros(
     } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (_: Exception) { null }
 }
 
+/** D59: el SERVIDOR ya marcó la cuenta pagada (p. ej. la cobraron en la terminal, TPV › Mesas, mientras esta pantalla seguía abierta). */
+internal const val MESA_YA_PAGADA = "Esta mesa ya se pagó: no la cobres otra vez."
+
 internal sealed interface SaldoSinRed {
     /** [hayCobro]: hay al menos un `PAY_CASH` de la orden en la cola (también un cierre de $0). */
     data class Conocido(val rondasCents: Int, val cobradoCents: Int, val hayCobro: Boolean) : SaldoSinRed {

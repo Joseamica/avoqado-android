@@ -654,6 +654,20 @@ class SecureStorage @Inject constructor(
             .apply()
     }
 
+    /**
+     * D66 (13-nov, D3): «Vendiendo: X» es de la SESIÓN. Al entrar alguien (contraseña, huella o PIN) vende él en esta
+     * sucursal, y se olvida lo que eligió la sesión anterior en TODAS: si no, entraba la cajera y el cobro salía a nombre
+     * del gerente que ya se había ido. Elegir otro vendedor dentro de la sesión sigue siendo libre (`selectStaff`).
+     */
+    fun venderComoQuienEntra(staffId: String, staffName: String) {
+        val currentVenueId = venueId ?: return
+        val editor = plainPrefs.edit()
+        llavesDelVendedorElegido(plainPrefs.all.keys).forEach { editor.remove(it) }
+        editor.putString(selectedStaffIdKey(currentVenueId), staffId)
+            .putString(selectedStaffNameKey(currentVenueId), staffName)
+            .apply()
+    }
+
     fun clearSelectedStaffForCurrentVenue() {
         val currentVenueId = venueId ?: return
         plainPrefs.edit()
@@ -967,6 +981,10 @@ class SecureStorage @Inject constructor(
     }
 
     companion object {
+        /** Las llaves del «Vendiendo» de cualquier sucursal (D66). */
+        internal fun llavesDelVendedorElegido(llaves: Set<String>): List<String> =
+            llaves.filter { it.startsWith("${KEY_SELECTED_STAFF_ID_PREFIX}_") || it.startsWith("${KEY_SELECTED_STAFF_NAME_PREFIX}_") }
+
         private const val KEY_GIFT_CARD_REQUESTS = "giftCardRequests"
         private const val KEY_GIFT_CARD_REQUESTS_ILEGIBLE = "giftCardRequestsIlegible"
         // Session

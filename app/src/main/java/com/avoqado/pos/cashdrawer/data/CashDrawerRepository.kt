@@ -11,6 +11,9 @@ import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.util.ConnectivityMonitor
 import com.avoqado.pos.core.data.network.ApiConstants
 import com.avoqado.pos.core.data.network.ForbiddenInterceptor
+import com.avoqado.pos.core.data.network.PasadaConSello
+import com.avoqado.pos.core.data.network.conSello
+import com.avoqado.pos.core.data.network.selloDeLaPasadaEnCurso
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -341,6 +344,8 @@ private fun esFalloSinRuta(e: Throwable): Boolean = when {
     // 🔴 Antes que nada: `SocketTimeoutException` NO hereda de `ConnectException`, pero dejarlo
     // explícito impide que un futuro «if es IOException» se lo lleve por delante.
     e is SocketTimeoutException -> false
+    // D80: la frenó el sello antes de salir (entró otra persona): el servidor ni se enteró.
+    e is com.avoqado.pos.core.data.network.SesionCambiada -> true
     e is UnknownHostException || e is ConnectException -> true
     else -> MARCAS_DE_SIN_RUTA.any { it in e.message?.lowercase().orEmpty() }
 }
@@ -1205,6 +1210,7 @@ class CashDrawerRepository @Inject constructor(
         val request = Request.Builder()
             .url("$baseUrl/current")
             .get()
+            .conSello(selloDeLaPasadaEnCurso()) // D80: dentro de una corrida del replay, con su sesión; fuera, como siempre
             .build()
         val sucursal = venueId
         val numero = consultasDeLaCaja.incrementAndGet()
@@ -1838,7 +1844,7 @@ class CashDrawerRepository @Inject constructor(
                     openedAt = java.time.Instant.ofEpochMilli(horaDeLaApertura(op)).toString(),
                 ),
             ).toRequestBody("application/json".toMediaType())
-            val request = Request.Builder().url("$baseUrl/open").post(requestBody).build()
+            val request = Request.Builder().url("$baseUrl/open").post(requestBody).conSello(selloDeLaPasadaEnCurso()).build()
             fotoDeAntes = fotoDeLasCopias(listOf(op.sessionId))
             withContext(Dispatchers.IO) {
                 val response = client.newCall(request).execute()
@@ -2623,7 +2629,14 @@ class CashDrawerRepository @Inject constructor(
      * Corre al entrar a Caja, en cada sync, al cerrar y al abrir otra caja.
      */
     internal suspend fun reproducirPendientes(ademas: PendingDrawerOp? = null): ResultadoDelReplay =
-        candadoDelReplay.withLock { reproducirPendientesYaConElCandado(ademas) }
+        candadoDelReplay.withLock {
+            // 🔴 D80: la corrida manda con UNA sesión: la de la pasada que la corre (`PaymentSyncService`, el outbox) o, si nadie la
+            // trae, la que hay al empezar. Si a media corrida entra otra persona (el cierre automático no detiene nada), sus
+            // peticiones no salen con la sesión ni a la sucursal de ella: `AuthInterceptor` las frena (`SesionCambiada`), la
+            // operación se queda en la cola sin marcarse ni contar intentos y la sube la pasada de quien entró.
+            val sello = selloDeLaPasadaEnCurso() ?: secureStorage.generacion
+            withContext(PasadaConSello(sello)) { reproducirPendientesYaConElCandado(ademas) }
+        }
 
     /**
      * 🔴 UN SOLO VUELO — F2, medido el 5-sep-2026 en una Samsung SM-X133.
@@ -3099,7 +3112,7 @@ class CashDrawerRepository @Inject constructor(
         // migrada por `completarLlavesLegadas`; esto cubre la entrada que llega por `ademas`.
         val localId = op.localId?.takeIf { it.isNotBlank() } ?: localIdLegado(op)
         return try {
-            val request = peticionDelMovimiento(op, localId)
+            val request = peticionDelMovimiento(op, localId).newBuilder().conSello(selloDeLaPasadaEnCurso()).build()
             val (code, resp) = withContext(Dispatchers.IO) {
                 val response = client.newCall(request).execute()
                 response.code to (response.body?.string() ?: "")
@@ -3145,6 +3158,7 @@ class CashDrawerRepository @Inject constructor(
             val request = Request.Builder()
                 .url("$baseUrl/close")
                 .post(requestBody)
+                .conSello(selloDeLaPasadaEnCurso())
                 .build()
             val fotoDeAntes = fotoDeLasCopias(listOf(sessionId))
 

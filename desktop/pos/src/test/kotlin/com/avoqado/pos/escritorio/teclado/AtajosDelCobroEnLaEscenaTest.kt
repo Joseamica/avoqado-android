@@ -17,6 +17,7 @@ import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.getValue
@@ -214,6 +215,73 @@ class AtajosDelCobroEnLaEscenaTest {
         onNodeWithText("Transferencia").performSemanticsAction(SemanticsActions.RequestFocus)
         onNodeWithText("Transferencia").performKeyInput { pressKey(Key.Enter); pressKey(Key.Spacebar) }
         runOnIdle { assertNull(cobro.manual) }
+    }
+
+    private fun tipoDelNegocio(nombre: String, base: String) = com.avoqado.pos.payment.domain.TenderTypeOption(
+        id = nombre, revision = 1, name = nombre, isSystem = true, baseMethod = base, captureTip = true, posSection = "PRIMARY",
+        displayOrder = if (base == "CREDIT_CARD") 0 else 1,
+    )
+
+    @Composable
+    private fun SelectorConTipos(cobro: Cobro) = PaymentMethodSelectionScreen(
+        paymentContext = PaymentContext(subtotalCents = 13_700),
+        onMethodSelected = { cobro.metodo = it },
+        onCancel = { cobro.cancelado++ },
+        onManualMethodSelected = { cobro.manual = it },
+        tenderTypes = listOf(tipoDelNegocio("Tarjeta de crédito", "CREDIT_CARD"), tipoDelNegocio("SPEI", "BANK_TRANSFER")),
+    )
+
+    /**
+     * El aviso es un `AvoqadoDialog`, que topa su altura al 85 % de `LocalConfiguration.screenHeightDp`: sin una pantalla de
+     * verdad (aquí vale 0) saldría sin altura (Codex r2). Como `FolioPorPagarEnLaEscenaTest`, una ventana de 1280×800.
+     */
+    @Composable
+    private fun EnWindowsConPantalla(contenido: @Composable () -> Unit) = CompositionLocalProvider(
+        androidx.compose.ui.platform.LocalConfiguration provides com.avoqado.escritorio.configuracionDeAndroid(1280.dp, 800.dp, 1f),
+    ) { EnWindows(contenido) }
+
+    @Test fun `P1 D57 Tarjeta en «Ya pagó de otra forma» pregunta por la terminal de Avoqado antes de registrar`() = runComposeUiTest {
+        val cobro = Cobro()
+        val aviso = com.avoqado.pos.payment.domain.AvisoDeTerminalDeAvoqado
+        setContent { EnWindowsConPantalla { SelectorConTipos(cobro) } }
+        onNodeWithText("Ya pagó de otra forma").performClick()
+        onNodeWithText("Tarjeta de crédito").performClick()
+        onNodeWithText(aviso.TITULO).assertExists()
+        onNodeWithText(aviso.CONSEJO).assertExists()
+        runOnIdle { assertNull(cobro.manual) }
+        // «No registrar» no registra nada y deja el cobro como estaba.
+        onNodeWithText(aviso.NO_REGISTRAR).performClick()
+        onNodeWithText(aviso.TITULO).assertDoesNotExist()
+        runOnIdle { assertNull(cobro.manual); assertEquals(0, cobro.cancelado) }
+        // Con el aviso abierto, F4/F5/Esc no tocan el cobro de abajo (el aviso es barrera).
+        onNodeWithText("Ya pagó de otra forma").performClick()
+        onNodeWithText("Tarjeta de crédito").performClick()
+        runOnIdle {
+            assertFalse(AtajosDeTeclado.atender(Key.F4)); assertFalse(AtajosDeTeclado.atender(Key.F5))
+            assertFalse(AtajosDeTeclado.atender(Key.Escape))
+        }
+        // En Windows Enter y Espacio no pican «registrar» (registra dinero).
+        onNodeWithText(aviso.registrar("\$137.00")).performSemanticsAction(SemanticsActions.RequestFocus)
+        onNodeWithText(aviso.registrar("\$137.00")).performKeyInput { pressKey(Key.Enter); pressKey(Key.Spacebar) }
+        runOnIdle { assertNull(cobro.manual) }
+        // «Fue otra terminal» sí registra la tarjeta elegida.
+        onNodeWithText(aviso.registrar("\$137.00")).performClick()
+        onNodeWithText(aviso.TITULO).assertDoesNotExist()
+        runOnIdle {
+            val elegido = cobro.manual as com.avoqado.pos.payment.domain.ManualPaymentChoice.Tender
+            assertEquals("Tarjeta de crédito", elegido.option.name)
+            assertNull(cobro.metodo); assertEquals(0, cobro.cancelado)
+        }
+    }
+
+    @Test fun `D57 Transferencia en «Ya pagó de otra forma» se registra al primer toque, sin aviso`() = runComposeUiTest {
+        val cobro = Cobro()
+        setContent { EnWindows { SelectorConTipos(cobro) } }
+        onNodeWithText("Ya pagó de otra forma").performClick()
+        // Del catálogo se llama «SPEI»: la fija «Transferencia» también sale en la hoja (Codex r1: dos coincidencias).
+        onNodeWithText("SPEI").performClick()
+        onNodeWithText(com.avoqado.pos.payment.domain.AvisoDeTerminalDeAvoqado.TITULO).assertDoesNotExist()
+        runOnIdle { assertEquals("SPEI", (cobro.manual as com.avoqado.pos.payment.domain.ManualPaymentChoice.Tender).option.name) }
     }
 
     @Test fun `P1 en Windows Enter y Espacio no pican Reintentar del error de pago, y Cancelar sí responde`() = runComposeUiTest {

@@ -677,7 +677,7 @@ class TablesViewModel @Inject constructor(
                 onSuccess = {
                     // Belt & suspenders for servers without the release-on-cancel
                     // change: try clearing explicitly (no-op/failure is fine).
-                    mutarCuenta(vId, setOf(order.id)) { repository.clearTable(vId, table.id) }
+                    mutarCuenta(vId, setOf(order.id)) { repository.clearTable(vId, table.id, order.id) }
                     repository.refresh(vId)
                     // The cancelled order must never keep steering a session.
                     tableSession.finalizar(vId, setOf(order.id), sessionEpoch)
@@ -729,7 +729,7 @@ class TablesViewModel @Inject constructor(
             // Server-driven settle check: clearTable succeeds ONLY when the
             // order is fully PAID. If it's still PARTIAL (split-the-bill),
             // keep the session alive so the next payment stays routed to it.
-            val cleared = cobroEnCola || mutarCuenta(vId, session.idsDeLaOrden) { repository.clearTable(vId, session.tableId) }.isSuccess
+            val cleared = cobroEnCola || mutarCuenta(vId, session.idsDeLaOrden) { repository.clearTable(vId, session.tableId, session.orderId) }.isSuccess
             repository.refresh(vId)
             if (cleared) {
                 tableSession.finalizar(vId, session.idsDeLaOrden, sessionEpoch)
@@ -757,7 +757,7 @@ class TablesViewModel @Inject constructor(
                 bloqueoDeSaldo(vId, setOf(order.id))?.let { if (primerMotivo == null) primerMotivo = it; fail++; return@forEach }
                 mutarCuenta(vId, setOf(order.id)) { repository.cancelOrder(vId, order.id, reason) }.fold(
                     onSuccess = {
-                        mutarCuenta(vId, setOf(order.id)) { repository.clearTable(vId, table.id) }
+                        mutarCuenta(vId, setOf(order.id)) { repository.clearTable(vId, table.id, order.id) }
                         tableSession.finalizar(vId, setOf(order.id), sessionEpoch)
                         lanHub.release(table.id)
                         ok++

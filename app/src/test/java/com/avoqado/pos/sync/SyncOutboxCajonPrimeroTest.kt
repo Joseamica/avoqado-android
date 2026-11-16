@@ -60,6 +60,8 @@ class SyncOutboxCajonPrimeroTest {
      */
     private val pendientes = CopyOnWriteArrayList<SyncIntentEntity>()
     private val pedidos = CopyOnWriteArrayList<SyncIntentsRequest>()
+    /** D80: con qué sello salió cada lote (`null` = sin sello). */
+    private val sellos = CopyOnWriteArrayList<Long?>()
     private val recursos = mutableListOf<Pair<SyncOutbox, File>>()
 
     @After fun limpiarRecursosPropios() {
@@ -105,9 +107,10 @@ class SyncOutboxCajonPrimeroTest {
             pendientes.removeIf { it.id == id }
             Unit // Stateful replay fixture; Room transaction has its own instrumented controls.
         }
-        coEvery { apiService.syncIntents(VENUE, any()) } answers {
+        coEvery { apiService.syncIntents(VENUE, any(), any()) } answers {
             val request = secondArg<SyncIntentsRequest>()
             pedidos += request
+            sellos += arg<com.avoqado.pos.core.data.network.SelloDePeticion?>(2)?.generacion ?: -1L
             SyncIntentsResponse(data = request.intents.map { wire ->
                 val result = if (wire.type == "PAY_CASH") JsonObject(mapOf(
                     "paymentId" to JsonPrimitive("server-" + wire.id), "orderId" to JsonPrimitive("order-cajon"),
@@ -360,5 +363,46 @@ class SyncOutboxCajonPrimeroTest {
 
     private companion object {
         const val VENUE = "venue-1"
+    }
+
+    // MARK: - D80 · el outbox no manda con la sesión de otra persona
+
+    /**
+     * D80 (hz:8024bc1c:D80): una pasada de `PaymentSyncService` que empezó con la sesión 7 corre este outbox; a media pasada entró otra
+     * persona (8). El cobro de mesa sale con el sello 7, así que `AuthInterceptor` no lo deja salir con la sesión 8 (`SesionCambiada`):
+     * se queda PENDIENTE y lo sube la pasada de quien entró.
+     */
+    @Test
+    fun `D80 dentro de una pasada el cobro de mesa sale con el sello de la pasada`() = runTest {
+        coEvery { cajon.sincronizarCajonPrimero() } returns true
+        every { cajon.cajasQueEsperanSuApertura() } returns emptySet()
+        val outbox = outbox(emptyList())
+        outbox.start(VENUE)
+        coVerify(timeout = 5_000) { dao.pendingFifo(VENUE, any()) } // el replay propio de start() ya leyó la cola vacía
+        every { secureStorage.generacion } returns 8L
+        pendientes += intent("i1", 1, "PAY_CASH")
+
+        kotlinx.coroutines.withContext(com.avoqado.pos.core.data.network.PasadaConSello(7L)) { outbox.replayNow(VENUE) }
+
+        assertEquals("El lote sale con el sello de la pasada, no con la sesión de quien entró", listOf(7L), sellos.toList())
+        outbox.stop()
+    }
+
+    /** D80: el replay propio del outbox (reloj, reconexión) sella con la sesión con que EMPEZÓ, aunque entre otra a media corrida. */
+    @Test
+    fun `D80 fuera de una pasada el outbox sella con la sesion con que empezo`() = runTest {
+        every { cajon.cajasQueEsperanSuApertura() } returns emptySet()
+        every { secureStorage.generacion } returns 7L
+        val outbox = outbox(emptyList())
+        outbox.start(VENUE)
+        coVerify(timeout = 5_000) { dao.pendingFifo(VENUE, any()) }
+        // Entra otra persona mientras el replay revisa el cajón (una espera de red).
+        coEvery { cajon.sincronizarCajonPrimero() } answers { every { secureStorage.generacion } returns 8L; true }
+        pendientes += intent("i1", 1, "PAY_CASH")
+
+        outbox.replayNow(VENUE)
+
+        assertEquals(listOf(7L), sellos.toList())
+        outbox.stop()
     }
 }

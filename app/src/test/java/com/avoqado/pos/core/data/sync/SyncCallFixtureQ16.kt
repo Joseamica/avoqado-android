@@ -11,8 +11,9 @@ import retrofit2.Response
 
 /** Transport adapter only: preserves each old fixture's exact suspend response and verification. */
 internal fun vincularCallFixtureQ16(api: ApiService) {
-    every { api.syncIntentsAdmittedQ16(any(),any(),any()) } answers {
+    every { api.syncIntentsAdmittedQ16(any(),any(),any(),any()) } answers {
         val venue=firstArg<String>();val request=secondArg<SyncIntentsRequest>()
+        val sello=arg<com.avoqado.pos.core.data.network.SelloDePeticion?>(3)
         object: Call<SyncIntentsResponse> {
             private var job: Job?=null
             private var cancelled=false
@@ -20,7 +21,7 @@ internal fun vincularCallFixtureQ16(api: ApiService) {
                 check(job==null)
                 val call=this
                 job=CoroutineScope(Dispatchers.Unconfined).launch(start=CoroutineStart.UNDISPATCHED) {
-                    try { callback.onResponse(call,Response.success(api.syncIntents(venue,request))) }
+                    try { callback.onResponse(call,Response.success(api.syncIntents(venue,request,sello))) }
                     catch(error:Throwable) { callback.onFailure(call,error) }
                 }
                 if(cancelled) job?.cancel()
