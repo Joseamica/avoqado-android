@@ -554,13 +554,14 @@ class ComandasPendientesStoreTest {
         val a = venta(1)
         store.guardar(a, ahora)
         store.guardar(venta(2), ahora)
+        val pintadoA = store.pendientes.value.first() // lo que la pantalla pintó
         val aPrima = a.copy(causa = "sin papel otra vez", trabajo = a.trabajo!!.copy(copiasPendientes = mapOf("st_barra" to 1)))
         assertTrue(store.reemplazar(a.trabajo!!, aPrima, ahora))
 
-        assertTrue(store.contiene(a))
-        assertTrue(store.mismaComanda(a, aPrima))
-        assertFalse(store.mismaComanda(a, venta(2)))
-        store.yaLaCante(a)
+        assertTrue(store.contiene(pintadoA))
+        assertTrue(store.mismaComanda(pintadoA, store.pendientes.value.first()))
+        assertFalse(store.mismaComanda(pintadoA, store.pendientes.value.last()))
+        store.yaLaCante(pintadoA)
 
         assertEquals(listOf("ORD-2"), store.pendientes.value.map { it.orderNumber })
     }
@@ -576,7 +577,8 @@ class ComandasPendientesStoreTest {
         val cursoB = venta(1).copy(trabajo = venta(1).trabajo!!.copy(orderType = "En tienda · Postre"))
         store.guardar(cursoA, ahora)
         store.guardar(cursoB, ahora)
-        assertFalse("una copia igual no es la comanda publicada", store.contiene(cursoA.copy()))
+        assertFalse("una copia igual no es la comanda publicada", store.contiene(store.pendientes.value.first().copy()))
+        assertTrue(store.contiene(store.pendientes.value.first()))
 
         val sinTrabajo = EstadoDeComanda.NoSalio(listOf("Barra"), ReintentoDeComanda.CAUSA_SIN_IMPRESORA, "ORD-1", trabajo = null)
         store.reemplazar(cursoA.trabajo!!, sinTrabajo, ahora)
@@ -600,6 +602,40 @@ class ComandasPendientesStoreTest {
         assertTrue("cambió el aviso publicado", store.pendiente.value === pintado)
         store.yaLaCante(pintado)
         assertTrue(store.pendientes.value.isEmpty())
+    }
+
+    /**
+     * P1 (Codex D1 r8 #1) Guardar otra vez el MISMO trabajo (un aviso nuevo con el mismo contenido) no le cambia la llave:
+     * «Ya la canté» sobre lo que se pintó antes sigue tachándola.
+     */
+    @Test
+    fun `P1 guardar otra vez el mismo trabajo no le cambia la llave`() {
+        val store = ComandasPendientesStore(AlmacenFalso()).apply { cargar("venue-1", ahora) }
+        val a = venta(1)
+        store.guardar(a, ahora)
+        val pintado = store.pendiente.value!!
+        store.guardar(a.copy(), ahora + 1)
+
+        store.yaLaCante(pintado)
+
+        assertTrue("la comanda cantada siguió viva", store.pendientes.value.isEmpty())
+    }
+
+    /** P2 (Codex D1 r8 #2) Dos avisos idénticos sin trabajo de sucursales DISTINTAS no se juntan. */
+    @Test
+    fun `P2 avisos identicos de sucursales distintas no se juntan`() {
+        val store = ComandasPendientesStore(AlmacenFalso()).apply { cargar("venue-1", ahora) }
+        val enA = venta(1)
+        val enB = venta(1).copy(trabajo = venta(1).trabajo!!.copy(venueId = "venue-2"))
+        store.guardar(enA, ahora)
+        store.guardar(enB, ahora) // llega tarde de B: queda suspendida
+        val sinTrabajo = EstadoDeComanda.NoSalio(listOf("Barra"), ReintentoDeComanda.CAUSA_SIN_IMPRESORA, "ORD-1", trabajo = null)
+        store.reemplazar(enA.trabajo!!, sinTrabajo, ahora)
+        store.reemplazar(enB.trabajo!!, sinTrabajo.copy(), ahora)
+
+        assertEquals(1, store.pendientes.value.size)
+        store.cargar("venue-2", ahora)
+        assertEquals("se perdió el aviso de la otra sucursal", 1, store.pendientes.value.size)
     }
 
     /** `sigueVigente`: presente, no vencida y de la sucursal cargada; una vencida se suelta. */

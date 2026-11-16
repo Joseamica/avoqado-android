@@ -65,17 +65,27 @@ class ComandasPendientesStore @Inject constructor(
         val venueId: String?,
         val aqui: Boolean,
         /**
-         * 🔴 Lo que esta MISMA comanda fue antes de cada reintento parcial ([reemplazar]: Cocina salió y queda Barra).
-         * Es su identidad para el cajero (Codex D1 r4–r6): la pantalla pudo pintar la versión anterior y el toque («Ya la
-         * canté», ocultar) tiene que reconocerla igual. Sólo en memoria: tras reiniciar, la pantalla pinta la de ahora.
+         * 🔴 Su folio interno (Codex D1 r4–r8): fijo mientras viva en la libreta, aunque un reintento parcial cambie su
+         * contenido (Cocina salió y queda Barra) o haya otro aviso idéntico. Va en el aviso publicado
+         * (`NoSalio.llaveEnLaLibreta`): es como el cajero señala «esta» al tocar «Ya la canté» u ocultar. Sólo en memoria.
          */
-        val antes: List<EstadoDeComanda.NoSalio> = emptyList(),
+        val llave: String = java.util.UUID.randomUUID().toString(),
+        /** Llaves de avisos idénticos que se juntaron en éste ([reemplazar]): la pantalla pudo pintar cualquiera. */
+        val alias: Set<String> = emptySet(),
     ) {
-        /**
-         * 🔴 Por IDENTIDAD (el mismo objeto que se publicó y la pantalla pintó), no por contenido (Codex D1 r7 #2): dos
-         * cursos de un folio pueden terminar con avisos idénticos y se confundían al ocultar o tachar.
-         */
-        fun es(aviso: EstadoDeComanda.NoSalio) = estado === aviso || antes.any { it === aviso }
+        fun es(aviso: EstadoDeComanda.NoSalio): Boolean {
+            val l = aviso.llaveEnLaLibreta ?: return false
+            return l == llave || l in alias
+        }
+
+        /** El aviso que se PUBLICA: una copia del de quien llama, con la llave puesta. */
+        fun publicado(aviso: EstadoDeComanda.NoSalio) = aviso.copy().also { it.llaveEnLaLibreta = llave }
+    }
+
+    /** Una entrada nueva con su aviso publicado (llave nueva). */
+    private fun nuevaEntrada(estado: EstadoDeComanda.NoSalio, desde: Long?, venueId: String?, aqui: Boolean): Entrada {
+        val e = Entrada(estado, desde, venueId, aqui)
+        return e.copy(estado = e.publicado(estado))
     }
 
     /**
@@ -139,7 +149,7 @@ class ComandasPendientesStore @Inject constructor(
     private fun asegurarLeido(ahora: Long?) {
         if (leidoDelDisco) return
         leidoDelDisco = true
-        val delDisco = leerDisco(ahora).map { Entrada(it.aviso(), it.guardadaEn, it.trabajo?.venueId, aqui = false) }
+        val delDisco = leerDisco(ahora).map { nuevaEntrada(it.aviso(), it.guardadaEn, it.trabajo?.venueId, aqui = false) }
         entradas = delDisco.filter { d -> entradas.none { it.estado.trabajo == d.estado.trabajo } } + entradas
     }
 
@@ -215,12 +225,12 @@ class ComandasPendientesStore @Inject constructor(
         true
     }
 
-    /** ¿[aviso] es (o fue, antes de un reintento parcial) una comanda de la libreta de esta sucursal? */
+    /** ¿[aviso] (por su llave) es una comanda de la libreta de esta sucursal? */
     fun contiene(aviso: EstadoDeComanda.NoSalio): Boolean = synchronized(cerrojo) {
         entradas.any { visible(it) && it.es(aviso) }
     }
 
-    /** ¿[a] y [b] son la MISMA comanda de la libreta (el mismo aviso, o una es la versión anterior de la otra)? */
+    /** ¿[a] y [b] son la MISMA comanda de la libreta (por su llave; ver `NoSalio.llaveEnLaLibreta`)? */
     fun mismaComanda(a: EstadoDeComanda.NoSalio, b: EstadoDeComanda.NoSalio): Boolean = synchronized(cerrojo) {
         a === b || entradas.any { it.es(a) && it.es(b) }
     }
@@ -258,8 +268,13 @@ class ComandasPendientesStore @Inject constructor(
         val trabajo = estado.trabajo ?: return false
         asegurarLeido(ahora)
         val previa = entradas.firstOrNull { it.estado.trabajo == trabajo }
-        val nueva = Entrada(estado, previa?.desde ?: ahora, trabajo.venueId, aqui = true)
-        entradas = if (previa != null) entradas.map { if (it === previa) nueva else it } else entradas + nueva
+        entradas = when {
+            previa == null -> entradas + nuevaEntrada(estado, ahora, trabajo.venueId, aqui = true)
+            // El mismo trabajo otra vez: misma comanda, misma llave (Codex D1 r8 #1); el aviso publicado sólo cambia si
+            // cambió su contenido.
+            previa.estado == estado -> entradas.map { if (it === previa) it.copy(aqui = true) else it }
+            else -> entradas.map { if (it === previa) it.copy(estado = it.publicado(estado), aqui = true) else it }
+        }
         val ok = persistir(ahora)
         publicar()
         return ok
@@ -292,13 +307,17 @@ class ComandasPendientesStore @Inject constructor(
         // Un reintento que falló igual devuelve un aviso NUEVO con el mismo contenido: la comanda se queda con el suyo (su
         // identidad es ese objeto, el que la pantalla pinta) y su historia no crece cada minuto.
         if (resultado == previa.estado) return !discoAtrasado
-        val nueva = previa.copy(estado = resultado, desde = previa.desde ?: ahora, antes = previa.antes + previa.estado)
-        // Sin nada reenviable y con un aviso IDÉNTICO a otro que ya se enseña (mismo folio, estaciones y causa): al cajero
-        // le dicen exactamente lo mismo y ninguno tiene qué reintentar, así que se queda uno (Codex D1 r7 #2: dos avisos
-        // iguales no se pueden distinguir en pantalla ni al tocarlos).
-        val gemela = if (resultado.trabajo == null) entradas.firstOrNull { it !== previa && it.estado == resultado } else null
+        val nueva = previa.copy(estado = previa.publicado(resultado), desde = previa.desde ?: ahora)
+        // Sin nada reenviable y con un aviso IDÉNTICO a otro de la MISMA sucursal (mismo folio, estaciones y causa): al
+        // cajero le dicen exactamente lo mismo y ninguno tiene qué reintentar, así que se queda uno, que hereda la llave
+        // del otro (Codex D1 r7 #2; r8 #2: nunca entre sucursales).
+        val gemela = if (resultado.trabajo == null) {
+            entradas.firstOrNull { it !== previa && it.venueId == previa.venueId && it.estado == resultado }
+        } else {
+            null
+        }
         entradas = if (gemela != null) {
-            entradas.filter { it !== previa }.map { if (it === gemela) it.copy(antes = it.antes + nueva.antes) else it }
+            entradas.filter { it !== previa }.map { if (it === gemela) it.copy(alias = it.alias + previa.llave + previa.alias) else it }
         } else {
             entradas.map { if (it === previa) nueva else it }
         }
@@ -397,7 +416,7 @@ class ComandasPendientesStore @Inject constructor(
      *
      * 🔴 [aviso] es la comanda que la persona VIO al tocar (Codex D1 r4 #1): si entre leerla y tocar llegó otra, «la más
      * reciente» ya sería la nueva, y se tachaba ésa —sin haber salido ni haberla cantado nadie— mientras la cantada seguía
-     * viva. Se reconoce también en la versión que tenía antes de un reintento parcial (r6 #1). `null` = la que se enseña.
+     * viva. Se reconoce por su llave, aunque un reintento parcial la haya cambiado (r6–r8). `null` = la que se enseña.
      *
      * @return el cierre en curso (las pruebas lo esperan), o `null` si no había nada que cerrar.
      */

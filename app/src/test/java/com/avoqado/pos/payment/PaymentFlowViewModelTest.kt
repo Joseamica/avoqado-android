@@ -5557,7 +5557,7 @@ class PaymentFlowViewModelTest {
         advanceUntilIdle()
         assertEquals(cursoB, viewModel.comandaWarning.value)
 
-        viewModel.ocultarAvisoDeComanda(cursoB)
+        viewModel.ocultarAvisoDeComanda(viewModel.comandaWarning.value) // el que se pintó
         advanceUntilIdle()
         assertNull(viewModel.comandaWarning.value)
         storeDePendientes.soltarSi(cursoB.trabajo!!) // el curso B por fin salió
