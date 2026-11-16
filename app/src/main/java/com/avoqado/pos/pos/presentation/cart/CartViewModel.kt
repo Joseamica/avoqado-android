@@ -1704,7 +1704,10 @@ class CartViewModel @Inject constructor(
      * @return `true` sólo si de verdad entró — la UI celebra con eso, así que un
      *   "¡Combo agregado!" nunca puede mentir.
      */
-    fun aplicarPromocion(promotion: Promotion, selecciones: Map<String, String> = emptyMap(), times: Map<String, com.avoqado.pos.pos.data.model.ServiceCourseSnapshot> = emptyMap()): Boolean {
+    fun aplicarPromocion(promotion: Promotion, selecciones: Map<String, String> = emptyMap(), times: Map<String, com.avoqado.pos.pos.data.model.ServiceCourseSnapshot> = emptyMap(),
+        extras: Map<String, List<SelectedModifier>> = emptyMap(),
+        piezasConExtras: Set<String> = emptySet(),
+    ): Boolean {
         val elegidas = opcionesElegidas(promotion, selecciones)
         if (elegidas.isNullOrEmpty()) {
             Log.w("🎁", "Promoción sin elección completa, no se agrega: ${promotion.name}")
@@ -1716,6 +1719,9 @@ class CartViewModel @Inject constructor(
         val nuevas = elegidas.mapIndexed { index, elegida ->
             CartItem(
                 type = CartItemType.ProductItem(elegida.opcion.productId),
+                // Extras sólo si la pieza manda su lista: sin la marca el SERVIDOR nunca los recibiría.
+                selectedModifiers = if (elegida.grupo.id in piezasConExtras) extras[elegida.grupo.id].orEmpty() else emptyList(),
+                comboConExtras = elegida.grupo.id in piezasConExtras,
                 name = elegida.opcion.productName.ifBlank { promotion.name },
                 // El carrito ya pinta `subtitle` bajo el nombre: es donde se lee
                 // "Combo del día" sin volver al catálogo.
@@ -2031,6 +2037,7 @@ class CartViewModel @Inject constructor(
                     promotionId = item.promotionId,
                     promotionGroupId = item.promotionGroupId,
                     promotionOptionId = item.promotionOptionId,
+                    comboConExtras = item.comboConExtras,
                     serviceCourse = item.serviceCourse,
                     catalogAt = item.catalogAt,
                 )
@@ -3188,6 +3195,7 @@ class CartViewModel @Inject constructor(
                 promotionId = savedItem.promotionId,
                 promotionGroupId = savedItem.promotionGroupId,
                 promotionOptionId = savedItem.promotionOptionId,
+                comboConExtras = savedItem.comboConExtras,
                 serviceCourse = savedItem.serviceCourse,
                 catalogAt = savedItem.catalogAt,
                 subtitle = savedItem.promotionName,

@@ -267,6 +267,8 @@ data class PromotionSelectionRequest(
     val groupId: String,
     val optionId: String,
     val serviceCourse: com.avoqado.pos.pos.data.model.ServiceCourseSnapshot? = null,
+    /** Extras de ESA pieza (un id repetido = más unidades). null = la llave no viaja y el SERVIDOR no revisa nada; `[]` sí viaja. */
+    val modifierIds: List<String>? = null,
 )
 
 /**

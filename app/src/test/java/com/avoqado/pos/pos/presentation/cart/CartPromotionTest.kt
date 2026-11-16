@@ -619,4 +619,79 @@ class CartPromotionTest {
         assertEquals(5000, vm.cartState.value.totalCents)
         assertEquals(AVISO_CARRITO_SIN_IMPUESTO, vm.avisoDelCarrito.value)
     }
+
+    // MARK: - Extras de cada pieza (modificadores en combo)
+
+    private val comboDeUnaPieza = Promotion(
+        id = "promo-uno",
+        name = "Hamburguesa completa",
+        pricingMode = "FIXED_TOTAL",
+        priceCents = 18000,
+        groups = listOf(grupoDeUnaOpcion("g-ham", "o-ham", "p-ham", "Hamburguesa", 18000)),
+    )
+
+    private val queso = com.avoqado.pos.pos.data.model.SelectedModifier("ge", "Extras", "queso", "Queso", 1500)
+
+    @Test
+    fun `un combo de 180 con queso de 15 cobra 195 y la linea sigue siendo del combo`() {
+        val vm = createViewModel()
+
+        assertTrue(
+            vm.aplicarPromocion(
+                comboDeUnaPieza, emptyMap(), emptyMap(),
+                extras = mapOf("g-ham" to listOf(queso)), piezasConExtras = setOf("g-ham"),
+            ),
+        )
+
+        val linea = vm.cartState.value.items.single()
+        assertEquals(listOf(queso), linea.selectedModifiers)
+        assertTrue(linea.comboConExtras)
+        assertTrue(linea.isPromotionLine)
+        assertEquals(19500, vm.cartState.value.subtotalCents)
+        // Tocar el mismo producto suelto no se junta con la pieza del combo.
+        vm.addProduct(Product(id = "p-ham", name = "Hamburguesa", priceValue = 180.0))
+        assertEquals(2, vm.cartState.value.items.size)
+    }
+
+    @Test
+    fun `sin extras ni marca la pieza se agrega como antes`() {
+        val vm = createViewModel()
+        vm.aplicarPromocion(comboDeUnaPieza, emptyMap())
+        val linea = vm.cartState.value.items.single()
+        assertTrue(linea.selectedModifiers.isEmpty())
+        assertFalse(linea.comboConExtras)
+        assertEquals(18000, vm.cartState.value.subtotalCents)
+    }
+
+    @Test
+    fun `guardar y restaurar el carrito conserva los extras y la marca`() {
+        val vm = createViewModel()
+        vm.aplicarPromocion(
+            comboDeUnaPieza, emptyMap(), emptyMap(),
+            extras = mapOf("g-ham" to listOf(queso)), piezasConExtras = setOf("g-ham"),
+        )
+        val guardados = mutableListOf<SavedCart>()
+        every { savedCartsRepository.saveCart(any()) } answers { guardados += firstArg<SavedCart>(); true }
+
+        assertTrue(vm.saveCurrentCart("Mesa 5"))
+        assertTrue(guardados.single().items.single().comboConExtras)
+        vm.restoreSavedCart(guardados.single())
+
+        val linea = vm.cartState.value.items.single()
+        assertEquals(listOf(queso), linea.selectedModifiers)
+        assertTrue(linea.comboConExtras)
+        assertEquals(19500, vm.cartState.value.subtotalCents)
+    }
+
+    @Test
+    fun `extras de una pieza sin marca no viajan al renglon`() {
+        val vm = createViewModel()
+
+        vm.aplicarPromocion(comboDeUnaPieza, emptyMap(), emptyMap(), extras = mapOf("g-ham" to listOf(queso)), piezasConExtras = emptySet())
+
+        val linea = vm.cartState.value.items.single()
+        assertTrue(linea.selectedModifiers.isEmpty())
+        assertFalse(linea.comboConExtras)
+        assertEquals(18000, vm.cartState.value.subtotalCents)
+    }
 }

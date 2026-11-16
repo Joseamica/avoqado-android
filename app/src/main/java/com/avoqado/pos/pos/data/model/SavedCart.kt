@@ -75,6 +75,8 @@ data class SavedCartItem(
     val promotionId: String? = null,
     val promotionGroupId: String? = null,
     val promotionOptionId: String? = null,
+    /// «Esta pieza del combo manda su lista de extras» (`CartItem.comboConExtras`). Falso en carritos viejos.
+    val comboConExtras: Boolean = false,
     val serviceCourse: ServiceCourseSnapshot? = null,
     /// La hora del catálogo con que se agregó la línea (`CartItem.catalogAt`). Nula en carritos viejos.
     val catalogAt: String? = null,
