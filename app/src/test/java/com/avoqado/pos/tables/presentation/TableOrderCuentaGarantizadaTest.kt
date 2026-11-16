@@ -36,6 +36,7 @@ import org.junit.Rule
 import org.junit.Test
 import java.io.File
 import java.io.IOException
+import okhttp3.ResponseBody.Companion.toResponseBody
 
 /** VMs/estado reales; IO controlado. La durabilidad de la consulta se prueba en TrabajoDeLaOrdenTest. */
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -772,6 +773,50 @@ class TableOrderCuentaGarantizadaTest {
             coEvery { repository.clearTable(any(), any(), any()) } returns Result.success(Unit)
             f.finishTableAfterPayment(); advanceUntilIdle()
             coVerify(exactly = 1) { repository.clearTable("v-cuenta-garantizada", "t1", "o1") }
+            assertNull(session.current())
+        } finally { a.viewModelScope.cancel(); f.viewModelScope.cancel() }
+    }
+
+    // D87 (hz:8024bc1c:D87): mesa con dos cuentas; se cobra completa UNA y «liberar mesa» sale 400 porque la OTRA sigue debiendo.
+    // La sesión se quedaba en PAYING y «Cobrar» sembraba «Cuenta Mesa N» con la cuenta ya pagada hasta reiniciar la app.
+    private val rechazoPorOtraCuenta = retrofit2.HttpException(retrofit2.Response.error<Any>(400,
+        """{"message":"Cannot clear table with unpaid order ORD-o2"}""".toResponseBody()))
+
+    @Test fun `D87 cuenta cobrada con otra cuenta debiendo cierra su sesion aunque liberar la mesa se rechace`() = runTest {
+        val a = vm(); val f = floor()
+        try {
+            // Sesión ascendida (cuenta real o1, abierta como local-origin): se pregunta por la real.
+            session.start(session.current()!!.copy(mode = TableSession.Mode.PAYING))
+            coEvery { repository.clearTable(any(), any(), any()) } returns Result.failure(rechazoPorOtraCuenta)
+            coEvery { repository.cuentaCobradaEnServidor("v-cuenta-garantizada", "o1") } returns true
+            f.finishTableAfterPayment(); advanceUntilIdle()
+            coVerify(exactly = 1) { repository.clearTable("v-cuenta-garantizada", "t1", "o1") }
+            // Sin sesión, «Cobrar» (`CartViewModel.consumePendingTableCobrar`) ya no siembra la cuenta pagada.
+            assertNull(session.current())
+            // Y si alguien la vuelve a abrir, se relee del servidor antes de cobrar.
+            assertTrue(session.requiereRevisarSaldo("v-cuenta-garantizada", setOf("o1")))
+        } finally { a.viewModelScope.cancel(); f.viewModelScope.cancel() }
+    }
+
+    @Test fun `D87 si el servidor no la tiene cobrada el rechazo deja la sesion viva como hoy`() = runTest {
+        val a = vm(); val f = floor()
+        try {
+            session.start(session.current()!!.copy(mode = TableSession.Mode.PAYING))
+            coEvery { repository.clearTable(any(), any(), any()) } returns Result.failure(rechazoPorOtraCuenta)
+            coEvery { repository.cuentaCobradaEnServidor(any(), any()) } returns false
+            f.finishTableAfterPayment(); advanceUntilIdle()
+            assertEquals(TableSession.Mode.PAYING, session.current()?.mode)
+        } finally { a.viewModelScope.cancel(); f.viewModelScope.cancel() }
+    }
+
+    @Test fun `D87 si liberar la mesa pasa no se pregunta por la cuenta`() = runTest {
+        val a = vm(); val f = floor()
+        try {
+            session.start(session.current()!!.copy(mode = TableSession.Mode.PAYING))
+            coEvery { repository.clearTable(any(), any(), any()) } returns Result.success(Unit)
+            f.finishTableAfterPayment(); advanceUntilIdle()
+            f.finishTableAfterPayment(cobroEnCola = true); advanceUntilIdle()
+            coVerify(exactly = 0) { repository.cuentaCobradaEnServidor(any(), any()) }
             assertNull(session.current())
         } finally { a.viewModelScope.cancel(); f.viewModelScope.cancel() }
     }

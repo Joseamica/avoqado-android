@@ -345,6 +345,16 @@ class TableServiceRepository @Inject constructor(
         response.order ?: error("Respuesta sin orden")
     }.onFailure { Log.e(TAG, "❌ getOrderDetail failed: ${it.message}") }
 
+    /**
+     * D87 (16-nov): tras un cobro completo, ¿el SERVIDOR ya tiene cobrada ESTA cuenta? «Liberar mesa» también se rechaza cuando
+     * ya se pagó y OTRA cuenta de la mesa todavía debe (cuenta aparte, «Separar en otra cuenta»). Se pregunta por la cuenta misma,
+     * en segundo plano (un 403 no abre el PIN): el plano no lo prueba (una provisional local conservada o una cuenta movida a otra
+     * mesa lo confunden; Codex r1). Sin respuesta (o un id local que el servidor no conoce), `false`: como antes.
+     */
+    suspend fun cuentaCobradaEnServidor(venueId: String, orderId: String): Boolean = try {
+        apiService.getOrderDetailEnSegundoPlano(venueId, orderId).order?.takeIf { it.id == orderId }?.status == CUENTA_COBRADA
+    } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (_: Exception) { false }
+
     /** Appends a round to the open order. 409 = stale version → caller refreshes and retries. */
     suspend fun addRound(
         venueId: String,

@@ -11,6 +11,7 @@ import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.IOException
@@ -44,6 +45,25 @@ class LiberarMesaConSuCuentaTest {
 
     @Test fun `cuenta del servidor - lleva la mesa y su cuenta`() = runTest {
         assertEquals(JsonObject(mapOf("tableId" to JsonPrimitive("t1"), "orderId" to JsonPrimitive("o-1"))), liberarSinRed("t1", "o-1"))
+    }
+
+    // D87 (hz:8024bc1c:D87): tras el rechazo de «liberar» por OTRA cuenta, se pregunta por la cuenta misma, en segundo plano.
+    private fun cuenta(id: String, status: String) = OrderDetailResponse(order = OrderDetail(id = id, status = status))
+
+    @Test fun `D87 cuenta cobrada en el servidor - solo COMPLETED de ESA cuenta`() = runTest {
+        coEvery { api.getOrderDetailEnSegundoPlano("v1", "o-1") } returns cuenta("o-1", "COMPLETED")
+        assertTrue(repo().cuentaCobradaEnServidor("v1", "o-1"))
+        coEvery { api.getOrderDetailEnSegundoPlano("v1", "o-1") } returns cuenta("o-1", "PENDING")
+        assertFalse("abono parcial: todavía debe", repo().cuentaCobradaEnServidor("v1", "o-1"))
+        coEvery { api.getOrderDetailEnSegundoPlano("v1", "o-1") } returns cuenta("o-1", "CANCELLED")
+        assertFalse("anulada no es cobrada", repo().cuentaCobradaEnServidor("v1", "o-1"))
+        coEvery { api.getOrderDetailEnSegundoPlano("v1", "o-1") } returns cuenta("o-2", "COMPLETED")
+        assertFalse("respuesta de otra cuenta", repo().cuentaCobradaEnServidor("v1", "o-1"))
+        coEvery { api.getOrderDetailEnSegundoPlano("v1", "o-1") } returns OrderDetailResponse(order = null)
+        assertFalse(repo().cuentaCobradaEnServidor("v1", "o-1"))
+        coEvery { api.getOrderDetailEnSegundoPlano("v1", "o-1") } throws IOException("sin red")
+        assertFalse("sin respuesta: como antes", repo().cuentaCobradaEnServidor("v1", "o-1"))
+        coVerify(exactly = 0) { api.getOrderDetail(any(), any()) }
     }
 
     @Test fun `con red no se encola nada`() = runTest {
