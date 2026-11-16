@@ -258,4 +258,98 @@ class ReplayDeComandasPendientesTest {
         assertNotNull(enDisco)
         assertTrue(enDisco!!.orderNumber == "ORD-5")
     }
+
+    // MARK: - Codex D11 r1
+
+    /**
+     * P1 (Codex D11 r1 #1) El reintento comprueba «sigue siendo mi comanda» y escribe bajo el MISMO candado que `guardar`.
+     * Aquí la escritura del reintento se detiene a la mitad mientras OTRO hilo (una ronda de mesa) guarda la venta ORD-5:
+     * sin candado, el reintento terminaba encima y ORD-5 desaparecía de memoria y de disco.
+     */
+    @Test
+    fun `P1 una ronda que guarda a media escritura del reintento no se pierde`() = runTest {
+        val enEscritura = java.util.concurrent.CountDownLatch(1)
+        val sigue = java.util.concurrent.CountDownLatch(1)
+        val almacen = object : AlmacenDeTexto {
+            @Volatile var texto: String? = null
+            @Volatile var detener = false
+            override fun leer(): String? = texto
+            override fun escribir(texto: String): Boolean {
+                if (detener && texto.contains("ORD-7")) {
+                    detener = false
+                    enEscritura.countDown()
+                    sigue.await(5, java.util.concurrent.TimeUnit.SECONDS)
+                }
+                this.texto = texto
+                return true
+            }
+            override fun borrar() { texto = null }
+        }
+        val store = ComandasPendientesStore(almacen)
+        store.guardar(falloDos)
+        almacen.detener = true
+
+        val reintento = Thread { store.reemplazar(trabajoDos, soloBarra) }.apply { start() }
+        enEscritura.await(5, java.util.concurrent.TimeUnit.SECONDS)
+        val ronda = Thread { store.guardar(fallo) }.apply { start() }
+        Thread.sleep(200) // sin candado, la ronda escribe aquí, ANTES de que el reintento termine
+        sigue.countDown()
+        reintento.join(5_000)
+        ronda.join(5_000)
+
+        assertEquals("la comanda de la ronda se perdió", "ORD-5", store.pendiente.value?.orderNumber)
+        assertEquals("ORD-5", ComandasPendientesStore(almacen).apply { cargar("venue-1") }.pendiente.value?.orderNumber)
+    }
+
+    /**
+     * P1 (Codex D11 r1 #2) Si la reimpresión de ORD-7 SALE pero mientras tanto falló ORD-5 y ocupó la libreta, el éxito
+     * de ORD-7 no puede borrar el aviso ni el reintento de ORD-5.
+     */
+    @Test
+    fun `P1 el éxito de una reimpresión no borra el aviso de otra venta`() = runTest {
+        val almacen = AlmacenFalsoReplay()
+        val store = ComandasPendientesStore(almacen)
+        store.guardar(falloDos)
+        val dispatcher = mockk<ComandaDispatcher>()
+        coEvery { dispatcher.reintentar(any(), any()) } coAnswers {
+            store.guardar(fallo)
+            EstadoDeComanda.Salio
+        }
+
+        ReplayDeComandasPendientes(store, dispatcher).intentarAhora()
+
+        assertEquals("ORD-5", store.pendiente.value?.orderNumber)
+        assertNotNull("el aviso de ORD-5 se borró del aparato", almacen.leer())
+    }
+
+    /**
+     * P1 (Codex D11 r1 #3) Con la app abierta más de 8 h, la comanda vence también para el reloj y el botón: no se imprime
+     * una comanda de ayer porque la impresora volvió.
+     */
+    @Test
+    fun `P1 con la app abierta más de 8 horas la comanda vencida ya no se manda`() = runTest {
+        val store = ComandasPendientesStore(AlmacenFalsoReplay())
+        val nueveHoras = 9L * 60 * 60 * 1000
+        store.guardar(falloDos, ahora = System.currentTimeMillis() - nueveHoras)
+        var llamadas = 0
+        val dispatcher = mockk<ComandaDispatcher>()
+        coEvery { dispatcher.reintentar(any(), any()) } coAnswers { llamadas++; EstadoDeComanda.Salio }
+
+        assertNull(ReplayDeComandasPendientes(store, dispatcher).intentarAhora())
+
+        assertEquals("se mandó una comanda de hace 9 h", 0, llamadas)
+        assertNull(store.pendiente.value)
+    }
+
+    /** La vigencia que lee el reloj también viene del disco al abrir la app (cargar), no sólo de lo guardado en esta vida. */
+    @Test
+    fun `al abrir la app la vigencia de lo guardado sigue contando desde el primer fallo`() = runTest {
+        val almacen = AlmacenFalsoReplay()
+        val t0 = System.currentTimeMillis() - 7L * 60 * 60 * 1000
+        ComandasPendientesStore(almacen).guardar(falloDos, ahora = t0)
+        val store = ComandasPendientesStore(almacen).apply { cargar("venue-1") }
+
+        assertNotNull("a las 7 h sigue vigente", store.vigente())
+        assertNull("a las 8 h y un minuto ya venció", store.vigente(ahora = t0 + 8L * 60 * 60 * 1000 + 60_000))
+    }
 }
