@@ -47,3 +47,18 @@ class SesionCambiada : java.io.IOException("La sesión cambió: no sale con la d
 
 /** El sello de una petición, si pasó por [AuthInterceptor]. */
 val okhttp3.Request.sello: Long? get() = tag(SelloDePeticion::class.java)?.generacion
+
+/**
+ * D80: la generación de sesión con que arrancó una pasada de las colas sin red. Viaja en el contexto de sus corrutinas, así que el
+ * cajón y la fila de Mesas que corre esa pasada mandan con el MISMO sello que sus cobros, sin pasarlo de mano en mano.
+ */
+class PasadaConSello(val generacion: Long) : kotlin.coroutines.AbstractCoroutineContextElement(PasadaConSello) {
+    companion object Key : kotlin.coroutines.CoroutineContext.Key<PasadaConSello>
+}
+
+/** El sello de la pasada en curso, o `null` si quien llama no corre dentro de una ([PasadaConSello]). */
+suspend fun selloDeLaPasadaEnCurso(): Long? = kotlinx.coroutines.currentCoroutineContext()[PasadaConSello]?.generacion
+
+/** Le pone a la petición el [SelloDePeticion] de [generacion]; `null` la deja como estaba. */
+fun okhttp3.Request.Builder.conSello(generacion: Long?): okhttp3.Request.Builder =
+    apply { generacion?.let { tag(SelloDePeticion::class.java, SelloDePeticion(it)) } }

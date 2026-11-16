@@ -232,6 +232,8 @@ class DescuentoConAprobacionCobroTest {
         advanceUntilIdle()
 
         assertEquals(DESCUENTO_CON_APROBACION_LO_APLICA_UN_GERENTE, (vm.state.value as PaymentFlowState.Error).message)
+        // D14: no es un error del cobro: sale en gris y sin «Reintentar».
+        assertEquals(com.avoqado.pos.payment.data.model.PaymentErrorSource.SOLO_GERENTE, (vm.state.value as PaymentFlowState.Error).source)
         nadaSeCreo()
         nadaSeAparto()
     }
@@ -289,6 +291,8 @@ class DescuentoConAprobacionCobroTest {
         cobrarEnEfectivo(conGerencial())
         advanceUntilIdle()
         assertEquals(DESCUENTO_CON_APROBACION_PIDE_PIN, (vm.state.value as PaymentFlowState.Error).message)
+        // D14: el siguiente cobro pide el PIN: sale en gris con «Volver a cobrar».
+        assertEquals(com.avoqado.pos.payment.data.model.PaymentErrorSource.PIDE_PIN, (vm.state.value as PaymentFlowState.Error).source)
         coVerify(exactly = 0) { coordinador.preauthorize(any(), any(), any()) }
 
         vm.retry()
