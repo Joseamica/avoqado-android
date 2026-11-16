@@ -865,5 +865,6 @@ class TableServiceRepository @Inject constructor(
                 putOrderRef(orderId)
             })
         Log.w(TAG, "📴 CLEAR_TABLE sin red — encolado al outbox")
+        Unit
     }.onFailure { Log.e(TAG, "❌ clearTable failed: ${it.message}") }
 }
