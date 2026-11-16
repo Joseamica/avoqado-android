@@ -220,9 +220,10 @@ class ComandasPendientesStore @Inject constructor(
      *
      * 1. **Sin trabajo, nada.** Un `NoSalio` sin trabajo (todas las estaciones saltadas, o el camino legado) no se
      *    puede reimprimir; guardarlo no le da nada al reloj ni al botón. Devuelve `false` sin tocar nada.
-     * 2. **Venue ajeno, se rechaza entero.** Si `trabajo.venueId` no es el del último [cargar], NO entra —el reloj de
-     *    reintento y Cobrar, que leen [pendientes], lo mandarían a las impresoras de la sucursal equivocada— (igual que
-     *    iOS). Lo único que se pierde es el reintento automático del trabajo viejo; su aviso ya se mostró. `false`.
+     * 2. **Venue ajeno, se SUSPENDE.** Si `trabajo.venueId` no es el del último [cargar] (cambiaron de sucursal mientras
+     *    su comanda seguía insistiendo), entra pero NO se publica: el reloj de reintento y Cobrar, que leen [pendientes],
+     *    lo mandarían a las impresoras de la sucursal equivocada. Vuelve al regresar a su sucursal. 🔴 Antes se rechazaba
+     *    entero (la libreta era de una ranura) y esa comanda se perdía (Codex D1 r3 #3).
      * 3. **Nunca cargado** (sin venue conocido): como antes, entra y se enseña.
      *
      * 🔴 D1: se AGREGA a la lista; ya no pisa la comanda de otra venta. El MISMO trabajo guardado otra vez no se duplica
@@ -233,8 +234,6 @@ class ComandasPendientesStore @Inject constructor(
      */
     fun guardar(estado: EstadoDeComanda.NoSalio, ahora: Long = System.currentTimeMillis()): Boolean = synchronized(cerrojo) {
         val trabajo = estado.trabajo ?: return false
-        val cargado = venueCargado
-        if (cargado != null && trabajo.venueId != cargado) return false
         asegurarLeido(ahora)
         val previa = entradas.firstOrNull { it.estado.trabajo == trabajo }
         val nueva = Entrada(estado, previa?.desde ?: ahora, trabajo.venueId, aqui = true)
@@ -340,7 +339,14 @@ class ComandasPendientesStore @Inject constructor(
      * archivo es la vigencia de 8 h, que retira cada comanda sola.
      */
     private fun escribirDisco(lista: List<Guardada>): Boolean {
-        if (lista.isEmpty()) return runCatching { almacen.borrar(); true }.getOrDefault(false)
+        // 🔴 Vaciar = primero escribir la lista vacía (eso SÍ dice si quedó: `commit()`), y luego borrar la llave por
+        // limpieza. `borrar` no avisa si falló (`PrefsComoAlmacen` descarta el `commit()`): si fuera lo único, una comanda
+        // ya cantada podría seguir en disco sin que el reloj se enterara (Codex D1 r3 #1). Un «[]» que se queda es inocuo.
+        if (lista.isEmpty()) {
+            val ok = runCatching { almacen.escribir("[]") }.getOrDefault(false)
+            if (ok) runCatching { almacen.borrar() }
+            return ok
+        }
         return runCatching { almacen.escribir(json.encodeToString(lista)) }
             .onFailure { Log.w(TAG, "No se pudieron escribir las comandas pendientes: ${it.message}") }
             .getOrDefault(false)

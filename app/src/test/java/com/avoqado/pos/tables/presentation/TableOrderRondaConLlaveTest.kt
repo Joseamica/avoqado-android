@@ -596,12 +596,13 @@ class TableOrderRondaConLlaveTest {
 
     /**
      * Task 9 review, ronda 1, m-2: `despacharEnFondo` vive en el ámbito de la app y puede seguir insistiendo
-     * minutos después de que el mesero cambie de sucursal. Si el trabajo que no salió es de la sucursal VIEJA,
-     * guardarlo en el almacén EN MEMORIA de la sucursal ACTUAL se saltaría el filtro por venue que `leer()` sí
-     * aplica al releer de disco — con dos locales en el mismo 192.168.1.x el papel saldría en el equivocado.
+     * minutos después de que el mesero cambie de sucursal. 🔴 D1 (Codex r3 #3): antes no se guardaba (la libreta era de
+     * una ranura y la habría enseñado en la sucursal actual) y esa comanda se perdía. Ahora se guarda: la libreta la
+     * deja SUSPENDIDA para su sucursal (no la enseña ni la imprime en la nueva; `ComandasPendientesStoreTest` «P1 un
+     * trabajo de OTRA sucursal no se publica pero queda suspendido…»).
      */
     @Test
-    fun `P1 el venue cambio antes de que la comanda terminara - no se guarda para el venue viejo`() = runTest {
+    fun `P1 el venue cambio antes de que la comanda terminara - se guarda y la libreta la suspende`() = runTest {
         coEvery { repository.addRound(any(), any(), any(), any()) } returns Result.success(UpdatedOrder(id = "o1", version = 4))
         val store = mockk<ComandasPendientesStore>(relaxed = true)
         var venueActual = "venue-1"
@@ -628,7 +629,7 @@ class TableOrderRondaConLlaveTest {
         vm.sendRound { _, _ -> }
         advanceUntilIdle()
 
-        verify(exactly = 0) { store.guardar(any(), any()) }
+        verify(exactly = 1) { store.guardar(noSalioDeVenue1, any()) }
         // El aviso en pantalla SÍ sale — la mesa que sigue abierta no tiene por qué mentir del todo.
         assertEquals("No salió la comanda de: Barra", vm.actionMessage.value)
     }

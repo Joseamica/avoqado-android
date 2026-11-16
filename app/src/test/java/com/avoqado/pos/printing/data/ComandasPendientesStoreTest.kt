@@ -189,18 +189,25 @@ class ComandasPendientesStoreTest {
         assertEquals("ORD-42", ComandasPendientesStore(almacen).leer("venue-1", ahora)?.orderNumber)
     }
 
-    /** m-8: el reloj de reintento y Cobrar leen la MEMORIA; un trabajo de otra sucursal imprimiría en el local equivocado. */
+    /**
+     * m-8: el reloj de reintento y Cobrar leen lo PUBLICADO; un trabajo de otra sucursal imprimiría en el local equivocado,
+     * así que no se publica. 🔴 D1 (Codex r3 #3): pero tampoco se tira — antes, con la ranura única, se rechazaba entero y
+     * la comanda de la sucursal anterior que seguía insistiendo al cambiar de sucursal se perdía. Ahora queda SUSPENDIDA y
+     * vuelve al regresar a su sucursal.
+     */
     @Test
-    fun `P1 un trabajo de OTRA sucursal no se publica en memoria ni se escribe`() {
+    fun `P1 un trabajo de OTRA sucursal no se publica pero queda suspendido para su sucursal`() {
         val almacen = AlmacenFalso()
         val store = ComandasPendientesStore(almacen)
         store.cargar("venue-1", ahora)
 
-        assertFalse(store.guardar(deOtraSucursal, ahora))
+        assertTrue(store.guardar(deOtraSucursal, ahora))
 
         assertNull("se publicó un trabajo de otra sucursal", store.pendiente.value)
-        // Almacén de UNA ranura: escribirlo pisaría el pendiente del venue actual (paridad con iOS).
-        assertNull("se escribió un trabajo de otra sucursal", almacen.texto)
+        assertTrue(store.vigentes(ahora).isEmpty())
+        store.cargar("venue-2", ahora)
+        assertEquals(deOtraSucursal, store.pendiente.value)
+        assertEquals("ORD-9", ComandasPendientesStore(almacen).leer("venue-2", ahora)?.orderNumber)
     }
 
     /** Un cambio de sucursal vuelve a llamar `cargar` (AppState.refreshTabs → startOfflineOutbox): la guarda sigue al venue nuevo. */
@@ -221,9 +228,10 @@ class ComandasPendientesStoreTest {
         store.cargar("venue-1", ahora)
         store.guardar(fallo, ahora)
 
-        assertFalse(store.guardar(deOtraSucursal, ahora))
+        store.guardar(deOtraSucursal, ahora)
 
         assertEquals(fallo, store.pendiente.value)
+        assertEquals(listOf(fallo), store.pendientes.value)
         assertEquals("ORD-42", ComandasPendientesStore(almacen).leer("venue-1", ahora)?.orderNumber)
     }
 
@@ -489,6 +497,34 @@ class ComandasPendientesStoreTest {
         assertEquals(
             listOf("ORD-1"),
             ComandasPendientesStore(almacen).apply { cargar("venue-1", ahora + 180_000) }.pendientes.value.map { it.orderNumber },
+        )
+    }
+
+    /**
+     * P1 (Codex D1 r3 #1) En Android `borrar` no avisa si falló. Al soltar la ÚLTIMA comanda con el disco sin responder,
+     * el reloj tiene que enterarse y reponer la copia vacía cuando el disco vuelve: si no, tras reiniciar regresaba la
+     * comanda ya cantada.
+     */
+    @Test
+    fun `P1 soltar la ultima con el disco sin responder se repone y no revive al reiniciar`() {
+        val almacen = object : AlmacenDeTexto {
+            var texto: String? = null
+            var fallar = false
+            override fun leer(): String? = texto
+            override fun escribir(texto: String): Boolean { if (fallar) return false; this.texto = texto; return true }
+            override fun borrar() { if (!fallar) texto = null } // como `PrefsComoAlmacen`: falla callado
+        }
+        val store = ComandasPendientesStore(almacen).apply { cargar("venue-1", ahora) }
+        store.guardar(venta(1), ahora)
+        almacen.fallar = true
+
+        store.yaLaCante()
+        almacen.fallar = false
+        store.vigentes(ahora + 60_000) // el tic del reloj
+
+        assertTrue(
+            "volvió la comanda ya cantada",
+            ComandasPendientesStore(almacen).apply { cargar("venue-1", ahora + 120_000) }.pendientes.value.isEmpty(),
         )
     }
 
