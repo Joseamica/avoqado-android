@@ -5614,7 +5614,8 @@ class PaymentFlowViewModel @Inject constructor(
         fun vigente() = secureStorage.venueId == mesa.venueId && tableSession.contextoActual() == mesa.contexto
         if (!vigente()) return
         viewModelScope.launch {
-            if (repo.clearTable(mesa.venueId, mesa.mesa.tableId, orderId).isFailure) {
+            // D87: un rechazo porque OTRA cuenta de la mesa todavía debe no deja viva la sesión de ESTA si el SERVIDOR ya la cobró.
+            if (repo.clearTable(mesa.venueId, mesa.mesa.tableId, orderId).isFailure && !repo.cuentaCobradaEnServidor(mesa.venueId, orderId)) {
                 Log.d("🍽", "La orden de la mesa ${mesa.mesa.tableNumber} sigue con saldo: su sesión sigue viva")
                 return@launch
             }

@@ -259,5 +259,53 @@ class ImporteYMesaDeLaVentaViejaTest {
         assertEquals("mesa-8", tableSession.current()?.tableId)
     }
 
+    /** D87: la venta vieja pagó SU cuenta y OTRA cuenta de la misma mesa sigue debiendo: «liberar» sale 400, la sesión no se queda. */
+    @Test
+    fun `D87 la mesa de una venta vieja con otra cuenta debiendo cierra SU sesion aunque liberar se rechace`() = runTest {
+        val mesa5 = TableSession.Active("mesa-5", "5", null, "orden-mesa-5", "M5", 1, 10_000, TableSession.Mode.PAYING)
+        tableSession.start(mesa5, VENUE)
+        coEvery { mesas.clearTable(any(), any(), any()) } returns Result.failure(IllegalStateException("Cannot clear table with unpaid order ORD-OTRA"))
+        coEvery { mesas.cuentaCobradaEnServidor(VENUE, "orden-mesa-5") } returns true
+        val respuesta = CompletableDeferred<Result<OrderRepository.CashPayResult>>().also { respuestaPendiente = it }
+        coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any(), importeAceptadoCents = any(), lineasDelTicket = any()) } coAnswers { respuesta.await() }
+
+        vm.startPaymentFlow(otroImporte(10_000)) // el cobro de la mesa 5
+        vm.selectPaymentMethod(PaymentMethod.CASH)
+        vm.processCashPayment(10_000)
+        advanceUntilIdle()
+        vm.startPaymentFlow(otroImporte(10_000)) // otra venta en pantalla, con la MISMA sesión de la mesa 5
+        respuesta.complete(Result.success(OrderRepository.CashPayResult(paymentId = "pago-5", receiptAccessKey = null, orderPaymentStatus = "PAID")))
+        advanceUntilIdle()
+
+        coVerify { mesas.clearTable(VENUE, "mesa-5", "orden-mesa-5") }
+        assertEquals("la sesión de la cuenta pagada ya no siembra «Cobrar»", null, tableSession.current())
+        coVerify { lanHub.release("mesa-5") }
+    }
+
+    /**
+     * D87, control (Codex r1 #2): el abono de la venta vieja fue PARCIAL y otro aparato movió esa cuenta a otra mesa. Que ya no esté
+     * en la mesa 5 no prueba que se saldó: el SERVIDOR no la tiene cobrada, así que su sesión sigue como hoy.
+     */
+    @Test
+    fun `D87 control la mesa de una venta vieja cuya cuenta sigue viva conserva su sesion`() = runTest {
+        val mesa5 = TableSession.Active("mesa-5", "5", null, "orden-mesa-5", "M5", 1, 10_000, TableSession.Mode.PAYING)
+        tableSession.start(mesa5, VENUE)
+        coEvery { mesas.clearTable(any(), any(), any()) } returns Result.failure(IllegalStateException("Cannot clear table with unpaid order ORD-OTRA"))
+        coEvery { mesas.cuentaCobradaEnServidor(any(), any()) } returns false
+        val respuesta = CompletableDeferred<Result<OrderRepository.CashPayResult>>().also { respuestaPendiente = it }
+        coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any(), importeAceptadoCents = any(), lineasDelTicket = any()) } coAnswers { respuesta.await() }
+
+        vm.startPaymentFlow(otroImporte(10_000))
+        vm.selectPaymentMethod(PaymentMethod.CASH)
+        vm.processCashPayment(10_000)
+        advanceUntilIdle()
+        vm.startPaymentFlow(otroImporte(10_000))
+        respuesta.complete(Result.success(OrderRepository.CashPayResult(paymentId = "pago-5", receiptAccessKey = null, orderPaymentStatus = "PARTIAL")))
+        advanceUntilIdle()
+
+        assertEquals("orden-mesa-5", tableSession.current()?.orderId)
+        coVerify(exactly = 0) { lanHub.release("mesa-5") }
+    }
+
     private companion object { const val VENUE = "venue-mesa" }
 }

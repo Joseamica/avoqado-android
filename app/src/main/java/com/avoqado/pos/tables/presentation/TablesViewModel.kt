@@ -722,7 +722,11 @@ class TablesViewModel @Inject constructor(
             // Server-driven settle check: clearTable succeeds ONLY when the
             // order is fully PAID. If it's still PARTIAL (split-the-bill),
             // keep the session alive so the next payment stays routed to it.
-            val cleared = cobroEnCola || mutarCuenta(vId, session.idsDeLaOrden) { repository.clearTable(vId, session.tableId, session.orderId) }.isSuccess
+            // D87: «liberar» también se rechaza cuando ESTA cuenta ya se pagó y OTRA de la mesa (cuenta aparte) todavía debe: se le
+            // pregunta al SERVIDOR por la cuenta misma. Sin red el clear ya se encoló y pasó (D75), así que esto sólo corre con red.
+            // ponytail: si el rechazo llega y esa lectura falla, la sesión sigue en PAYING hasta reabrir la mesa (como antes de D87).
+            val cleared = cobroEnCola || mutarCuenta(vId, session.idsDeLaOrden) { repository.clearTable(vId, session.tableId, session.orderId) }.isSuccess ||
+                repository.cuentaCobradaEnServidor(vId, session.orderId)
             repository.refresh(vId)
             if (cleared) {
                 tableSession.finalizar(vId, session.idsDeLaOrden, sessionEpoch)
