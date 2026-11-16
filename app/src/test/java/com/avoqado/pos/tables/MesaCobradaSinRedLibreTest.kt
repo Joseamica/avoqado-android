@@ -53,7 +53,7 @@ class MesaCobradaSinRedLibreTest {
         val trabajo = mutableMapOf<String, TrabajoSinResolver>()
         val encolados = mutableListOf<Pair<String, JsonObject>>()
         val outbox = mockk<SyncOutbox>()
-        coEvery { outbox.enqueue(venue, any(), any()) } answers {
+        coEvery { outbox.enqueue(venue, any(), any(), any()) } answers {
             val id = "intent-${encolados.size + 1}"
             encolados += secondArg<String>() to thirdArg<JsonObject>()
             estados[id] = MutableStateFlow(SyncIntentEntity.STATUS_PENDING)
