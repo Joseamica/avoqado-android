@@ -1,5 +1,6 @@
 package com.avoqado.pos.payment
 
+import com.avoqado.pos.pos.data.model.promotionRefDe
 import com.avoqado.pos.MainDispatcherRule
 import com.avoqado.pos.printing.data.AlmacenDeTexto
 import com.avoqado.pos.printing.data.ComandasPendientesStore
@@ -1238,6 +1239,66 @@ class OrderRequestPromotionTest {
             assertEquals("Cuenta Mesa 5", r.items.single().name)
             assertEquals(10000, r.total); assertTrue(cuadra(r))
         } finally { paymentViewModel.viewModelScope.cancel() }
+    }
+
+    // MARK: - Extras por pieza del combo (modifierIds)
+
+    private val extrasQueso = listOf(
+        SelectedModifier("g-extras", "Extras", "queso", "Queso", 1500),
+        SelectedModifier("g-extras", "Extras", "tocino", "Tocino", 2000),
+    )
+
+    private fun comboConExtras(marcada: Boolean, extras: List<SelectedModifier>): List<CartItem> {
+        val lineas = lineasDelCombo()
+        return listOf(lineas[0].copy(comboConExtras = marcada, selectedModifiers = extras), lineas[1])
+    }
+
+    @Test
+    fun `promotionRefDe manda los extras de la pieza marcada y deja las demas sin llave`() {
+        val ref = promotionRefDe(comboConExtras(true, extrasQueso), "inst-1")!!
+        assertEquals(listOf("queso", "tocino"), ref.selections.single { it.groupId == "g-plato" }.modifierIds)
+        assertNull(ref.selections.single { it.groupId == "g-bebida" }.modifierIds)
+    }
+
+    @Test
+    fun `promotionRefDe sin marca no manda modifierIds aunque la linea tenga extras`() {
+        val ref = promotionRefDe(comboConExtras(false, extrasQueso), "inst-1")!!
+        assertNull(ref.selections.single { it.groupId == "g-plato" }.modifierIds)
+    }
+
+    @Test
+    fun `promotionRefDe con marca y sin extras manda la lista vacia`() {
+        val ref = promotionRefDe(comboConExtras(true, emptyList()), "inst-1")!!
+        assertEquals(emptyList<String>(), ref.selections.single { it.groupId == "g-plato" }.modifierIds)
+    }
+
+    @Test
+    fun `el JSON de mostrador y del efectivo sin red lleva modifierIds solo en la pieza marcada`() {
+        val items = buildOrderItemRequests(comboConExtras(true, extrasQueso.take(1)))
+        val request = CreateOrderRequest(items = items, subtotal = 9900, total = 9900, paymentMethod = "CASH")
+
+        val payload = OrderRepository.buildCreateOrderPayload(request = request, staffId = "staff-1")
+        val selections = kotlinx.serialization.json.Json.parseToJsonElement(payload)
+            .jsonObject.getValue("items").jsonArray.single()
+            .jsonObject.getValue("promotionRef").jsonObject.getValue("selections").jsonArray.map { it.jsonObject }
+
+        val plato = selections.single { it.getValue("groupId").toString() == "\"g-plato\"" }
+        val bebida = selections.single { it.getValue("groupId").toString() == "\"g-bebida\"" }
+        assertEquals("[\"queso\"]", plato.getValue("modifierIds").toString())
+        assertFalse("sin marca la llave no aparece", bebida.containsKey("modifierIds"))
+        assertTrue(payload.contains("\"modifierIds\":[\"queso\"]"))
+    }
+
+    @Test
+    fun `el JSON de mostrador sin ninguna marca no trae la llave modifierIds`() {
+        val request = CreateOrderRequest(
+            items = buildOrderItemRequests(lineasDelCombo()),
+            subtotal = 9900,
+            total = 9900,
+            paymentMethod = "CASH",
+        )
+        val payload = OrderRepository.buildCreateOrderPayload(request = request, staffId = "staff-1")
+        assertFalse(payload.contains("modifierIds"))
     }
 
 }

@@ -33,6 +33,9 @@ import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.pos.data.model.Promotion
 import com.avoqado.pos.pos.data.model.PromotionGroup
 import com.avoqado.pos.pos.data.model.PromotionOption
+import com.avoqado.pos.pos.data.model.ProductModifierGroup
+import com.avoqado.pos.pos.data.model.SelectedModifier
+import com.avoqado.pos.pos.presentation.product.ModifierGroupSection
 import java.util.Locale
 import com.avoqado.pos.designsystem.components.AvoqadoModalBottomSheet
 
@@ -213,20 +216,28 @@ private fun pesos(centavos: Int): String = String.format(Locale.US, "$%.2f", cen
 fun PromotionSheet(
     promocion: Promotion,
     onDismiss: () -> Unit,
-    onConfirm: (Map<String, String>) -> Unit,
+    onConfirm: (Map<String, String>, Map<String, List<SelectedModifier>>) -> Unit,
     courses: List<com.avoqado.pos.pos.data.model.ServiceCourseSnapshot> = emptyList(),
     initialCourse: com.avoqado.pos.pos.data.model.ServiceCourseSnapshot? = null,
     courseNotice: String? = null,
-    onConfirmWithCourses: ((Map<String, String>, Map<String, com.avoqado.pos.pos.data.model.ServiceCourseSnapshot>) -> Unit)? = null,
+    onConfirmWithCourses: ((Map<String, String>, Map<String, com.avoqado.pos.pos.data.model.ServiceCourseSnapshot>, Map<String, List<SelectedModifier>>) -> Unit)? = null,
+    /** Los grupos de extras de una pieza, o null si se vende como hoy (servidor viejo, cantidad distinta de 1). */
+    gruposDeLaPieza: (PromotionOption) -> List<ProductModifierGroup>? = { null },
 ) {
     var selecciones by remember(promocion.id) { mutableStateOf(emptyMap<String, String>()) }
     var tiempos by remember(promocion.id) { mutableStateOf(promocion.groups.mapNotNull { group ->
         (initialCourse ?: courses.firstOrNull())?.let { group.id to it }
     }.toMap()) }
+    // Extras por grupo del COMBO: cada pieza elegida guarda ahí los suyos.
+    var extras by remember(promocion.id) { mutableStateOf(emptyMap<String, List<SelectedModifier>>()) }
     val preguntables = remember(promocion.id) { gruposConEleccion(promocion) }
     val incluidos = remember(promocion.id) { gruposIncluidos(promocion) }
     val completa = opcionesElegidas(promocion, selecciones) != null
     val estimado = estimadoDePromocion(promocion, selecciones)
+    // Sólo cuentan los extras de piezas que hoy mandan su lista: si una deja de tenerla (catálogo, capacidad), se podan.
+    val extrasVigentes = extras.filterKeys { it in piezasConExtras(promocion, selecciones, gruposDeLaPieza) }
+    val faltantes = faltantesDelCombo(promocion, selecciones, extrasVigentes, gruposDeLaPieza)
+    val extrasDelCombo = extrasCents(extrasVigentes)
     // Techo explícito: dentro de una hoja la altura llega sin acotar, y un
     // `weight` sobre altura infinita truena. Mismo recurso que AvoqadoDialog.
     val alturaMaximaLista = (LocalConfiguration.current.screenHeightDp * 0.55f).dp
@@ -273,13 +284,15 @@ fun PromotionSheet(
                     item(key = "incluye") {
                         Column {
                             TituloDeGrupo(texto = "Incluye")
-                            incluidos.forEach { opcion ->
+                            promocion.groups.filter { it.options.size == 1 }.forEach { grupoFijo ->
+                                val opcion = grupoFijo.options.single()
                                 Text(
                                     text = etiquetaDeOpcion(opcion),
                                     style = MaterialTheme.typography.bodyMedium,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     modifier = Modifier.padding(vertical = AvoqadoTheme.spacing.xxs),
                                 )
+                                ExtrasDeLaPieza(grupoFijo.id, opcion, gruposDeLaPieza, extras) { extras = it }
                             }
                         }
                     }
@@ -296,8 +309,15 @@ fun PromotionSheet(
                             FilaDeOpcion(
                                 opcion = opcion,
                                 seleccionada = selecciones[grupo.id] == opcion.id,
-                                onSelect = { selecciones = selecciones + (grupo.id to opcion.id) },
+                                onSelect = {
+                                    // Cambiar de opción borra los extras de la anterior: eran de otro platillo.
+                                    if (selecciones[grupo.id] != opcion.id) extras = extras - grupo.id
+                                    selecciones = selecciones + (grupo.id to opcion.id)
+                                },
                             )
+                        }
+                        grupo.options.firstOrNull { it.id == selecciones[grupo.id] }?.let { elegida ->
+                            ExtrasDeLaPieza(grupo.id, elegida, gruposDeLaPieza, extras) { extras = it }
                         }
                     }
                 }
@@ -318,12 +338,19 @@ fun PromotionSheet(
 
             PrimaryButton(
                 // Sin estimado no se escribe un precio inventado.
-                text = if (estimado != null) "Agregar al carrito · ${pesos(estimado)}" else "Agregar al carrito",
-                onClick = { onConfirmWithCourses?.invoke(selecciones, tiempos) ?: onConfirm(selecciones) },
-                enabled = completa,
+                text = if (estimado != null) "Agregar al carrito · ${pesos(estimado + extrasDelCombo)}" else "Agregar al carrito",
+                onClick = { onConfirmWithCourses?.invoke(selecciones, tiempos, extrasVigentes) ?: onConfirm(selecciones, extrasVigentes) },
+                enabled = completa && faltantes.isEmpty(),
                 fullWidth = true,
             )
-            if (!completa) {
+            if (completa && faltantes.isNotEmpty()) {
+                Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xs))
+                Text(
+                    text = faltantes.first(),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            } else if (!completa) {
                 Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xs))
                 // Nunca un botón muerto sin explicación.
                 Text(
@@ -333,6 +360,27 @@ fun PromotionSheet(
                 )
             }
         }
+    }
+}
+
+/** Los grupos de extras de UNA pieza del combo, con el mismo control del panel de un platillo suelto. */
+@Composable
+private fun ExtrasDeLaPieza(
+    grupoDelComboId: String,
+    opcion: PromotionOption,
+    gruposDeLaPieza: (PromotionOption) -> List<ProductModifierGroup>?,
+    extras: Map<String, List<SelectedModifier>>,
+    onCambio: (Map<String, List<SelectedModifier>>) -> Unit,
+) {
+    val grupos = gruposDeLaPieza(opcion).orEmpty()
+    grupos.forEach { grupo ->
+        ModifierGroupSection(
+            group = grupo,
+            selectedModifiers = extras[grupoDelComboId].orEmpty(),
+            onModifierToggled = { extra, seleccionado ->
+                onCambio(extras + (grupoDelComboId to alternarExtra(extras[grupoDelComboId].orEmpty(), grupo, extra, seleccionado)))
+            },
+        )
     }
 }
 
@@ -420,7 +468,7 @@ private fun PromotionSheetPreview() {
             ),
         ),
         onDismiss = {},
-        onConfirm = {},
+        onConfirm = { _, _ -> },
     )
 }
 

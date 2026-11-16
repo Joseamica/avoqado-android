@@ -354,4 +354,21 @@ class PromotionsRepositoryTest {
 
         assertEquals(EstadoCatalogo.CARGADO, repo.estado.value)
     }
+
+    // ── capacidad de extras por pieza ────────────────────────────────────────
+
+    @Test
+    fun `componentModifiers true en la respuesta se lee como true`() {
+        val body = """{"success":true,"data":{"active":[],"upcoming":[],"componentModifiers":true}}"""
+        val result = Json { ignoreUnknownKeys = true }.decodeFromString(PromotionsResponse.serializer(), body)
+        assertEquals(true, result.data.componentModifiers)
+    }
+
+    @Test
+    fun `sin el campo componentModifiers (servidor viejo) es false`() {
+        val body = """{"success":true,"data":{"active":[],"upcoming":[]}}"""
+        val result = Json { ignoreUnknownKeys = true }.decodeFromString(PromotionsResponse.serializer(), body)
+        assertEquals(false, result.data.componentModifiers)
+    }
+
 }

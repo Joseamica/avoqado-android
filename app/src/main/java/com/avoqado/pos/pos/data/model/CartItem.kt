@@ -54,6 +54,8 @@ data class CartItem(
      *  líneas se pueden agrupar pero no se pueden mandar. */
     val promotionGroupId: String? = null,
     val promotionOptionId: String? = null,
+    /** Esta pieza del combo manda su lista de extras (`modifierIds`, aunque vacía) y el SERVIDOR la revisa. false = como antes, sin la llave. */
+    val comboConExtras: Boolean = false,
     val serviceCourse: ServiceCourseSnapshot? = null,
 
     // Customizations

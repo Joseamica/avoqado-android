@@ -653,6 +653,10 @@ class OrderRepository @Inject constructor(
                                                                 buildJsonObject {
                                                                     put("groupId", selection.groupId)
                                                                     put("optionId", selection.optionId)
+                                                                    // Llave presente (aunque `[]`) = el SERVIDOR revisa los extras; ausente = como antes.
+                                                                    selection.modifierIds?.let { ids ->
+                                                                        put("modifierIds", buildJsonArray { ids.forEach { id -> add(JsonPrimitive(id)) } })
+                                                                    }
                                                                     selection.serviceCourse?.let { course ->
                                                                         put("serviceCourse", buildJsonObject {
                                                                             put("id", course.id)
