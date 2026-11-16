@@ -281,4 +281,161 @@ class ComandasPendientesStoreTest {
 
         coVerify(exactly = 0) { entrega.cerrarPorPapel(any(), any(), any()) }
     }
+
+    // MARK: - D1 (hz:033d44ca:D1, 16-nov-2026): la libreta guarda TODAS las comandas que no salieron, no sólo la última
+
+    /** Tres ventas cuya comanda no salió, con la cocina apagada en hora pico. Mismo venue; cada una con su trabajo. */
+    private fun venta(n: Int) = fallo.copy(
+        orderNumber = "ORD-$n",
+        trabajo = fallo.trabajo!!.copy(orderNumber = "ORD-$n", orderId = "order-$n"),
+    )
+
+    /**
+     * P1 El caso de la tarjeta: la impresora de cocina se apaga, fallan tres comandas seguidas y sólo se guardaba la
+     * ÚLTIMA (una sola ranura en disco): las otras dos perdían su reintento y su «Volver a imprimir».
+     */
+    @Test
+    fun `P1 tres comandas que no salen seguidas quedan las tres, en el orden en que fallaron`() {
+        val store = ComandasPendientesStore(AlmacenFalso())
+        store.cargar("venue-1", ahora)
+
+        assertTrue(store.guardar(venta(1), ahora))
+        assertTrue(store.guardar(venta(2), ahora + 60_000))
+        assertTrue(store.guardar(venta(3), ahora + 120_000))
+
+        assertEquals("se pisaron comandas", listOf("ORD-1", "ORD-2", "ORD-3"), store.pendientes.value.map { it.orderNumber })
+        // El aviso que se ve sigue siendo el más reciente, como antes.
+        assertEquals("ORD-3", store.pendiente.value?.orderNumber)
+    }
+
+    /** P1 Las tres sobreviven a que la app muera: al abrir vuelven las tres, cada una con su trabajo reenviable. */
+    @Test
+    fun `P1 tras reiniciar la app vuelven las tres comandas pendientes`() {
+        val almacen = AlmacenFalso()
+        ComandasPendientesStore(almacen).apply {
+            cargar("venue-1", ahora)
+            guardar(venta(1), ahora)
+            guardar(venta(2), ahora + 60_000)
+            guardar(venta(3), ahora + 120_000)
+        }
+
+        val tras = ComandasPendientesStore(almacen).apply { cargar("venue-1", ahora + 180_000) }
+
+        assertEquals(listOf("ORD-1", "ORD-2", "ORD-3"), tras.pendientes.value.map { it.orderNumber })
+        assertEquals(listOf("order-1", "order-2", "order-3"), tras.pendientes.value.map { it.trabajo?.orderId })
+        assertEquals("ORD-3", tras.pendiente.value?.orderNumber)
+    }
+
+    /** Un aviso guardado por la versión anterior (una sola hoja, sin lista) se sigue leyendo al actualizar la app. */
+    @Test
+    fun `lo que guardo la version anterior de una sola hoja se sigue leyendo`() {
+        val almacen = AlmacenFalso()
+        ComandasPendientesStore(almacen).apply { cargar("venue-1", ahora); guardar(fallo, ahora) }
+        // El formato viejo era el objeto suelto: la misma entrada, sin los corchetes de la lista.
+        almacen.texto = almacen.texto!!.trim().removePrefix("[").removeSuffix("]")
+
+        val tras = ComandasPendientesStore(almacen).apply { cargar("venue-1", ahora + 60_000) }
+
+        assertEquals(listOf("ORD-42"), tras.pendientes.value.map { it.orderNumber })
+        assertEquals(listOf(plan), tras.pendiente.value?.trabajo?.planes)
+    }
+
+    /** El MISMO trabajo guardado dos veces no se duplica (saldría dos veces) y conserva la hora de su primer fallo. */
+    @Test
+    fun `el mismo trabajo guardado dos veces no se duplica ni renueva su vigencia`() {
+        val almacen = AlmacenFalso()
+        val store = ComandasPendientesStore(almacen).apply { cargar("venue-1", ahora) }
+        store.guardar(venta(1), ahora)
+        store.guardar(venta(2), ahora)
+        store.guardar(venta(1), ahora + 7L * 60 * 60 * 1000)
+
+        assertEquals(listOf("ORD-1", "ORD-2"), store.pendientes.value.map { it.orderNumber })
+        val ochoHorasYUnMinuto = ahora + 8L * 60 * 60 * 1000 + 60_000
+        assertEquals("volver a guardarla renovó su vigencia", emptyList<String>(), store.vigentes(ochoHorasYUnMinuto).map { it.orderNumber })
+    }
+
+    /** P1 Soltar la que salió no borra las demás, ni en memoria ni en disco. */
+    @Test
+    fun `P1 soltar una comanda no borra las otras`() {
+        val almacen = AlmacenFalso()
+        val store = ComandasPendientesStore(almacen).apply { cargar("venue-1", ahora) }
+        store.guardar(venta(1), ahora)
+        store.guardar(venta(2), ahora)
+        store.guardar(venta(3), ahora)
+
+        assertTrue(store.soltarSi(venta(2).trabajo!!))
+
+        assertEquals(listOf("ORD-1", "ORD-3"), store.pendientes.value.map { it.orderNumber })
+        assertEquals(
+            listOf("ORD-1", "ORD-3"),
+            ComandasPendientesStore(almacen).apply { cargar("venue-1", ahora) }.pendientes.value.map { it.orderNumber },
+        )
+    }
+
+    /** «Ya la canté» resuelve la que se VE (la más reciente); la anterior aparece en su lugar, con su botón. */
+    @Test
+    fun `ya la cante resuelve la que se ve y aparece la anterior`() {
+        val almacen = AlmacenFalso()
+        val store = ComandasPendientesStore(almacen).apply { cargar("venue-1", ahora) }
+        store.guardar(venta(1), ahora)
+        store.guardar(venta(2), ahora)
+
+        store.yaLaCante()
+
+        assertEquals("ORD-1", store.pendiente.value?.orderNumber)
+        assertEquals(
+            listOf("ORD-1"),
+            ComandasPendientesStore(almacen).apply { cargar("venue-1", ahora) }.pendientes.value.map { it.orderNumber },
+        )
+    }
+
+    /**
+     * El `Salio` de una venta suelta SÓLO lo de su folio. Antes `limpiar()` vaciaba la libreta entera: si el cajero había
+     * ocultado el aviso de otra venta, la siguiente venta que sí imprimía le borraba su reintento.
+     */
+    @Test
+    fun `soltar por folio no toca las comandas de otras ventas`() {
+        val store = ComandasPendientesStore(AlmacenFalso()).apply { cargar("venue-1", ahora) }
+        store.guardar(venta(1), ahora)
+        store.guardar(venta(2), ahora)
+
+        store.soltarPorFolio("ORD-2")
+
+        assertEquals(listOf("ORD-1"), store.pendientes.value.map { it.orderNumber })
+    }
+
+    /** Una comanda que vence (8 h) se va sola; las que siguen vigentes se quedan. */
+    @Test
+    fun `vence una y las demas siguen`() {
+        val almacen = AlmacenFalso()
+        val store = ComandasPendientesStore(almacen).apply { cargar("venue-1", ahora) }
+        store.guardar(venta(1), ahora)
+        store.guardar(venta(2), ahora + 5L * 60 * 60 * 1000)
+        val nueveHoras = ahora + 9L * 60 * 60 * 1000
+
+        assertEquals(listOf("ORD-2"), store.vigentes(nueveHoras).map { it.orderNumber })
+        assertEquals(listOf("ORD-2"), store.pendientes.value.map { it.orderNumber })
+        assertEquals(
+            "la vencida siguió en el aparato",
+            listOf("ORD-2"),
+            ComandasPendientesStore(almacen).apply { cargar("venue-1", nueveHoras) }.pendientes.value.map { it.orderNumber },
+        )
+    }
+
+    /**
+     * P1 Lo pendiente de OTRA sucursal se SUSPENDE, no se borra: guardar en la sucursal actual no lo pisa. Con la ranura
+     * única, la comanda de la sucursal A desaparecía en cuanto fallaba una en la B.
+     */
+    @Test
+    fun `P1 guardar en la sucursal actual no pisa lo suspendido de otra sucursal`() {
+        val almacen = AlmacenFalso()
+        ComandasPendientesStore(almacen).apply { cargar("venue-1", ahora); guardar(fallo, ahora) }
+        val enB = ComandasPendientesStore(almacen).apply { cargar("venue-2", ahora) }
+        assertTrue(enB.pendientes.value.isEmpty())
+        assertTrue(enB.guardar(deOtraSucursal, ahora))
+
+        val deVueltaEnA = ComandasPendientesStore(almacen).apply { cargar("venue-1", ahora) }
+
+        assertEquals(listOf("ORD-42"), deVueltaEnA.pendientes.value.map { it.orderNumber })
+    }
 }

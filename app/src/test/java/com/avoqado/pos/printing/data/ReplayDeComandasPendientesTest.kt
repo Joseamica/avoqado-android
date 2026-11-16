@@ -359,4 +359,74 @@ class ReplayDeComandasPendientesTest {
         assertNotNull("a las 7 h sigue vigente", store.vigente())
         assertNull("a las 8 h y un minuto ya venció", store.vigente(ahora = t0 + 8L * 60 * 60 * 1000 + 60_000))
     }
+
+    // MARK: - D1 (hz:033d44ca:D1, 16-nov-2026): cuando vuelve la impresora salen TODAS, no sólo la última
+
+    private fun venta(n: Int) = fallo.copy(orderNumber = "ORD-$n", trabajo = trabajo.copy(orderNumber = "ORD-$n", orderId = "order-$n"))
+
+    /**
+     * P1 El recorrido de la tarjeta: cocina apagada, tres rondas que no salen, se prende la impresora. Antes salía sólo la
+     * tercera (la única que quedaba en la libreta). Ahora salen las tres, en el orden en que fallaron.
+     */
+    @Test
+    fun `P1 al prender la impresora salen las tres comandas pendientes en orden`() = runTest {
+        val almacen = AlmacenFalsoReplay()
+        val store = ComandasPendientesStore(almacen).apply { cargar("venue-1") }
+        store.guardar(venta(1))
+        store.guardar(venta(2))
+        store.guardar(venta(3))
+        val salieron = mutableListOf<String>()
+        val visto = slot<TrabajoPendiente>()
+        val dispatcher = mockk<ComandaDispatcher>()
+        coEvery { dispatcher.reintentar(capture(visto), any()) } coAnswers {
+            salieron += visto.captured.orderNumber
+            EstadoDeComanda.Salio
+        }
+
+        ReplayDeComandasPendientes(store, dispatcher).intentarAhora()
+
+        assertEquals(listOf("ORD-1", "ORD-2", "ORD-3"), salieron)
+        assertTrue(store.pendientes.value.isEmpty())
+        assertNull(store.pendiente.value)
+        assertNull("quedó basura en el aparato", almacen.leer())
+    }
+
+    /** Si una sigue sin salir (su estación sigue apagada), las demás salen igual y sólo ella se queda. */
+    @Test
+    fun `si una sigue fallando las demas salen y solo ella se queda`() = runTest {
+        val store = ComandasPendientesStore(AlmacenFalsoReplay()).apply { cargar("venue-1") }
+        store.guardar(venta(1))
+        store.guardar(venta(2))
+        store.guardar(venta(3))
+        val visto = slot<TrabajoPendiente>()
+        val dispatcher = mockk<ComandaDispatcher>()
+        coEvery { dispatcher.reintentar(capture(visto), any()) } coAnswers {
+            if (visto.captured.orderNumber == "ORD-2") venta(2) else EstadoDeComanda.Salio
+        }
+
+        ReplayDeComandasPendientes(store, dispatcher).intentarAhora()
+
+        assertEquals(listOf("ORD-2"), store.pendientes.value.map { it.orderNumber })
+    }
+
+    /** Una que ya salió no se vuelve a mandar en el siguiente tic (la cocina no recibe dos). */
+    @Test
+    fun `P1 la que ya salio no se manda otra vez en el siguiente tic`() = runTest {
+        val store = ComandasPendientesStore(AlmacenFalsoReplay()).apply { cargar("venue-1") }
+        store.guardar(venta(1))
+        store.guardar(venta(2))
+        val salieron = mutableListOf<String>()
+        val visto = slot<TrabajoPendiente>()
+        val dispatcher = mockk<ComandaDispatcher>()
+        coEvery { dispatcher.reintentar(capture(visto), any()) } coAnswers {
+            salieron += visto.captured.orderNumber
+            if (visto.captured.orderNumber == "ORD-2") venta(2) else EstadoDeComanda.Salio
+        }
+        val replay = ReplayDeComandasPendientes(store, dispatcher)
+
+        replay.intentarAhora()
+        replay.intentarAhora()
+
+        assertEquals("ORD-1 salió dos veces", listOf("ORD-1", "ORD-2", "ORD-2"), salieron)
+    }
 }
