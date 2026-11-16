@@ -603,6 +603,7 @@ fun PaymentFlowScreen(
                     message = com.avoqado.pos.core.data.network.ServerErrorText.humanize(currentState.message, currentState.message),
                     sinRed = fuente == com.avoqado.pos.payment.data.model.PaymentErrorSource.NETWORK,
                     pideGerente = pideGerente,
+                    noSeCobro = fuente == com.avoqado.pos.payment.data.model.PaymentErrorSource.NO_SE_COBRO,
                     retryLabel = when (fuente) {
                         com.avoqado.pos.payment.data.model.PaymentErrorSource.PIDE_PIN -> "Volver a cobrar"
                         com.avoqado.pos.payment.data.model.PaymentErrorSource.SOLO_GERENTE -> null

@@ -3610,7 +3610,7 @@ class PaymentFlowViewModel @Inject constructor(
                         }
                         _state.value = PaymentFlowState.Error(
                             message = terminalResult.message,
-                            source = PaymentErrorSource.TERMINAL,
+                            source = if (terminalResult.sinCobroNiRechazo) PaymentErrorSource.NO_SE_COBRO else PaymentErrorSource.TERMINAL,
                             // C1: «Terminal ocupada» con salida — «Revisar ese cobro» sólo si el servidor nombró un cobro
                             // real (con `"unknown"` no hay a quién preguntar).
                             revisarCobroId = terminalResult.bloqueador?.revisable,

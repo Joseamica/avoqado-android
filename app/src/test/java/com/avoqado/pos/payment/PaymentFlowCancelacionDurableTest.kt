@@ -592,7 +592,7 @@ class PaymentFlowCancelacionDurableTest {
         verify(exactly = 1) { terminalPaymentService.aplicarDesenlaceTardio(any(), any(), any()) }
         verify {
             terminalPaymentService.aplicarDesenlaceTardio(
-                "req-1", CardChargeOutcome.NotCharged(CardChargeDecision.CANCEL_ALREADY_RESOLVED_MESSAGE), aunSiFueDeclarado = false,
+                "req-1", CardChargeOutcome.NotCharged(CardChargeDecision.CANCEL_ALREADY_RESOLVED_MESSAGE, sinCobroNiRechazo = true), aunSiFueDeclarado = false, // D58
             )
         }
     }

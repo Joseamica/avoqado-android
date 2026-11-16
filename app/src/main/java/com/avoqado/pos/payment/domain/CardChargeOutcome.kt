@@ -61,7 +61,11 @@ sealed class CardChargeOutcome {
      * 🔴 Sólo nace de un estado terminal que lo AFIRME (`FAILED`, `CANCELLED`). Nunca de una
      * ausencia (404) ni de una ignorancia (no se pudo preguntar) — ésas son `Undetermined`.
      */
-    data class NotCharged(val message: String) : CardChargeOutcome()
+    /**
+     * D58: [sinCobroNiRechazo] = nadie cobró y nadie rechazó (cancelación aceptada, la terminal se liberó sin evidencia, un cajero
+     * confirmó que no se cobró): la pantalla lo dice neutro, no «Error en el pago». Un rechazo del banco o un fallo queda en false.
+     */
+    data class NotCharged(val message: String, val sinCobroNiRechazo: Boolean = false) : CardChargeOutcome()
 
     /** No se pudo determinar. Ni éxito ni fracaso: jamás ofrecer un reintento a ciegas. */
     data class Undetermined(val message: String) : CardChargeOutcome()
@@ -161,7 +165,7 @@ object CardChargeDecision {
     ): CardChargeOutcome = when {
         cobroYaAplicadoAEstaVenta -> CardChargeOutcome.NotCharged(CHARGE_ALREADY_APPLIED_MESSAGE)
         resultado is CardChargeOutcome.Charged -> resultado
-        verdictoNoSeCobro -> CardChargeOutcome.NotCharged(CANCEL_ALREADY_RESOLVED_MESSAGE)
+        verdictoNoSeCobro -> CardChargeOutcome.NotCharged(CANCEL_ALREADY_RESOLVED_MESSAGE, sinCobroNiRechazo = true)
         else -> resultado
     }
 
@@ -316,9 +320,9 @@ object CardChargeDecision {
             probe.cancelDisposition == "ACTIVE" -> CardChargeOutcome.Undetermined("El cobro sigue activo. Confirma en la terminal. No vuelvas a pasar la tarjeta.")
             probe.status == "COMPLETED" -> CardChargeOutcome.Undetermined(UNDETERMINED_MESSAGE)
             probe.status == "FAILED" && probe.outcomeEvidence == "NO_EVIDENCE_AFTER_WINDOW" ->
-                CardChargeOutcome.NotCharged("No se confirmó el cobro en 30 s. Puedes volver a cobrar. Si el banco lo aprueba tarde, se registra solo y te avisamos.")
+                CardChargeOutcome.NotCharged("No se confirmó el cobro en 30 s. Puedes volver a cobrar. Si el banco lo aprueba tarde, se registra solo y te avisamos.", sinCobroNiRechazo = true)
             probe.status == "FAILED" && probe.outcomeEvidence == "OPERATOR_RECONCILED" ->
-                CardChargeOutcome.NotCharged("Un cajero confirmó que no se cobró. Puedes volver a cobrar.")
+                CardChargeOutcome.NotCharged("Un cajero confirmó que no se cobró. Puedes volver a cobrar.", sinCobroNiRechazo = true)
             // 🔴 El banco lo rechazó y el SERVIDOR lo supo por el webhook del procesador (AngelPay o Blumon),
             // sin que nadie declarara nada. Lo único accionable para el cajero es que PUEDE volver a cobrar:
             // el genérico de abajo lo deja sin saberlo y ahí es donde vuelve a pasar la tarjeta con miedo.
@@ -334,7 +338,7 @@ object CardChargeDecision {
             probe.status == "FAILED" && probe.outcomeEvidence == EVIDENCIA_SIN_AUTORIZACION ->
                 CardChargeOutcome.NotCharged(mensajeDeLaTerminal?.trim()?.takeIf { it.isNotEmpty() } ?: NO_INICIADO_RESPALDO)
             probe.status == "FAILED" -> CardChargeOutcome.NotCharged("El cobro fue rechazado. No se cobró la tarjeta.")
-            probe.status == "CANCELLED" && probe.cancelDisposition == "ACCEPTED" -> CardChargeOutcome.NotCharged("El cobro se canceló. No se cobró la tarjeta.")
+            probe.status == "CANCELLED" && probe.cancelDisposition == "ACCEPTED" -> CardChargeOutcome.NotCharged("El cobro se canceló. No se cobró la tarjeta.", sinCobroNiRechazo = true)
             // TIMED_OUT, UNKNOWN — y cualquier estado que este cliente no conozca todavía.
             // Adivinar aquí es exactamente el bug: se dice que no se sabe.
             else -> CardChargeOutcome.Undetermined(UNDETERMINED_MESSAGE)

@@ -12,6 +12,8 @@ enum class PaymentErrorSource {
     TERMINAL,
     SERVER,
     UNKNOWN,
+    /** D58: no se cobró y nadie rechazó (cancelación, terminal liberada, cajero lo confirmó): neutro, no rojo. */
+    NO_SE_COBRO,
 
     /**
      * D14 (hz:87f4b879:D14): no es una falla del cobro. La venta necesita el PIN de un gerente y el siguiente cobro lo pide: se pinta

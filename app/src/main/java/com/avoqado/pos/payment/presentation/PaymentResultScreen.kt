@@ -25,6 +25,7 @@ import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.Error
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.HelpOutline
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Print
@@ -782,6 +783,8 @@ fun PaymentErrorView(
      * selector de terminal. Sin red es un estado normal (regla «todo funciona sin red»), no un error.
      */
     sinRed: Boolean = false,
+    /** D58: no se cobró y nadie rechazó (p. ej. se canceló en la terminal): «No se cobró» en gris, no «Error en el pago». */
+    noSeCobro: Boolean = false,
     /**
      * D14 (hz:87f4b879:D14): la venta necesita a un gerente (su PIN o su sesión). Tampoco es una falla del cobro: gris, «Lo autoriza un
      * gerente». Con [retryLabel] `null` no hay nada que reintentar y la salida ([cancelLabel]) es el botón principal.
@@ -809,14 +812,16 @@ fun PaymentErrorView(
             when {
                 sinRed -> Icons.Filled.WifiOff
                 pideGerente -> Icons.Filled.Lock
+                noSeCobro -> Icons.Filled.Info
                 else -> Icons.Filled.Error
             },
             contentDescription = when {
                 sinRed -> "Sin conexión"
                 pideGerente -> "Lo autoriza un gerente"
+                noSeCobro -> "No se cobró"
                 else -> "Error"
             },
-            tint = if (sinRed || pideGerente) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error,
+            tint = if (sinRed || pideGerente || noSeCobro) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error,
             modifier = Modifier.size(80.dp),
         )
 
@@ -826,6 +831,7 @@ fun PaymentErrorView(
             text = titleLabel ?: when {
                 sinRed -> "Sin conexión"
                 pideGerente -> "Lo autoriza un gerente"
+                noSeCobro -> "No se cobró"
                 else -> "Error en el pago"
             },
             style = MaterialTheme.typography.headlineLarge,

@@ -551,7 +551,7 @@ class CardChargeDecisionTest {
             verdictoNoSeCobro = true,
             cobroYaAplicadoAEstaVenta = false,
         )
-        assertEquals(CardChargeOutcome.NotCharged(CardChargeDecision.CANCEL_ALREADY_RESOLVED_MESSAGE), r)
+        assertEquals(CardChargeOutcome.NotCharged(CardChargeDecision.CANCEL_ALREADY_RESOLVED_MESSAGE, sinCobroNiRechazo = true), r) // D58
     }
 
     @Test

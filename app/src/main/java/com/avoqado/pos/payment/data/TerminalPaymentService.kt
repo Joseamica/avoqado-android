@@ -1129,7 +1129,7 @@ class TerminalPaymentService @Inject constructor(
             // Consta que NO se cobró: reintentar es seguro.
             clearMatching(requestId)
             Log.d("💳", "🚫 Consta que no se cobró: $message")
-            TerminalPaymentResult.Error(message, requestId = requestId).also {
+            TerminalPaymentResult.Error(message, requestId = requestId, sinCobroNiRechazo = sinCobroNiRechazo).also {
                 if (requestId in activePosts) recoveredPosts[requestId] = it
             }
         }
@@ -1491,6 +1491,8 @@ sealed class TerminalPaymentResult {
         val requestId: String? = null,
         val noSeCreo: Boolean = false,
         val bloqueador: BloqueadorDeCobro? = null,
+        /** D58: consta que no se cobró y no fue un rechazo (ver [CardChargeOutcome.NotCharged.sinCobroNiRechazo]). */
+        val sinCobroNiRechazo: Boolean = false,
     ) : TerminalPaymentResult()
 
     /**
