@@ -31,6 +31,22 @@ val CartState.cuentaPideMotivo: Boolean
 /** El id con que nace la cortesía de toda la cuenta (`ShortcutsGridView`, «Cortesía»). */
 const val CORTESIA_DE_CUENTA_PREFIJO = "cortesia_"
 
+/**
+ * El motivo de la cuenta que sale en la venta (cobro, «Pagar después», la cola sin red y lo que se ve en la hoja de descuentos). Sólo
+ * si el descuento de AHORA es el que lo recibió: uno que pide motivo, o la cortesía de toda la cuenta con su razón. Codex r3 #2: «Usar
+ * el de <cliente>», el referido o quitar el descuento cambian `orderDiscount` sin tocar el texto; ese texto se queda en el carrito,
+ * pero no viaja ni se muestra con un descuento que no es el suyo. Todo descuento que pide motivo entra por `applyOrderDiscount`, que
+ * lo reescribe.
+ */
+val CartState.motivoDeCuentaQueViaja: String?
+    get() = orderDiscountReason?.takeIf {
+        it.isNotBlank() && (cuentaPideMotivo || orderDiscount?.id?.startsWith(CORTESIA_DE_CUENTA_PREFIJO) == true)
+    }
+
+/** El comentario del motivo de la cuenta, sólo cuando viaja su motivo ([motivoDeCuentaQueViaja]). */
+val CartState.comentarioDeCuentaQueViaja: String?
+    get() = orderDiscountReasonComment?.takeIf { it.isNotBlank() && motivoDeCuentaQueViaja != null }
+
 /** Lo que pide motivo y todavía no lo trae, en palabras para la ventana («Playera · Ajuste de precio», «Descuento de la cuenta»). */
 fun CartState.descuentosSinMotivo(motivos: MotivosDeDescuento): List<String> {
     if (!motivos.sePide) return emptyList()

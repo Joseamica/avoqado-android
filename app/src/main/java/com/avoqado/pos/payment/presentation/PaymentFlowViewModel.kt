@@ -66,6 +66,8 @@ import com.avoqado.pos.pos.data.model.CartItem
 import com.avoqado.pos.pos.data.model.CartItemType
 import com.avoqado.pos.pos.data.model.buildOrderItemRequests
 import com.avoqado.pos.pos.presentation.cart.CartState
+import com.avoqado.pos.pos.presentation.cart.comentarioDeCuentaQueViaja
+import com.avoqado.pos.pos.presentation.cart.motivoDeCuentaQueViaja
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.util.formatMoney
 import com.avoqado.pos.core.domain.printing.ComandaDispatcher
@@ -6407,9 +6409,9 @@ class PaymentFlowViewModel @Inject constructor(
             // D4: la etiqueta del descuento de cuenta del catálogo (el importe sigue en `discount`).
             descuentoDeCatalogoId = cart.descuentoDeCatalogoQueViaja,
             descuentoDeCatalogoPideAprobacion = cart.orderDiscount?.pideAprobacion == true,
-            // f998c8: el motivo del descuento de la cuenta (o la razón de la cortesía de la cuenta); se suelta al cambiar el descuento.
-            orderDiscountReason = cart.orderDiscountReason?.takeIf { it.isNotBlank() && cart.orderDiscount != null },
-            orderDiscountReasonComment = cart.orderDiscountReasonComment?.takeIf { it.isNotBlank() && !cart.orderDiscountReason.isNullOrBlank() },
+            // f998c8: el motivo del descuento de la cuenta (o la razón de la cortesía de la cuenta), sólo si es del descuento de ahora.
+            orderDiscountReason = cart.motivoDeCuentaQueViaja,
+            orderDiscountReasonComment = cart.comentarioDeCuentaQueViaja,
         )
     }
 

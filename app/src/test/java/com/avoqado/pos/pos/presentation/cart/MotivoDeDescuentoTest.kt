@@ -67,6 +67,32 @@ class MotivoDeDescuentoTest {
         assertFalse(base.copy(orderDiscount = diezPorCiento.copy(id = "${CORTESIA_DE_CUENTA_PREFIJO}1", value = 100.0)).cuentaPideMotivo)
     }
 
+    @Test
+    fun `Codex r3 #2 - el motivo de la cuenta viaja solo con el descuento al que se le puso, no con el del cliente que lo reemplazo`() {
+        val conMotivo = CartState(
+            items = listOf(linea()),
+            orderDiscount = diezPorCiento,
+            orderDiscountReason = "Queja del cliente",
+            orderDiscountReasonComment = "tardó",
+        )
+        assertEquals("Queja del cliente", conMotivo.motivoDeCuentaQueViaja)
+        assertEquals("tardó", conMotivo.comentarioDeCuentaQueViaja)
+        // «Usar el de <cliente>» cambia el descuento y deja el texto en el carrito: no viaja.
+        val delCliente = conMotivo.copy(orderDiscount = diezPorCiento.copy(id = "d-cliente", source = DESCUENTO_DEL_CLIENTE_SOURCE))
+        assertNull(delCliente.motivoDeCuentaQueViaja)
+        assertNull(delCliente.comentarioDeCuentaQueViaja)
+        assertNull(conMotivo.copy(orderDiscount = diezPorCiento.copy(source = "REFERRAL_NEW_CUSTOMER")).motivoDeCuentaQueViaja)
+        assertNull(conMotivo.copy(orderDiscount = null).motivoDeCuentaQueViaja)
+        // La cortesía de toda la cuenta sí lleva su razón como motivo (Codex r2 #2).
+        val cortesia = conMotivo.copy(
+            orderDiscount = diezPorCiento.copy(id = "${CORTESIA_DE_CUENTA_PREFIJO}1", value = 100.0),
+            orderDiscountReason = "Cumpleaños",
+        )
+        assertEquals("Cumpleaños", cortesia.motivoDeCuentaQueViaja)
+        assertNull(conMotivo.copy(orderDiscountReason = "  ").motivoDeCuentaQueViaja)
+        assertNull(conMotivo.copy(orderDiscountReason = null).comentarioDeCuentaQueViaja)
+    }
+
     // MARK: - La última puerta antes de cobrar (Codex r1 #4: carrito restaurado)
 
     @Test

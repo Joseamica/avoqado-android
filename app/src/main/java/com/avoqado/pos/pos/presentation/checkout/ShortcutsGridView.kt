@@ -89,6 +89,7 @@ import com.avoqado.pos.pos.data.model.SelectedModifier
 import com.avoqado.pos.pos.presentation.cart.CartState
 import com.avoqado.pos.pos.presentation.cart.CartViewModel
 import com.avoqado.pos.pos.presentation.cart.Restauracion
+import com.avoqado.pos.pos.presentation.cart.motivoDeCuentaQueViaja
 import com.avoqado.pos.designsystem.theme.Warning
 import com.avoqado.pos.core.data.network.ServerErrorText
 
@@ -639,7 +640,7 @@ internal fun OrderDiscountsContent(
                             style = MaterialTheme.typography.bodyMedium,
                         )
                         // f998c8: el motivo que se eligió, a la vista.
-                        cartState.orderDiscountReason?.let { motivo ->
+                        cartState.motivoDeCuentaQueViaja?.let { motivo ->
                             Text(
                                 text = "Motivo: $motivo",
                                 style = MaterialTheme.typography.bodySmall,
