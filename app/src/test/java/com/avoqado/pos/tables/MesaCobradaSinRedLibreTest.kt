@@ -335,6 +335,39 @@ class MesaCobradaSinRedLibreTest {
         assertEquals(listOf("local-b"), m.repo.tables.value.single().openOrders.map { it.id })
     }
 
+    @Test fun `Codex r4 #1 - la cuenta que sólo venía como puntero también vuelve si se rechaza`() = prueba {
+        val soloPuntero = mesa.copy(status = "OCCUPIED", currentOrder = TableOrder(id = "orden-a", orderNumber = "A-1", total = 45.0, version = 3))
+        val m = mundo(TablesResponse(data = listOf(soloPuntero), capabilities = conCapacidad), sesion = sesionDe(cuentaA))
+        m.repo.refresh(venue).getOrThrow()
+        m.cobroEnCamino("orden-a")
+        assertTrue(m.cobrarYSoltar("orden-a"))
+        assertTrue(m.repo.tables.value.single().isAvailable)
+        m.trabajo["orden-a"] = TrabajoSinResolver(1, 1, setOf("PAY_CASH"), 4500)
+
+        m.repo.reconciliarMarcasSinRed(venue)
+
+        assertEquals(listOf("orden-a"), m.repo.tables.value.single().openOrders.map { it.id })
+        assertTrue(m.repo.tables.value.single().isOccupied)
+    }
+
+    @Test fun `Codex r4 #2 - archivaron la mesa y luego se rechazó la cuenta - la mesa se rearma con su cuenta`() = prueba {
+        val local = OpenCheckSummary(id = "local-c", orderNumber = "L-3", total = 45.0, isProvisional = true)
+        val m = mundo(TablesResponse(data = listOf(mesa, otraMesa), capabilities = conCapacidad), sesion = sesionDe(local, provisional = true))
+        m.repo.refresh(venue).getOrThrow()
+        m.repo.markTableOccupiedLocally("t7")
+        m.trabajo["local-c"] = TrabajoSinResolver(2, 0, setOf("OPEN_TABLE", "PAY_CASH"), 4500)
+        assertTrue(m.cobrarYSoltar("local-c"))
+        coEvery { m.api.getTables(venue) } returns TablesResponse(data = listOf(otraMesa), capabilities = conCapacidad)
+        m.repo.refresh(venue).getOrThrow() // la M7 ya no viene: la archivaron desde el panel
+        assertNull(m.repo.tables.value.firstOrNull { it.id == "t7" })
+        m.trabajo["local-c"] = TrabajoSinResolver(2, 2, setOf("OPEN_TABLE", "PAY_CASH"), 4500) // y su apertura se rechazó
+
+        m.repo.reconciliarMarcasSinRed(venue)
+
+        val m7 = m.repo.tables.value.single { it.id == "t7" }
+        assertEquals(listOf("local-c"), m7.openOrders.map { it.id })
+    }
+
     @Test fun `tras reiniciar la app sin red, el plano guardado ya no trae A y recuerda la marca`() = prueba {
         val filas = mutableMapOf<String, CachedPayloadEntity>()
         val m = mundo(TablesResponse(data = listOf(ocupada), capabilities = conCapacidad), filas, sesionDe(cuentaA))

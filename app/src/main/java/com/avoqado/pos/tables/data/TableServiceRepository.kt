@@ -121,6 +121,8 @@ class TableServiceRepository @Inject constructor(
         /** Las cuentas que se quitaron del plano, tal como estaban: se devuelven si se rechaza su cobro o su «liberar» (Codex r1 #4). */
         val cuentas: List<OpenCheckSummary> = emptyList(),
         val enMillis: Long = 0,
+        /** La mesa como estaba, sin cuentas (Codex r4 #2): si después falta en el listado (la archivaron), se rearma para devolverlas. */
+        val mesa: DiningTable? = null,
     )
 
     private val floorWrites = Mutex()
@@ -401,17 +403,26 @@ class TableServiceRepository @Inject constructor(
         } to vivas
     }
 
-    /** Las cuentas quitadas de [marcas] que pasan [cual] vuelven a su mesa (sin duplicar la que ya está ahí). */
+    /**
+     * Las cuentas quitadas de [marcas] que pasan [cual] vuelven a su mesa (sin duplicar la que ya está ahí). Si su mesa ya no viene en el
+     * listado (Codex r4 #2: la archivaron desde el panel), se rearma desde la copia de la marca, como hace [preserveLocalChecks] con una
+     * provisional.
+     */
     private fun devolver(venueId: String, tables: List<DiningTable>, marcas: Collection<LiberadaSinRed>,
-        cual: (OpenCheckSummary) -> Boolean): List<DiningTable> =
-        tables.map { table ->
+        cual: (OpenCheckSummary) -> Boolean): List<DiningTable> {
+        fun conLasSuyas(table: DiningTable): DiningTable {
             var t = table
             marcas.filter { it.tableId == table.id }.flatMap { it.cuentas }.filter(cual).forEach { cuenta ->
                 val real = idDelServidor(venueId, cuenta.id)
                 if (t.openOrders.none { it.id == cuenta.id || it.id == real }) t = t.copy(status = "OCCUPIED", openOrders = t.openOrders + cuenta)
             }
-            t
+            return t
         }
+        val ids = tables.map { it.id }.toSet()
+        val rearmadas = marcas.filter { it.tableId !in ids }.mapNotNull { it.mesa }.distinctBy { it.id }
+            .map { conLasSuyas(it.copy(openOrders = emptyList(), currentOrder = null)) }.filter { it.openOrders.isNotEmpty() }
+        return tables.map(::conLasSuyas) + rearmadas
+    }
 
     /**
      * D8 (Codex r1 #4, r2 #1): sin respuesta del servidor, la cola ya puede saber que se rechazó trabajo de una cuenta soltada: vuelve al
@@ -477,8 +488,13 @@ class TableServiceRepository @Inject constructor(
             val ids = idsDeLaCuenta + idsDeLaCuenta.map { idDelServidor(venueId, it) } +
                 mesa.openOrders.filter { idDelServidor(venueId, it.id) in idsDeLaCuenta }.map { it.id }
             if (!servidorConVisitaNueva) return@withLock false
-            val marca = LiberadaSinRed(tableId, ids, clearIntentId, cuentas = mesa.openOrders.filter { it.id in ids },
-                enMillis = System.currentTimeMillis())
+            // Codex r4 #1: la cuenta puede venir sólo como puntero (`currentOrder`, sin `openOrders`): también se guarda su copia.
+            val delPuntero = mesa.currentOrder?.takeIf { o -> o.id in ids && mesa.openOrders.none { it.id == o.id } }?.let { o ->
+                OpenCheckSummary(id = o.id, orderNumber = o.orderNumber, covers = o.covers, total = o.total, itemCount = o.itemCount,
+                    version = o.version, waiterId = o.waiter?.id, waiterName = o.waiter?.name, createdAt = o.createdAt)
+            }
+            val marca = LiberadaSinRed(tableId, ids, clearIntentId, cuentas = mesa.openOrders.filter { it.id in ids } + listOfNotNull(delPuntero),
+                enMillis = System.currentTimeMillis(), mesa = mesa.copy(openOrders = emptyList(), currentOrder = null))
             val tables = _tables.value.map { if (it.id == tableId) sinCuentas(it, ids) else it }
             val nuevas = liberadas.filterNot { it.clearIntentId == clearIntentId } + marca
             // Sin versión: la siguiente vuelta del sondeo vuelve a pedir /tables (lo guardado ya no es la foto del servidor).
