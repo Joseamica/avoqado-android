@@ -123,7 +123,7 @@ class AvisoDeIslaTest {
             AvisoDeIsla.flujo(peers, { yo.deviceId }, { true }, { setOf(n86.deviceId, samsung.deviceId) }).collect { visto += it }
         }
         runCurrent()
-        assertEquals(listOf<String?>(null), visto)
+        assertTrue("Codex r2 #2: durante la gracia no emite nada (el null inicial es del ViewModel)", visto.isEmpty())
         advanceTimeBy(AvisoDeIsla.GRACIA_MS + 1); runCurrent()
         assertEquals("falta la SAMSUNG: parcial a los 10 s", AvisoDeIsla.TEXTO_PARCIAL, visto.last())
         peers.value = listOf(yo) // también se pierde la N86

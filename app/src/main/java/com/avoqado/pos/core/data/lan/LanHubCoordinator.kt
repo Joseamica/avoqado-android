@@ -144,8 +144,10 @@ class LanHubCoordinator(
     }
 
     fun stop() {
-        vivo = false
-        publicarMeDeclaran(emptySet())
+        synchronized(candadoDePublicar) {
+            vivo = false
+            publicarMeDeclaran(emptySet())
+        }
         val arbitro = ArbiterElection.pick(discovery.peers.value) // el último conocido, antes de desengancharse
         trabajos?.cancel() // no `scope.cancel()`: `sincronizarVenue` hace stop() → start() y el scope tiene que seguir vivo
         trabajos = null
@@ -178,7 +180,13 @@ class LanHubCoordinator(
     /** Entre `start` y `stop`: un coordinador apagado ya no publica (una línea tardía del socket no revive a nadie). */
     @Volatile private var vivo = false
 
-    private fun refrescarMeDeclaran() {
+    /**
+     * Codex r2 #1: revisar `vivo`, leer y publicar van juntos bajo este candado, igual que apagar y publicar el vacío. Sin él, un hilo del
+     * socket que ya había revisado `vivo` publicaba su foto vieja DESPUÉS del vacío de `stop`. Orden: este candado → el del `LeaseServer`.
+     */
+    private val candadoDePublicar = Any()
+
+    private fun refrescarMeDeclaran() = synchronized(candadoDePublicar) {
         if (vivo) publicarMeDeclaran(cajasQueLeDeclaran())
     }
 
