@@ -128,11 +128,28 @@ class AvisoDeIslaTest {
         assertEquals("falta la SAMSUNG: parcial a los 10 s", AvisoDeIsla.TEXTO_PARCIAL, visto.last())
         peers.value = listOf(yo) // también se pierde la N86
         runCurrent()
-        advanceTimeBy(AvisoDeIsla.GRACIA_MS + 1); runCurrent()
-        assertEquals(AvisoDeIsla.TEXTO, visto.last())
+        assertEquals("Codex r1 4: ya se mostraba: cambia de texto sin otra gracia", AvisoDeIsla.TEXTO, visto.last())
         peers.value = listOf(yo, n86, samsung) // vuelven las dos
         runCurrent()
         assertEquals("se quita al instante", null, visto.last())
+    }
+
+    @Test fun `Codex r1 4 - la caja que empieza a declararle cambia el texto al instante, sin esperar la revision del minuto`() = runTest {
+        val meDeclaran = MutableStateFlow(emptySet<String>())
+        val visto = mutableListOf<String?>()
+        // La SAMSUNG del ensayo: no ve a nadie por NSD, recuerda a la N86 y a la D3.
+        backgroundScope.launch {
+            AvisoDeIsla.flujo(MutableStateFlow(listOf(yo)), { yo.deviceId }, { true }, { setOf(n86.deviceId, "d3-4f9f") }, meDeclaran)
+                .collect { visto += it }
+        }
+        advanceTimeBy(AvisoDeIsla.GRACIA_MS + 1); runCurrent()
+        assertEquals(AvisoDeIsla.TEXTO, visto.last())
+        meDeclaran.value = setOf(n86.deviceId) // la N86 le empieza a declarar
+        runCurrent()
+        assertEquals(AvisoDeIsla.TEXTO_PARCIAL, visto.last())
+        meDeclaran.value = emptySet() // deja de declararle (vence a los 30 s): vuelve el de siempre, también al instante
+        runCurrent()
+        assertEquals(AvisoDeIsla.TEXTO, visto.last())
     }
 
     // MARK: - Lo recordado (el disco del D12, sólo lectura)
@@ -240,7 +257,7 @@ class AvisoDeIslaTest {
         val outbox = mockk<SyncOutbox>(relaxed = true)
         coEvery { outbox.trabajoSinResolverDeLaOrden(any(), any()) } returns TrabajoSinResolver(0, 0, emptySet(), 0)
         val plan = mockk<PlanManager>(relaxed = true).also { every { it.hasFeature(any()) } returns true }
-        every { hub.cajasQueLeDeclaran() } returns emptySet()
+        every { hub.cajasQueLeDeclaran } returns MutableStateFlow(emptySet())
         val transporte = mockk<TransporteLan>().also {
             every { it.peers } returns peers
             every { it.deviceId } returns yo.deviceId

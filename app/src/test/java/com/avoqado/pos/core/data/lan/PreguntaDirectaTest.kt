@@ -232,6 +232,85 @@ class PreguntaDirectaTest {
         assertEquals(LeaseProtocol.STATUS_LEASES, lista.status)
     }
 
+    @Test
+    fun `empate con árbitros distintos - una apertura concedida cuya pregunta directa sigue en vuelo no contesta «estoy»`() = runTest {
+        // Si contestara «estoy» con su veredicto a medias, dos cajas que abren la misma mesa en el mismo instante se frenarían las dos.
+        val directa = CompletableDeferred<LeaseResponse?>()
+        val client = mockk<LeaseClient> { coEvery { enMesa(any(), any()) } coAnswers { directa.await() } }
+        val mesas = caja()
+        val discovery = FakeDiscovery(listOf(yo, n86))
+        coordinador(listOf(yo, n86), mesas, client, discovery).start()
+        runCurrent()
+        val a = mesas.abrirApertura("M2", "s1", "Cashier", "V1")
+        val veredicto = async { mesas.esperar(a) { true } }
+        testScheduler.advanceTimeBy(13_000); runCurrent() // el árbitro (yo) ya concedió; la N86 no ha contestado
+        assertNull("todavía no es final", discovery.hub!!(pregunta("M2")).holder)
+
+        directa.complete(LeaseResponse(status = LeaseProtocol.STATUS_OK))
+        runCurrent()
+        assertEquals(LeaseOutcome.Granted, veredicto.await())
+        assertEquals("ya es final: va a abrir", "M2", discovery.hub!!(pregunta("M2")).holder?.tableId)
+    }
+
+    @Test
+    fun `Codex r1 2 - un traspaso del ticket a la sesión entre las dos lecturas sigue contestando «estoy»`() = runTest {
+        // La UI activa la sesión y DESPUÉS termina el ticket. Si `ocupa` leyera la sesión primero (vacía) y el traspaso cayera entre las
+        // dos lecturas, no saldría por ninguna. Aquí el traspaso ocurre justo al leer la sesión.
+        var sesion: String? = null
+        var traspaso: (() -> Unit)? = null
+        val mesas = MesasDeEstaCaja({ val v = sesion; traspaso?.invoke(); traspaso = null; v }, flowOf(null), vidas) { testScheduler.currentTime }
+        val a = mesas.abrirApertura("M2", "s", "Waiter", "V1")
+        mesas.resolver(a.id, LeaseOutcome.Granted)
+        traspaso = { sesion = "M2"; mesas.terminarApertura(a) }
+        assertTrue(mesas.ocupa("M2", "V1"))
+        assertTrue("y ya con la sesión", mesas.ocupa("M2", "V1"))
+    }
+
+    @Test
+    fun `Codex r1 3 - al vencer los 15 s la apertura sigue en isla y se anota - contesta «estoy» y una respuesta tardía no la cambia`() = runTest {
+        val mesas = caja()
+        mesas.consultaDirecta = true // la pregunta directa nunca termina (nadie la hace en esta prueba)
+        val a = mesas.abrirApertura("M2", "s", "Waiter", "V1")
+        assertFalse(mesas.ocupa("M2", "V1"))
+        assertEquals(LeaseOutcome.NoHub, mesas.esperar(a) { true })
+        assertEquals(MesasDeEstaCaja.PLAZO_PEDIR_MESA_MS, testScheduler.currentTime)
+        assertTrue("va a abrir en isla: lo dice", mesas.ocupa("M2", "V1"))
+        mesas.resolver(a.id, LeaseOutcome.Taken("Tarde"))
+        mesas.resolverDirecto(a.id, LeaseOutcome.Taken("Tarde"))
+        assertEquals(LeaseOutcome.NoHub, mesas.esperar(a) { true })
+        assertTrue(mesas.ocupa("M2", "V1"))
+    }
+
+    @Test
+    fun `una espera soltada porque el intento ya no vale no se anota como isla`() = runTest {
+        val mesas = caja()
+        val a = mesas.abrirApertura("M2", "s", "Waiter", "V1")
+        assertEquals(LeaseOutcome.NoHub, mesas.esperar(a) { false })
+        assertFalse(mesas.ocupa("M2", "V1"))
+    }
+
+    @Test
+    fun `Codex r1 4 - el coordinador publica quién le declara al aceptar un estado y vacía al apagarse`() = runTest {
+        val publicado = mutableListOf<Set<String>>()
+        val discovery = FakeDiscovery(listOf(yo))
+        val c = LanHubCoordinator(discovery, caja(), me, "V1", { "Cashier" }, mockk(relaxed = true),
+            LeaseServer(deviceId = me, monoMillis = { testScheduler.currentTime }), relojMs = { testScheduler.currentTime },
+            scope = backgroundScope, publicarMeDeclaran = { publicado += it })
+        c.start()
+        runCurrent()
+        discovery.hub!!(LeaseProtocol.encode(LeaseRequest(op = LeaseProtocol.OP_ESTADO, deviceId = "n86-mesero", staffName = "W", gen = 1, seq = 1)))
+        assertEquals("al instante, sin esperar al reconciliador", setOf("n86-mesero"), publicado.last())
+        testScheduler.advanceTimeBy(LeaseRegistry.DEFAULT_TTL_MILLIS + LeaseRegistry.RENEW_INTERVAL_MILLIS + 1); runCurrent()
+        assertEquals("el vencimiento lo ve la vuelta del reconciliador", emptySet<String>(), publicado.last())
+        discovery.hub!!(LeaseProtocol.encode(LeaseRequest(op = LeaseProtocol.OP_ESTADO, deviceId = "n86-mesero", staffName = "W", gen = 1, seq = 2)))
+        assertEquals(setOf("n86-mesero"), publicado.last())
+        c.stop()
+        assertEquals(emptySet<String>(), publicado.last())
+        val antes = publicado.size
+        discovery.hub?.invoke(LeaseProtocol.encode(LeaseRequest(op = LeaseProtocol.OP_ESTADO, deviceId = "n86-mesero", staffName = "W", gen = 1, seq = 3)))
+        assertEquals("apagado ya no publica", antes, publicado.size)
+    }
+
     // MARK: - Para la línea del plano
 
     @Test

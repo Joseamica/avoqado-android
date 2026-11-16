@@ -187,7 +187,7 @@ class TablesViewModel @Inject constructor(
             yo = { transporte.deviceId },
             hubDelNegocio = { planManager.hasFeature("OFFLINE_LAN_HUB") },
             recordadas = { venueId?.let { AvisoDeIsla.recordadas(cache, it, transporte.deviceId, System.currentTimeMillis()) }.orEmpty() },
-            meDeclaran = { lanHub.cajasQueLeDeclaran() },
+            meDeclaran = lanHub.cajasQueLeDeclaran,
         ).stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000, replayExpirationMillis = 0), null)
     }
 

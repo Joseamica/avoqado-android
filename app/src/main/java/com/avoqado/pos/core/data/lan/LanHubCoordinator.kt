@@ -56,6 +56,12 @@ class LanHubCoordinator(
     server: LeaseServer? = null,
     private val relojMs: () -> Long = { System.nanoTime() / 1_000_000 },
     private val scope: CoroutineScope = CoroutineScope(Dispatchers.IO + SupervisorJob()),
+    /**
+     * Hub D6 bandas (Codex r1 #4): las cajas que hoy le declaran a este aparato como árbitro, cada vez que pueden cambiar (un `estado`
+     * aceptado, cada vuelta del reconciliador para los vencimientos de 30 s, un relevo de árbitro y al apagarse). La línea del plano lo
+     * observa: con una foto que sólo se leía en la revisión del minuto, mentía hasta 60 s.
+     */
+    private val publicarMeDeclaran: (Set<String>) -> Unit = {},
 ) {
     /** Contesta cuando me eligen árbitro; con el mismo reloj monotónico que la caja. */
     private val server = server ?: LeaseServer(deviceId = deviceId, monoMillis = relojMs)
@@ -82,6 +88,7 @@ class LanHubCoordinator(
 
     /** Desde la 3.5 (D1) el hub NO abre socket ni descubrimiento: se engancha al transporte único y consume sus peers. */
     fun start() {
+        vivo = true
         discovery.conectarHub(::responder)
         mesas.fijarVenue(venueId)
         mesas.nuevaEpoca()
@@ -107,6 +114,7 @@ class LanHubCoordinator(
                         } else {
                             server.dejarArbitraje()
                         }
+                        refrescarMeDeclaran()
                         despertar()
                     }
                 }
@@ -119,6 +127,7 @@ class LanHubCoordinator(
                 // `isActive` arriba de cada vuelta: tras `stop()` una vuelta devuelve 0 y `withTimeoutOrNull(0)` no suspende, así que
                 // sin esto el bucle cancelado daba UNA vuelta completa más (y hasta mandaba otro `estado`).
                 while (isActive) {
+                    refrescarMeDeclaran() // los vencimientos de 30 s no avisan solos: cada vuelta (≤ 10 s) lo vuelve a mirar
                     val ms = try {
                         reconciliarUnaVez()
                     } catch (e: CancellationException) {
@@ -135,6 +144,8 @@ class LanHubCoordinator(
     }
 
     fun stop() {
+        vivo = false
+        publicarMeDeclaran(emptySet())
         val arbitro = ArbiterElection.pick(discovery.peers.value) // el último conocido, antes de desengancharse
         trabajos?.cancel() // no `scope.cancel()`: `sincronizarVenue` hace stop() → start() y el scope tiene que seguir vivo
         trabajos = null
@@ -163,6 +174,13 @@ class LanHubCoordinator(
 
     /** Hub D6 bandas: las cajas que hoy le declaran a ESTE aparato como árbitro. Para la línea del plano: con ellas sí se coordina. */
     fun cajasQueLeDeclaran(): Set<String> = server.cajasQueDeclaran() - deviceId
+
+    /** Entre `start` y `stop`: un coordinador apagado ya no publica (una línea tardía del socket no revive a nadie). */
+    @Volatile private var vivo = false
+
+    private fun refrescarMeDeclaran() {
+        if (vivo) publicarMeDeclaran(cajasQueLeDeclaran())
+    }
 
     // ── Hub D6 bandas: la pregunta directa ────────────────────────────────────
 
@@ -219,7 +237,9 @@ class LanHubCoordinator(
      */
     internal fun responder(linea: String): LeaseResponse {
         val pedido = LeaseProtocol.decodeRequest(linea)
-        if (pedido?.op != LeaseProtocol.OP_EN_MESA) return server.respondTo(linea)
+        if (pedido?.op != LeaseProtocol.OP_EN_MESA) {
+            return server.respondTo(linea).also { if (pedido?.op == LeaseProtocol.OP_ESTADO) refrescarMeDeclaran() }
+        }
         if (pedido.version != LeaseProtocol.PROTOCOL_VERSION) {
             return LeaseResponse(status = LeaseProtocol.STATUS_ERROR, message = LeaseProtocol.ERROR_VERSION_MISMATCH)
         }

@@ -72,6 +72,7 @@ class LanHubService @Inject constructor(
             venueId = venueId,
             nombre = { secureStorage.selectedStaffNameForCurrentVenue ?: secureStorage.userFirstName.orEmpty() },
             scope = scopeDePrueba ?: CoroutineScope(Dispatchers.IO + SupervisorJob()),
+            publicarMeDeclaran = { _cajasQueLeDeclaran.value = it },
         )
         coordinator = hub
         venueActivo = venueId
@@ -85,6 +86,7 @@ class LanHubService @Inject constructor(
         cuentas?.apagar()
         coordinator?.stop()
         coordinator = null
+        _cajasQueLeDeclaran.value = emptySet()
         venueActivo = null
         _enabled.value = false
     }
@@ -94,8 +96,13 @@ class LanHubService @Inject constructor(
         if (coordinator != null && venueActivo != venueId) stop()
     }
 
-    /** Hub D6 bandas: las cajas que hoy le declaran a este aparato como árbitro (la línea del plano las cuenta como acompañantes). */
-    fun cajasQueLeDeclaran(): Set<String> = coordinator?.cajasQueLeDeclaran().orEmpty()
+    private val _cajasQueLeDeclaran = MutableStateFlow<Set<String>>(emptySet())
+
+    /**
+     * Hub D6 bandas: las cajas que hoy le declaran a este aparato como árbitro (la línea del plano las cuenta como acompañantes). La
+     * publica el coordinador encendido cada vez que puede cambiar; sin coordinador, ninguna.
+     */
+    val cajasQueLeDeclaran: StateFlow<Set<String>> = _cajasQueLeDeclaran.asStateFlow()
 
     /** Hub D3: el ticket de un intento de abrir una mesa LIBRE, al instante (despierta al reconciliador). Su dueño lo termina. */
     fun abrirApertura(tableId: String, staffId: String, staffName: String): Apertura =

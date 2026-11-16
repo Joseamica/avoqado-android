@@ -9,7 +9,9 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.transformLatest
 import kotlinx.serialization.json.Json
@@ -89,15 +91,23 @@ internal object AvisoDeIsla {
         yo: () -> String,
         hubDelNegocio: () -> Boolean,
         recordadas: suspend () -> Set<String>,
-        meDeclaran: () -> Set<String> = { emptySet() },
-    ): Flow<String?> = combine(peers, tic()) { p, _ -> p }
-        .map { p -> if (hubDelNegocio()) texto(true, yo(), p, recordadas(), meDeclaran()) else null }
-        .distinctUntilChanged()
-        .transformLatest { linea ->
-            if (linea != null) delay(GRACIA_MS)
-            emit(linea)
-        }
-        .distinctUntilChanged()
+        meDeclaran: Flow<Set<String>> = flowOf(emptySet()),
+    ): Flow<String?> = flow {
+        // Codex r1 #4: lo que ya se muestra cambia de texto sin otra gracia (de «no ve a las otras» a «no ve a todas» y al revés); la
+        // gracia es sólo para APARECER. Una variable por recolección: el `WhileSubscribed` del plano vuelve a recolectar al regresar.
+        var mostrada: String? = null
+        emitAll(
+            combine(peers, meDeclaran, tic()) { p, d, _ -> p to d }
+                .map { (p, d) -> if (hubDelNegocio()) texto(true, yo(), p, recordadas(), d) else null }
+                .distinctUntilChanged()
+                .transformLatest { linea ->
+                    if (linea != null && mostrada == null) delay(GRACIA_MS)
+                    mostrada = linea
+                    emit(linea)
+                }
+                .distinctUntilChanged(),
+        )
+    }
 
     private fun tic(): Flow<Unit> = flow {
         while (true) {

@@ -145,13 +145,29 @@ class MesasDeEstaCaja internal constructor(
 
     /**
      * Hub D6 bandas, lo que contesta esta caja a `en_mesa`: ¿está en [tableId] de [venueId]? Sí si es su mesa actual o si tiene una apertura
-     * de esa mesa que el árbitro ya concedió o que va a abrir en isla. Una pendiente o una que salió ocupada, no: ésa no va a abrir todavía.
+     * de esa mesa con veredicto FINAL de abrir: el árbitro la concedió (o isla) y su propia pregunta directa ya terminó sin «ocupada».
+     * Una pendiente, una que salió ocupada o una cuya pregunta directa sigue en vuelo, no: si dos cajas con árbitros distintos abren la
+     * misma mesa en el mismo instante y cada una contestara «estoy» con su veredicto a medias, se frenarían LAS DOS. Ante la duda, isla:
+     * en ese empate las dos abren y quedan dos cuentas, como hoy (límite declarado).
      */
-    fun ocupa(tableId: String, venueId: String): Boolean =
-        mesaActual() == tableId || tickets.value.values.any {
-            it.apertura.venueId == venueId && it.apertura.tableId == tableId &&
-                (it.resultado == LeaseOutcome.Granted || it.resultado == LeaseOutcome.NoHub)
+    fun ocupa(tableId: String, venueId: String): Boolean {
+        // Codex r1 #2: PRIMERO los tickets, DESPUÉS la mesa actual, como [declaracion]: el éxito activa la sesión y luego termina el
+        // ticket, así que en este orden la mesa sale por una de las dos. Al revés, un traspaso entre las dos lecturas no salía por ninguna.
+        val porTicket = tickets.value.values.any {
+            it.apertura.venueId == venueId && it.apertura.tableId == tableId && veredicto(it).let { v -> v == LeaseOutcome.Granted || v == LeaseOutcome.NoHub }
         }
+        return porTicket || mesaActual() == tableId
+    }
+
+    /**
+     * Codex r1 #1: el veredicto FINAL de un ticket, el mismo para [esperar] y para [ocupa]. Una «ocupada» (directa o del árbitro) es final
+     * en cuanto llega; «concedida» o «isla» del árbitro, sólo con la pregunta directa ya terminada. null = todavía no hay.
+     */
+    private fun veredicto(t: Ticket): LeaseOutcome? = t.directo ?: when (val r = t.resultado) {
+        is LeaseOutcome.Taken -> r
+        null -> null
+        else -> r.takeIf { t.directoListo }
+    }
 
     /** Idempotente. Un ticket terminado no revive ni con una resolución tardía; su espera da `NoHub`. */
     fun terminarApertura(a: Apertura) = tickets.update { it - a.id }
@@ -184,15 +200,16 @@ class MesasDeEstaCaja internal constructor(
         var avisado = false
         while (true) {
             val t = tickets.value[a.id] ?: return LeaseOutcome.NoHub
-            t.directo?.let { return it }
-            when (val r = t.resultado) {
-                is LeaseOutcome.Taken -> return r
-                null -> Unit
-                else -> if (t.directoListo) return r
-            }
+            veredicto(t)?.let { return it }
             if (t.esperando && !avisado) { avisado = true; alEsperar() }
             val restante = a.creadaEnMs + PLAZO_PEDIR_MESA_MS - relojMs()
-            if (restante <= 0 || !sigue()) return LeaseOutcome.NoHub
+            if (restante <= 0) {
+                // Codex r1 #3: al vencer, la pantalla sigue abriendo en isla. Se ANOTA en el ticket (y ya no lo cambia una respuesta tardía)
+                // para que `ocupa` conteste «estoy» mientras abre. Lo que ya estaba decidido no se pisa.
+                cambiar(a.id) { it.copy(resultado = it.resultado ?: LeaseOutcome.NoHub, directoListo = true) }
+                return tickets.value[a.id]?.let(::veredicto) ?: LeaseOutcome.NoHub
+            }
+            if (!sigue()) return LeaseOutcome.NoHub // el intento ya no vale (otra pantalla, otra sucursal): no va a abrir, no se anota
             withTimeoutOrNull(minOf(restante, REVISAR_SIGUE_MS)) { tickets.first { it[a.id] != t } }
         }
     }
