@@ -117,6 +117,12 @@ data class CartState(
      */
     val pendingStampReward: com.avoqado.pos.loyalty.data.PremioPorAplicar? = null,
     val orderDiscount: Discount? = null,
+    /**
+     * Encargo f998c8: el motivo (y comentario) que eligió la caja para [orderDiscount]. Se suelta al cambiar o quitar el descuento
+     * ([CartViewModel.applyOrderDiscount]); viaja como `orderDiscountReason`/`orderDiscountReasonComment`.
+     */
+    val orderDiscountReason: String? = null,
+    val orderDiscountReasonComment: String? = null,
     val orderNote: String? = null,
     val orderTaxPercent: Int? = null,
     /** Cumplimiento (Square): DINE_IN | TAKEOUT | DELIVERY | PICKUP. La venta
@@ -1587,6 +1593,10 @@ class CartViewModel @Inject constructor(
          * rebajada — ver [CartItem.itemDiscountType].
          */
         discount: Discount? = null,
+        /** f998c8: el motivo que eligió la caja para el descuento o el ajuste de esta línea (con «Pedir motivo» prendido). */
+        motivo: com.avoqado.pos.pos.domain.MotivoElegido? = null,
+        /** f998c8: el descuento lo trae una sugerencia (upsell), no una persona: no pide motivo. */
+        descuentoSugerido: Boolean = false,
     ) {
         // Ver addProduct: agotado avisa, nunca bloquea.
         avisarSiAgotado(product)
@@ -1609,6 +1619,9 @@ class CartViewModel @Inject constructor(
             itemDiscountName = discount?.name,
             itemDiscountMax = discount?.maxDiscountAmount,
             itemDiscountPideAprobacion = discount?.pideAprobacion == true,
+            discountReason = motivo?.motivo?.takeIf { discount != null || priceAdjustment != null },
+            discountReasonComment = motivo?.comentario?.takeIf { discount != null || priceAdjustment != null },
+            descuentoSugerido = descuentoSugerido && discount != null,
             serviceCourse = immediateServiceCourse(),
             catalogAt = product.catalogAt,
         )
@@ -1894,12 +1907,19 @@ class CartViewModel @Inject constructor(
         }
     }
 
-    fun applyOrderDiscount(discount: Discount?) {
+    fun applyOrderDiscount(discount: Discount?, motivo: com.avoqado.pos.pos.domain.MotivoElegido? = null) {
         if (_cartState.value.items.any { it.locked }) return
         // D2: quitar el del cliente desde la hoja de descuentos es su «Quitar»; otro descuento encima lo quita y lo dice.
         if (discount == null) quitarDescuentoDelCliente() else quitarElDelClientePorOtro()
-        // Otro descuento es otra cuenta: el monto fijo del anterior ya no aplica.
-        _cartState.update { it.copy(orderDiscount = discount, descuentoDeCuentaCongelado = null) }
+        // Otro descuento es otra cuenta: el monto fijo del anterior ya no aplica. f998c8: su motivo tampoco (otro descuento, otro por qué).
+        _cartState.update {
+            it.copy(
+                orderDiscount = discount,
+                descuentoDeCuentaCongelado = null,
+                orderDiscountReason = motivo?.motivo?.takeIf { discount != null },
+                orderDiscountReasonComment = motivo?.comentario?.takeIf { discount != null },
+            )
+        }
         // D2: quitar un manual (o cupón) que estaba antes deja lugar al del cliente, si no se le quitó en esta venta.
         if (discount == null) ponerDescuentoDelClienteSiToca()
     }
@@ -1949,15 +1969,37 @@ class CartViewModel @Inject constructor(
         }
     }
 
-    fun updateItemPriceAdjustment(itemId: String, priceCents: Int?) {
+    fun updateItemPriceAdjustment(itemId: String, priceCents: Int?, motivo: com.avoqado.pos.pos.domain.MotivoElegido? = null) {
         if (esLineaFija(itemId)) return
         _cartState.update { state ->
             state.copy(
                 items = state.items.map {
-                    if (it.id == itemId) it.copy(priceAdjustment = priceCents) else it
+                    if (it.id != itemId) {
+                        it
+                    } else {
+                        // f998c8: un ajuste nuevo trae su motivo; quitar el ajuste conserva el del descuento de catálogo, si queda uno.
+                        val conAjuste = it.copy(priceAdjustment = priceCents)
+                        when {
+                            motivo != null && priceCents != null -> conAjuste.copy(discountReason = motivo.motivo, discountReasonComment = motivo.comentario)
+                            priceCents == null && conAjuste.itemDiscountId.isNullOrBlank() -> conAjuste.copy(discountReason = null, discountReasonComment = null)
+                            else -> conAjuste
+                        }
+                    }
                 },
             )
         }
+    }
+
+    /** f998c8: el switch y la lista de motivos del negocio (guardados: sirven sin red). Sin repositorio (pruebas), apagado. */
+    val motivosDeDescuento: com.avoqado.pos.pos.domain.MotivosDeDescuento
+        get() = com.avoqado.pos.pos.domain.MotivosDeDescuento(secureStorage.discountReasonRequired, secureStorage.discountReasons)
+
+    /** f998c8: lo que pide motivo y no lo trae (carrito restaurado, venta que regresó del cobro con saldo…). Vacío = se puede seguir. */
+    fun descuentosSinMotivo(): List<String> = _cartState.value.descuentosSinMotivo(motivosDeDescuento)
+
+    /** f998c8: pone el motivo que eligió la caja en todo lo que lo pide y no lo trae (la última puerta antes de cobrar). */
+    fun ponerMotivoEnLoQueFalta(motivo: com.avoqado.pos.pos.domain.MotivoElegido) {
+        _cartState.update { it.conMotivoEnLoQueFalta(motivo) }
     }
 
     fun saveCurrentCart(name: String? = null): Boolean {
@@ -2032,6 +2074,9 @@ class CartViewModel @Inject constructor(
                     itemDiscountValue = item.itemDiscountValue,
                     itemDiscountName = item.itemDiscountName,
                     itemDiscountMax = item.itemDiscountMax,
+                    discountReason = item.discountReason,
+                    discountReasonComment = item.discountReasonComment,
+                    descuentoSugerido = item.descuentoSugerido,
                     promotionInstanceId = item.promotionInstanceId,
                     promotionName = item.promotionName,
                     promotionId = item.promotionId,
@@ -2043,6 +2088,8 @@ class CartViewModel @Inject constructor(
                 )
             },
             orderDiscount = state.orderDiscount,
+            orderDiscountReason = state.orderDiscountReason,
+            orderDiscountReasonComment = state.orderDiscountReasonComment,
             orderNote = state.orderNote,
             orderTaxPercent = state.orderTaxPercent,
             reservationId = state.reservationId,
@@ -3187,6 +3234,10 @@ class CartViewModel @Inject constructor(
                 itemDiscountMax = if (vivo != null) vivo.maxDiscountAmount else savedItem.itemDiscountMax,
                 // D4: lo dice el catálogo vivo; sin él (borrado o sin cargar) decide el SERVIDOR al crear la venta.
                 itemDiscountPideAprobacion = vivo?.pideAprobacion == true,
+                // f998c8: el motivo vuelve con su línea; un carrito viejo no lo trae y se pide al cobrar.
+                discountReason = savedItem.discountReason,
+                discountReasonComment = savedItem.discountReasonComment,
+                descuentoSugerido = savedItem.descuentoSugerido,
                 // El combo vuelve como combo: mismo `promotionInstanceId` y las
                 // mismas elecciones, o el carrito restaurado cobraría el 2x1
                 // como dos productos a precio de lista.
@@ -3210,6 +3261,9 @@ class CartViewModel @Inject constructor(
         _cartState.value = CartState(
             items = items,
             orderDiscount = restoredDiscount,
+            // f998c8: el motivo sólo si el descuento que vuelve es el mismo que se guardó (un referido no vuelve).
+            orderDiscountReason = savedCart.orderDiscountReason.takeIf { restoredDiscount != null },
+            orderDiscountReasonComment = savedCart.orderDiscountReasonComment.takeIf { restoredDiscount != null },
             orderNote = savedCart.orderNote,
             orderTaxPercent = null,
             reservationId = savedCart.reservationId,
@@ -3365,6 +3419,9 @@ class CartViewModel @Inject constructor(
                 autorizacionDelDescuento = venta.autorizacionQueViaja,
                 descuentoDeCatalogoId = venta.descuentoDeCatalogoQueViaja,
                 descuentoDeCatalogoPideAprobacion = venta.orderDiscount?.pideAprobacion == true,
+                // f998c8: el motivo del descuento de la cuenta (sólo si es de los que lo piden).
+                orderDiscountReason = venta.orderDiscountReason?.takeIf { venta.cuentaPideMotivo && it.isNotBlank() },
+                orderDiscountReasonComment = venta.orderDiscountReasonComment?.takeIf { venta.cuentaPideMotivo && it.isNotBlank() && !venta.orderDiscountReason.isNullOrBlank() },
             )
             if (!OrderRepository.hasProductItems(request)) {
                 return ResultadoPagarDespues.Error("No hay productos válidos para crear la orden")

@@ -1714,7 +1714,11 @@ class TableOrderViewModel @Inject constructor(
      * encola ni dice «Descuento aplicado». En línea, sin el permiso, el SERVIDOR contesta 403 `overridable` y el teclado del PIN se
      * abre solo; sólo un 2xx dice «Descuento aplicado».
      */
-    fun applyDiscount(discountId: String, pideAprobacion: Boolean = false) {
+    /** f998c8: el switch y la lista de motivos del negocio (guardados con los ajustes: sirven sin red). */
+    val motivosDeDescuento: com.avoqado.pos.pos.domain.MotivosDeDescuento
+        get() = com.avoqado.pos.pos.domain.MotivosDeDescuento(secureStorage.discountReasonRequired, secureStorage.discountReasons)
+
+    fun applyDiscount(discountId: String, pideAprobacion: Boolean = false, motivo: com.avoqado.pos.pos.domain.MotivoElegido? = null) {
         val session = tableSession.current() ?: return
         val vId = venueId ?: return
         bloqueoDeSaldo(vId, session)?.let { showBlockedReason(it); return }
@@ -1723,7 +1727,7 @@ class TableOrderViewModel @Inject constructor(
             return
         }
         viewModelScope.launch {
-            mutarCuenta(vId, session) { mutar { repository.applyOrderDiscount(vId, session.orderId, discountId, pideAprobacion) }}.fold(
+            mutarCuenta(vId, session) { mutar { repository.applyOrderDiscount(vId, session.orderId, discountId, pideAprobacion, motivo) }}.fold(
                 onSuccess = { showMessage("Descuento aplicado"); repository.refresh(vId) },
                 onFailure = { e ->
                     if (pideAprobacion && repository.esFalloDeRed(e)) showSinRed(DESCUENTO_CON_APROBACION_SIN_RED_MESA)

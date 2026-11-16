@@ -1,5 +1,6 @@
 package com.avoqado.pos.pos.data.model
 
+import com.avoqado.pos.pos.presentation.cart.descuentoPideMotivo
 import com.avoqado.pos.payment.data.model.OrderItemRequest
 import com.avoqado.pos.payment.data.model.OrderModifierRequest
 import com.avoqado.pos.payment.data.model.PromotionRefRequest
@@ -123,5 +124,8 @@ private fun CartItem.toOrderItemRequest(): OrderItemRequest {
         adjustedUnitPrice = priceAdjustment.takeIf {
             type is CartItemType.ProductItem && !isCortesia && it != null && it < unitPrice
         },
+        // f998c8: sólo con un descuento o ajuste que lo pide; la cortesía lleva su propio motivo.
+        discountReason = discountReason?.trim()?.takeIf { it.isNotEmpty() && descuentoPideMotivo },
+        discountReasonComment = discountReasonComment?.trim()?.takeIf { it.isNotEmpty() && descuentoPideMotivo && !discountReason.isNullOrBlank() },
     )
 }

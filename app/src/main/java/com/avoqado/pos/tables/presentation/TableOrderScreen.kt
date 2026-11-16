@@ -279,6 +279,8 @@ fun TableOrderScreen(
     var showCustomerPicker by remember { mutableStateOf(false) }
     var showFulfillmentDialog by remember { mutableStateOf(false) }
     var showDiscountsDialog by remember { mutableStateOf(false) }
+    // f998c8: el descuento de la mesa que espera su motivo (id y si pide aprobación).
+    var descuentoDeMesaEsperandoMotivo by remember { mutableStateOf<Pair<String, Boolean>?>(null) }
     var showSplitCheckDialog by remember { mutableStateOf(false) }
     var showSortCartDialog by remember { mutableStateOf(false) }
     var showCalculator by remember { mutableStateOf(false) }
@@ -895,7 +897,7 @@ fun TableOrderScreen(
         ProductDetailPanel(
             product = product,
             isTablet = isTablet,
-            onAddToCart = { quantity, modifiers, note, isCortesia, cortesiaReason, _, _ ->
+            onAddToCart = { quantity, modifiers, note, isCortesia, cortesiaReason, _, _, _ ->
                 viewModel.addProductWithModifiers(
                     product, quantity, modifiers, note,
                     isCortesia = isCortesia, cortesiaReason = cortesiaReason,
@@ -1407,9 +1409,28 @@ fun TableOrderScreen(
             available = allDiscounts.filter { it.scope == "ORDER" && it.active },
             applied = check?.discounts ?: emptyList(),
             // D4: el que pide la aprobación de un gerente no se encola sin red y abre el PIN si hace falta.
-            onApply = { id -> viewModel.applyDiscount(id, pideAprobacion = allDiscounts.firstOrNull { it.id == id }?.pideAprobacion == true) },
+            // f998c8: con «Pedir motivo», primero el motivo (sirve sin red: la lista está guardada en el aparato).
+            onApply = { id ->
+                val pide = allDiscounts.firstOrNull { it.id == id }?.pideAprobacion == true
+                if (viewModel.motivosDeDescuento.sePide) descuentoDeMesaEsperandoMotivo = id to pide
+                else viewModel.applyDiscount(id, pideAprobacion = pide)
+            },
             onRemove = { id -> viewModel.removeDiscount(id) },
             onDismiss = { showDiscountsDialog = false },
+        )
+    }
+    descuentoDeMesaEsperandoMotivo?.let { (id, pide) ->
+        val allDiscounts by catalogViewModel.discountsRepository.discounts.collectAsState()
+        com.avoqado.pos.pos.presentation.components.DialogoMotivoDeDescuento(
+            motivos = viewModel.motivosDeDescuento.lista,
+            titulo = "Motivo del descuento",
+            detalle = listOfNotNull(allDiscounts.firstOrNull { it.id == id }?.name),
+            textoConfirmar = "Aplicar descuento",
+            onConfirmar = { motivo ->
+                viewModel.applyDiscount(id, pideAprobacion = pide, motivo = motivo)
+                descuentoDeMesaEsperandoMotivo = null
+            },
+            onCancelar = { descuentoDeMesaEsperandoMotivo = null },
         )
     }
 

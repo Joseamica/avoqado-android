@@ -8,6 +8,9 @@ data class SavedCart(
     val name: String,
     val items: List<SavedCartItem>,
     val orderDiscount: Discount? = null,
+    /** f998c8: el motivo del descuento de la cuenta y su comentario. Nulos en carritos viejos: al cobrar se piden. */
+    val orderDiscountReason: String? = null,
+    val orderDiscountReasonComment: String? = null,
     val orderNote: String? = null,
     val orderTaxPercent: Int? = null,
     /// Walk-in class link + attached customer — dropped on save before, so a
@@ -62,6 +65,11 @@ data class SavedCartItem(
     val itemDiscountName: String? = null,
     /// D13: el descuento máximo del catálogo (pesos) de la foto. Nulo en carritos viejos = sin tope, como antes.
     val itemDiscountMax: Double? = null,
+    /// f998c8: el motivo del descuento (o del ajuste) de la línea y su comentario. Nulos en carritos viejos: al cobrar se piden.
+    val discountReason: String? = null,
+    val discountReasonComment: String? = null,
+    /// f998c8: el descuento lo puso una sugerencia (upsell), no una persona. Falso en carritos viejos.
+    val descuentoSugerido: Boolean = false,
     /// Credit-pack (membresía) identity — before, a saved pack line restored
     /// as a plain CustomAmount: charged, never granted, gate bypassed.
     val packId: String? = null,

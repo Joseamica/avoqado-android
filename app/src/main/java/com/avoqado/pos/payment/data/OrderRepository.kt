@@ -512,7 +512,9 @@ class OrderRepository @Inject constructor(
                 (request.items.isNotEmpty() && request.splitType != null && request.splitType != "FULLPAYMENT") ||
                 (request.items.isNotEmpty() && llevaDescuentoDelCliente(request)) ||
                 // D4: `/fast` no lleva descuento ni etiqueta: con un descuento que pide aprobación, la venta crea su orden.
-                (request.items.isNotEmpty() && llevaDescuentoDeCatalogo(request) && request.descuentoDeCatalogoPideAprobacion)
+                (request.items.isNotEmpty() && llevaDescuentoDeCatalogo(request) && request.descuentoDeCatalogoPideAprobacion) ||
+                // f998c8: `/fast` manda el neto, sin descuento ni motivo: con un motivo en la cuenta, la venta crea su orden (como D4).
+                (request.items.isNotEmpty() && request.discount > 0 && !request.orderDiscountReason.isNullOrBlank())
 
         /** D2: la etiqueta del descuento del cliente sólo viaja con monto (el SERVIDOR exige `montoCents == discount`). */
         private fun llevaDescuentoDelCliente(request: CreateOrderRequest): Boolean =
@@ -748,6 +750,11 @@ class OrderRepository @Inject constructor(
                                         item.discountId
                                             ?.takeIf { !item.isCortesia && it.isNotBlank() }
                                             ?.let { put("discountId", it) }
+                                        // f998c8: el motivo del descuento o del ajuste de la línea (la cola sin red también arma por aquí).
+                                        item.discountReason?.takeIf { !item.isCortesia && it.isNotBlank() }?.let { put("discountReason", it) }
+                                        item.discountReasonComment
+                                            ?.takeIf { !item.isCortesia && it.isNotBlank() && !item.discountReason.isNullOrBlank() }
+                                            ?.let { put("discountReasonComment", it) }
                                     }
                                 },
                             )
@@ -779,6 +786,13 @@ class OrderRepository @Inject constructor(
                 // D4: el descuento de cuenta del catálogo. Sólo etiqueta (el SERVIDOR revisa su aprobación): el importe sigue siendo `discount`.
                 // ADITIVO: sin él el cuerpo queda byte a byte igual.
                 if (llevaDescuentoDeCatalogo(request)) put("descuentoDeCatalogoId", request.descuentoDeCatalogoId)
+                // f998c8: el motivo del descuento de la cuenta, sólo con importe. ADITIVO: sin motivo el cuerpo queda byte a byte igual.
+                if (request.discount > 0) {
+                    request.orderDiscountReason?.takeIf { it.isNotBlank() }?.let { motivo ->
+                        put("orderDiscountReason", motivo)
+                        request.orderDiscountReasonComment?.takeIf { it.isNotBlank() }?.let { put("orderDiscountReasonComment", it) }
+                    }
+                }
                 // D5. ADITIVO: sin cupón el cuerpo queda byte a byte igual.
                 request.couponCode?.takeIf { it.isNotBlank() }?.let { put("couponCode", it) }
                 customerId?.takeIf { it.isNotBlank() }?.let { put("customerId", it) }
