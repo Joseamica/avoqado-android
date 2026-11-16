@@ -38,6 +38,7 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -128,11 +129,38 @@ class CashDrawerViewModel @Inject constructor(
     private val _tenderBreakdown = MutableStateFlow<List<CashDrawerRepository.TenderRow>?>(null)
     val tenderBreakdown: StateFlow<List<CashDrawerRepository.TenderRow>?> = _tenderBreakdown.asStateFlow()
 
+    /** D68 #13: la lectura del desglose en vuelo, y cuál es la última (una vieja que llega tarde no pisa a la nueva). */
+    private var cargandoDesglose = false
+    private var generacionDelDesglose = 0
+
     /** Fetch the payment-method breakdown for a session's window (corte de caja). */
     fun loadTenderBreakdown(fromMillis: Long, toMillis: Long) {
+        val generacion = ++generacionDelDesglose
+        cargandoDesglose = true
         viewModelScope.launch {
-            _tenderBreakdown.value = repository.getTenderBreakdown(fromMillis, toMillis)
+            try {
+                val desglose = repository.getTenderBreakdown(fromMillis, toMillis)
+                if (generacion == generacionDelDesglose) _tenderBreakdown.value = desglose
+            } finally {
+                if (generacion == generacionDelDesglose) cargandoDesglose = false
+            }
         }
+    }
+
+    /**
+     * D68 #13 (prueba final del 13-nov): el corte hecho sin red seguía diciendo «No se pudo consultar el desglose por método de
+     * pago…» después de volver la red, hasta tocar «Reintentar». Al volver la red, la pantalla del corte lo pide otra vez SÓLO si
+     * falta (nunca borra uno bueno al cortarse la red).
+     */
+    fun recargarDesgloseSiFalta(fromMillis: Long, toMillis: Long) {
+        if (_tenderBreakdown.value == null && !cargandoDesglose) loadTenderBreakdown(fromMillis, toMillis)
+    }
+
+    /** D68 #13: con red y servidor; lo observa sólo la pantalla del corte (perezoso: las pruebas que no lo leen no lo arman). */
+    val enLinea: StateFlow<Boolean> by lazy {
+        kotlinx.coroutines.flow.combine(conectividad.isConnected, conectividad.isServerReachable) { red, servidor -> red && servidor }
+            .stateIn(viewModelScope, kotlinx.coroutines.flow.SharingStarted.Eagerly,
+                conectividad.isConnected.value && conectividad.isServerReachable.value)
     }
 
     // End of day ("Cierre del día") — day summary + blockers.

@@ -345,6 +345,20 @@ class PaymentFlowViewModel @Inject constructor(
     private val _terminalAvailability = MutableStateFlow(TerminalAvailability.CHECKING)
     val terminalAvailability: StateFlow<TerminalAvailability> = _terminalAvailability.asStateFlow()
 
+    /**
+     * D68 #12 (prueba final del 13-nov): la sonda corrió CON internet y sin terminal conectada (gris, «No hay terminales conectadas»),
+     * se cortó la red y el gris se quedó: el cajero leía «no hay terminales» cuando lo cierto era «sin internet», y sólo «Reintentar»
+     * lo destrababa. Ahora el gris sólo vale con red; sin red la fila se toca y el cobro dice «Sin conexión: el cobro con tarjeta
+     * necesita internet…» ([TARJETA_SIN_RED]). Sin monitor (pruebas a mano), como antes.
+     */
+    val terminalesNoConectadas: StateFlow<Boolean> by lazy {
+        combine(_terminalAvailability, connectivityMonitor?.isConnected ?: flowOf(true),
+            connectivityMonitor?.isServerReachable ?: flowOf(true)) { disponibilidad, ruta, servidor ->
+            terminalesNoConectadasCon(disponibilidad, ruta && servidor)
+        }.stateIn(viewModelScope, SharingStarted.Eagerly, terminalesNoConectadasCon(_terminalAvailability.value,
+            connectivityMonitor?.let { it.isConnected.value && it.isServerReachable.value } ?: true))
+    }
+
     private var cartState: CartState? = null
     // Copias del cobro, anteriores a cualquier suspensión; el piso/sucursal vivos pueden cambiar después.
     private var mesaDelCobro: com.avoqado.pos.tables.data.TableSession.Active? = null
@@ -2351,6 +2365,17 @@ class PaymentFlowViewModel @Inject constructor(
             combine(conexionDelSaldo, servidorDelSaldo,
                 tarjetasRepository?.cambiosDeAjustes ?: MutableStateFlow<Map<String, EstadoDeAjustes>>(emptyMap())) { _, _, _ -> Unit }
                 .collect { actualizarFilaDeSaldo() }
+        }
+        // D68 #12: al volver la red con la pantalla de «¿cómo paga?» a la vista, se vuelve a preguntar por las terminales (en
+        // segundo plano, como al arrancar): lo que se supo antes de cortarse ya puede no ser cierto.
+        viewModelScope.launch {
+            var antes: Boolean? = null
+            combine(conexionDelSaldo, servidorDelSaldo) { conectado, servidor -> conectado && servidor }.collect { enLinea ->
+                val volvio = antes == false && enLinea
+                antes = enLinea
+                val eligiendo = _state.value is PaymentFlowState.SelectingPaymentMethod || _state.value is PaymentFlowState.CollectingTip
+                if (volvio && eligiendo && _terminalAvailability.value != TerminalAvailability.CHECKING) probeTerminalAvailability()
+            }
         }
         // El «Sin conexión» de un intento fallido deja de ser cierto al volver la red. Un rechazo del servidor se queda.
         viewModelScope.launch {
@@ -7103,3 +7128,9 @@ class PaymentFlowViewModel @Inject constructor(
         }
     }
 }
+
+/** D68 #12: «No hay terminales conectadas» (en gris) sólo si la sonda lo supo y el aparato SIGUE con red. PURA. */
+internal fun terminalesNoConectadasCon(
+    disponibilidad: PaymentFlowViewModel.TerminalAvailability,
+    enLinea: Boolean,
+): Boolean = disponibilidad == PaymentFlowViewModel.TerminalAvailability.NONE && enLinea

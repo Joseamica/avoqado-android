@@ -1,0 +1,62 @@
+package com.avoqado.pos.cashdrawer.presentation
+
+import com.avoqado.pos.MainDispatcherRule
+import com.avoqado.pos.cashdrawer.data.CashDrawerRepository
+import io.mockk.coEvery
+import io.mockk.coVerify
+import io.mockk.mockk
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
+import org.junit.Rule
+import org.junit.Test
+
+/**
+ * D68 #13 (prueba final del 13-nov): el corte hecho sin red seguía diciendo «No se pudo consultar el desglose por método de pago…»
+ * después de volver la red. Al volver la red la pantalla pide el desglose otra vez, sólo si falta y si no hay otra lectura en vuelo.
+ */
+@OptIn(ExperimentalCoroutinesApi::class)
+class CorteDesgloseAlVolverLaRedTest {
+    @get:Rule val main = MainDispatcherRule(UnconfinedTestDispatcher())
+
+    private fun pantalla(repo: CashDrawerRepository) = CashDrawerViewModel(
+        repository = repo,
+        printerService = mockk(relaxed = true),
+        roleManager = mockk(relaxed = true),
+        tpvSettingsRepository = mockk(relaxed = true),
+        conectividad = mockk(relaxed = true),
+        permissionOverrideRepository = mockk(relaxed = true),
+        comprobantes = mockk(relaxed = true),
+        secureStorage = mockk(relaxed = true),
+    )
+
+    private val efectivo = listOf(CashDrawerRepository.TenderRow("CASH", 12_000))
+
+    @Test fun `sin red falta el desglose y al volver la red se pide otra vez`() {
+        val repo = mockk<CashDrawerRepository>(relaxed = true)
+        coEvery { repo.getTenderBreakdown(1L, 2L) } returnsMany listOf(null, efectivo)
+        val vm = pantalla(repo)
+        vm.loadTenderBreakdown(1L, 2L)
+        assertNull(vm.tenderBreakdown.value)
+        vm.recargarDesgloseSiFalta(1L, 2L)
+        assertEquals(efectivo, vm.tenderBreakdown.value)
+        // Ya lo tiene: volver a cambiar la red no lo pide otra vez ni lo borra.
+        vm.recargarDesgloseSiFalta(1L, 2L)
+        coVerify(exactly = 2) { repo.getTenderBreakdown(1L, 2L) }
+        assertEquals(efectivo, vm.tenderBreakdown.value)
+    }
+
+    @Test fun `con una lectura en vuelo no se pide una segunda`() {
+        val repo = mockk<CashDrawerRepository>(relaxed = true)
+        val respuesta = CompletableDeferred<List<CashDrawerRepository.TenderRow>?>()
+        coEvery { repo.getTenderBreakdown(1L, 2L) } coAnswers { respuesta.await() }
+        val vm = pantalla(repo)
+        vm.loadTenderBreakdown(1L, 2L)
+        vm.recargarDesgloseSiFalta(1L, 2L)
+        respuesta.complete(efectivo)
+        coVerify(exactly = 1) { repo.getTenderBreakdown(1L, 2L) }
+        assertEquals(efectivo, vm.tenderBreakdown.value)
+    }
+}

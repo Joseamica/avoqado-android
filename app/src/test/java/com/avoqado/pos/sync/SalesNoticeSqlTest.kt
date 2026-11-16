@@ -26,7 +26,7 @@ class SalesNoticeSqlTest {
                 check(r.next())
                 SalesNoticeAggregate(r.getInt("total"),r.getInt("unseenCount"),r.getInt("failedGroup"),r.getInt("interruptedGroup"),
                     r.getInt("q15Group"),r.getInt("rejectedGroup"),r.getInt("ackfailedGroup"),r.getInt("ackinterruptedGroup"),
-                    r.getInt("ackq15Group"),r.getInt("ackrejectedGroup"),r.getInt("untouchedQ15"),r.getInt("untouchedRejected"))
+                    r.getInt("ackq15Group"),r.getInt("ackrejectedGroup"),r.getInt("untouchedQ15"),r.getInt("untouchedRejected"),r.getInt("appliedAlerts"))
             } }
             override suspend fun save(row:SalesNoticeAcknowledgementEntity) {
                 val columns=listOf("venueId","origin","id","actor","acknowledgedAt")+SALES_NOTICE_VERSION_COLUMNS

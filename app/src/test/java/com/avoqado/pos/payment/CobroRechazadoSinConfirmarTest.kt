@@ -702,6 +702,9 @@ class CobroRechazadoSinConfirmarTest {
         assertEquals("Cobro en efectivo", com.avoqado.pos.sync.presentation.tituloDelCobroInterrumpido("CASH", null))
         assertEquals("Cobro con transferencia", com.avoqado.pos.sync.presentation.tituloDelCobroInterrumpido("TRANSFER", null))
         assertEquals("Cobro con otro tipo de pago", com.avoqado.pos.sync.presentation.tituloDelCobroInterrumpido("CASH", "tipo-1"))
+        // D68 #5: con el nombre del tipo del negocio, se dice su nombre; sin él, el genérico.
+        assertEquals("Cobro con Transferencia", com.avoqado.pos.sync.presentation.tituloDelCobroInterrumpido("CASH", "tipo-1", "Transferencia"))
+        assertEquals("Cobro con otro tipo de pago", com.avoqado.pos.sync.presentation.tituloDelCobroInterrumpido("CASH", "tipo-1", "  "))
     }
 
     /** M-1 (espejo de iOS): tras «No se pudo cancelar», «Reintentar» reintenta la CANCELACIÓN, nunca el cobro. */

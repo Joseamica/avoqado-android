@@ -38,6 +38,23 @@ class PreparationServiceViewModelTest {
             coVerify { repository.page("v", "order", page.nextCursor, false) }
         } finally { model.close() }
     }
+    @Test fun `D68 sin internet la hoja dice Sin conexion en espanol y nunca Connection reset`() = runTest {
+        val repository = mockk<KitchenPreparationRepository>(relaxed = true)
+        every { repository.notice } returns MutableStateFlow(null)
+        every { repository.negotiated("v") } returns true
+        coEvery { repository.restoreCapabilities("v") } just Runs
+        coEvery { repository.localPage(any(), any(), any(), any()) } returns null
+        coEvery { repository.savedPage(any(), any(), any(), any()) } returns null
+        coEvery { repository.page(any(), any(), any(), any()) } throws java.net.SocketException("Connection reset")
+        val storage = mockk<SecureStorage>(); every { storage.venueId } returns "v"
+        val outbox = mockk<SyncOutbox>(); every { outbox.acks } returns MutableSharedFlow<SyncAck>()
+        val model = PreparationServiceViewModel(repository, storage, outbox)
+        try {
+            model.open("order"); runCurrent()
+            assertEquals(SIN_RED_AL_LEER, model.state.value.message)
+            assertFalse(model.state.value.loading)
+        } finally { model.close() }
+    }
     @Test fun `saved products are visible while capability HTTP waits and remain after auth rejection`() = runTest {
         val repository = mockk<KitchenPreparationRepository>(relaxed = true)
         every { repository.notice } returns MutableStateFlow(null)
