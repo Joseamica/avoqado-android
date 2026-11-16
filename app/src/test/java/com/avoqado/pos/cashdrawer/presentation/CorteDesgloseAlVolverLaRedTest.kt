@@ -98,4 +98,29 @@ class CorteDesgloseAlVolverLaRedTest {
         vieja.complete(otro)
         assertEquals(efectivo, vm.tenderBreakdown.value)
     }
+
+    @Test fun `Codex r4 1 el parcial no pasa por el definitivo de la misma caja`() {
+        val repo = mockk<CashDrawerRepository>(relaxed = true)
+        coEvery { repo.getTenderBreakdown(1L, 2L) } returns efectivo // parcial
+        coEvery { repo.getTenderBreakdown(1L, 9L) } returns null // definitivo, sin red
+        val vm = pantalla(repo)
+        vm.loadTenderBreakdown(1L, 2L)
+        vm.loadTenderBreakdown(1L, 9L)
+        assertNull(vm.tenderBreakdown.value) // «No se pudo consultar», con su «Reintentar», no el parcial
+    }
+
+    @Test fun `Codex r4 3 con el desglose de otra caja en pantalla la red que vuelve en vuelo sí se reintenta`() {
+        val repo = mockk<CashDrawerRepository>(relaxed = true)
+        val deB = CompletableDeferred<List<CashDrawerRepository.TenderRow>?>()
+        var llamadasB = 0
+        coEvery { repo.getTenderBreakdown(1L, 2L) } returns listOf(CashDrawerRepository.TenderRow("CASH", 1)) // caja A
+        coEvery { repo.getTenderBreakdown(5L, 6L) } coAnswers { llamadasB++; if (llamadasB == 1) deB.await() else efectivo }
+        val vm = pantalla(repo)
+        vm.loadTenderBreakdown(1L, 2L)
+        vm.loadTenderBreakdown(5L, 6L) // se abre B; A sigue en pantalla mientras tanto
+        vm.recargarDesgloseSiFalta(5L, 6L) // volvió la red con la lectura de B en vuelo
+        deB.complete(null)
+        assertEquals(2, llamadasB)
+        assertEquals(efectivo, vm.tenderBreakdown.value)
+    }
 }

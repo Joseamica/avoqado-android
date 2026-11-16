@@ -130,21 +130,24 @@ class CashDrawerViewModel @Inject constructor(
     val tenderBreakdown: StateFlow<List<CashDrawerRepository.TenderRow>?> = _tenderBreakdown.asStateFlow()
 
     /**
-     * D68 #13: UNA sola lectura del desglose para las tres entradas (abrir el corte, imprimir el parcial y volver la red). Codex
-     * r1–r3 encontraron la misma familia tres veces con dos caminos que se coordinaban a mano; ahora las reglas viven sólo aquí:
+     * D68 #13: la lectura del desglose de la PANTALLA del corte (abrir y volver la red). Codex r1–r4 encontraron la misma familia
+     * cuatro veces; la raíz era que un desglose se reconocía sólo por la apertura de la caja y que imprimir escribía en la pantalla.
+     * Las reglas, todas aquí:
+     * - un desglose ES de su ventana exacta (apertura y fin): el parcial no pasa por el definitivo ni el de otra caja por éste;
      * - cada lectura toma su turno AL EMPEZAR: una que empezó después manda aunque ésta termine al último;
-     * - si falla (sin red), no borra el desglose de la MISMA caja (mismo inicio); el de otra caja sí se quita, porque no es suyo;
-     * - si la red volvió mientras estaba en vuelo y falló, al terminar se pide otra vez.
+     * - si falla (sin red), sólo se conserva lo que ya estaba en pantalla de ESA misma ventana; lo de otra ventana se quita;
+     * - si la red volvió mientras estaba en vuelo y falló, al terminar se pide otra vez;
+     * - imprimir lee aparte y no toca la pantalla ([printPartialCorte]).
      * Todo corre en el hilo principal (`viewModelScope`), así que estas marcas no se pisan entre hilos.
      */
     private var cargandoDesglose = false
     private var generacionDelDesglose = 0
     private var reintentoPendiente: Pair<Long, Long>? = null
-    /** El inicio de la caja del desglose que está en pantalla (`null` = ninguno). */
-    private var desdeDelDesglose: Long? = null
+    /** La ventana del desglose que está en pantalla (`null` = ninguno). */
+    private var ventanaDelDesglose: Pair<Long, Long>? = null
 
-    /** Lee el desglose de la ventana [fromMillis, toMillis] y lo publica según las reglas de arriba. `null` = no se pudo consultar. */
-    private suspend fun leerDesglose(fromMillis: Long, toMillis: Long): List<CashDrawerRepository.TenderRow>? {
+    private suspend fun leerDesglose(fromMillis: Long, toMillis: Long) {
+        val ventana = fromMillis to toMillis
         val generacion = ++generacionDelDesglose
         cargandoDesglose = true
         reintentoPendiente = null
@@ -156,19 +159,18 @@ class CashDrawerViewModel @Inject constructor(
         } catch (_: Exception) {
             null
         }
-        if (generacion != generacionDelDesglose) return desglose // una lectura más nueva manda en la pantalla
+        if (generacion != generacionDelDesglose) return // una lectura más nueva manda en la pantalla
         cargandoDesglose = false
         if (desglose != null) {
             _tenderBreakdown.value = desglose
-            desdeDelDesglose = fromMillis
-        } else if (desdeDelDesglose != fromMillis) {
+            ventanaDelDesglose = ventana
+        } else if (ventanaDelDesglose != ventana) {
             _tenderBreakdown.value = null
-            desdeDelDesglose = null
+            ventanaDelDesglose = null
         }
         val otra = reintentoPendiente
         reintentoPendiente = null
         if (desglose == null && otra != null) viewModelScope.launch { leerDesglose(otra.first, otra.second) }
-        return desglose
     }
 
     /** Fetch the payment-method breakdown for a session's window (corte de caja). */
@@ -179,10 +181,10 @@ class CashDrawerViewModel @Inject constructor(
     /**
      * D68 #13 (prueba final del 13-nov): el corte hecho sin red seguía diciendo «No se pudo consultar el desglose por método de
      * pago…» después de volver la red, hasta tocar «Reintentar». Al volver la red, la pantalla del corte lo pide otra vez SÓLO si
-     * falta (nunca borra uno bueno al cortarse la red).
+     * falta el de ESA ventana (nunca borra uno bueno al cortarse la red). Con una lectura en vuelo, se pide al terminar si falla.
      */
     fun recargarDesgloseSiFalta(fromMillis: Long, toMillis: Long) {
-        if (_tenderBreakdown.value != null) return
+        if (_tenderBreakdown.value != null && ventanaDelDesglose == (fromMillis to toMillis)) return
         if (cargandoDesglose) reintentoPendiente = fromMillis to toMillis else loadTenderBreakdown(fromMillis, toMillis)
     }
 
@@ -789,9 +791,12 @@ class CashDrawerViewModel @Inject constructor(
             val confirmado = sincronizar()
             val frescos = runCatching { repository.getEvents(session.id) }.getOrDefault(events)
             loadCurrentSession()
-            // `null` si no se pudo consultar — NUNCA `emptyList()`, que significa "no hubo cobros". D68 #13: la misma lectura
-            // que la pantalla ([leerDesglose]); el papel con `null` dice que no se pudo consultar.
-            val tenders = leerDesglose(session.openedAt, System.currentTimeMillis())
+            // `null` si no se pudo consultar — NUNCA `emptyList()`, que significa "no hubo cobros"; el papel lo dice. D68 #13 (Codex
+            // r1 #1 y r4 #2): el papel lee aparte y NO toca la pantalla: una impresión vieja (de otra caja, o sin red) no borra ni
+            // reemplaza el desglose que la pantalla tiene de su propia ventana.
+            val tenders = runCatching {
+                repository.getTenderBreakdown(session.openedAt, System.currentTimeMillis())
+            }.getOrNull()
             printCorte(
                 session = session,
                 events = frescos,
