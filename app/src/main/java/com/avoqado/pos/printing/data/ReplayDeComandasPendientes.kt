@@ -78,14 +78,20 @@ class ReplayDeComandasPendientes @Inject constructor(
             return null
         }
         try {
-            val trabajo = store.pendiente.value?.trabajo ?: return null
+            // `vigente`, no `pendiente.value`: con la app abierta más de 8 h la comanda vence aquí también (Codex D11 r1 #3).
+            val trabajo = store.vigente()?.trabajo ?: return null
             Log.d(TAG, "Reintentando la comanda del pedido ${trabajo.orderNumber}")
             val estado = comandaDispatcher.reintentar(trabajo)
-            if (estado is EstadoDeComanda.Salio) {
-                // 🔴 Se limpia SÓLO cuando de verdad salió. Un `NoSalio` deja el pendiente donde
-                // estaba para que el siguiente tic lo vuelva a intentar.
-                store.limpiar()
+            if (estado is EstadoDeComanda.Salio || estado is EstadoDeComanda.SinComanda) {
+                // 🔴 Se suelta SÓLO cuando ya no falta nada, y sólo si la libreta sigue siendo ESTA comanda: si mientras
+                // se imprimía falló otra venta, la suya no se borra (Codex D11 r1 #2).
+                store.soltarSi(trabajo)
                 Log.d(TAG, "✅ La comanda del pedido ${trabajo.orderNumber} por fin salió")
+            } else if (estado is EstadoDeComanda.NoSalio) {
+                // 🔴 D11 (16-nov-2026): el `NoSalio` trae SÓLO lo que sigue faltando. Si Cocina salió y Barra no, el
+                // pendiente se queda con Barra; dejar el viejo hacía que el siguiente tic le mandara a Cocina el mismo
+                // ticket otra vez. Ver [ComandasPendientesStore.reemplazar].
+                store.reemplazar(trabajo, estado)
             }
             return estado
         } finally {
