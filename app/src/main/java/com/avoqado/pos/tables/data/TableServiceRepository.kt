@@ -99,10 +99,36 @@ class TableServiceRepository @Inject constructor(
         /** Plano en el POS (2026-10-09): la versión de estas mesas — lo guardado al día no se vuelve a bajar. */
         val tablesVersion: String? = null,
         val floorPlanVersion: String? = null,
+        /** D8: las cuentas cobradas y soltadas sin red en este aparato (viajan con el plano, en la misma escritura). */
+        val liberadasSinRed: List<LiberadaSinRed> = emptyList(),
+        /** D8: la última respuesta buena de /tables dijo que el servidor entiende `OPEN_TABLE.visitaNueva`. */
+        val servidorConVisitaNueva: Boolean = false,
+    )
+
+    /**
+     * D8 (hz:033d44ca:D8, 16-nov-2026): una cuenta que ESTE aparato cobró por completo y soltó sin red. Su cobro y su «liberar mesa» van
+     * en la cola de mesas; la mesa se ve libre en este plano y se le puede abrir otra cuenta (que sale DESPUÉS por la misma cola). Mientras
+     * su trabajo siga en camino, una respuesta de /tables que aún la traiga no la vuelve a pintar. Si el SERVIDOR rechaza su cobro o su
+     * «liberar», la marca se borra y la cuenta vuelve al plano desde [cuentas] (también sin red: el aparato ya sabe del rechazo).
+     */
+    @kotlinx.serialization.Serializable
+    data class LiberadaSinRed(
+        val tableId: String,
+        /** Los ids de la cuenta (el local y el del servidor, si ya se conoce). */
+        val ids: Set<String>,
+        /** El intent `CLEAR_TABLE` que la soltó. */
+        val clearIntentId: String,
+        /** Las cuentas que se quitaron del plano, tal como estaban: se devuelven si se rechaza su cobro o su «liberar» (Codex r1 #4). */
+        val cuentas: List<OpenCheckSummary> = emptyList(),
+        val enMillis: Long = 0,
     )
 
     private val floorWrites = Mutex()
     @Volatile private var loadedVenueId: String? = null
+    /** D8: las marcas vivas de la sucursal cargada ([LiberadaSinRed]); se escriben siempre junto con el plano. */
+    @Volatile private var liberadas: List<LiberadaSinRed> = emptyList()
+    /** D8 (Codex r1 #6): sólo con un servidor que entiende la visita nueva se suelta una mesa sin red (uno viejo podría juntarlas). */
+    @Volatile private var servidorConVisitaNueva: Boolean = false
     // Un GET /tables a la vez: dos en el aire pueden llegar al revés y la foto vieja pisar a la nueva.
     // ponytail: si un GET se cuelga, los demás esperan su timeout; cola por sucursal si algún día estorba.
     private val refrescos = Mutex()
@@ -175,6 +201,8 @@ class TableServiceRepository @Inject constructor(
         if (loadedVenueId == venueId) return
         loadedVenueId = venueId
         _tables.value = emptyList()
+        liberadas = emptyList()
+        servidorConVisitaNueva = false
         _ownership.value = TableOwnership()
         tablesVersion = null
         _floorPlanVersionFromTables.value = null
@@ -253,11 +281,13 @@ class TableServiceRepository @Inject constructor(
         // Se anota al pedirlo, sin esperar candados: tras esperar, ya puede estar activa otra sucursal (Codex r5 #1).
         val alPedirlo = loadedVenueId
         return refrescos.withLock { runCatching {
-        val sueltas = floorWrites.withLock {
+        val (sueltas, marcas) = floorWrites.withLock {
             // Si mientras esperaba su turno el plano cambió a otra sucursal, este refresco ya no aplica: no la vuelve a activar.
             check(loadedVenueId == alPedirlo || loadedVenueId == venueId) { "La sucursal cambió" }
-            mirarA(venueId); sueltasAntesDelGet(venueId)
+            mirarA(venueId); sueltasAntesDelGet(venueId) to liberadas
         }
+        // D8: cómo estaba el trabajo de cada cuenta soltada ANTES del GET (una respuesta pedida antes de que suba no la suelta).
+        val estadoDeMarcas = marcas.associateWith { estadoDeLaMarca(venueId, it) }
         _isLoading.value = true
         try {
             val response = apiService.getTables(venueId)
@@ -269,17 +299,24 @@ class TableServiceRepository @Inject constructor(
             }
             floorWrites.withLock {
                 check(loadedVenueId == venueId) { "La sucursal cambió" }
-                val tables = preserveLocalChecks(venueId, response.data, cachedFloor(venueId)?.tables ?: _tables.value, cerradas)
+                val (tables, vivas) = aplicarMarcas(venueId,
+                    preserveLocalChecks(venueId, response.data, cachedFloor(venueId)?.tables ?: _tables.value, cerradas),
+                    // Una marca escrita mientras tanto (otro cobro soltado durante el GET) se conserva tal cual.
+                    liberadas.associateWith { estadoDeMarcas[it] ?: EstadoDeMarca.EN_CAMINO })
                 val ownership = TableOwnership(response.settings?.enforceTableOwnership == true,
                     response.viewer?.staffId, response.viewer?.canManageAllTables ?: true, roleManager.canSettleAnyTable)
                 // Con cuentas provisionales la lista no está reconciliada: sin versión, la siguiente vuelta vuelve a pedir
                 // /tables, como antes del poller.
-                val versionGuardada = if (tables.any { t -> t.openOrders.any { it.isProvisional } }) null else response.tablesVersion
+                // D8: con una cuenta soltada sin red escondida, tampoco (la siguiente vuelta debe volver a mirar).
+                val versionGuardada = if (vivas.isNotEmpty() || tables.any { t -> t.openOrders.any { it.isProvisional } }) null else response.tablesVersion
                 // Espejo en disco ANTES de pintar, con su versión (plano en el POS, spec 2026-10-09 §4.1): si el proceso
                 // muere aquí, lo que el mesero vio ya está guardado y su versión también.
                 payloadCache.save(com.avoqado.pos.core.data.local.PayloadCache.TYPE_TABLES, venueId,
                     cacheJson.encodeToString(TablesCacheBlob.serializer(), TablesCacheBlob(tables, ownership.enforced, ownership.staffId,
-                        ownership.canManageAll, versionGuardada, response.floorPlanVersion)))
+                        ownership.canManageAll, versionGuardada, response.floorPlanVersion, vivas,
+                        response.capabilities?.openTableNewVisit == true)))
+                liberadas = vivas
+                servidorConVisitaNueva = response.capabilities?.openTableNewVisit == true
                 tablesVersion = versionGuardada
                 _floorPlanVersionFromTables.value = response.floorPlanVersion
                 _tables.value = tables
@@ -291,7 +328,7 @@ class TableServiceRepository @Inject constructor(
         }
     }.onFailure {
         Log.e(TAG, "❌ refresh failed: ${it.message}")
-        floorWrites.withLock { if (loadedVenueId == venueId) hydrateFromCache(venueId) }
+        floorWrites.withLock { if (loadedVenueId == venueId) { hydrateFromCache(venueId); devolverRechazadas(venueId) } }
     } }
     }
 
@@ -313,9 +350,136 @@ class TableServiceRepository @Inject constructor(
         }
         payloadCache.saveDurable(com.avoqado.pos.core.data.local.PayloadCache.TYPE_TABLES, venueId,
             cacheJson.encodeToString(TablesCacheBlob.serializer(), TablesCacheBlob(tables, _ownership.value.enforced, _ownership.value.staffId,
-                _ownership.value.canManageAll, tablesVersion, floorPlanVersionFromTables)))
+                _ownership.value.canManageAll, tablesVersion, floorPlanVersionFromTables, liberadas, servidorConVisitaNueva)))
         _tables.value = tables
     }
+
+    // MARK: - D8 · la mesa cobrada sin red queda libre en este aparato
+
+    internal enum class EstadoDeMarca { EN_CAMINO, RECHAZADA, RESUELTA }
+
+    /**
+     * El trabajo de la cuenta soltada: su cobro (y lo demás de la cuenta) y su «liberar mesa». Un rechazo de cualquiera ⇒ RECHAZADA (la
+     * cuenta vuelve al plano). Algo pendiente o retenido ⇒ EN_CAMINO (sigue escondida). Nada sin resolver ⇒ RESUELTA (manda el servidor).
+     * Si no se puede leer, EN_CAMINO: lo que ya se soltó no reaparece por un fallo de disco.
+     */
+    private suspend fun estadoDeLaMarca(venueId: String, marca: LiberadaSinRed): EstadoDeMarca = try {
+        val trabajo = syncOutbox.trabajoSinResolverDeLaOrden(venueId, marca.ids)
+        val liberar = syncOutbox.observarEstado(marca.clearIntentId).first()
+        when {
+            trabajo.rechazados > 0 || liberar == com.avoqado.pos.core.data.local.database.SyncIntentEntity.STATUS_REJECTED ->
+                EstadoDeMarca.RECHAZADA
+            trabajo.enCamino > 0 || liberar == com.avoqado.pos.core.data.local.database.SyncIntentEntity.STATUS_PENDING ||
+                liberar == com.avoqado.pos.core.data.local.database.SyncIntentEntity.STATUS_HELD -> EstadoDeMarca.EN_CAMINO
+            else -> EstadoDeMarca.RESUELTA
+        }
+    } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (_: Exception) { EstadoDeMarca.EN_CAMINO }
+
+    /** Esconde las cuentas EN_CAMINO, devuelve las provisionales RECHAZADAS y suelta las marcas que ya no hacen falta. */
+    private fun aplicarMarcas(venueId: String, tables: List<DiningTable>, estados: Map<LiberadaSinRed, EstadoDeMarca>):
+        Pair<List<DiningTable>, List<LiberadaSinRed>> {
+        val vivas = estados.filterValues { it == EstadoDeMarca.EN_CAMINO }.keys.toList()
+        val rechazadas = estados.filterValues { it == EstadoDeMarca.RECHAZADA }.keys
+        // La provisional pudo recibir su id del servidor DESPUÉS de soltarse (su OPEN_TABLE ya subió): se esconde con los dos.
+        val escondidas = vivas.flatMap { it.ids }.let { ids -> ids + ids.map { idDelServidor(venueId, it) } }.toSet()
+        return devolver(venueId, tables.map { sinCuentas(it, escondidas) }, rechazadas) to vivas
+    }
+
+    /** Las cuentas quitadas por marcas RECHAZADAS vuelven a su mesa (sin duplicar la que ya trae el servidor). */
+    private fun devolver(venueId: String, tables: List<DiningTable>, rechazadas: Collection<LiberadaSinRed>): List<DiningTable> =
+        tables.map { table ->
+            var t = table
+            rechazadas.filter { it.tableId == table.id }.flatMap { it.cuentas }.forEach { cuenta ->
+                val real = idDelServidor(venueId, cuenta.id)
+                if (t.openOrders.none { it.id == cuenta.id || it.id == real }) t = t.copy(status = "OCCUPIED", openOrders = t.openOrders + cuenta)
+            }
+            t
+        }
+
+    /**
+     * D8 (Codex r1 #4): sin respuesta del servidor, la cola ya puede saber que se rechazó el cobro o el «liberar» de una cuenta soltada:
+     * vuelve al plano desde la copia guardada y la marca se borra, en una escritura a disco. Siempre dentro de `floorWrites`.
+     */
+    private suspend fun devolverRechazadas(venueId: String) {
+        val rechazadas = liberadas.filter { estadoDeLaMarca(venueId, it) == EstadoDeMarca.RECHAZADA }
+        if (rechazadas.isEmpty()) return
+        val tables = devolver(venueId, _tables.value, rechazadas)
+        val nuevas = liberadas - rechazadas.toSet()
+        payloadCache.saveDurable(com.avoqado.pos.core.data.local.PayloadCache.TYPE_TABLES, venueId,
+            cacheJson.encodeToString(TablesCacheBlob.serializer(), TablesCacheBlob(tables, _ownership.value.enforced, _ownership.value.staffId,
+                _ownership.value.canManageAll, null, floorPlanVersionFromTables, nuevas, servidorConVisitaNueva)))
+        tablesVersion = null
+        liberadas = nuevas
+        _tables.value = tables
+    }
+
+    private fun idDelServidor(venueId: String, id: String): String =
+        try { draftStore.loadResolved(venueId, id).first } catch (_: Exception) { id }
+
+    /** La mesa sin las cuentas [ids] (lista y puntero); si ya no le queda ninguna, libre. */
+    private fun sinCuentas(table: DiningTable, ids: Set<String>): DiningTable {
+        if (ids.isEmpty() || (table.openOrders.none { it.id in ids } && table.currentOrder?.id !in ids)) return table
+        val restantes = table.openOrders.filterNot { it.id in ids }
+        val puntero = table.currentOrder?.takeIf { it.id !in ids }
+        val libre = restantes.isEmpty() && puntero == null && table.status == "OCCUPIED"
+        return table.copy(openOrders = restantes, currentOrder = puntero, status = if (libre) "AVAILABLE" else table.status)
+    }
+
+    /**
+     * D8: «Liberar mesa» tras un cobro COMPLETO. En línea, como siempre (devuelve `false`). Sin red, el `CLEAR_TABLE` va a la cola y, si
+     * [soltarSinRed] (quien llama ya comprobó que todo el dinero de la cuenta va por la cola de mesas), la cuenta se quita del plano de
+     * este aparato junto con su marca, en UNA escritura a disco, y devuelve `true`. Si esa escritura falla, el «liberar» ya quedó en la
+     * cola y la mesa se queda como antes («Por sincronizar»): `false`.
+     */
+    suspend fun liberarTrasCobro(venueId: String, tableId: String, orderId: String, idsDeLaCuenta: Set<String>,
+        soltarSinRed: suspend () -> Boolean): Result<Boolean> {
+        val enLinea = runCatching { apiService.clearTable(venueId, tableId); Unit }
+        val error = enLinea.exceptionOrNull() ?: return Result.success(false)
+        if (error is kotlinx.coroutines.CancellationException) throw error
+        if (!isNetworkError(error)) { Log.e(TAG, "❌ clearTable failed: ${error.message}"); return Result.failure(error) }
+        val intentId = try {
+            syncOutbox.enqueue(venueId, "CLEAR_TABLE", kotlinx.serialization.json.buildJsonObject {
+                put("tableId", kotlinx.serialization.json.JsonPrimitive(tableId))
+                putOrderRef(orderId)
+            })
+        } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) {
+            Log.e(TAG, "❌ clearTable no se pudo encolar: ${e.message}"); return Result.failure(e)
+        }
+        Log.w(TAG, "📴 CLEAR_TABLE sin red — encolado al outbox")
+        return Result.success(try { servidorConVisitaNueva && soltarSinRed() && soltarEnElPlano(venueId, tableId, idsDeLaCuenta, intentId) }
+            catch (e: kotlinx.coroutines.CancellationException) { throw e }
+            catch (e: Exception) { Log.e(TAG, "❌ No se pudo soltar la mesa en el plano: ${e.message}"); false })
+    }
+
+    private suspend fun soltarEnElPlano(venueId: String, tableId: String, idsDeLaCuenta: Set<String>, clearIntentId: String): Boolean =
+        floorWrites.withLock {
+            if (loadedVenueId != venueId) return@withLock false
+            val mesa = _tables.value.firstOrNull { it.id == tableId } ?: return@withLock false
+            // El id con que la conoce el plano puede ser el local o el del servidor: se juntan los dos.
+            val ids = idsDeLaCuenta + idsDeLaCuenta.map { idDelServidor(venueId, it) } +
+                mesa.openOrders.filter { idDelServidor(venueId, it.id) in idsDeLaCuenta }.map { it.id }
+            if (!servidorConVisitaNueva) return@withLock false
+            val marca = LiberadaSinRed(tableId, ids, clearIntentId, cuentas = mesa.openOrders.filter { it.id in ids },
+                enMillis = System.currentTimeMillis())
+            val tables = _tables.value.map { if (it.id == tableId) sinCuentas(it, ids) else it }
+            val nuevas = liberadas.filterNot { it.clearIntentId == clearIntentId } + marca
+            // Sin versión: la siguiente vuelta del sondeo vuelve a pedir /tables (lo guardado ya no es la foto del servidor).
+            payloadCache.saveDurable(com.avoqado.pos.core.data.local.PayloadCache.TYPE_TABLES, venueId,
+                cacheJson.encodeToString(TablesCacheBlob.serializer(), TablesCacheBlob(tables, _ownership.value.enforced, _ownership.value.staffId,
+                    _ownership.value.canManageAll, null, floorPlanVersionFromTables, nuevas, servidorConVisitaNueva)))
+            tablesVersion = null
+            liberadas = nuevas
+            _tables.value = tables
+            true
+        }
+
+    /**
+     * D8: ¿este aparato soltó sin red una cuenta de [tableId] cuyo trabajo sigue en camino? Entonces la cuenta nueva de esa mesa se abre
+     * POR LA COLA (detrás de su cobro y su «liberar»), aunque haya red, como visita nueva (`OPEN_TABLE.visitaNueva`: el SERVIDOR nunca la
+     * mete en otra cuenta de la mesa). Si no, se abre como siempre.
+     */
+    fun abrirComoVisitaNueva(venueId: String, tableId: String): Boolean =
+        loadedVenueId == venueId && liberadas.any { it.tableId == tableId }
 
     private suspend fun hydrateFromCache(venueId: String) {
         if (_tables.value.isNotEmpty()) return
@@ -323,6 +487,8 @@ class TableServiceRepository @Inject constructor(
             val blob = cachedFloor(venueId) ?: return
             tablesVersion = blob.tablesVersion
             _floorPlanVersionFromTables.value = blob.floorPlanVersion
+            liberadas = blob.liberadasSinRed
+            servidorConVisitaNueva = blob.servidorConVisitaNueva
             _tables.value = blob.tables
             _ownership.value = TableOwnership(blob.enforced, blob.staffId, blob.canManageAll, roleManager.canSettleAnyTable)
         }.onFailure { Log.e(TAG, "❌ Cache de mesas corrupto: ${it.message}") }
@@ -331,6 +497,7 @@ class TableServiceRepository @Inject constructor(
     /** Plano en el POS: pinta lo guardado al entrar, antes de tocar la red (sólo si no hay mesas en memoria). */
     suspend fun hydrate(venueId: String) = floorWrites.withLock {
         if (loadedVenueId != venueId) mirarA(venueId) else hydrateFromCache(venueId)
+        devolverRechazadas(venueId)
     }
 
     /** Opens a table (reuses its active order or creates an empty one). Returns the order. */

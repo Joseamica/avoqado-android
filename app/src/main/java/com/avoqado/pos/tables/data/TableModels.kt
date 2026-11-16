@@ -188,7 +188,13 @@ data class TablesResponse(
      */
     val tablesVersion: String? = null,
     val floorPlanVersion: String? = null,
+    /** D8: lo que este servidor entiende de la cola sin red. Servidores viejos no lo mandan. */
+    val capabilities: TablesCapabilities? = null,
 )
+
+/** D8 (hz:033d44ca:D8): con `openTableNewVisit`, el SERVIDOR nunca mete una visita nueva (`OPEN_TABLE.visitaNueva`) en otra cuenta. */
+@Serializable
+data class TablesCapabilities(val openTableNewVisit: Boolean = false)
 
 /** VenueSettings que afectan al módulo de mesas. */
 @Serializable
