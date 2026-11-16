@@ -294,6 +294,7 @@ class LanHubCoordinator(
 
         // 4. Yo soy el árbitro: en local, sin dar la vuelta por la red.
         val pedido = pedido(gen, seq, declaracion)
+        val enviadoMs = relojMs()
         val resp = if (soyYo) server.respondTo(LeaseProtocol.encode(pedido)) else client.estado(arbitro, pedido)
 
         // 5. Primero el contexto local: si cambió la época o el árbitro elegido, nada de lo que volvió vale (ni null, ni stale, ni
@@ -301,14 +302,41 @@ class LanHubCoordinator(
         //    r1 #3): una época nueva de otro hilo espera a que esto termine o lo encuentra ya invalidado.
         return aplicarSiSigue(epoca, { sigueElegido(arbitro, cambios) }) {
             trasValidar()
-            aplicarRespuesta(resp, arbitro, declaracion)
+            aplicarRespuesta(resp, arbitro, Callado(arbitro.deviceId, epoca, cambios, enviadoMs), declaracion)
         } ?: 0
     }
 
+    /**
+     * D14 (hz:033d44ca:D14): a quién se le habló y cuándo salió el mensaje. [silencio] guarda el PRIMERO de una racha sin respuesta:
+     * desde [desdeMs] ese árbitro, en esa época y en esa elección (`cambiosDeArbitro`, por X → Y → X, Codex D14 r1 #2), no ha contestado
+     * nada. Cualquier respuesta lo borra. Lo toca sólo el reconciliador, dentro del candado de la época.
+     */
+    private data class Callado(val arbitro: String, val epoca: Long, val cambios: Long, val desdeMs: Long) {
+        fun mismo(o: Callado) = arbitro == o.arbitro && epoca == o.epoca && cambios == o.cambios
+    }
+    private var silencio: Callado? = null
+
     /** Pasos 6 a 11 de [reconciliarUnaVez], dentro del candado de la época: nada de red ni de suspensión aquí. */
-    private fun aplicarRespuesta(resp: LeaseResponse?, arbitro: LanPeer, declaracion: MesasDeEstaCaja.Declaracion): Long {
-        // 6 y 8. Sin respuesta, u `ok` de otro árbitro: lo conocido no cambia. Nunca 0: un rechazo instantáneo no hace un bucle sin pausa.
-        if (resp == null || (resp.status == LeaseProtocol.STATUS_OK && resp.arbitro != arbitro.deviceId)) {
+    private fun aplicarRespuesta(resp: LeaseResponse?, arbitro: LanPeer, envio: Callado, declaracion: MesasDeEstaCaja.Declaracion): Long {
+        // 6. Sin respuesta. D14: el árbitro que se quedó sin WiFi seguía en la lista y cada apertura esperaba los 15 s enteros. Un silencio
+        //    corto se reintenta en 1 s (un bache con el árbitro vivo); cuando el mismo árbitro lleva [SILENCIO_PARA_ISLA_MS] sin contestar
+        //    nada de lo que se le mandó, las aperturas que viajaron en ESTA declaración van a isla, que es lo que les daba el plazo. Por
+        //    tiempo y no por número de faltas (Codex D14 r1 #1): dos rechazos al instante no son seis segundos de silencio. La pregunta
+        //    directa sigue: `esperar` la espera antes de abrir, y una «ocupada» directa gana.
+        if (resp == null) {
+            val racha = silencio?.takeIf { it.mismo(envio) } ?: envio
+            silencio = racha
+            val callaMs = relojMs() - racha.desdeMs
+            if (callaMs >= SILENCIO_PARA_ISLA_MS && declaracion.aperturas.isNotEmpty()) {
+                Log.w(TAG, "🏝️ El árbitro ${arbitro.deviceId.take(6)} lleva ${callaMs / 1000} s sin contestar — aperturas en isla")
+                declaracion.aperturas.forEach { mesas.resolver(it.id, LeaseOutcome.NoHub) }
+            }
+            return if (mesas.hayPendientes(venueId)) REINTENTO_MS else LATIDO_MS
+        }
+        silencio = null
+
+        // 8. `ok` de otro árbitro: lo conocido no cambia. Nunca 0: un rechazo instantáneo no hace un bucle sin pausa.
+        if (resp.status == LeaseProtocol.STATUS_OK && resp.arbitro != arbitro.deviceId) {
             return if (mesas.hayPendientes(venueId)) REINTENTO_MS else LATIDO_MS
         }
 
@@ -444,6 +472,12 @@ class LanHubCoordinator(
 
         /** Sin respuesta y con una apertura esperando: se reintenta pronto, nunca en 0. */
         const val REINTENTO_MS = 1_000L
+
+        /**
+         * D14: silencio del mismo árbitro (desde el primer mensaje sin respuesta) para dar en isla las aperturas que viajan. Dos plazos de
+         * un mensaje: al menos dos intentos enteros sin una sola respuesta, en la red del local, donde un aparato vivo contesta en ms.
+         */
+        const val SILENCIO_PARA_ISLA_MS = 2 * LeaseClient.PLAZO_HUB_MS
 
         /** El mismo tope de un id que `Presencias` (MAX_ID). */
         const val MAX_MESA = 64
