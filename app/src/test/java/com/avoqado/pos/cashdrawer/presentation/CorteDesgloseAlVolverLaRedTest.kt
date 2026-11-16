@@ -72,4 +72,30 @@ class CorteDesgloseAlVolverLaRedTest {
         assertEquals(2, llamadas)
         assertEquals(efectivo, vm.tenderBreakdown.value)
     }
+
+    @Test fun `Codex r3 2 reabrir la misma caja sin red no borra su desglose y otra caja no hereda el ajeno`() {
+        val repo = mockk<CashDrawerRepository>(relaxed = true)
+        coEvery { repo.getTenderBreakdown(1L, 2L) } returnsMany listOf(efectivo, null)
+        coEvery { repo.getTenderBreakdown(5L, 6L) } returns null
+        val vm = pantalla(repo)
+        vm.loadTenderBreakdown(1L, 2L)
+        assertEquals(efectivo, vm.tenderBreakdown.value)
+        vm.loadTenderBreakdown(1L, 2L) // la misma caja, ya sin red
+        assertEquals(efectivo, vm.tenderBreakdown.value)
+        vm.loadTenderBreakdown(5L, 6L) // otra caja sin red: no enseña el desglose de la anterior
+        assertNull(vm.tenderBreakdown.value)
+    }
+
+    @Test fun `una lectura que empezo antes y termina despues no pisa a la nueva`() {
+        val repo = mockk<CashDrawerRepository>(relaxed = true)
+        val vieja = CompletableDeferred<List<CashDrawerRepository.TenderRow>?>()
+        val otro = listOf(CashDrawerRepository.TenderRow("CASH", 99))
+        coEvery { repo.getTenderBreakdown(1L, 2L) } coAnswers { vieja.await() }
+        coEvery { repo.getTenderBreakdown(1L, 3L) } returns efectivo
+        val vm = pantalla(repo)
+        vm.loadTenderBreakdown(1L, 2L)
+        vm.loadTenderBreakdown(1L, 3L)
+        vieja.complete(otro)
+        assertEquals(efectivo, vm.tenderBreakdown.value)
+    }
 }

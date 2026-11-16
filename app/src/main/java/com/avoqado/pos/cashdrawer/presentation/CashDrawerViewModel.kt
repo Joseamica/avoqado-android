@@ -129,31 +129,51 @@ class CashDrawerViewModel @Inject constructor(
     private val _tenderBreakdown = MutableStateFlow<List<CashDrawerRepository.TenderRow>?>(null)
     val tenderBreakdown: StateFlow<List<CashDrawerRepository.TenderRow>?> = _tenderBreakdown.asStateFlow()
 
-    /** D68 #13: la lectura del desglose en vuelo, y cuál es la última (una vieja que llega tarde no pisa a la nueva). */
+    /**
+     * D68 #13: UNA sola lectura del desglose para las tres entradas (abrir el corte, imprimir el parcial y volver la red). Codex
+     * r1–r3 encontraron la misma familia tres veces con dos caminos que se coordinaban a mano; ahora las reglas viven sólo aquí:
+     * - cada lectura toma su turno AL EMPEZAR: una que empezó después manda aunque ésta termine al último;
+     * - si falla (sin red), no borra el desglose de la MISMA caja (mismo inicio); el de otra caja sí se quita, porque no es suyo;
+     * - si la red volvió mientras estaba en vuelo y falló, al terminar se pide otra vez.
+     * Todo corre en el hilo principal (`viewModelScope`), así que estas marcas no se pisan entre hilos.
+     */
     private var cargandoDesglose = false
     private var generacionDelDesglose = 0
-    /** D68 #13 (Codex r1 #2): la red volvió mientras una lectura seguía en vuelo; si ésa falla, se pide otra vez al terminar. */
     private var reintentoPendiente: Pair<Long, Long>? = null
+    /** El inicio de la caja del desglose que está en pantalla (`null` = ninguno). */
+    private var desdeDelDesglose: Long? = null
 
-    /** Fetch the payment-method breakdown for a session's window (corte de caja). */
-    fun loadTenderBreakdown(fromMillis: Long, toMillis: Long) {
+    /** Lee el desglose de la ventana [fromMillis, toMillis] y lo publica según las reglas de arriba. `null` = no se pudo consultar. */
+    private suspend fun leerDesglose(fromMillis: Long, toMillis: Long): List<CashDrawerRepository.TenderRow>? {
         val generacion = ++generacionDelDesglose
         cargandoDesglose = true
         reintentoPendiente = null
-        viewModelScope.launch {
-            var desglose: List<CashDrawerRepository.TenderRow>? = null
-            try {
-                desglose = repository.getTenderBreakdown(fromMillis, toMillis)
-                if (generacion == generacionDelDesglose) _tenderBreakdown.value = desglose
-            } finally {
-                if (generacion == generacionDelDesglose) {
-                    cargandoDesglose = false
-                    val otra = reintentoPendiente
-                    reintentoPendiente = null
-                    if (desglose == null && otra != null) loadTenderBreakdown(otra.first, otra.second)
-                }
-            }
+        val desglose = try {
+            repository.getTenderBreakdown(fromMillis, toMillis)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            if (generacion == generacionDelDesglose) cargandoDesglose = false
+            throw e
+        } catch (_: Exception) {
+            null
         }
+        if (generacion != generacionDelDesglose) return desglose // una lectura más nueva manda en la pantalla
+        cargandoDesglose = false
+        if (desglose != null) {
+            _tenderBreakdown.value = desglose
+            desdeDelDesglose = fromMillis
+        } else if (desdeDelDesglose != fromMillis) {
+            _tenderBreakdown.value = null
+            desdeDelDesglose = null
+        }
+        val otra = reintentoPendiente
+        reintentoPendiente = null
+        if (desglose == null && otra != null) viewModelScope.launch { leerDesglose(otra.first, otra.second) }
+        return desglose
+    }
+
+    /** Fetch the payment-method breakdown for a session's window (corte de caja). */
+    fun loadTenderBreakdown(fromMillis: Long, toMillis: Long) {
+        viewModelScope.launch { leerDesglose(fromMillis, toMillis) }
     }
 
     /**
@@ -769,20 +789,9 @@ class CashDrawerViewModel @Inject constructor(
             val confirmado = sincronizar()
             val frescos = runCatching { repository.getEvents(session.id) }.getOrDefault(events)
             loadCurrentSession()
-            // D68 #13 (Codex r1 #1 y r2 #1): esta lectura toma su turno AL EMPEZAR, como cualquier otra: una que empiece después
-            // gana aunque ésta termine al último, y sin red no borra de la pantalla un desglose bueno (el papel con `null` dice que
-            // no se pudo consultar).
-            val generacion = ++generacionDelDesglose
-            cargandoDesglose = true
-            reintentoPendiente = null
-            // `null` si no se pudo consultar — NUNCA `emptyList()`, que significa "no hubo cobros".
-            val tenders = runCatching {
-                repository.getTenderBreakdown(session.openedAt, System.currentTimeMillis())
-            }.getOrNull()
-            if (generacion == generacionDelDesglose) {
-                cargandoDesglose = false
-                if (tenders != null) _tenderBreakdown.value = tenders
-            }
+            // `null` si no se pudo consultar — NUNCA `emptyList()`, que significa "no hubo cobros". D68 #13: la misma lectura
+            // que la pantalla ([leerDesglose]); el papel con `null` dice que no se pudo consultar.
+            val tenders = leerDesglose(session.openedAt, System.currentTimeMillis())
             printCorte(
                 session = session,
                 events = frescos,
