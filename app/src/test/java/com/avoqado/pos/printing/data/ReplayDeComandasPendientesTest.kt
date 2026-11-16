@@ -202,15 +202,21 @@ class ReplayDeComandasPendientesTest {
     fun `P1 guardar lo reducido no renueva la vigencia de 8 horas`() = runTest {
         val almacen = AlmacenFalsoReplay()
         val store = ComandasPendientesStore(almacen)
-        val t0 = 1_000_000_000L
+        // Hace 7 h: todavía vigente, así que el reintento SÍ corre y guarda lo reducido (Codex D11 r2: con una fecha de
+        // 1970 la comanda vencía antes de reintentar y la prueba pasaba sin probar nada).
+        val t0 = System.currentTimeMillis() - 7L * 60 * 60 * 1000
         store.guardar(falloDos, ahora = t0)
+        var llamadas = 0
         val dispatcher = mockk<ComandaDispatcher>()
-        coEvery { dispatcher.reintentar(any(), any()) } returns soloBarra
+        coEvery { dispatcher.reintentar(any(), any()) } coAnswers { llamadas++; soloBarra }
 
         ReplayDeComandasPendientes(store, dispatcher).intentarAhora()
 
+        assertEquals("el reintento no corrió", 1, llamadas)
+        assertEquals(listOf("st_barra"), store.leer("venue-1", ahora = t0 + 60_000)?.trabajo?.planes?.map { it.stationId })
         val ochoHorasYUnMinuto = 8L * 60 * 60 * 1000 + 60_000
-        assertNull("la comanda de hace 8 h siguió viva", store.leer("venue-1", ahora = t0 + ochoHorasYUnMinuto))
+        assertNull("guardar lo reducido renovó la vigencia", store.leer("venue-1", ahora = t0 + ochoHorasYUnMinuto))
+        assertNull("con la app abierta tampoco vence a su hora", store.vigente(ahora = t0 + ochoHorasYUnMinuto))
     }
 
     /**
