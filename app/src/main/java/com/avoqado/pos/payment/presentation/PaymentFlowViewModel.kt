@@ -1797,12 +1797,16 @@ class PaymentFlowViewModel @Inject constructor(
      */
     private val _avisoEnCurso = MutableStateFlow<EstadoDeComanda?>(null)
 
-    /** El pedido cuyo aviso el cajero se quitó de encima sin resolverlo (toque fuera / Atrás). */
-    private val _ocultoSinResolver = MutableStateFlow<String?>(null)
+    /**
+     * La comanda cuyo aviso el cajero se quitó de encima sin resolverlo (toque fuera / Atrás).
+     * 🔴 D1 (Codex r6 #2): la comanda, no su folio. Los cursos de una venta comparten folio y la libreta ya guarda varias:
+     * ocultar uno por folio escondía también el aviso de otro curso que nadie ocultó.
+     */
+    private val _ocultoSinResolver = MutableStateFlow<EstadoDeComanda.NoSalio?>(null)
 
     val comandaWarning: StateFlow<EstadoDeComanda?> =
         combine(_avisoEnCurso, comandasPendientesStore.pendiente, _ocultoSinResolver) { enCurso, pendiente, oculto ->
-            enCurso ?: pendiente?.takeIf { it.orderNumber != oculto }
+            enCurso ?: pendiente?.takeIf { oculto == null || !comandasPendientesStore.mismaComanda(it, oculto) }
         }.stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
     /**
@@ -1826,7 +1830,7 @@ class PaymentFlowViewModel @Inject constructor(
         val visto = aviso ?: enCurso ?: comandasPendientesStore.pendiente.value
         val deLaLibreta = (visto as? EstadoDeComanda.NoSalio)?.takeIf { v ->
             // Sin `aviso`, como antes: sólo si lo que se ve ES la libreta (no un aviso en curso de otra venta, N-I1).
-            (aviso != null || enCurso == null) && comandasPendientesStore.pendientes.value.any { it == v }
+            (aviso != null || enCurso == null) && comandasPendientesStore.contiene(v)
         }
         if (deLaLibreta != null) {
             if (enCurso == deLaLibreta) _avisoEnCurso.value = null
@@ -1848,8 +1852,10 @@ class PaymentFlowViewModel @Inject constructor(
         /** D1: el aviso que la pantalla pintó (ver [clearComandaWarning]); `null` = el que hay ahora. */
         aviso: EstadoDeComanda? = null,
     ) {
-        _ocultoSinResolver.value = ((aviso ?: comandaWarning.value) as? EstadoDeComanda.NoSalio)?.orderNumber
-        _avisoEnCurso.value = null
+        val visto = aviso ?: comandaWarning.value
+        _ocultoSinResolver.value = visto as? EstadoDeComanda.NoSalio
+        // D1 (Codex r6 #2): sólo el aviso en curso que se tocó; uno que llegó después del toque se queda.
+        if (aviso == null || _avisoEnCurso.value == aviso) _avisoEnCurso.value = null
     }
 
     // 🔴 Ya NO se lee el disco aquí: lo pendiente lo carga `AppState` una sola vez al abrir

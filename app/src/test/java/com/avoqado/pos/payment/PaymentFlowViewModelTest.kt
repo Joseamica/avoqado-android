@@ -5544,6 +5544,28 @@ class PaymentFlowViewModelTest {
         assertEquals("se tachó la comanda que nadie cantó", listOf("YYYY"), storeDePendientes.pendientes.value.map { it.orderNumber })
     }
 
+    /**
+     * P2 D1 (Codex r6 #2): ocultar un curso no esconde el aviso de OTRO curso de la misma venta. Los cursos comparten folio;
+     * antes se ocultaba por folio y, cuando el curso oculto salía, el otro seguía sin aviso aunque nadie lo ocultó.
+     */
+    @Test
+    fun `P2 D1 ocultar un curso no esconde el aviso de otro curso del mismo folio`() = runTest {
+        val cursoA = comandaX
+        val cursoB = comandaX.copy(estaciones = listOf("Cocina"), trabajo = comandaX.trabajo!!.copy(orderType = "En tienda · Plato fuerte"))
+        assertTrue(storeDePendientes.guardar(cursoA))
+        assertTrue(storeDePendientes.guardar(cursoB))
+        advanceUntilIdle()
+        assertEquals(cursoB, viewModel.comandaWarning.value)
+
+        viewModel.ocultarAvisoDeComanda(cursoB)
+        advanceUntilIdle()
+        assertNull(viewModel.comandaWarning.value)
+        storeDePendientes.soltarSi(cursoB.trabajo!!) // el curso B por fin salió
+        advanceUntilIdle()
+
+        assertEquals("el aviso del curso A se quedó escondido", cursoA, viewModel.comandaWarning.value)
+    }
+
     /** El cierre solo del toast (y Atrás / tocar fuera) va a `ocultarAvisoDeComanda`: la libreta y sus filas quedan. */
     @Test
     fun `P1 ocultar el aviso Reintentando no toca la libreta - su reloj y el del replay siguen`() = runTest {

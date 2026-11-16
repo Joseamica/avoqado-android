@@ -64,7 +64,15 @@ class ComandasPendientesStore @Inject constructor(
         val desde: Long?,
         val venueId: String?,
         val aqui: Boolean,
-    )
+        /**
+         * 🔴 Lo que esta MISMA comanda fue antes de cada reintento parcial ([reemplazar]: Cocina salió y queda Barra).
+         * Es su identidad para el cajero (Codex D1 r4–r6): la pantalla pudo pintar la versión anterior y el toque («Ya la
+         * canté», ocultar) tiene que reconocerla igual. Sólo en memoria: tras reiniciar, la pantalla pinta la de ahora.
+         */
+        val antes: List<EstadoDeComanda.NoSalio> = emptyList(),
+    ) {
+        fun es(aviso: EstadoDeComanda.NoSalio) = estado == aviso || aviso in antes
+    }
 
     /**
      * 🔴 D1 (hz:033d44ca:D1, 16-nov-2026): TODAS las comandas que no salieron, de todas las sucursales, en el orden en que
@@ -203,6 +211,16 @@ class ComandasPendientesStore @Inject constructor(
         true
     }
 
+    /** ¿[aviso] es (o fue, antes de un reintento parcial) una comanda de la libreta de esta sucursal? */
+    fun contiene(aviso: EstadoDeComanda.NoSalio): Boolean = synchronized(cerrojo) {
+        entradas.any { visible(it) && it.es(aviso) }
+    }
+
+    /** ¿[a] y [b] son la MISMA comanda de la libreta (iguales, o una es la versión anterior de la otra)? */
+    fun mismaComanda(a: EstadoDeComanda.NoSalio, b: EstadoDeComanda.NoSalio): Boolean = synchronized(cerrojo) {
+        a == b || entradas.any { it.es(a) && it.es(b) }
+    }
+
     @Serializable
     private data class Guardada(
         val estaciones: List<String>,
@@ -267,7 +285,7 @@ class ComandasPendientesStore @Inject constructor(
         ahora: Long = System.currentTimeMillis(),
     ): Boolean = synchronized(cerrojo) {
         val previa = entradas.firstOrNull { it.estado.trabajo == anterior } ?: return false
-        val nueva = previa.copy(estado = resultado, desde = previa.desde ?: ahora)
+        val nueva = previa.copy(estado = resultado, desde = previa.desde ?: ahora, antes = previa.antes + previa.estado)
         entradas = entradas.map { if (it === previa) nueva else it }
         val ok = persistir(ahora)
         publicar()
@@ -364,13 +382,13 @@ class ComandasPendientesStore @Inject constructor(
      *
      * 🔴 [aviso] es la comanda que la persona VIO al tocar (Codex D1 r4 #1): si entre leerla y tocar llegó otra, «la más
      * reciente» ya sería la nueva, y se tachaba ésa —sin haber salido ni haberla cantado nadie— mientras la cantada seguía
-     * viva. `null` = la que se enseña ahora.
+     * viva. Se reconoce también en la versión que tenía antes de un reintento parcial (r6 #1). `null` = la que se enseña.
      *
      * @return el cierre en curso (las pruebas lo esperan), o `null` si no había nada que cerrar.
      */
     fun yaLaCante(aviso: EstadoDeComanda.NoSalio? = null): Job? {
         val trabajo = synchronized(cerrojo) {
-            val vista = (if (aviso != null) entradas.lastOrNull { visible(it) && it.estado == aviso } else entradas.lastOrNull(::visible))
+            val vista = (if (aviso != null) entradas.lastOrNull { visible(it) && it.es(aviso) } else entradas.lastOrNull(::visible))
                 ?: return null
             entradas = entradas.filter { it !== vista }
             persistir()

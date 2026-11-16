@@ -544,6 +544,27 @@ class ComandasPendientesStoreTest {
         assertEquals(listOf("ORD-2"), store.pendientes.value.map { it.orderNumber })
     }
 
+    /**
+     * P1 (Codex D1 r6 #1) La pantalla pintó A (Cocina + Barra); un reintento parcial la dejó en A′ (sólo Barra) antes del
+     * toque. «Ya la canté» sobre A resuelve A′: es la MISMA comanda. Antes se quedaba viva y el reloj imprimía Barra.
+     */
+    @Test
+    fun `P1 ya la cante reconoce la comanda aunque un reintento parcial la haya cambiado`() {
+        val store = ComandasPendientesStore(AlmacenFalso()).apply { cargar("venue-1", ahora) }
+        val a = venta(1)
+        store.guardar(a, ahora)
+        store.guardar(venta(2), ahora)
+        val aPrima = a.copy(causa = "sin papel otra vez", trabajo = a.trabajo!!.copy(copiasPendientes = mapOf("st_barra" to 1)))
+        assertTrue(store.reemplazar(a.trabajo!!, aPrima, ahora))
+
+        assertTrue(store.contiene(a))
+        assertTrue(store.mismaComanda(a, aPrima))
+        assertFalse(store.mismaComanda(a, venta(2)))
+        store.yaLaCante(a)
+
+        assertEquals(listOf("ORD-2"), store.pendientes.value.map { it.orderNumber })
+    }
+
     /** `sigueVigente`: presente, no vencida y de la sucursal cargada; una vencida se suelta. */
     @Test
     fun `sigue vigente dice si se puede mandar ya`() {
