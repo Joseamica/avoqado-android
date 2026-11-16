@@ -116,6 +116,48 @@ class ComandasPendientesStore @Inject constructor(
     }
 
     /**
+     * Lo que dejó un reintento de [anterior] — el reloj o «Volver a imprimir» (D11, 16-nov-2026).
+     *
+     * 🔴 Existe porque el reintento sólo BORRABA cuando todo salía. Si Cocina salía y Barra volvía a fallar, el
+     * `NoSalio` traía la lista ya reducida (sólo Barra), pero aquí seguía la vieja (Cocina + Barra): el siguiente tic
+     * del reloj, o el siguiente toque, le mandaba a Cocina el mismo ticket otra vez — la cocina podía preparar dos
+     * veces el mismo plato.
+     *
+     * - **Sólo si el pendiente sigue siendo [anterior].** La libreta es de UNA ranura: si mientras se imprimía entró
+     *   el fallo de OTRA venta, ése manda y no se pisa (tampoco se borra).
+     * - **Con trabajo reenviable**, se guarda la lista reducida, en memoria y en disco, **conservando la hora del
+     *   primer fallo**: la vigencia de 8 h cuenta desde que la comanda no salió, no desde el último intento (si no, el
+     *   reloj la renovaría cada minuto y una comanda de ayer seguiría viva).
+     * - **Sin nada reenviable** (lo que faltaba salió, pero lo que queda ya no tiene impresora): el aviso se sigue
+     *   VIENDO —la pantalla lo pinta sin «Volver a imprimir» y el cajero lo cierra con «Ya la canté»— pero se borra
+     *   del disco y el reloj ya no tiene qué mandar. Reenviar el trabajo viejo sólo repetiría lo que ya salió.
+     * - Si el disco no acepta la escritura, se BORRA el viejo del disco en vez de dejarlo: tras reiniciar, su «Volver a
+     *   imprimir» repetiría lo que ya salió. Un ticket duplicado en la cocina es peor que el aviso que se pierde.
+     *
+     * @return `false` si no cambió nada (otra venta en la ranura) o si el disco no quedó al día.
+     */
+    fun reemplazar(
+        anterior: TrabajoPendiente,
+        resultado: EstadoDeComanda.NoSalio,
+        ahora: Long = System.currentTimeMillis(),
+    ): Boolean {
+        if (_pendiente.value?.trabajo != anterior) return false
+        val trabajo = resultado.trabajo
+        if (trabajo == null) {
+            runCatching { almacen.borrar() }
+            _pendiente.value = resultado
+            return true
+        }
+        val desde = runCatching { almacen.leer()?.let { json.decodeFromString<Guardada>(it).guardadaEn } }.getOrNull() ?: ahora
+        val escrito = runCatching {
+            almacen.escribir(json.encodeToString(Guardada(resultado.estaciones, resultado.causa, resultado.orderNumber, trabajo, desde)))
+        }.onFailure { Log.w(TAG, "No se pudo guardar lo que falta de la comanda: ${it.message}") }.getOrDefault(false)
+        if (!escrito) runCatching { almacen.borrar() }
+        _pendiente.value = resultado
+        return escrito
+    }
+
+    /**
      * Devuelve el aviso guardado, o `null` si no hay o si ya VENCIÓ.
      *
      * La vigencia no es cosmética: una comanda de ayer ya se resolvió de alguna forma —la

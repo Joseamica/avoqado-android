@@ -82,10 +82,14 @@ class ReplayDeComandasPendientes @Inject constructor(
             Log.d(TAG, "Reintentando la comanda del pedido ${trabajo.orderNumber}")
             val estado = comandaDispatcher.reintentar(trabajo)
             if (estado is EstadoDeComanda.Salio) {
-                // 🔴 Se limpia SÓLO cuando de verdad salió. Un `NoSalio` deja el pendiente donde
-                // estaba para que el siguiente tic lo vuelva a intentar.
+                // 🔴 Se limpia SÓLO cuando de verdad salió.
                 store.limpiar()
                 Log.d(TAG, "✅ La comanda del pedido ${trabajo.orderNumber} por fin salió")
+            } else if (estado is EstadoDeComanda.NoSalio) {
+                // 🔴 D11 (16-nov-2026): el `NoSalio` trae SÓLO lo que sigue faltando. Si Cocina salió y Barra no, el
+                // pendiente se queda con Barra; dejar el viejo hacía que el siguiente tic le mandara a Cocina el mismo
+                // ticket otra vez. Ver [ComandasPendientesStore.reemplazar].
+                store.reemplazar(trabajo, estado)
             }
             return estado
         } finally {
