@@ -16,6 +16,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.PriorityHigh
+import androidx.compose.material.icons.filled.WifiOff
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -86,6 +87,11 @@ fun AvoqadoWarningToast(
      * Codex, 2026-09-07). Ahí se pasa un cierre que sólo OCULTA.
      */
     onCerrarSinResolver: (() -> Unit)? = null,
+    /**
+     * D14 (hz:87f4b879:D14): el aviso es de «Sin conexión»: un estado normal (regla «todo funciona sin red»), no una advertencia.
+     * Mismo aviso, en gris y con el wifi tachado, como el «Sin conexión» de la pantalla de cobro.
+     */
+    sinRed: Boolean = false,
 ) {
     var visible by remember { mutableStateOf(false) }
     val esAccionable = (primaryLabel != null && onPrimary != null) || secondaryLabel != null
@@ -141,13 +147,13 @@ fun AvoqadoWarningToast(
                 Box(
                     modifier = Modifier
                         .size(64.dp)
-                        .background(Warning, CircleShape),
+                        .background(if (sinRed) MaterialTheme.colorScheme.surfaceVariant else Warning, CircleShape),
                     contentAlignment = Alignment.Center,
                 ) {
                     Icon(
-                        imageVector = Icons.Filled.PriorityHigh,
-                        contentDescription = null,
-                        tint = Color.White,
+                        imageVector = if (sinRed) Icons.Filled.WifiOff else Icons.Filled.PriorityHigh,
+                        contentDescription = if (sinRed) "Sin conexión" else null,
+                        tint = if (sinRed) MaterialTheme.colorScheme.onSurfaceVariant else Color.White,
                         modifier = Modifier.size(36.dp),
                     )
                 }

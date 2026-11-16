@@ -245,6 +245,23 @@ class PaymentFlowConSaldoTest {
         assertTrue(vm().cobrarConSaldo(identified,8000) is DesenlaceDeCobro.Cobrado)
         assertTrue(server.takeRequest(1,TimeUnit.SECONDS)!!.path!!.endsWith("/gift-cards/pay-new-order"))
     }
+    /**
+     * D15 (Codex r1 #2): `pay-new-order` no lleva el PIN de un gerente. Una venta que regala un producto, de una sesión sin el permiso de
+     * cortesía, no sale por ahí (antes: 403 «No tienes permiso»); con el permiso sale como hoy.
+     */
+    @Test fun cortesiaDeProductoSinPermisoNoCreaLaCuentaConSaldo()=runTest {
+        every { roles.canCompOrders } returns false
+        cart=cart.copy(items=cart.items+CartItem(id="regalo",type=CartItemType.ProductItem("catalog-2"),name="Helado",unitPrice=5000,
+            isCortesia=true,cortesiaReason="Cortesía"))
+        val r=vm().cobrarConSaldo(identified,8000)
+        assertEquals(DesenlaceDeCobro.NoSalio(com.avoqado.pos.payment.data.model.SALDO_NO_LLEVA_PIN_DE_GERENTE),r)
+        assertEquals(0,server.requestCount);assertEquals(0,cleared);assertFalse(cart.isEmpty)
+
+        every { roles.canCompOrders } returns true
+        server.enqueue(response())
+        assertTrue(vm().cobrarConSaldo(identified,8000) is DesenlaceDeCobro.Cobrado)
+        assertTrue(server.takeRequest(1,TimeUnit.SECONDS)!!.path!!.endsWith("/gift-cards/pay-new-order"))
+    }
     /** D2 · 7b: `pay-new-order` crea la venta con el mismo cuerpo que el cobro: la etiqueta y el PIN en el CUERPO, nunca en el encabezado. */
     @Test fun descuentoDelClienteViajaConSuEtiquetaYSuTokenAPayNewOrder()=runTest {
         every { roles.canApplyDiscounts } returns false
