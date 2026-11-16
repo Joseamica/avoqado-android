@@ -26,7 +26,7 @@ class SalesNoticeBannerTest {
         SalesNoticeSqlTest.Fixture().use { f ->
             // Un cobro sin confirmar (frena) y dos «Pago registrado · revisa las diferencias» (SYNCED: ya están en el servidor).
             f.payment("sin-confirmar")
-            val resultado="""{"paymentId":"p","orderId":"o","amountCents":100,"tipCents":0,"camposDiferentes":["tipCents"]}"""
+            val resultado="""{"paymentId":"p","orderId":"o","amountCents":100,"tipCents":0,"camposDiferentes":["tipCents"],"camposNoComprobados":[]}"""
             for(id in listOf("registrado-1","registrado-2")) f.payment(id,changes=mapOf("syncStatus" to "SYNCED",
                 "q15Reason" to com.avoqado.pos.payment.data.ConciliacionDelCobro.DIFERENCIA,"q15ResultJson" to resultado))
             val summary=f.dao.summary("venue-A",emptySet())
