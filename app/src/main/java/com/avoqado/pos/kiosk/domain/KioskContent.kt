@@ -68,6 +68,12 @@ sealed interface KioskContent {
          * su palomita y un aviso en gris.
          */
         val offline: Boolean = false,
+        /**
+         * Asistencia verificada (16-nov-2026): cuántos lugares ya llegaron y cuántos se esperan. Desde entonces el
+         * SERVIDOR no manda nombres ([people] vacío) y la pantalla enseña el QR en vez de la lista.
+         */
+        val arrivedCount: Int = 0,
+        val expectedCount: Int = 0,
     ) : KioskContent
 
     /**
@@ -116,6 +122,11 @@ sealed interface KioskContent {
     data class CheckedIn(
         val customerName: String,
         val session: KioskSession,
+        /**
+         * Tecleó su teléfono SIN RED: la llegada quedó guardada en el aparato y se manda sola. No es error (regla «sin red»):
+         * la persona pasa, y la pantalla lo dice en gris, sin nombre (sin red el aparato no sabe de quién es el teléfono).
+         */
+        val offline: Boolean = false,
     ) : KioskContent
 
     /**

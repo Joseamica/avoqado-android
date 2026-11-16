@@ -61,10 +61,17 @@ class KioskCheckInSinRedTest {
     private val api = mockk<KioskCheckInApi>().also {
         coEvery { it.checkInReservation(any(), any(), any(), any()) } returns Result.success(null)
         coEvery { it.roster() } returns Result.failure(IOException())
+        // Asistencia verificada: el QR pide su llave (aquí sin red) y el teléfono busca la hora del servidor.
+        coEvery { it.qrKey(any()) } returns Result.failure(IOException())
+        every { it.horaDelServidorMs() } returns null
     }
     private val dao = FakeReservationDao()
     private val retrier = mockk<ReservationActionsRetrier>().also { coEvery { it.drain(any()) } returns emptyMap() }
-    private val storage = mockk<SecureStorage> { every { venueId } returns "v1" }
+    private val storage = mockk<SecureStorage> {
+        every { venueId } returns "v1"
+        every { kioskQrKey } returns null
+        every { kioskDeviceKey } returns "aparato-de-prueba"
+    }
 
     // Perezoso: KioskState toma Dispatchers.Main al construirse, y la regla lo cambia hasta que empieza la prueba.
     private val kiosk by lazy { KioskState() }

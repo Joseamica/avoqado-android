@@ -45,6 +45,21 @@ class KioskState @Inject constructor() {
         if (!value) restart()
     }
 
+    // MARK: - El QR de la llegada (asistencia verificada, 16-nov-2026)
+
+    private val _qr = MutableStateFlow<String?>(null)
+
+    /**
+     * La liga que se pinta como QR para que cada alumna registre su llegada con SU celular. La firma este aparato y cambia
+     * sola cada 30 s ([com.avoqado.pos.kiosk.domain.KioskDriver]); null = todavía sin llave (el aparato nunca habló con el
+     * servidor). No lleva datos de nadie: es la misma para toda la fila.
+     */
+    val qr: StateFlow<String?> = _qr.asStateFlow()
+
+    fun setQr(url: String?) {
+        if (_qr.value != url) _qr.value = url
+    }
+
     // MARK: - Lo que se ve
 
     private val _content = MutableStateFlow<KioskContent>(KioskContent.Welcome)

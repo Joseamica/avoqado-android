@@ -9,6 +9,7 @@ import com.avoqado.pos.kiosk.domain.KioskDriver
 import com.avoqado.pos.kiosk.domain.KioskPack
 import com.avoqado.pos.kiosk.domain.KioskState
 import io.mockk.coEvery
+import io.mockk.every
 import io.mockk.coVerify
 import io.mockk.mockk
 import org.junit.Assert.assertEquals
@@ -30,7 +31,10 @@ class KioskPaisTest {
     private val pack = KioskPack("p1", "10 clases", 150_000, null)
     private val api = mockk<KioskCheckInApi>().also {
         coEvery { it.packCheckout(any(), any()) } returns Result.failure(IOException())
-        coEvery { it.checkIn(any()) } returns Result.failure(IOException())
+        coEvery { it.checkIn(any(), any(), any(), any()) } returns Result.failure(IOException())
+        // Asistencia verificada: sin ancla de hora del servidor (no se guarda en la cola) y sin llave de QR.
+        every { it.horaDelServidorMs() } returns null
+        coEvery { it.qrKey(any()) } returns Result.failure(IOException())
     }
     // Perezoso: KioskState toma Dispatchers.Main al construirse, y la regla lo cambia hasta que empieza la prueba.
     private val kiosk by lazy { KioskState() }
@@ -74,7 +78,7 @@ class KioskPaisTest {
         teclear("2025550123")
         kiosk.onSearch?.invoke()
 
-        coVerify { api.checkIn("+12025550123") }
+        coVerify { api.checkIn("+12025550123", any(), any(), any()) }
     }
 
     @Test

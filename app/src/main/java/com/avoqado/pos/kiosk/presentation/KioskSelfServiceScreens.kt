@@ -146,7 +146,8 @@ private fun IdentifyHeader(content: KioskContent.Identify, onPickCountry: () -> 
         // Para comprar: no se busca a nadie, sólo se guarda a su nombre.
         content.forPack != null -> Sub("Para guardar tus clases a tu nombre.")
         content.notFound -> Note("No encontramos ese número. Pregunta en el mostrador.")
-        content.failed -> Note("No pudimos conectarnos. Inténtalo otra vez.")
+        // Sin red y sin poder guardarlo (el aparato nunca oyó al servidor desde que arrancó): el QR sí sirve.
+        content.failed -> Note("Sin conexión. Escanea el QR con tu celular o pide ayuda en el mostrador.")
         else -> Sub("Con el número que usaste al reservar.")
     }
 }
@@ -247,6 +248,21 @@ private fun SessionCard(session: KioskSession, onCheckIn: () -> Unit) {
 
 @Composable
 internal fun CheckedIn(content: KioskContent.CheckedIn) {
+    if (content.offline) {
+        // Asistencia verificada: guardada sin red. En gris y sin nombre; nunca en el rojo de un error.
+        Screen {
+            Spacer(Modifier.weight(1f))
+            Checkmark()
+            Spacer(Modifier.height(AvoqadoTheme.spacing.xl))
+            Big("Tu llegada quedó guardada")
+            Spacer(Modifier.height(AvoqadoTheme.spacing.md))
+            Sub("Sin conexión · Se registra sola cuando vuelva el internet.")
+            Spacer(Modifier.height(AvoqadoTheme.spacing.md))
+            Text("Puedes pasar", fontSize = KBody, fontWeight = FontWeight.SemiBold, color = Success)
+            Spacer(Modifier.weight(1f))
+        }
+        return
+    }
     Screen {
         Spacer(Modifier.weight(1f))
         Checkmark()
