@@ -149,11 +149,11 @@ fun CustomerDisplaySheet(
                         style = MaterialTheme.typography.bodyLarge,
                     )
                     Text(
-                        text = "La pantalla del cliente muestra sola quién viene a la clase " +
-                            "que está por empezar, y cada quien toca su nombre. Se abre 20 " +
-                            "minutos antes y se cierra pasada la tolerancia que pusiste en " +
-                            "Ajustes de Reservaciones. Necesita que el cliente alcance a " +
-                            "tocar la segunda pantalla.",
+                        text = "La pantalla del cliente muestra un QR para que cada quien registre " +
+                            "su llegada con su celular; quien no lo trae, teclea su teléfono. Ya no " +
+                            "enseña la lista de nombres. Se abre 20 minutos antes de la clase y se " +
+                            "cierra pasada la tolerancia que pusiste en Ajustes de Reservaciones. " +
+                            "Necesita que el cliente alcance la segunda pantalla.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )

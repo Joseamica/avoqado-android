@@ -84,7 +84,14 @@ object KioskTap {
      * esperan, intactas, a que vuelva su sucursal.
      */
     fun pendingFor(rows: List<PendingReservationActionEntity>, venueId: String?, maxAttempts: Int): Int =
-        rows.count { it.action == ACTION && it.attemptCount < maxAttempts && parse(it.payloadJson)?.venueId == venueId }
+        rows.count {
+            it.attemptCount < maxAttempts && when (it.action) {
+                ACTION -> parse(it.payloadJson)?.venueId == venueId
+                // Asistencia verificada: el teléfono tecleado sin red también es una llegada que sólo sale con SU sucursal.
+                KioskPhone.ACTION -> KioskPhone.parse(it.payloadJson)?.venueId == venueId
+                else -> false
+            }
+        }
 
     /** Qué pasó con un envío. Igual para el toque en vivo y para el reenvío: un solo criterio. */
     sealed interface Outcome {
