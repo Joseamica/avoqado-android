@@ -72,8 +72,23 @@ class MesasDeEstaCaja internal constructor(
      */
     data class Declaracion(val mesas: Set<String>, val aperturas: List<Apertura>)
 
-    /** Un ticket vivo: su apertura, la PRIMERA resolución (null = pendiente) y si el árbitro pidió esperar. */
-    private data class Ticket(val apertura: Apertura, val resultado: LeaseOutcome? = null, val esperando: Boolean = false)
+    /**
+     * Un ticket vivo: su apertura, la PRIMERA resolución del árbitro (null = pendiente), si el árbitro pidió esperar y, Hub D6 bandas,
+     * lo que contestaron directo las otras cajas: [directo] es la primera «ocupada» y [directoListo] dice que la pregunta terminó.
+     */
+    private data class Ticket(
+        val apertura: Apertura,
+        val resultado: LeaseOutcome? = null,
+        val esperando: Boolean = false,
+        val directo: LeaseOutcome.Taken? = null,
+        val directoListo: Boolean = true,
+    )
+
+    /**
+     * Hub D6 bandas: con un coordinador encendido (`LanHubCoordinator.start`), cada apertura nueva nace esperando la pregunta directa
+     * a las otras cajas; sin él nadie la haría, y su espera da `NoHub` de todos modos (`LanHubService.esperarApertura`).
+     */
+    @Volatile var consultaDirecta: Boolean = false
 
     /** id → ticket, en orden de apertura. */
     private val tickets = MutableStateFlow<Map<String, Ticket>>(emptyMap())
@@ -114,9 +129,29 @@ class MesasDeEstaCaja internal constructor(
 
     fun abrirApertura(tableId: String, staffId: String, staffName: String, venueId: String): Apertura {
         val a = Apertura(UUID.randomUUID().toString(), tableId, staffId, staffName, venueId, relojMs())
-        tickets.update { it + (a.id to Ticket(a)) }
+        tickets.update { it + (a.id to Ticket(a, directoListo = !consultaDirecta)) }
         return a
     }
+
+    /** Hub D6 bandas: las aperturas vivas cuya pregunta directa no ha terminado (el coordinador las pregunta una vez cada una). */
+    fun porConsultarDirecto(): List<Apertura> = tickets.value.values.filter { !it.directoListo }.map { it.apertura }
+
+    /**
+     * Hub D6 bandas: termina la pregunta directa de [id]: [ocupada] (la primera caja que dijo «estoy») o null (nadie, o nadie contestó).
+     * Un ticket ya terminado no revive; una segunda respuesta no cambia la primera.
+     */
+    fun resolverDirecto(id: String, ocupada: LeaseOutcome.Taken?) =
+        cambiar(id) { if (it.directoListo) it else it.copy(directo = ocupada, directoListo = true) }
+
+    /**
+     * Hub D6 bandas, lo que contesta esta caja a `en_mesa`: ¿está en [tableId] de [venueId]? Sí si es su mesa actual o si tiene una apertura
+     * de esa mesa que el árbitro ya concedió o que va a abrir en isla. Una pendiente o una que salió ocupada, no: ésa no va a abrir todavía.
+     */
+    fun ocupa(tableId: String, venueId: String): Boolean =
+        mesaActual() == tableId || tickets.value.values.any {
+            it.apertura.venueId == venueId && it.apertura.tableId == tableId &&
+                (it.resultado == LeaseOutcome.Granted || it.resultado == LeaseOutcome.NoHub)
+        }
 
     /** Idempotente. Un ticket terminado no revive ni con una resolución tardía; su espera da `NoHub`. */
     fun terminarApertura(a: Apertura) = tickets.update { it - a.id }
@@ -142,12 +177,19 @@ class MesasDeEstaCaja internal constructor(
     /**
      * Espera la resolución de [a]. `NoHub` (isla) si el ticket ya no está, si vencen [PLAZO_PEDIR_MESA_MS] contados desde
      * `a.creadaEnMs` o si [sigue] da `false` (se revisa cada 250 ms). [alEsperar] suena una sola vez, cuando el árbitro pide esperar.
+     * Hub D6 bandas: una «ocupada» (directa o del árbitro) sale en cuanto llega; «concedida» o «isla» del árbitro esperan a que termine la
+     * pregunta directa a las otras cajas.
      */
     suspend fun esperar(a: Apertura, alEsperar: () -> Unit = {}, sigue: () -> Boolean): LeaseOutcome {
         var avisado = false
         while (true) {
             val t = tickets.value[a.id] ?: return LeaseOutcome.NoHub
-            t.resultado?.let { return it }
+            t.directo?.let { return it }
+            when (val r = t.resultado) {
+                is LeaseOutcome.Taken -> return r
+                null -> Unit
+                else -> if (t.directoListo) return r
+            }
             if (t.esperando && !avisado) { avisado = true; alEsperar() }
             val restante = a.creadaEnMs + PLAZO_PEDIR_MESA_MS - relojMs()
             if (restante <= 0 || !sigue()) return LeaseOutcome.NoHub

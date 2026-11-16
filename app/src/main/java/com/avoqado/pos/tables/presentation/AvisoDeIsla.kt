@@ -26,6 +26,12 @@ import kotlinx.serialization.json.Json
 internal object AvisoDeIsla {
     const val TEXTO = "Este aparato no ve a las otras cajas por el WiFi: cada uno trabaja por separado"
 
+    /**
+     * Hub D6 bandas (hz:033d44ca:D6, 16-nov): coordina con unas cajas y otra que recuerda no está a la vista. Pasó en el ensayo con el WiFi
+     * que aísla la banda de 5 GHz: la D3 veía a la N86 pero no a la SAMSUNG, y no decía nada.
+     */
+    const val TEXTO_PARCIAL = "Este aparato no ve a todas las cajas por el WiFi: con las que no ve, cada una trabaja por separado"
+
     /** Al abrir la app o el plano, NSD y el `quien` por TCP tardan unos segundos en encontrar a las demás: sin esto, la línea parpadea. */
     const val GRACIA_MS = 10_000L
 
@@ -40,9 +46,21 @@ internal object AvisoDeIsla {
      * de cocina con app vieja que el D12 recuerda no es «otra caja» en un negocio de una sola caja).
      */
     fun mostrar(hubDelNegocio: Boolean, yo: String, peers: List<LanPeer>, recordadas: Set<String>): Boolean =
-        hubDelNegocio &&
-            peers.none { it.deviceId != yo && it.sirveLeases } &&
-            recordadas.any { did -> did != yo && peers.none { it.deviceId == did } }
+        texto(hubDelNegocio, yo, peers, recordadas) == TEXTO
+
+    /**
+     * Hub D6 bandas: qué dice la línea, o null. [meDeclaran] son las cajas que hoy le avisan a ESTE aparato dónde están (es su árbitro):
+     * con ellas también se coordina, aunque NSD no las traiga (la SAMSUNG del ensayo no veía a la N86, pero la N86 le declaraba).
+     * - Falta una recordada (que no está a la vista ni le declara) y no coordina con nadie ⇒ [TEXTO], como el D6 de siempre.
+     * - Falta una y sí coordina con alguna ⇒ [TEXTO_PARCIAL].
+     */
+    fun texto(hubDelNegocio: Boolean, yo: String, peers: List<LanPeer>, recordadas: Set<String>, meDeclaran: Set<String> = emptySet()): String? {
+        if (!hubDelNegocio) return null
+        val falta = recordadas.any { did -> did != yo && peers.none { it.deviceId == did } && did !in meDeclaran }
+        if (!falta) return null
+        val coordina = peers.any { it.deviceId != yo && it.sirveLeases } || meDeclaran.any { it != yo }
+        return if (coordina) TEXTO_PARCIAL else TEXTO
+    }
 
     /**
      * Las cajas de [venueId] que el D12 recuerda (menos de [CajasRecordadas.OLVIDAR_MS]), sin este aparato. Si el disco no se puede
@@ -71,12 +89,13 @@ internal object AvisoDeIsla {
         yo: () -> String,
         hubDelNegocio: () -> Boolean,
         recordadas: suspend () -> Set<String>,
-    ): Flow<Boolean> = combine(peers, tic()) { p, _ -> p }
-        .map { p -> hubDelNegocio() && mostrar(true, yo(), p, recordadas()) }
+        meDeclaran: () -> Set<String> = { emptySet() },
+    ): Flow<String?> = combine(peers, tic()) { p, _ -> p }
+        .map { p -> if (hubDelNegocio()) texto(true, yo(), p, recordadas(), meDeclaran()) else null }
         .distinctUntilChanged()
-        .transformLatest { aislado ->
-            if (aislado) delay(GRACIA_MS)
-            emit(aislado)
+        .transformLatest { linea ->
+            if (linea != null) delay(GRACIA_MS)
+            emit(linea)
         }
         .distinctUntilChanged()
 

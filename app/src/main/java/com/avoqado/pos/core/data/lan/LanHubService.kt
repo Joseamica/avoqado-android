@@ -94,6 +94,9 @@ class LanHubService @Inject constructor(
         if (coordinator != null && venueActivo != venueId) stop()
     }
 
+    /** Hub D6 bandas: las cajas que hoy le declaran a este aparato como árbitro (la línea del plano las cuenta como acompañantes). */
+    fun cajasQueLeDeclaran(): Set<String> = coordinator?.cajasQueLeDeclaran().orEmpty()
+
     /** Hub D3: el ticket de un intento de abrir una mesa LIBRE, al instante (despierta al reconciliador). Su dueño lo termina. */
     fun abrirApertura(tableId: String, staffId: String, staffName: String): Apertura =
         mesas.abrirApertura(tableId, staffId, staffName, secureStorage.venueId.orEmpty())

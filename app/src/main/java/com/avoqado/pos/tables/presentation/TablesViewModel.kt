@@ -176,10 +176,10 @@ class TablesViewModel @Inject constructor(
      * D6 (hz:e5ee98bc:D6): «este aparato no ve a las otras cajas por el WiFi» ([AvisoDeIsla]). Sólo lo pinta el plano: ningún botón
      * lo lee. Perezoso y sólo mientras alguien lo mira, como [layout] (Cobrar y la cuenta también crean este ViewModel).
      */
-    val avisoDeIsla: StateFlow<Boolean> by lazy {
+    val avisoDeIsla: StateFlow<String?> by lazy {
         val transporte = transporteLan
         val cache = payloadCache
-        if (transporte == null || cache == null) return@lazy MutableStateFlow(false).asStateFlow()
+        if (transporte == null || cache == null) return@lazy MutableStateFlow<String?>(null).asStateFlow()
         // Codex r1 #5: `replayExpirationMillis = 0` ⇒ al detenerse vuelve a «sin línea»; al regresar al plano no se entrega el `true`
         // de la visita anterior.
         AvisoDeIsla.flujo(
@@ -187,7 +187,8 @@ class TablesViewModel @Inject constructor(
             yo = { transporte.deviceId },
             hubDelNegocio = { planManager.hasFeature("OFFLINE_LAN_HUB") },
             recordadas = { venueId?.let { AvisoDeIsla.recordadas(cache, it, transporte.deviceId, System.currentTimeMillis()) }.orEmpty() },
-        ).stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000, replayExpirationMillis = 0), false)
+            meDeclaran = { lanHub.cajasQueLeDeclaran() },
+        ).stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000, replayExpirationMillis = 0), null)
     }
 
     private val _rememberedTab = MutableStateFlow<String?>(null)
