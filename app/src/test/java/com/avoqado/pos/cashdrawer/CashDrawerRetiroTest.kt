@@ -587,7 +587,7 @@ class CashDrawerRetiroTest {
     // MARK: - El PIN pide la autorización atada a ESE retiro
 
     @Test fun `con llave el cuerpo la lleva, sin llave no`() = runBlocking {
-        val sesion = mockk<SecureStorage>(relaxed = true) { every { accessToken } returns "sesion" }
+        val sesion = mockk<SecureStorage>(relaxed = true) { every { selloYAccess() } returns (1L to "sesion") }
         val pin = PermissionOverrideRepository(
             sesion,
             servidor { 201 to """{"success":true,"data":{"token":"tok-1","authorizedBy":{"id":"sv-9","name":"Daniel"}}}""" },

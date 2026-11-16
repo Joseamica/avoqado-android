@@ -47,7 +47,7 @@ class F04SyncReplayTest {
         val context = mockk<Context>(relaxed = true)
         every { context.getSharedPreferences(any(), any()) } returns prefs
         coEvery { dao.pendingFifo("v1", any()) } answers { if (row.status == "PENDING") listOf(row) else emptyList() }
-        coEvery { api.syncIntents("v1", any()) } returns SyncIntentsResponse(data = listOf(response))
+        coEvery { api.syncIntents("v1", any(), any()) } returns SyncIntentsResponse(data = listOf(response))
         coEvery { dao.resolve(any(), any(), any(), any(), any()) } answers {
             events += "legacy"; row = row.copy(status = arg(1)); Unit
         }
@@ -75,7 +75,7 @@ class F04SyncReplayTest {
         try {
             subject.replayNow("v1")
             assertEquals(listOf("commit", "emit"), events)
-            coVerify(exactly = 1) { api.syncIntents("v1", any()) }
+            coVerify(exactly = 1) { api.syncIntents("v1", any(), any()) }
             coVerify(exactly = 0) { dao.resolve(any(), any(), any(), any(), any()) }
         } finally { collector.cancel(); subject.stop() }
     }
@@ -90,7 +90,7 @@ class F04SyncReplayTest {
             subject.replayNow("v1")
             assertEquals("PENDING", row.status)
             assertTrue(events.isEmpty())
-            coVerify(exactly = 1) { api.syncIntents("v1", any()) }
+            coVerify(exactly = 1) { api.syncIntents("v1", any(), any()) }
             coVerify(exactly = 0) { dao.resolve(any(), any(), any(), any(), any()) }
         } finally { collector.cancel(); subject.stop() }
     }
@@ -112,7 +112,7 @@ class F04SyncReplayTest {
         val response = stale().copy(id = "not-in-batch")
         val subject = subject(response)
         var attempts = 0
-        coEvery { api.syncIntents("v1", any()) } answers {
+        coEvery { api.syncIntents("v1", any(), any()) } answers {
             attempts += 1
             // El guard global aprobado corta antes de cualquier resolución; el límite protege el fixture.
             if (attempts > 1) throw IllegalStateException("test-stop-after-second-attempt")
@@ -145,7 +145,7 @@ class F04SyncReplayTest {
             subject.replayNow("v1")
             assertEquals(listOf("commit"), events)
             assertEquals("HELD", heldSale.status)
-            coVerify(exactly = 1) { api.syncIntents("v1", match { request -> request.intents.map { it.id } == listOf("cash") }) }
+            coVerify(exactly = 1) { api.syncIntents("v1", match { request -> request.intents.map { it.id } == listOf("cash") }, any()) }
             coVerify(exactly = 0) { dao.pendingFifo(any(), any()) }
             coVerify(exactly = 0) { dao.resolve(any(), any(), any(), any(), any()) }
         } finally { subject.stop() }
@@ -166,7 +166,7 @@ class F04SyncReplayTest {
             assertNull(row.q15CaptureJson)
             assertTrue(events.isEmpty())
             coVerify(exactly = 1) { dao.retenerIntentQ15("v1", "cash", ConciliacionDelCobro.CAPTURA_SIN_EVIDENCIA, any()) }
-            coVerify(exactly = 0) { api.syncIntents(any(), any()) }
+            coVerify(exactly = 0) { api.syncIntents(any(), any(), any()) }
             coVerify(exactly = 0) { dao.resolveStaleSequence(any(), any(), any(), any(), any(), any(), any()) }
         } finally { subject.stop() }
     }

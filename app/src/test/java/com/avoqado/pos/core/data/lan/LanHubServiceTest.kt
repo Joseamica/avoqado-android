@@ -1,10 +1,17 @@
 package com.avoqado.pos.core.data.lan
 
 import com.avoqado.pos.core.data.local.SecureStorage
+import io.mockk.Runs
 import io.mockk.every
+import io.mockk.just
 import io.mockk.mockk
+import io.mockk.slot
 import io.mockk.verify
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.test.advanceTimeBy
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -69,5 +76,126 @@ class LanHubServiceTest {
         verify(exactly = 1) { cuentas.encender("venue-a") }
         h.stop()
         io.mockk.verifyOrder { cuentas.encender("venue-a"); cuentas.apagar() } // `start` también apaga lo anterior antes de encender
+    }
+
+    // MARK: - Hub D3 (mesa declarada): el hub declara lo que guarda `MesasDeEstaCaja`
+
+    private val mesas = MesasDeEstaCaja({ null }, flowOf(null), ContadorDeVidas({ 0L }, { true })) { System.nanoTime() / 1_000_000 }
+
+    @Test
+    fun `D3 - start fija la sucursal de las aperturas y stop suelta las suyas`() {
+        val h = LanHubService(secure, transporte, mesas = mesas)
+        mesas.abrirApertura("m1", "s1", "Juan", "venue-b")
+        val propia = h.abrirApertura("m2", "s1", "Juan")
+
+        h.start()
+        assertTrue(mesas.declaracion("venue-b").aperturas.isEmpty())
+        assertEquals(listOf(propia), mesas.declaracion("venue-a").aperturas)
+
+        h.stop()
+        assertTrue(mesas.declaracion("venue-a").aperturas.isEmpty())
+    }
+
+    @Test
+    fun `p35 - con el hub apagado, esperarApertura da isla al instante y terminarApertura no truena`() = runTest {
+        val m = MesasDeEstaCaja({ null }, flowOf(null), ContadorDeVidas({ 0L }, { true })) { testScheduler.currentTime }
+        val h = LanHubService(secure, transporte, mesas = m)
+        val ticket = h.abrirApertura("m5", "s1", "Juan")
+        assertEquals("el ticket se entrega aunque no haya hub", listOf(ticket), m.declaracion("venue-a").aperturas)
+
+        assertEquals(LeaseOutcome.NoHub, h.esperarApertura(ticket))
+        assertEquals(0L, testScheduler.currentTime)
+
+        h.terminarApertura(ticket)
+        h.terminarApertura(ticket) // idempotente: el `finally` de un intento abandonado lo repite
+        assertTrue(m.declaracion("venue-a").aperturas.isEmpty())
+    }
+
+    @Test
+    fun `p35 - cambiar de sucursal con una apertura esperando da isla, sin esperar los 15 s`() = runTest {
+        val m = MesasDeEstaCaja({ null }, flowOf(null), ContadorDeVidas({ 0L }, { true })) { testScheduler.currentTime }
+        // Esta caja es el árbitro y calienta esperando a la otra: la apertura queda «esperar» (pendiente).
+        val t = mockk<TransporteLan>(relaxed = true) {
+            every { deviceId } returns "tablet-1"
+            every { peers } returns MutableStateFlow(
+                listOf(
+                    LanPeer("tablet-1", "127.0.0.1", 9000, isWired = true, presencia = true),
+                    LanPeer("tablet-2", "10.0.0.2", 9000, presencia = true),
+                ),
+            )
+        }
+        every { secure.selectedStaffNameForCurrentVenue } returns "Juan"
+        val h = LanHubService(secure, t, mesas = m).also { it.scopeDePrueba = backgroundScope }
+        h.start()
+        val ticket = h.abrirApertura("m5", "s1", "Juan")
+        val espera = async { h.esperarApertura(ticket) }
+        advanceTimeBy(1_000)
+        assertTrue("sigue esperando al calentamiento", espera.isActive)
+
+        h.sincronizarVenue("venue-b")
+        advanceTimeBy(500)
+
+        assertEquals(LeaseOutcome.NoHub, espera.await())
+        assertTrue(testScheduler.currentTime < MesasDeEstaCaja.PLAZO_PEDIR_MESA_MS)
+        h.terminarApertura(ticket)
+        h.stop()
+    }
+
+    @Test
+    fun `D3 - release solo despierta - nunca suelta una apertura por nombre de mesa`() = runTest {
+        val h = LanHubService(secure, transporte, mesas = mesas)
+        h.release("m5") // sin hub: nada que despertar
+        h.start()
+        val ticket = h.abrirApertura("m5", "s1", "Juan")
+
+        h.release("m5")
+
+        assertEquals(listOf(ticket), mesas.declaracion("venue-a").aperturas)
+        h.stop()
+    }
+
+    @Test
+    fun `D3 - el ticket de otra sucursal da isla al instante, sin esperar los 15 s`() = runTest {
+        val m = MesasDeEstaCaja({ null }, flowOf(null), ContadorDeVidas({ 0L }, { true })) { testScheduler.currentTime }
+        val h = LanHubService(secure, transporte, mesas = m)
+        h.start()
+        try {
+            val ajeno = m.abrirApertura("m5", "s1", "Juan", "venue-b")
+
+            assertEquals(LeaseOutcome.NoHub, h.esperarApertura(ajeno))
+            assertEquals(0L, testScheduler.currentTime)
+        } finally {
+            h.stop()
+        }
+    }
+
+    @Test
+    fun `D3 - release despierta al reconciliador - la mesa que dejó sale de su declaración enseguida, no al latido de 10 s`() = runTest {
+        var actual: String? = "m5"
+        // La mesa actual cambia SIN avisar (flujo fijo): lo único que despierta al reconciliador es `release`.
+        val m = MesasDeEstaCaja({ actual }, flowOf(null), ContadorDeVidas({ 0L }, { true })) { testScheduler.currentTime }
+        val arbitro = slot<(String) -> LeaseResponse>()
+        val t = mockk<TransporteLan>(relaxed = true) {
+            every { deviceId } returns "tablet-1"
+            every { peers } returns MutableStateFlow(listOf(LanPeer("tablet-1", "127.0.0.1", 9000, presencia = true)))
+            every { conectarHub(capture(arbitro)) } just Runs
+        }
+        every { secure.selectedStaffNameForCurrentVenue } returns "Juan"
+        val h = LanHubService(secure, t, mesas = m).also { it.scopeDePrueba = backgroundScope }
+        fun ocupadas() = arbitro.captured(LeaseProtocol.encode(LeaseRequest(op = LeaseProtocol.OP_LIST))).leases.orEmpty().map { it.tableId }
+
+        h.start()
+        runCurrent()
+        assertEquals("esta caja (el árbitro) declara m5", listOf("m5"), ocupadas())
+        actual = null
+        advanceTimeBy(5_000)
+        assertEquals("nada la despertó todavía", listOf("m5"), ocupadas())
+
+        h.release("m5")
+        runCurrent()
+
+        assertEquals("salió un estado nuevo, sin esperar el latido", emptyList<String>(), ocupadas())
+        assertEquals(5_000L, testScheduler.currentTime)
+        h.stop()
     }
 }

@@ -12,6 +12,17 @@ enum class PaymentErrorSource {
     TERMINAL,
     SERVER,
     UNKNOWN,
+    /** D58: no se cobró y nadie rechazó (cancelación, terminal liberada, cajero lo confirmó): neutro, no rojo. */
+    NO_SE_COBRO,
+
+    /**
+     * D14 (hz:87f4b879:D14): no es una falla del cobro. La venta necesita el PIN de un gerente y el siguiente cobro lo pide: se pinta
+     * en gris, con «Volver a cobrar» (nunca «Error en el pago» en rojo).
+     */
+    PIDE_PIN,
+
+    /** D14: no es una falla. Sólo la cobra alguien con el permiso, con su sesión (el PIN de gerente está apagado): nada que reintentar. */
+    SOLO_GERENTE,
 }
 
 /** En qué cola quedó un cobro hecho sin red. Son dos: la de cobros y el outbox de mesas provisionales. */
@@ -420,6 +431,28 @@ const val DESCUENTO_CON_APROBACION_SIN_RED =
 /** D4: el negocio tiene apagado el PIN de gerente; ese descuento sólo lo aplica alguien con el permiso, con su propia sesión. */
 const val DESCUENTO_CON_APROBACION_LO_APLICA_UN_GERENTE =
     "Este descuento necesita la aprobación de un gerente. Pide a alguien con el permiso «Aplicar descuentos en TPV» que cobre con su sesión, o quita el descuento."
+
+/**
+ * D15 (hz:87f4b879:D15): la venta regala un PRODUCTO (cortesía del renglón o descuento de catálogo tipo cortesía) y el negocio tiene
+ * apagado el PIN de gerente: sólo la da alguien con el permiso, con su sesión.
+ */
+const val CORTESIA_DE_PRODUCTO_LA_DA_UN_GERENTE =
+    "Esta venta regala un producto (cortesía). La da un gerente con su sesión, o quita la cortesía."
+
+/** D15: el PIN del gerente necesita internet; sin red la cortesía de producto de alguien sin permiso no se cobra (como D2). */
+const val CORTESIA_DE_PRODUCTO_SIN_RED =
+    "Sin conexión: el PIN del gerente necesita internet. Quita la cortesía o cobra cuando vuelva la red."
+
+/**
+ * D15 (Codex r1 #2): el cobro con saldo de tarjeta de regalo crea la venta por otra puerta que no lleva el PIN de un gerente. Una venta
+ * que lo necesita (cortesía o descuento con aprobación, sin el permiso) no sale por ahí.
+ */
+const val SALDO_NO_LLEVA_PIN_DE_GERENTE =
+    "Esta venta necesita el PIN de un gerente (cortesía o descuento con aprobación) y el cobro con saldo no lo puede pedir. Cóbrala en efectivo o con tarjeta, o quita la cortesía o el descuento."
+
+/** D15: el SERVIDOR pidió `orders:comp` por una cortesía de producto (permisos guardados viejos). No se creó nada. */
+const val CORTESIA_DE_PRODUCTO_PIDE_PIN =
+    "Esta venta regala un producto (cortesía). Vuelve a cobrar para pedir el PIN de un gerente, o quita la cortesía."
 
 /** D4: el SERVIDOR pidió la aprobación aunque la app no lo esperaba (catálogo o permisos de otro momento). No se creó nada. */
 const val DESCUENTO_CON_APROBACION_PIDE_PIN =

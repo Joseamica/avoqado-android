@@ -237,6 +237,102 @@ class AppStateVenueRecoveryTest {
     }
 
     /**
+     * D72 (D3, 13-nov): «No se pudieron actualizar los tiempos» seguía en la mesa con la red de vuelta: los tiempos sólo se
+     * releían al abrir la cuenta. Al volver la red se releen si hay ese aviso; sin aviso no se gasta la petición.
+     */
+    @Test
+    fun `D72 al volver la red se releen los tiempos sólo si quedó el aviso de que no se actualizaron`() = runTest {
+        val connected = MutableStateFlow(false)
+        val aviso = MutableStateFlow<String?>("No se pudieron actualizar los tiempos. Se usa la última lista guardada.")
+        val tiempos = mockk<com.avoqado.pos.tables.data.ServiceCoursesRepository>(relaxed = true) {
+            every { notice } returns aviso
+            coEvery { refresh(any()) } coAnswers { aviso.value = null }
+        }
+        createAppState(true, {}, {}, {}, onOutboxStart = {}, connected = connected, serviceCoursesRepository = tiempos)
+        advanceUntilIdle()
+        connected.value = true
+        advanceTimeBy(1100)
+        runCurrent()
+        io.mockk.coVerify(exactly = 1) { tiempos.refresh("venue-atole") }
+        org.junit.Assert.assertNull("el aviso viejo se quita", aviso.value)
+
+        connected.value = false
+        connected.value = true
+        advanceTimeBy(1100)
+        runCurrent()
+        io.mockk.coVerify(exactly = 1) { tiempos.refresh(any()) }
+    }
+
+    /** D72 (Codex r1 #2): con la red ya de vuelta, una lectura que falla después deja el aviso; se relee sin otro corte. */
+    @Test
+    fun `D72 si el aviso de tiempos aparece con la red ya arriba también se relee`() = runTest {
+        val aviso = MutableStateFlow<String?>(null)
+        val tiempos = mockk<com.avoqado.pos.tables.data.ServiceCoursesRepository>(relaxed = true) {
+            every { notice } returns aviso
+            coEvery { refresh(any()) } coAnswers { aviso.value = null }
+        }
+        createAppState(true, {}, {}, {}, onOutboxStart = {}, serviceCoursesRepository = tiempos)
+        advanceUntilIdle()
+        io.mockk.coVerify(exactly = 0) { tiempos.refresh(any()) }
+        aviso.value = "No se pudieron actualizar los tiempos. Se usa la última lista guardada."
+        advanceTimeBy(1100)
+        runCurrent()
+        io.mockk.coVerify(exactly = 1) { tiempos.refresh("venue-atole") }
+        org.junit.Assert.assertNull(aviso.value)
+    }
+
+    /**
+     * D72 (Codex r1 #1): la relectura que hace caer la bandera del servidor (cocina contesta 500) no se cancela a sí misma,
+     * y su rebote no la repite en ciclo: a lo más una relectura automática por minuto.
+     */
+    @Test
+    fun `D72 la relectura de tiempos no se cancela con la caida que ella misma provoca ni se repite en ciclo`() = runTest {
+        val connected = MutableStateFlow(false)
+        val servidor = MutableStateFlow(true)
+        val aviso = MutableStateFlow<String?>("No se pudieron actualizar los tiempos. Se usa la última lista guardada.")
+        var terminadas = 0
+        val tiempos = mockk<com.avoqado.pos.tables.data.ServiceCoursesRepository>(relaxed = true) {
+            every { notice } returns aviso
+            coEvery { refresh(any()) } coAnswers {
+                servidor.value = false // la cocina contestó 500: el interceptor baja la bandera
+                kotlinx.coroutines.delay(50)
+                servidor.value = true // el ping la sube otra vez
+                kotlinx.coroutines.delay(50)
+                terminadas++ // y los tiempos siguen fallando: el aviso se queda
+            }
+        }
+        createAppState(true, {}, {}, {}, onOutboxStart = {}, connected = connected, reachable = servidor,
+            serviceCoursesRepository = tiempos)
+        advanceUntilIdle()
+        connected.value = true
+        advanceTimeBy(1100)
+        runCurrent()
+        advanceTimeBy(5_000)
+        runCurrent()
+        assertEquals("la relectura llegó al final", 1, terminadas)
+        // Y el rebote de después (el servidor cae y el ping lo sube a los 10 s) no la repite en ciclo…
+        servidor.value = false
+        advanceTimeBy(10_000)
+        servidor.value = true
+        advanceTimeBy(1100)
+        runCurrent()
+        io.mockk.coVerify(exactly = 1) { tiempos.refresh(any()) }
+        // …pero tampoco se pierde: al cumplirse el minuto, con el aviso y la red arriba, se relee otra vez (Codex r2 #1).
+        advanceTimeBy(60_000)
+        runCurrent()
+        io.mockk.coVerify(exactly = 2) { tiempos.refresh(any()) }
+        assertEquals(2, terminadas)
+        // La siguiente espera es del doble: a los 60 s de la segunda todavía no hay tercera.
+        advanceTimeBy(65_000)
+        runCurrent()
+        io.mockk.coVerify(exactly = 2) { tiempos.refresh(any()) }
+        // El servidor ya contesta bien: se quita el aviso y el ciclo termina (si no, la prueba nunca se queda quieta).
+        aviso.value = null
+        advanceUntilIdle()
+        io.mockk.coVerify(exactly = 2) { tiempos.refresh(any()) }
+    }
+
+    /**
      * Etapa 3 del KDS (3.5, D12): la red local sigue a la sesión. La sucursal la enciende (el hub del venue viejo se
      * desengancha ANTES de iniciar el transporte), y al cerrar sesión se apaga el hub antes que el transporte.
      */
@@ -645,6 +741,7 @@ class AppStateVenueRecoveryTest {
         onOutboxStart: () -> Unit,
         onTableStart: () -> Unit = {},
         connected: MutableStateFlow<Boolean> = MutableStateFlow(true),
+        reachable: MutableStateFlow<Boolean> = MutableStateFlow(true),
         onSettingsRefresh: () -> Unit = {},
         tpvSettingsRepository: TpvSettingsRepository? = null,
         sessionInvalidated: MutableSharedFlow<Long> = MutableSharedFlow(),
@@ -671,6 +768,7 @@ class AppStateVenueRecoveryTest {
         /** D52 (a): los cobros y la cola de mesas de verdad (sobre sus DAO), en vez de los de mentira. */
         pagosReales: PaymentSyncService? = null,
         colaReal: SyncOutbox? = null,
+        serviceCoursesRepository: com.avoqado.pos.tables.data.ServiceCoursesRepository? = null,
     ): AppState {
         val secureStorage = storageReal ?: mockk<SecureStorage>(relaxed = true) {
             every { isLoggedIn } returns true
@@ -716,7 +814,7 @@ class AppStateVenueRecoveryTest {
         }
         val connectivityMonitor = mockk<ConnectivityMonitor>(relaxed = true) {
             every { isConnected } returns connected
-            every { isServerReachable } returns MutableStateFlow(true)
+            every { isServerReachable } returns reachable
         }
         val inventorySync = mockk<InventoryCountSyncCoordinator>(relaxed = true) {
             every { start(any()) } answers { onInventoryStart() }
@@ -754,6 +852,7 @@ class AppStateVenueRecoveryTest {
             connectivityMonitor = connectivityMonitor,
             printConfigRepository = printConfigRepository,
             savedCartsRepository = savedCartsRepository,
+            serviceCoursesRepository = serviceCoursesRepository,
         )
         if (resolverReal == null) return plantilla
         // La fábrica generada ejecuta también la inyección de miembros de Hilt.

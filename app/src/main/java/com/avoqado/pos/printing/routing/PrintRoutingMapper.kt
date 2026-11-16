@@ -28,9 +28,10 @@ object PrintRoutingMapper {
         stationId != null && config.stations.any { it.id == stationId && it.active && !it.sendsComanda }
 
     /**
-     * [buildComandas] más el filtro de «No lleva comanda». SÓLO lo prenden los disparos de ventas del POS (mostrador, mesas,
-     * vales, reservas, Órdenes de una venta del POS); Uber/Rappi, pedidos en línea y el papel de la pantalla de cocina llaman
-     * con `false` y rutean exactamente como hoy. Lo que no tiene estación sigue en «SIN ESTACIÓN».
+     * [buildComandas] más el filtro de «No lleva comanda». Lo prenden los disparos de ventas del POS (mostrador, mesas,
+     * vales, reservas, Órdenes de una venta del POS) y Uber/Rappi SÓLO cuando su ticket de empaque, que lleva esos renglones,
+     * ya imprimió (Bloque 2, `ImpresionDeComandasDeReparto`). Pedidos en línea y el papel de la pantalla de cocina llaman con
+     * `false` y rutean exactamente como hoy. Lo que no tiene estación sigue en «SIN ESTACIÓN».
      */
     fun rutear(items: List<RoutableItem>, config: PrintConfig, omitirSinComanda: Boolean): Ruteo {
         val categoryMap = config.categoryRouting.associate { it.categoryId to it.printStationId }

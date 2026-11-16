@@ -115,6 +115,7 @@ class AuthRepository @Inject constructor(
                         permisosVigentes = primaryVenue.permisosVigentes,
                     )
                     secureStorage.venuesList = venues.map { it.toStoredVenue() }
+                    venderComoQuienEntra(user.id, user.firstName, user.lastName, user.email)
                 }
                 if (instalada == null) {
                     Log.w("🔐", "Login tardío: ya entró otra persona en este aparato, no se instala")
@@ -216,10 +217,7 @@ class AuthRepository @Inject constructor(
                 // 🔴 La venta se atribuye a quien acaba de entrar. Sin esto, entra Ana y las ventas
                 // siguen saliendo a nombre del anterior. El cajero puede cambiarlo enseguida desde
                 // Cobrar, sin PIN — eso no se toca.
-                secureStorage.saveSelectedStaffForCurrentVenue(
-                    staffId = user.id,
-                    staffName = listOfNotNull(user.firstName, user.lastName).joinToString(" ").ifBlank { user.email },
-                )
+                venderComoQuienEntra(user.id, user.firstName, user.lastName, user.email)
             }
             if (instalada == null) {
                 Log.w("🔐", "PIN tardío: ya entró otra persona en este aparato, no se instala")
@@ -289,7 +287,9 @@ class AuthRepository @Inject constructor(
             secureStorage.guardarRotadaDeLaHuellaSiSigue(refreshToken, response.refreshToken)
             val instalada = secureStorage.instalarSiSigue(sello) {
                 secureStorage.updateTokens(accessToken = response.accessToken, refreshToken = response.refreshToken)
-                secureStorage.restoreBiometricSession(venue)
+                if (secureStorage.restoreBiometricSession(venue)) {
+                    secureStorage.userId?.let { venderComoQuienEntra(it, null, null, secureStorage.userEmail) }
+                }
             }
             Log.d("🔐", if (instalada != null) "✅ Biometric login" else "Huella tardía: ya entró otra persona, no se instala")
             instalada != null
@@ -402,6 +402,13 @@ class AuthRepository @Inject constructor(
 
         Log.d("🔄", "✅ Switched to venue: ${venue.name}")
     }
+
+    /** D66: toda sesión nueva vende a nombre de quien entró (ver [SecureStorage.venderComoQuienEntra]). */
+    private fun venderComoQuienEntra(userId: String, firstName: String?, lastName: String?, email: String?) =
+        secureStorage.venderComoQuienEntra(
+            staffId = userId,
+            staffName = listOfNotNull(firstName, lastName).joinToString(" ").ifBlank { email.orEmpty() }.ifBlank { "Staff" },
+        )
 
     fun logout() {
         Log.d("🔐", "logout - clearing session")

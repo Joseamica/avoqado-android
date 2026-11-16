@@ -591,10 +591,25 @@ fun PaymentFlowScreen(
                 }
             }
             is PaymentFlowState.Error -> {
+                val fuente = currentState.source
+                // D14 (hz:87f4b879:D14): «lo autoriza un gerente» no es una falla del cobro: gris; con el PIN apagado no hay nada que
+                // reintentar y la salida es «Volver al carrito» (el carrito se queda como estaba).
+                val pideGerente = fuente == com.avoqado.pos.payment.data.model.PaymentErrorSource.PIDE_PIN ||
+                    fuente == com.avoqado.pos.payment.data.model.PaymentErrorSource.SOLO_GERENTE
                 PaymentErrorView(
                     accionesDeRedHabilitadas = accionesDeRedHabilitadas,
-                    message = currentState.message,
-                    sinRed = currentState.source == com.avoqado.pos.payment.data.model.PaymentErrorSource.NETWORK,
+                    // D59: el texto del SERVIDOR se dice en español aquí, al pintarlo («Order is already paid»); el estado lo conserva
+                    // tal cual porque otras piezas lo comparan.
+                    message = com.avoqado.pos.core.data.network.ServerErrorText.humanize(currentState.message, currentState.message),
+                    sinRed = fuente == com.avoqado.pos.payment.data.model.PaymentErrorSource.NETWORK,
+                    pideGerente = pideGerente,
+                    noSeCobro = fuente == com.avoqado.pos.payment.data.model.PaymentErrorSource.NO_SE_COBRO,
+                    retryLabel = when (fuente) {
+                        com.avoqado.pos.payment.data.model.PaymentErrorSource.PIDE_PIN -> "Volver a cobrar"
+                        com.avoqado.pos.payment.data.model.PaymentErrorSource.SOLO_GERENTE -> null
+                        else -> "Reintentar"
+                    },
+                    cancelLabel = if (pideGerente) "Volver al carrito" else "Cancelar",
                     onRetry = { viewModel.retry() },
                     // Cancelar aquí NO borra la orden a ciegas: primero se resuelve el cobro (si
                     // llegó a existir) y sólo cuando conste que no se cobró se cancela la venta.

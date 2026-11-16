@@ -41,6 +41,17 @@ data class KDSOrder(
     /** Estación a la que el servidor la repartió. `null` = «Sin estación»: sale en todas las pantallas. */
     val printStationId: String? = null,
     val preparationVersion: Int = 0,
+    /** Dónde imprimir esta comanda de delivery según el canal. `null` = servidor viejo o sin ajuste: como en el salón. */
+    val impresionReparto: ImpresionReparto? = null,
+)
+
+/** Lo que el negocio eligió para imprimir los pedidos de un proveedor de delivery. */
+@Serializable
+data class ImpresionReparto(
+    val proveedor: String? = null,
+    val estacionUnicaId: String? = null,
+    val empaque: Boolean = true,
+    val empaqueEstacionId: String? = null,
 )
 
 @Serializable

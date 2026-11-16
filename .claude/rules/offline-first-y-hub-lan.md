@@ -116,10 +116,10 @@ el mismo POS se ve como dos peers y la elección de árbitro deja de ser estable
 
 Código: `core/data/lan/` (Android) · `Services/LAN/` (iOS). **UN transporte por aparato** (`TransporteLan`, KDS 3.5):
 UN `ServerSocket`, UN anuncio `_avoqado-pos._tcp` y UN buscador. Rutea cada línea por `op` (`EnrutadorLan`):
-`acquire|renew|release|list` al hub de mesas (sólo si está encendido en ESE aparato) y `comanda` al receptor de cocina
+`estado|acquire|renew|release|list` al hub de mesas (sólo si está encendido en ESE aparato) y `comanda` al receptor de cocina
 (sólo con un Tablero a la vista); lo demás, «Operación desconocida». TXT: `did`, `wired`, `boot`, `venue`, `kds=<estaciones
-en pantalla>`, `hub=1|0` — un aparato con `hub=0` no entra a la elección del árbitro. Líneas de ≤ 64 KiB con plazo de 3 s
-para la línea entera (`LineaAcotada`). Las capas del hub de mesas:
+en pantalla>`, `hub=1|0` — un aparato con `hub=0` no entra a la elección del árbitro —, y `pm=1` si habla `estado`
+(§3.1b). Líneas de ≤ 64 KiB con plazo de 3 s para la línea entera (`LineaAcotada`). Las capas del hub de mesas:
 
 1. **Núcleo** (`TableLease`, `LeaseRegistry`, `ArbiterElection`) — lógica PURA,
    sin red y con el reloj por parámetro. Toda la corrección vive aquí.
@@ -132,7 +132,9 @@ para la línea entera (`LineaAcotada`). Las capas del hub de mesas:
 ### 3.1 Lo que hay que entender antes de tocarlo
 
 - **LEASE, no candado.** Un candado sin caducidad deja la mesa muerta si la
-  tablet se apaga. TTL 30s, renovación a 1/3.
+  tablet se apaga. TTL 30s, renovación a 1/3. Desde el Hub D3 el permiso por mesa
+  sólo lo usan las apps viejas y el modo compatible; las cajas nuevas declaran
+  dónde están (§3.1b).
 - **ÉPOCA (fencing token).** Sube SIEMPRE — ni al caducar ni al soltar la mesa se
   reinicia. Si la reinicias, un dispositivo zombi con la época vieja vuelve a
   parecer válido y pisa el trabajo de otro.
@@ -145,6 +147,34 @@ para la línea entera (`LineaAcotada`). Las capas del hub de mesas:
 - 🔴 **DEGRADAR, NUNCA BLOQUEAR.** Sin hub, con el árbitro caído, con permiso de
   red denegado o con error de protocolo → `NoHub` y el POS sigue como isla. El
   hub PREVIENE conflictos, no autoriza ventas: **jamás puede impedir un cobro.**
+
+### 3.1b La caja dice dónde está (presencia declarada, Hub D3, nov-2026)
+
+Antes cada caja pedía, renovaba y soltaba un permiso por mesa, y ninguna salida lo soltaba (la flecha, «Descartar y salir»,
+el cobro en otra caja): la mesa quedaba «ocupada» para siempre. Ahora cada caja le **declara** al árbitro dónde está y el
+árbitro le cree al aviso más nuevo. Una mesa está ocupada si OTRA caja viva (menos de 30 s desde su último aviso aceptado)
+la declara; salir es simplemente dejar de declararla.
+
+- **Qué declara:** la mesa donde está (también si entró a una ya ocupada) y sus **aperturas**: cada intento de abrir una mesa
+  LIBRE es un ticket con id que sólo su dueño (la pantalla de mesas) termina, en toda salida; en el éxito, primero se activa la
+  sesión y después se termina el ticket, sin hueco. Lo manda UN reconciliador serial por caja (nunca dos mensajes en vuelo,
+  siempre lo más nuevo) al cambiar algo, cada 10 s y al cambiar de árbitro, con plazo total de 3 s por mensaje.
+- **El orden `(gen, seq)`:** `gen` es el número de vida del proceso, guardado en disco ANTES del primer mensaje (si no se puede
+  guardar, esa caja trabaja en isla); `seq` sube con cada mensaje. El árbitro sólo acepta un `(gen, seq)` mayor que el último de
+  esa caja; lo demás es `stale` y no cambia nada. La caja aplica una respuesta sólo si el árbitro y su época local siguen siendo
+  los de cuando la mandó.
+- **El calentamiento:** un árbitro nuevo (relevo o reinicio) no sabe nada. Durante 12 s, o hasta oír a cada caja que anuncia
+  `pm=1`, contesta «esperar» y la pantalla dice «Revisando con las otras cajas…». Abrir una mesa espera como mucho **15 s
+  contados desde el toque**, aunque el árbitro cambie dos veces.
+- **Apps viejas:** contra un árbitro sin `pm=1` (ANDROID viejo o iOS), el mismo reconciliador entra en **modo compatible** y
+  traduce lo que declara a `acquire`/`renew`/`release`, uno a la vez. Un árbitro nuevo atiende las ops viejas de las apps viejas,
+  les niega la mesa que declara una caja nueva viva y borra los permisos viejos de una caja en cuanto ésta declara. El protocolo
+  sigue en la versión 1 y las ops viejas salen por el cable byte por byte igual.
+- 🔴 **Ante cualquier duda, isla:** sin árbitro, sin respuesta, `stale`, `error` o el plazo vencido ⇒ se abre como siempre. Los
+  límites declarados (dos cuentas que el SERVIDOR junta al volver la red, árbitro apagado que NSD sigue listando ~108 s, plan
+  guardado al abrir la app, bandas del WiFi) están en el §4 del spec:
+  `../docs/superpowers/specs/2026-11-12-mesa-del-hub-declarativa-design.md` (en el workspace). Pruebas: `p01`–`p35` en las de
+  `core/data/lan/` y `tables/presentation/`, y el recorrido de tres aparatos `RecorridoDeDosCajasTest`.
 
 ### 3.2 Asimetría de cable Kotlin ↔ Swift (real, silenciosa)
 
@@ -367,6 +397,10 @@ descuentos, cargos, cortesías, mover/asignar/anular, liberar, separar y fusiona
 cheques, dividir por puesto — todo sin red. Hub LAN previniendo el doble-abre.
 Comanda imprimiendo offline **verificada contra un receptor ESC/POS real**, sin
 red y sin config de estaciones (2026-07-28). Cuarentena visible para rechazos.
+
+**Mesas del Hub por presencia declarada (D3, §3.1b): construido con pruebas unitarias y el recorrido de tres aparatos
+(nov-2026); falta el recorrido en aparato** (D3 + SAMSUNG, mezcla con el APK de `develop`, matar la app dentro de una mesa,
+relevo de árbitro).
 
 **KDS por el WiFi del local (3.5, §3.4): construido y con pruebas unitarias (2026-09-29); falta el QA en aparato apagando
 la red** (Home con comanda empujada, SIM + WiFi sin internet, pantalla en segundo plano, cambio de estación a

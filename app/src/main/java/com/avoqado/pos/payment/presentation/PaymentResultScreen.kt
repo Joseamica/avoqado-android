@@ -25,7 +25,9 @@ import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.Error
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.HelpOutline
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Print
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.filled.WifiOff
@@ -781,12 +783,19 @@ fun PaymentErrorView(
      * selector de terminal. Sin red es un estado normal (regla «todo funciona sin red»), no un error.
      */
     sinRed: Boolean = false,
+    /** D58: no se cobró y nadie rechazó (p. ej. se canceló en la terminal): «No se cobró» en gris, no «Error en el pago». */
+    noSeCobro: Boolean = false,
+    /**
+     * D14 (hz:87f4b879:D14): la venta necesita a un gerente (su PIN o su sesión). Tampoco es una falla del cobro: gris, «Lo autoriza un
+     * gerente». Con [retryLabel] `null` no hay nada que reintentar y la salida ([cancelLabel]) es el botón principal.
+     */
+    pideGerente: Boolean = false,
     /**
      * C1 (22-oct): «Revisar ese cobro» — la terminal (o la venta) la ocupa otro cobro y se puede consultar cómo quedó.
      * `null` ⇒ no se ofrece (cualquier otro error, o el servidor no dijo cuál es).
      */
     onRevisarCobro: (() -> Unit)? = null,
-    retryLabel: String = "Reintentar",
+    retryLabel: String? = "Reintentar",
     cancelLabel: String = "Cancelar",
     titleLabel: String? = null,
     accionesDeRedHabilitadas: Boolean = true,
@@ -800,16 +809,31 @@ fun PaymentErrorView(
     ) {
         if (!accionesDeRedHabilitadas) Text(com.avoqado.pos.giftcards.domain.TextosDeTarjetas.SIN_RED)
         Icon(
-            if (sinRed) Icons.Filled.WifiOff else Icons.Filled.Error,
-            contentDescription = if (sinRed) "Sin conexión" else "Error",
-            tint = if (sinRed) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error,
+            when {
+                sinRed -> Icons.Filled.WifiOff
+                pideGerente -> Icons.Filled.Lock
+                noSeCobro -> Icons.Filled.Info
+                else -> Icons.Filled.Error
+            },
+            contentDescription = when {
+                sinRed -> "Sin conexión"
+                pideGerente -> "Lo autoriza un gerente"
+                noSeCobro -> "No se cobró"
+                else -> "Error"
+            },
+            tint = if (sinRed || pideGerente || noSeCobro) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error,
             modifier = Modifier.size(80.dp),
         )
 
         Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxl))
 
         Text(
-            text = titleLabel ?: if (sinRed) "Sin conexión" else "Error en el pago",
+            text = titleLabel ?: when {
+                sinRed -> "Sin conexión"
+                pideGerente -> "Lo autoriza un gerente"
+                noSeCobro -> "No se cobró"
+                else -> "Error en el pago"
+            },
             style = MaterialTheme.typography.headlineLarge,
         )
 
@@ -823,12 +847,17 @@ fun PaymentErrorView(
 
         Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxxl))
 
-        PrimaryButton(
-            text = retryLabel,
-            onClick = onRetry,
-            enabled = accionesDeRedHabilitadas,
-            modifier = Modifier.sinTeclasDeClic(LocalEsEscritorio.current),
-        )
+        if (retryLabel != null) {
+            PrimaryButton(
+                text = retryLabel,
+                onClick = onRetry,
+                enabled = accionesDeRedHabilitadas,
+                modifier = Modifier.sinTeclasDeClic(LocalEsEscritorio.current),
+            )
+        } else {
+            // D14: sin nada que reintentar, la única salida es el botón principal (no cobra: puede responder al teclado).
+            PrimaryButton(text = cancelLabel, onClick = onCancel)
+        }
 
         // C1: la salida de «Terminal ocupada». Sólo consulta (nunca cobra): abre «Cobro sin confirmar» sobre el cobro
         // que ocupa, con «Volver a consultar» y «Ya revisé la terminal: no se cobró».
@@ -843,10 +872,12 @@ fun PaymentErrorView(
             }
         }
 
-        Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))
+        if (retryLabel != null) {
+            Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))
 
-        TextButton(onClick = onCancel) {
-            Text(cancelLabel)
+            TextButton(onClick = onCancel) {
+                Text(cancelLabel)
+            }
         }
     }
 }

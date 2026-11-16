@@ -196,6 +196,13 @@ fun TableOrderScreen(
     // mismo que prende la franja de «Sin conexión» de la app (`AppState.showOfflineBanner`).
     val servidorAlcanzable by viewModel.isServerReachable.collectAsState()
     val recompensasEnLinea = isConnected && servidorAlcanzable
+    // D59 (D3, 12-nov): con la mesa abierta sin red, la cobraron en la terminal (TPV › Mesas); al volver la red esta pantalla
+    // seguía ofreciendo «Pagar $65». Al volver red y servidor se relee la cuenta: sale «Ya pagado». Sólo en ese cambio, no al abrir.
+    var estabaEnLinea by remember { mutableStateOf(recompensasEnLinea) }
+    LaunchedEffect(recompensasEnLinea) {
+        if (recompensasEnLinea && !estabaEnLinea) viewModel.loadCheck()
+        estabaEnLinea = recompensasEnLinea
+    }
     // «Recompensas»: prendido sólo si no hay motivo para apagarlo (sin red, sin cliente…); el motivo es el texto del botón gris.
     val motivoRecompensas = com.avoqado.pos.tables.data.motivoSinRecompensas(
         // Sin la cuenta al día del servidor no se sabe qué clienta tiene: ni «Agrega el cliente» ni el saldo de una clienta que otra
@@ -288,15 +295,21 @@ fun TableOrderScreen(
     var showMerge by remember { mutableStateOf(false) }
     // Pago dedicado (Square): el flujo de pago se presenta AQUÍ, sin brincar al
     // register de retail. Mismo PaymentFlowViewModel, solo cambia el cascarón.
-    var showPayment by remember { mutableStateOf(false) }
-    var paymentSeedCents by remember { mutableStateOf(0) }
-    var pendingSplitConfig by remember { mutableStateOf(com.avoqado.pos.payment.presentation.SplitConfig()) }
-    var committedPaymentCompletion by remember {
-        mutableStateOf<com.avoqado.pos.payment.presentation.PaymentCompletion?>(null)
-    }
-    var showSplitImporte by remember { mutableStateOf(false) }
+    //
+    // 🔴 D61 (13-nov): TODO el estado del cobro de la mesa vive en el ViewModel de la mesa ([CobroDeLaMesa]), no en un
+    // `remember`. Girar el aparato, cambiar el tema o el tamaño de letra recrea la Activity: la pantalla de cobro DESAPARECÍA
+    // mientras su `PaymentFlowViewModel` seguía cobrando, y «Pagar» abría OTRO cobro de la misma mesa. `rememberSaveable` no
+    // basta: en la N86 girar cambia el árbol de teléfono por el de tableta (Codex r1 #1). Al volver, la pantalla de cobro
+    // recibe la MISMA apertura (`cobroDeLaMesa.apertura`) y sigue el mismo cobro. Se abre sólo con `cobroDeLaMesa.abrir()`.
+    val cobroDeLaMesa = viewModel.cobroDeLaMesa
+    var showPayment by cobroDeLaMesa::abierto
+    var paymentSeedCents by cobroDeLaMesa::semillaCents
+    var pendingSplitConfig by cobroDeLaMesa::reparto
+    var restanteConfirmado by cobroDeLaMesa::restanteConfirmado
+    var showSplitImporte by cobroDeLaMesa::dividiendo
     // I-1 (re-revisión): el «SÍ pasó» de la orden de esta mesa se pinta aquí y se reconoce; antes el flujo se cerraba callado.
-    var previousChargeNotice by remember { mutableStateOf<String?>(null) }
+    // D61: también sobrevive al giro: si se perdía, nadie lo reconocía.
+    var previousChargeNotice by cobroDeLaMesa::avisoCobroAnterior
     val tablesViewModel: TablesViewModel = androidx.hilt.navigation.compose.hiltViewModel()
     var unknownBarcode by remember { mutableStateOf<String?>(null) }
     // Menú … por tiempo (¡Listo!/Repetir). Par (curso, abierto).
@@ -321,6 +334,7 @@ fun TableOrderScreen(
     // aparece en el árbol de accesibilidad, así que se puede verificar que salió.
     val isReprinting by viewModel.isReprinting.collectAsState()
     val actionIsError by viewModel.actionIsError.collectAsState()
+    val mensajeSinRed by viewModel.mensajeSinRed.collectAsState()
     val actionHint by viewModel.actionHint.collectAsState()
     // El aviso lo pinta el DESIGN SYSTEM (AvoqadoSuccessToast / AvoqadoErrorToast):
     // centrado, con el color que corresponde y con subtítulo para decir qué hacer.
@@ -403,16 +417,41 @@ fun TableOrderScreen(
         }
     }
 
+    val pantallaViva = remember { java.util.concurrent.atomic.AtomicBoolean(true) }
+    DisposableEffect(Unit) { onDispose { pantallaViva.set(false) } }
+
+    /**
+     * La ÚNICA salida del cobro de la mesa hacia la cuenta (cancelar, cerrar «Dividir importe», «Venta nueva» con resto o sin
+     * cobro confirmado, cobro anterior resuelto). 🔴 La sesión NO puede quedarse en PAYING (auditoría; D61): el tab Cobrar la
+     * detectaría y sembraría el register con esta mesa —una venta retail acabaría registrada contra la orden de la mesa—,
+     * `requiereRevisarSaldo` se la saltaría y `PaymentFlowViewModel.mesaDelCobro` la tomaría.
+     *
+     * Sólo la pantalla VIVA cierra: un aviso tardío de la composición que se fue al girar (p. ej. la X de «Dividir importe» a
+     * media animación, que avisa al cancelarse) regresaría la sesión a ORDERING debajo del cobro que la pantalla nueva
+     * restauró, y ese cobro ya no pagaría la orden de la mesa.
+     */
+    fun cerrarCobro() {
+        if (!pantallaViva.get()) return
+        showPayment = false
+        showSplitImporte = false
+        pendingSplitConfig = com.avoqado.pos.payment.presentation.SplitConfig()
+        restanteConfirmado = null
+        viewModel.tableSession.current()?.let { s ->
+            viewModel.tableSession.start(s.copy(mode = com.avoqado.pos.tables.data.TableSession.Mode.ORDERING))
+        }
+        viewModel.loadCheck()
+    }
+
     fun firePagar() {
         if (blockIfCannotPay()) return
         prepararPago {
             paymentSeedCents = viewModel.tableSession.current()?.totalCents ?: 0
             if (paymentSeedCents <= 0) paymentSeedCents = viewModel.payableTotalCents
             pendingSplitConfig = com.avoqado.pos.payment.presentation.SplitConfig()
-            committedPaymentCompletion = null
+            restanteConfirmado = null
             // Al abrirse el cobro la cámara se cierra: no queda leyendo debajo del importe congelado.
             showBarcodeScanner = false
-            showPayment = true
+            cobroDeLaMesa.abrir()
         }
         // El motivo lo pone `preparePagar()`, que es quien SABE por qué no se
         // puede: sin cargos, ya pagada, o cuenta ajena. Antes se ponía aquí un
@@ -812,6 +851,14 @@ fun TableOrderScreen(
                     subtitle = actionHint,
                     onDismiss = { viewModel.consumeActionMessage() },
                 )
+            } else if (mensaje == mensajeSinRed) {
+                // D14: «Sin conexión… necesita internet» es un estado normal: gris con el wifi, y con tiempo para leerlo.
+                com.avoqado.pos.designsystem.components.AvoqadoWarningToast(
+                    message = mensaje,
+                    onDismiss = { viewModel.consumeActionMessage() },
+                    durationMs = 4000L,
+                    sinRed = true,
+                )
             } else {
                 AvoqadoSuccessToast(
                     message = mensaje,
@@ -1028,12 +1075,13 @@ fun TableOrderScreen(
                     unitPrice = paymentSeedCents,
                 ),
             ),
-            onDismiss = { showSplitImporte = false },
+            // D61: cerrar «Dividir importe» sin elegir es salir del cobro: la mesa regresa a ORDERING (antes se quedaba en PAYING).
+            onDismiss = { cerrarCobro() },
             onConfirm = { config ->
                 showSplitImporte = false
                 pendingSplitConfig = config
-                committedPaymentCompletion = null
-                showPayment = true
+                restanteConfirmado = null
+                cobroDeLaMesa.abrir()
             },
         )
     }
@@ -1082,18 +1130,6 @@ fun TableOrderScreen(
                 },
             )
         }
-        val cerrarCobro = {
-            showPayment = false
-            pendingSplitConfig = com.avoqado.pos.payment.presentation.SplitConfig()
-            committedPaymentCompletion = null
-            // 🔴 La sesión NO puede quedarse en PAYING (auditoría): el tab
-            // Cobrar la detectaría y sembraría el register con esta mesa —
-            // una venta retail acabaría registrada contra la orden de la mesa.
-            viewModel.tableSession.current()?.let { s ->
-                viewModel.tableSession.start(s.copy(mode = com.avoqado.pos.tables.data.TableSession.Mode.ORDERING))
-            }
-            viewModel.loadCheck()
-        }
         androidx.compose.ui.window.Dialog(
             onDismissRequest = { /* la X del flujo cierra; el back no lo tumba a medias */ },
             properties = androidx.compose.ui.window.DialogProperties(
@@ -1122,6 +1158,9 @@ fun TableOrderScreen(
                 com.avoqado.pos.payment.presentation.PaymentFlowScreen(
                     cartState = paymentCart,
                     splitConfig = pendingSplitConfig,
+                    // D61: la apertura del ViewModel de la mesa: tras girar (también de teléfono a tableta) es la MISMA y el
+                    // flujo sigue el cobro en vuelo en vez de arrancar otro.
+                    apertura = cobroDeLaMesa.apertura,
                     // El cheque ya trae su cliente asignado; el recibo lo
                     // muestra en vez de pedirlo otra vez al cerrar la mesa.
                     preselectedCustomerId = check?.customerId,
@@ -1131,7 +1170,7 @@ fun TableOrderScreen(
                         showSplitImporte = true
                     },
                     onPaymentCommitted = { completion ->
-                        committedPaymentCompletion = completion
+                        restanteConfirmado = completion.remainingBalanceCents
                         if (completion.remainingBalanceCents > 0) {
                             // Pago parcial (split): la sesión ya debe SOLO el resto.
                             // No cambiamos todavía el seed visible: hacerlo aquí
@@ -1145,11 +1184,10 @@ fun TableOrderScreen(
                         }
                     },
                     onDone = {
-                        val completion = committedPaymentCompletion
-                        committedPaymentCompletion = null
-                        when {
-                            completion == null -> showPayment = false
-                            completion.remainingBalanceCents == 0 -> {
+                        val salida = salidaTrasElRecibo(restanteConfirmado)
+                        restanteConfirmado = null
+                        when (salida) {
+                            SalidaTrasElRecibo.SALIR_AL_PLANO -> {
                                 showPayment = false
                                 pendingSplitConfig = com.avoqado.pos.payment.presentation.SplitConfig()
                                 // Square: efectivo exacto → después del recibo regresa
@@ -1160,7 +1198,8 @@ fun TableOrderScreen(
                             // el resto se cobra con «Pagar», que revisa el saldo como cualquier cobro (también sin red). Re-sembrar
                             // ESTE cobro no arrancaba otro: la pantalla conserva su apertura (29-sep), el recibo se quedaba y el
                             // segundo toque lo cerraba con la mesa todavía en PAYING.
-                            else -> cerrarCobro()
+                            // D61: sin cobro confirmado también sale por aquí (antes sólo bajaba la bandera y dejaba PAYING).
+                            SalidaTrasElRecibo.CERRAR_COBRO -> cerrarCobro()
                         }
                     },
                     onCancel = { cerrarCobro() },
@@ -1237,7 +1276,8 @@ fun TableOrderScreen(
                         // YA dice qué hacer (cancélalo o espera), así que no se le pega otra pista
                         // que apunta a lo contrario.
                         val pista = "Cobra el resto de esa cuenta por separado, o reversa su pago antes de fusionarla."
-                            .takeIf { msg != com.avoqado.pos.payment.domain.CancelacionDeCobro.COBRO_EN_CURSO_BLOQUEA_CUENTA }
+                            .takeIf { msg != com.avoqado.pos.payment.domain.CancelacionDeCobro.COBRO_EN_CURSO_BLOQUEA_CUENTA &&
+                                msg !in MOTIVOS_DE_FUSIONAR_POR_COBRO_EN_COLA }
                         viewModel.showError(msg, pista)
                     }
                 }
@@ -2485,234 +2525,241 @@ internal fun TableActionsPanel(
     printBlockedReason: String? = null,
 ) {
     val motivoPreCuenta = motivoPreCuentaEnPanel(hasSent,printBlockedReason)
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(AvoqadoTheme.spacing.md),
-        verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm),
-    ) {
-        // El "por qué está gris" aparece AQUÍ, junto al botón que el mesero
-        // acaba de tocar, y se queda hasta que lo cierre.
-        BlockedNoticeCard(blockedNotice, onDismissNotice)
-        Row(horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
-            ActionPill(
-                label = "Borrar nuevos artículos",
-                enabled = hasPending,
-                blockedReason = "No hay artículos nuevos que borrar.",
-                onBlocked = onBlocked,
-                onClick = onClearPending,
-                modifier = Modifier.weight(1f),
-            )
-            ActionPill(
-                label = "Mover",
-                enabled = true,
-                onClick = onMover,
-                modifier = Modifier.weight(1f),
-            )
+    Column(modifier = Modifier.fillMaxSize()) {
+        // El "por qué está gris" va FIJO encima de la lista y se queda hasta que lo cierren. D653 (12-nov): iba dentro de
+        // la lista; en horizontal la lista se desplaza y el aviso de un botón de abajo («Recompensas») salía fuera de la
+        // vista: la cajera creía que el toque no hizo nada. Como en «Cuenta», donde el aviso tampoco se desplaza.
+        if (blockedNotice != null) {
+            Box(modifier = Modifier.padding(start = AvoqadoTheme.spacing.md, end = AvoqadoTheme.spacing.md, top = AvoqadoTheme.spacing.md)) {
+                BlockedNoticeCard(blockedNotice, onDismissNotice)
+            }
         }
-        Row(horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
-            ActionPill(
-                label = "Anular cuenta",
-                enabled = true,
-                destructive = true,
-                onClick = onAnular,
-                modifier = Modifier.weight(1f),
-            )
-            ActionPill(
-                label = "Asignar",
-                enabled = true,
-                onClick = onAsignar,
-                modifier = Modifier.weight(1f),
-            )
-        }
-        Row(horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
-            ActionPill(
-                label = "Cortesía en la cuenta",
-                enabled = hasSent,
-                blockedReason = if (cuentaSinLeer) CUENTA_SIN_LEER_ESPERA
-                    else "Primero envía la ronda a cocina. La cortesía se aplica sobre lo ya enviado.",
-                onBlocked = onBlocked,
-                onClick = onCompWhole,
-                modifier = Modifier.weight(1f),
-            )
-            ActionPill(
-                label = "Dividir la cuenta",
-                enabled = hasSent,
-                blockedReason = if (isOffline) {
-                    "Dividir por puesto necesita internet. Se habilita solo cuando vuelva la señal."
-                } else if (cuentaSinLeer) {
-                    CUENTA_SIN_LEER_ESPERA
-                } else {
-                    "Primero envía la ronda a cocina."
-                },
-                blockedByConnection = isOffline,
-                onBlocked = onBlocked,
-                onClick = onDividir,
-                modifier = Modifier.weight(1f),
-            )
-        }
-        Row(horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
-            ActionPill(
-                label = "Separar en otra cuenta",
-                enabled = canSeparar,
-                // 🔴 Separar exige AL MENOS DOS artículos: uno se va a la cuenta
-                // nueva y otro tiene que quedarse. Con uno solo, el diálogo abría
-                // y "Separar (0)" NUNCA podía habilitarse — el mesero quedaba en
-                // un callejón sin salida. (Encontrado en la D3, mesa M2.)
-                blockedReason = separarBlockedReason,
-                onBlocked = onBlocked,
-                onClick = onSepararCuenta,
-                modifier = Modifier.weight(1f),
-            )
-            ActionPill(
-                label = "Fusionar cuentas",
-                enabled = true,
-                onClick = onFusionar,
-                modifier = Modifier.weight(1f),
-            )
-        }
-        Row(horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
-            ActionPill(
-                label = "Ordenar carrito",
-                enabled = hasPending,
-                blockedReason = "No hay artículos nuevos que ordenar.",
-                onBlocked = onBlocked,
-                onClick = onOrdenarCarrito,
-                modifier = Modifier.weight(1f),
-            )
-            Spacer(modifier = Modifier.weight(1f))
-        }
-        Row(horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
-            ActionPill(
-                label = "Imprimir cuenta",
-                enabled = motivoPreCuenta == null,
-                blockedReason = motivoPreCuenta,
-                onBlocked = onBlocked,
-                onClick = onPrintPreBill,
-                modifier = Modifier.weight(1f),
-            )
-            ActionPill(
-                label = if (isReprinting) "Reimprimiendo…" else "Volver a imprimir pedido",
-                enabled = hasSent && !isReprinting,
-                blockedReason = if (isReprinting) null else if (cuentaSinLeer) CUENTA_SIN_LEER_ESPERA
-                    else "Aún no se ha enviado ningún pedido a cocina.",
-                onBlocked = onBlocked,
-                onClick = onReprintComandas,
-                modifier = Modifier.weight(1f),
-            )
-        }
-        Row(horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
-            ActionPill(
-                label = "Escanear",
-                enabled = true,
-                onClick = onEscanear,
-                modifier = Modifier.weight(1f),
-            )
-            Spacer(modifier = Modifier.weight(1f))
-        }
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .verticalScroll(rememberScrollState())
+                .padding(AvoqadoTheme.spacing.md),
+            verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm),
+        ) {
+            Row(horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
+                ActionPill(
+                    label = "Borrar nuevos artículos",
+                    enabled = hasPending,
+                    blockedReason = "No hay artículos nuevos que borrar.",
+                    onBlocked = onBlocked,
+                    onClick = onClearPending,
+                    modifier = Modifier.weight(1f),
+                )
+                ActionPill(
+                    label = "Mover",
+                    enabled = true,
+                    onClick = onMover,
+                    modifier = Modifier.weight(1f),
+                )
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
+                ActionPill(
+                    label = "Anular cuenta",
+                    enabled = true,
+                    destructive = true,
+                    onClick = onAnular,
+                    modifier = Modifier.weight(1f),
+                )
+                ActionPill(
+                    label = "Asignar",
+                    enabled = true,
+                    onClick = onAsignar,
+                    modifier = Modifier.weight(1f),
+                )
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
+                ActionPill(
+                    label = "Cortesía en la cuenta",
+                    enabled = hasSent,
+                    blockedReason = if (cuentaSinLeer) CUENTA_SIN_LEER_ESPERA
+                        else "Primero envía la ronda a cocina. La cortesía se aplica sobre lo ya enviado.",
+                    onBlocked = onBlocked,
+                    onClick = onCompWhole,
+                    modifier = Modifier.weight(1f),
+                )
+                ActionPill(
+                    label = "Dividir la cuenta",
+                    enabled = hasSent,
+                    blockedReason = if (isOffline) {
+                        "Dividir por puesto necesita internet. Se habilita solo cuando vuelva la señal."
+                    } else if (cuentaSinLeer) {
+                        CUENTA_SIN_LEER_ESPERA
+                    } else {
+                        "Primero envía la ronda a cocina."
+                    },
+                    blockedByConnection = isOffline,
+                    onBlocked = onBlocked,
+                    onClick = onDividir,
+                    modifier = Modifier.weight(1f),
+                )
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
+                ActionPill(
+                    label = "Separar en otra cuenta",
+                    enabled = canSeparar,
+                    // 🔴 Separar exige AL MENOS DOS artículos: uno se va a la cuenta
+                    // nueva y otro tiene que quedarse. Con uno solo, el diálogo abría
+                    // y "Separar (0)" NUNCA podía habilitarse — el mesero quedaba en
+                    // un callejón sin salida. (Encontrado en la D3, mesa M2.)
+                    blockedReason = separarBlockedReason,
+                    onBlocked = onBlocked,
+                    onClick = onSepararCuenta,
+                    modifier = Modifier.weight(1f),
+                )
+                ActionPill(
+                    label = "Fusionar cuentas",
+                    enabled = true,
+                    onClick = onFusionar,
+                    modifier = Modifier.weight(1f),
+                )
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
+                ActionPill(
+                    label = "Ordenar carrito",
+                    enabled = hasPending,
+                    blockedReason = "No hay artículos nuevos que ordenar.",
+                    onBlocked = onBlocked,
+                    onClick = onOrdenarCarrito,
+                    modifier = Modifier.weight(1f),
+                )
+                Spacer(modifier = Modifier.weight(1f))
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
+                ActionPill(
+                    label = "Imprimir cuenta",
+                    enabled = motivoPreCuenta == null,
+                    blockedReason = motivoPreCuenta,
+                    onBlocked = onBlocked,
+                    onClick = onPrintPreBill,
+                    modifier = Modifier.weight(1f),
+                )
+                ActionPill(
+                    label = if (isReprinting) "Reimprimiendo…" else "Volver a imprimir pedido",
+                    enabled = hasSent && !isReprinting,
+                    blockedReason = if (isReprinting) null else if (cuentaSinLeer) CUENTA_SIN_LEER_ESPERA
+                        else "Aún no se ha enviado ningún pedido a cocina.",
+                    onBlocked = onBlocked,
+                    onClick = onReprintComandas,
+                    modifier = Modifier.weight(1f),
+                )
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
+                ActionPill(
+                    label = "Escanear",
+                    enabled = true,
+                    onClick = onEscanear,
+                    modifier = Modifier.weight(1f),
+                )
+                Spacer(modifier = Modifier.weight(1f))
+            }
 
-        Text(
-            text = "Detalles",
-            style = MaterialTheme.typography.titleSmall,
-            fontWeight = FontWeight.SemiBold,
-            modifier = Modifier.padding(top = AvoqadoTheme.spacing.md),
-        )
-        HorizontalDivider()
-        Row(horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
-            ActionPill(
-                label = "Nombre y notas",
-                enabled = true,
-                onClick = onNameNotes,
-                modifier = Modifier.weight(1f),
+            Text(
+                text = "Detalles",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.padding(top = AvoqadoTheme.spacing.md),
             )
-            ActionPill(
-                label = "Conteo de clientes",
-                enabled = true,
-                onClick = onCovers,
-                modifier = Modifier.weight(1f),
-            )
-        }
-        Row(horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
-            ActionPill(
-                label = "Cumplimiento",
-                enabled = true,
-                onClick = onCumplimiento,
-                modifier = Modifier.weight(1f),
-            )
-            ActionPill(
-                label = "Descuentos",
-                enabled = true,
-                onClick = onDescuentos,
-                modifier = Modifier.weight(1f),
-            )
-        }
-        Row(horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
-            ActionPill(
-                label = "Recompensas",
-                enabled = hasLoyalty,
-                // El motivo verdadero (motivoSinRecompensas): sin red, sin cliente, programa apagado, pocos puntos o cuenta con
-                // abono. Un solo texto para todo mentía (nube, 12-nov).
-                blockedReason = rewardsBlockedReason
-                    ?: "Esta cuenta no tiene puntos para canjear. Agrega el cliente en la pestaña «Cliente».",
-                blockedByConnection = rewardsBlockedByConnection,
-                onBlocked = onRewardsBlocked,
-                onClick = onRecompensas,
-                modifier = Modifier.weight(1f),
-            )
-            ActionPill(
-                label = "Cobros por servicio",
-                enabled = true,
-                onClick = onCobrosServicio,
-                modifier = Modifier.weight(1f),
-            )
-        }
-        Row(horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
-            ActionPill(
-                label = "Menús",
-                enabled = true,
-                onClick = onMenus,
-                modifier = Modifier.weight(1f),
-            )
-            Spacer(modifier = Modifier.weight(1f))
-        }
+            HorizontalDivider()
+            Row(horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
+                ActionPill(
+                    label = "Nombre y notas",
+                    enabled = true,
+                    onClick = onNameNotes,
+                    modifier = Modifier.weight(1f),
+                )
+                ActionPill(
+                    label = "Conteo de clientes",
+                    enabled = true,
+                    onClick = onCovers,
+                    modifier = Modifier.weight(1f),
+                )
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
+                ActionPill(
+                    label = "Cumplimiento",
+                    enabled = true,
+                    onClick = onCumplimiento,
+                    modifier = Modifier.weight(1f),
+                )
+                ActionPill(
+                    label = "Descuentos",
+                    enabled = true,
+                    onClick = onDescuentos,
+                    modifier = Modifier.weight(1f),
+                )
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
+                ActionPill(
+                    label = "Recompensas",
+                    enabled = hasLoyalty,
+                    // El motivo verdadero (motivoSinRecompensas): sin red, sin cliente, programa apagado, pocos puntos o cuenta con
+                    // abono. Un solo texto para todo mentía (nube, 12-nov).
+                    blockedReason = rewardsBlockedReason
+                        ?: "Esta cuenta no tiene puntos para canjear. Agrega el cliente en la pestaña «Cliente».",
+                    blockedByConnection = rewardsBlockedByConnection,
+                    onBlocked = onRewardsBlocked,
+                    onClick = onRecompensas,
+                    modifier = Modifier.weight(1f),
+                )
+                ActionPill(
+                    label = "Cobros por servicio",
+                    enabled = true,
+                    onClick = onCobrosServicio,
+                    modifier = Modifier.weight(1f),
+                )
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
+                ActionPill(
+                    label = "Menús",
+                    enabled = true,
+                    onClick = onMenus,
+                    modifier = Modifier.weight(1f),
+                )
+                Spacer(modifier = Modifier.weight(1f))
+            }
 
-        Text(
-            text = "Otras acciones",
-            style = MaterialTheme.typography.titleSmall,
-            fontWeight = FontWeight.SemiBold,
-            modifier = Modifier.padding(top = AvoqadoTheme.spacing.md),
-        )
-        HorizontalDivider()
-        Row(horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
-            ActionPill(
-                label = "Calculadora",
-                enabled = true,
-                onClick = onCalculadora,
-                modifier = Modifier.weight(1f),
+            Text(
+                text = "Otras acciones",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.padding(top = AvoqadoTheme.spacing.md),
             )
-            ActionPill(
-                label = "Importe personalizado",
-                enabled = true,
-                onClick = onCustomAmount,
-                modifier = Modifier.weight(1f),
-            )
-        }
-        Row(horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
-            ActionPill(
-                label = "Marcar entrada/salida",
-                enabled = true,
-                onClick = onMarcarEntrada,
-                modifier = Modifier.weight(1f),
-            )
-            ActionPill(
-                label = "Caja abierta",
-                enabled = hasCashDrawer,
-                blockedReason = "No hay impresora de recibos con cajón en esta caja. Agrégala en Más › Impresoras y cajón.",
-                onBlocked = onBlocked,
-                onClick = onCajaAbierta,
-                modifier = Modifier.weight(1f),
-            )
+            HorizontalDivider()
+            Row(horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
+                ActionPill(
+                    label = "Calculadora",
+                    enabled = true,
+                    onClick = onCalculadora,
+                    modifier = Modifier.weight(1f),
+                )
+                ActionPill(
+                    label = "Importe personalizado",
+                    enabled = true,
+                    onClick = onCustomAmount,
+                    modifier = Modifier.weight(1f),
+                )
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
+                ActionPill(
+                    label = "Marcar entrada/salida",
+                    enabled = true,
+                    onClick = onMarcarEntrada,
+                    modifier = Modifier.weight(1f),
+                )
+                ActionPill(
+                    label = "Caja abierta",
+                    enabled = hasCashDrawer,
+                    blockedReason = "No hay impresora de recibos con cajón en esta caja. Agrégala en Más › Impresoras y cajón.",
+                    onBlocked = onBlocked,
+                    onClick = onCajaAbierta,
+                    modifier = Modifier.weight(1f),
+                )
+            }
         }
     }
 }

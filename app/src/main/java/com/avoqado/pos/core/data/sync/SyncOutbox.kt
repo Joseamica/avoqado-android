@@ -408,7 +408,7 @@ class SyncOutbox @Inject constructor(
     }
 
     /** Recover only an already stored ACK. Missing/ambiguous/processing/rejected stay held. */
-    private suspend fun recuperarRetenidoQ16(row: SyncIntentEntity, venueId: String, epoch: Long): Boolean {
+    private suspend fun recuperarRetenidoQ16(row: SyncIntentEntity, venueId: String, epoch: Long, sello: Long): Boolean {
         if (row.venueId != venueId || row.type !in setOf(SyncIntentTypes.OPEN_TABLE, SyncIntentTypes.ADD_ITEMS, SyncIntentTypes.PAY_CASH)) return false
         val savedDevice = prefs.getString(KEY_DEVICE_ID, null)?.takeIf { it.isNotBlank() } ?: return false
         try {
@@ -418,7 +418,7 @@ class SyncOutbox @Inject constructor(
             val response = apiService.recoverSyncQ16(venueId, kotlinx.serialization.json.buildJsonObject {
                 put("deviceId", JsonPrimitive(savedDevice))
                 put("intentIds", kotlinx.serialization.json.JsonArray(listOf(JsonPrimitive(row.id))))
-            })
+            }, com.avoqado.pos.core.data.network.SelloDePeticion(sello))
             val data = response["data"] as? JsonObject ?: return false
             val records = data["intents"] as? kotlinx.serialization.json.JsonArray ?: return false
             val orders = data["orders"] as? kotlinx.serialization.json.JsonArray
@@ -474,8 +474,8 @@ class SyncOutbox @Inject constructor(
         withContext(Dispatchers.IO) { tableDrafts.loadResolved(venueId, original).first.takeIf { it != original && it.isNotBlank() } }
 
     private suspend fun enviarAdmitidoQ16(venueId: String, request: SyncIntentsRequest,
-        token: AdmisionDePrecioQ16.Token): SyncIntentsResponse = kotlinx.coroutines.suspendCancellableCoroutine { continuation ->
-        val call=apiService.syncIntentsAdmittedQ16(venueId,request,token)
+        token: AdmisionDePrecioQ16.Token, sello: Long): SyncIntentsResponse = kotlinx.coroutines.suspendCancellableCoroutine { continuation ->
+        val call=apiService.syncIntentsAdmittedQ16(venueId,request,token,com.avoqado.pos.core.data.network.SelloDePeticion(sello))
         continuation.invokeOnCancellation { call.cancel() }
         val admitted=AdmisionDePrecioQ16.admit(token) {
             if (continuation.isActive) call.enqueue(object: retrofit2.Callback<SyncIntentsResponse> {
@@ -503,11 +503,18 @@ class SyncOutbox @Inject constructor(
         ) {
             return 0
         }
+        // 🔴 D80: la corrida manda con UNA sesión: la de la pasada que la corre (`PaymentSyncService`) o, si viene de los disparadores
+        // propios (reloj, reconexión, un intent nuevo), la que hay al empezar. Si a media corrida entra otra persona, sus lotes no
+        // salen con la sesión de ella (`AuthInterceptor` ⇒ `SesionCambiada`): se quedan PENDIENTES y los sube la pasada de quien
+        // entró. El cajón de esta corrida, con el mismo sello.
+        val sello = com.avoqado.pos.core.data.network.selloDeLaPasadaEnCurso() ?: secureStorage.generacion
         // 🔴 EL CAJÓN VA PRIMERO, TAMBIÉN POR ESTA PUERTA (P2-3). Es el MISMO punto de entrada y el
         // MISMO candado de un solo vuelo que usa `PaymentSyncService`: si ya hay un replay del
         // cajón en vuelo, éste espera su turno y encuentra la cola vacía, así que la apertura NUNCA
         // se manda dos veces por sumar un segundo llamador.
-        val cobrosPuedenSalir = runCatching { cajon.sincronizarCajonPrimero() }
+        val cobrosPuedenSalir = runCatching {
+            withContext(com.avoqado.pos.core.data.network.PasadaConSello(sello)) { cajon.sincronizarCajonPrimero() }
+        }
             .onFailure { Log.e(TAG, "❌ No se pudo sincronizar el cajón antes del outbox: ${it.message}") }
             .getOrDefault(true)
         // 🔴 La barrera de la apertura POR CAJA (efectivo sin red en el turno correcto): un intent con caja espera a la apertura de
@@ -526,7 +533,7 @@ class SyncOutbox @Inject constructor(
                     if (leidos.isEmpty()) break
                     if (leidos.first().q15Reason != null) {
                         // Soltada (19-oct): vuelve a pasar por la admisión de precio UNA vez por ciclo; nunca un bucle caliente.
-                        if (recuperarRetenidoQ16(leidos.first(), venueId, contextoDeSesion) && soltadasEnEsteCiclo.add(leidos.first().id)) continue
+                        if (recuperarRetenidoQ16(leidos.first(), venueId, contextoDeSesion, sello) && soltadasEnEsteCiclo.add(leidos.first().id)) continue
                         break // no same-cycle re-price or hot loop after recovery
                     }
 
@@ -584,8 +591,8 @@ class SyncOutbox @Inject constructor(
                     // Context captured before reading this batch also fences the Q16 query await.
                     val response = try {
                         if (batch.any { it.type == SyncIntentTypes.OPEN_TABLE || it.type == SyncIntentTypes.ADD_ITEMS })
-                            enviarAdmitidoQ16(venueId, request, precioToken)
-                        else apiService.syncIntents(venueId, request)
+                            enviarAdmitidoQ16(venueId, request, precioToken, sello)
+                        else apiService.syncIntents(venueId, request, com.avoqado.pos.core.data.network.SelloDePeticion(sello))
                     } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
                     catch (e: Exception) {
                         // Error de red/5xx: los intents quedan PENDING y el próximo
@@ -693,7 +700,7 @@ class SyncOutbox @Inject constructor(
         // D5 · B2b (R5-1): un rechazo de algo de la mesa (su ronda, sobre todo) mata su foto: si el gerente la descarta y el borrador
         // la vuelve a encolar, nunca suma sobre la foto. Si el disco no deja borrarla, queda muerta en memoria y el rechazo se guarda
         // igual (Codex b2b-r1 #1): la fila rechazada pone gris, y con el piloto prendido «Marcar resuelta» no la quita hasta borrarla.
-        if (!ack.isAcked) runCatching { fotos?.invalidar(row.payloadJson) }
+        if (!ack.isAcked && !row.type.liberaLaMesa()) runCatching { fotos?.invalidar(row.payloadJson) }
         if(ack.status == "REJECTED" && ack.errorCode == "STALE_DEVICE_SEQUENCE") {
             require(row.venueId == venueId && sentDeviceId.isNotBlank() && sentDeviceId == currentDeviceId)
             dao.resolveStaleSequence(ack.id,venueId,row.seq,
@@ -737,7 +744,7 @@ class SyncOutbox @Inject constructor(
         // D5 · B2b (R5-1): descartar la ronda tampoco deja que su borrador sume sobre la foto. Con el piloto prendido, si el disco no
         // deja borrarla, lanza y la fila rechazada se queda (la mesa sigue en gris); apagado, sigue como hoy (la foto queda muerta).
         val fila = dao.findForVenue(venueId, id)
-        fotos?.let { f -> fila?.let { f.borrarAntesDe(it.payloadJson) } }
+        fotos?.let { f -> fila?.takeUnless { it.type.liberaLaMesa() }?.let { f.borrarAntesDe(it.payloadJson) } }
         // D29 (deuda A4): la ronda sale del borrador de su mesa ANTES que su fila. Sin esto, al reabrir la mesa `restoreDraft` la
         // volvía a encolar con el mismo id (una ronda del borrador sin fila es la que la app no alcanzó a encolar). Si la app muere
         // entre los dos pasos, la fila sigue y se vuelve a marcar; si el disco no deja, lanza y la fila se queda.
@@ -784,7 +791,7 @@ class SyncOutbox @Inject constructor(
     suspend fun filasSinResolverDeLaOrden(venueId: String, ids: Set<String>): List<FilaDeLaOrden> = withContext(Dispatchers.IO) {
         val filas = dao.filasSinResolver(venueId)
         val expanded = conAlias(venueId, ids, filas.map { it.payloadJson })
-        filas.filter { tocaLaOrden(it.payloadJson, expanded) }.map {
+        filas.filter { !it.type.liberaLaMesa() && tocaLaOrden(it.payloadJson, expanded) }.map {
             FilaDeLaOrden(it.id, it.type, it.status, if (it.type == TIPO_PAGO_EN_EFECTIVO) importeDelEfectivo(it.payloadJson) else null)
         }
     }
@@ -796,7 +803,7 @@ class SyncOutbox @Inject constructor(
     suspend fun filasDeLaOrdenDesde(venueId: String, ids: Set<String>, desdeSeq: Long): List<FilaDeLaOrden> = withContext(Dispatchers.IO) {
         val filas = dao.filasDesde(venueId, desdeSeq)
         val expanded = conAlias(venueId, ids, filas.map { it.payloadJson })
-        filas.filter { tocaLaOrden(it.payloadJson, expanded) }.map {
+        filas.filter { !it.type.liberaLaMesa() && tocaLaOrden(it.payloadJson, expanded) }.map {
             FilaDeLaOrden(it.id, it.type, it.status, if (it.type == TIPO_PAGO_EN_EFECTIVO) importeDelEfectivo(it.payloadJson) else null, it.seq)
         }
     }
@@ -826,7 +833,7 @@ class SyncOutbox @Inject constructor(
             var cobrado = 0
             val tipos = mutableSetOf<String>()
             for (fila in filas) {
-                if (!tocaLaOrden(fila.payloadJson, ids)) continue
+                if (fila.type.liberaLaMesa() || !tocaLaOrden(fila.payloadJson, ids)) continue
                 intents++
                 if (fila.status == SyncIntentEntity.STATUS_REJECTED) rechazados++
                 tipos += fila.type
@@ -843,6 +850,13 @@ class SyncOutbox @Inject constructor(
             require(cents >= 0) { "Importe de pago negativo" }
             return cents
         }
+
+        /**
+         * D75 (hz:8024bc1c:D75): «Liberar mesa» actúa sobre la MESA, no sobre la cuenta. Desde D75 su payload nombra la cuenta que el
+         * aparato quiso soltar (para que el SERVIDOR no lo rechace por OTRA cuenta de la mesa), pero eso no lo vuelve trabajo de esa
+         * cuenta ni toca su foto: las lecturas por cuenta lo saltan, como cuando sólo llevaba la mesa.
+         */
+        internal fun String.liberaLaMesa() = this == "CLEAR_TABLE"
 
         internal fun tocaLaOrden(payloadJson: String, ids: Set<String>): Boolean {
             fun contieneId(value: JsonElement): Boolean = when (value) {

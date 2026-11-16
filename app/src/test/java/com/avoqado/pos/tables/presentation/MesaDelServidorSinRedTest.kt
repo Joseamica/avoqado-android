@@ -91,6 +91,9 @@ class MesaDelServidorSinRedTest {
     private var efectivoGuardado: EfectivoDelPedido? = EfectivoDelPedido.NINGUNO
     /** D45: las filas de la orden en esa cola, por su llave y si ya subieron (la firma). */
     private var cobrosGuardados: List<com.avoqado.pos.payment.domain.DineroDeLaOrden> = emptyList()
+    /** D62: el efectivo de OTRAS cuentas (por llave) en esa cola; una llave con null = no se pudo leer. */
+    private val efectivoDeOtraCuenta = mutableMapOf<String, EfectivoDelPedido?>()
+    private lateinit var repo: TableServiceRepository
     private fun abono(subido: Boolean) = listOf(com.avoqado.pos.payment.domain.DineroDeLaOrden("e:abono-50", 5000, esTarjeta = false, confirmado = subido))
 
     // MARK: - El servidor (la cuenta que conoce) y la red
@@ -157,6 +160,8 @@ class MesaDelServidorSinRedTest {
         fotos = FotosDeMesas(dirFotos, { piloto })
         client = OkHttpClient.Builder().addInterceptor(PuertaDeLaFoto(fotos)).build()
         val repository = mockk<TableServiceRepository>(relaxed = true)
+        repo = repository
+        coEvery { repository.mergeOrders(any(), any(), any()) } returns Result.success(Unit)
         every { repository.tables } returns MutableStateFlow(emptyList())
         every { repository.ownership } returns MutableStateFlow(TableServiceRepository.TableOwnership())
         coEvery { repository.getOrderDetail(any(), any()) } answers {
@@ -196,7 +201,10 @@ class MesaDelServidorSinRedTest {
         }
         every { plan.concedidaPorAvoqado(TableOrderViewModel.CODIGO_PILOTO_SIN_RED) } answers { piloto }
         coEvery { cobros.hayPendiente(any(), any(), any(), any()) } answers { cobroEnOtraCola }
-        coEvery { efectivoDeCobros.efectivoDelPedido(any()) } answers { efectivoGuardado ?: throw IllegalStateException("disco") }
+        coEvery { efectivoDeCobros.efectivoDelPedido(any()) } answers {
+            val id = firstArg<String>()
+            (if (id in efectivoDeOtraCuenta) efectivoDeOtraCuenta[id] else efectivoGuardado) ?: throw IllegalStateException("disco")
+        }
         coEvery { efectivoDeCobros.cobrosDelPedido(any(), any()) } answers { cobrosGuardados }
         val config = mockk<PrintConfigRepository>(relaxed = true)
         every { config.getCurrentConfig() } returns PrintConfig()
@@ -205,6 +213,7 @@ class MesaDelServidorSinRedTest {
         return TableOrderViewModel(repository, session, config, mockk(relaxed = true), mockk<PrinterService>(relaxed = true), storage,
             outbox, mockk(relaxed = true), connectivity, mockk(relaxed = true), mockk(relaxed = true), mockk(relaxed = true), draftStore = drafts,
             planManager = plan, fotos = fotos, cobrosLocales = cobros, efectivoEnColaDeCobros = efectivoDeCobros)
+            .also { it.discoParaFusionar = kotlin.coroutines.EmptyCoroutineContext }
     }
 
     /** El mesero abre la mesa M1 (del servidor) desde el plano. */
@@ -341,6 +350,74 @@ class MesaDelServidorSinRedTest {
         assertTrue(subject.preparePagar())
         assertEquals(10000, session.current()!!.totalCents)
         subject.viewModelScope.cancel()
+    }
+
+    // MARK: - D62: fusionar una cuenta cuyo abono espera en la cola de COBROS
+
+    private fun TestScope.fusionar(subject: TableOrderViewModel, origen: String): Pair<Boolean, String>? {
+        var resultado: Pair<Boolean, String>? = null
+        subject.mergeFrom(origen) { ok, msg -> resultado = ok to msg }
+        advanceUntilIdle()
+        return resultado
+    }
+
+    @Test fun `P2 D62 la cuenta con un abono en la cola de cobros no se fusiona y al subir si`() = runTest {
+        val subject = mesaDeCien()
+        // La cuenta A de la mesa tiene $50 en efectivo cuyo POST no llegó: su fila conserva orderId = A.
+        efectivoDeOtraCuenta["order-A"] = EfectivoDelPedido.EN_COLA
+        assertEquals(false to FUSIONAR_COBRO_SIN_SINCRONIZAR, fusionar(subject, "order-A"))
+        coVerify(exactly = 0) { repo.mergeOrders(any(), any(), any()) }
+
+        efectivoDeOtraCuenta["order-A"] = EfectivoDelPedido.NINGUNO // ya subió: el SERVIDOR decide (con pagos rechaza la fusión)
+        assertEquals(true, fusionar(subject, "order-A")?.first)
+        coVerify(exactly = 1) { repo.mergeOrders(venue, "order-F", "order-A") }
+        subject.viewModelScope.cancel()
+    }
+
+    @Test fun `D62 un cobro por revisar o la cola sin leer tampoco dejan fusionar`() = runTest {
+        val subject = mesaDeCien()
+        efectivoDeOtraCuenta["order-A"] = EfectivoDelPedido.POR_REVISAR
+        assertEquals(false to FUSIONAR_COBRO_POR_REVISAR, fusionar(subject, "order-A"))
+        efectivoDeOtraCuenta["order-A"] = null // la lectura de la cola truena: falla CERRADO
+        assertEquals(false to FUSIONAR_COBROS_SIN_LEER, fusionar(subject, "order-A"))
+        coVerify(exactly = 0) { repo.mergeOrders(any(), any(), any()) }
+        subject.viewModelScope.cancel()
+    }
+
+    @Test fun `D62 el abono guardado con la llave local de la cuenta origen tambien frena la fusion`() = runTest {
+        // A se abrió en este aparato con su id local y quedó estacionada al cambiar a F: su abono se guardó con esa llave.
+        val a = session.abrirDesdePiso(venue, TableSession.Active("table-F", "1", null, "order-A", "F-2", 1, 0, TableSession.Mode.ORDERING,
+            localOrderId = "local-A"))!!
+        assertTrue(session.estacionar(venue, a))
+        efectivoDeOtraCuenta["local-A"] = EfectivoDelPedido.EN_COLA
+        val subject = mesaDeCien()
+        assertEquals(false to FUSIONAR_COBRO_SIN_SINCRONIZAR, fusionar(subject, "order-A"))
+        coVerify(exactly = 0) { repo.mergeOrders(any(), any(), any()) }
+        subject.viewModelScope.cancel()
+    }
+
+    /** Codex r1 #1: A nació sin red como «local-A», su apertura subió y la app se reinició: la memoria ya no sabe que A fue «local-A». */
+    @Test fun `D62 el abono guardado con el id local de una cuenta ya promovida frena la fusion tras reiniciar`() = runTest {
+        drafts.promote(venue, "local-A", "order-A") // lo que deja en disco el acuse de su apertura
+        efectivoDeOtraCuenta["local-A"] = EfectivoDelPedido.POR_REVISAR
+        val subject = mesaDeCien()
+        assertEquals(false to FUSIONAR_COBRO_POR_REVISAR, fusionar(subject, "order-A"))
+        coVerify(exactly = 0) { repo.mergeOrders(any(), any(), any()) }
+        subject.viewModelScope.cancel()
+    }
+
+    @Test fun `D62 elegida por su id local ya promovido, cuenta el abono guardado con el id del servidor`() = runTest {
+        drafts.promote(venue, "local-A", "order-A")
+        efectivoDeOtraCuenta["order-A"] = EfectivoDelPedido.EN_COLA
+        val subject = mesaDeCien()
+        assertEquals(false to FUSIONAR_COBRO_SIN_SINCRONIZAR, fusionar(subject, "local-A"))
+        coVerify(exactly = 0) { repo.mergeOrders(any(), any(), any()) }
+        subject.viewModelScope.cancel()
+    }
+
+    @Test fun `D62 la pista de reversar el pago no se pega a los motivos de la cola de cobros`() {
+        assertEquals(setOf(FUSIONAR_COBRO_SIN_SINCRONIZAR, FUSIONAR_COBRO_POR_REVISAR, FUSIONAR_COBROS_SIN_LEER), MOTIVOS_DE_FUSIONAR_POR_COBRO_EN_COLA)
+        assertEquals(null, motivoParaFusionar(EfectivoDelPedido.NINGUNO))
     }
 
     @Test fun `abono sin internet y luego el resto`() = runTest {

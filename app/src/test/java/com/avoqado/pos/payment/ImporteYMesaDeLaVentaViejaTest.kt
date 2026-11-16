@@ -99,7 +99,7 @@ class ImporteYMesaDeLaVentaViejaTest {
         every { secureStorage.venueId } returns VENUE
         every { secureStorage.userId } returns "user-1"
         every { areaTicketRepository.session.current() } returns null
-        coEvery { mesas.clearTable(any(), any()) } returns Result.success(Unit)
+        coEvery { mesas.clearTable(any(), any(), any()) } returns Result.success(Unit)
         customerDisplay = CustomerDisplayState()
         vm = PaymentFlowViewModel(
             tableSession = tableSession, syncOutbox = mockk(relaxed = true), orderRepository = orderRepository,
@@ -229,9 +229,9 @@ class ImporteYMesaDeLaVentaViejaTest {
         respuesta.complete(Result.success(OrderRepository.CashPayResult(paymentId = "pago-5", receiptAccessKey = null, orderPaymentStatus = "PAID")))
         advanceUntilIdle()
 
-        coVerify { mesas.clearTable(VENUE, "mesa-5") }
+        coVerify { mesas.clearTable(VENUE, "mesa-5", "orden-mesa-5") }
         coVerify { lanHub.release("mesa-5") }
-        coVerify(exactly = 0) { mesas.clearTable(any(), "mesa-8") }
+        coVerify(exactly = 0) { mesas.clearTable(any(), "mesa-8", any()) }
         assertEquals("la mesa de B sigue activa", "mesa-8", tableSession.current()?.tableId)
         assertTrue("la orden de la mesa 5 quedó finalizada", tableSession.requiereRevisarSaldo(VENUE, setOf("orden-mesa-5")))
     }
@@ -254,8 +254,8 @@ class ImporteYMesaDeLaVentaViejaTest {
         respuesta.complete(Result.success(OrderRepository.CashPayResult(paymentId = "pago-5", receiptAccessKey = null, orderPaymentStatus = "PAID")))
         advanceUntilIdle()
 
-        coVerify { mesas.clearTable(VENUE, "mesa-5") }
-        coVerify(exactly = 0) { mesas.clearTable(any(), "mesa-8") }
+        coVerify { mesas.clearTable(VENUE, "mesa-5", "orden-mesa-5") }
+        coVerify(exactly = 0) { mesas.clearTable(any(), "mesa-8", any()) }
         assertEquals("mesa-8", tableSession.current()?.tableId)
     }
 

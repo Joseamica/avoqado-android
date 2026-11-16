@@ -104,6 +104,8 @@ internal fun motivoParaNoCobrarLaMesa(provisional: Boolean, cheque: OrderDetail?
     provisional -> if (trabajo.rechazados == 0 && trabajo.tipos.all { it in setOf("OPEN_TABLE", "ADD_ITEMS", "PAY_CASH") }) null
         else "Esta mesa tiene cambios sin sincronizar: cóbrala cuando se sincronicen."
     trabajo.intents > 0 -> "Esta mesa tiene cambios sin sincronizar: cóbrala cuando se sincronicen."
+    // D59: el SERVIDOR ya la marcó pagada (la cobraron en la terminal con esta pantalla abierta): «Pagar $0.00» no se ofrece.
+    cheque?.id == orderId && cheque.paymentStatus.equals("PAID", ignoreCase = true) -> MESA_YA_PAGADA
     // Sin lectura fresca del servidor no se sabe si cambió: se dice lo cierto (no se pudo confirmar), no «cambió».
     !chequeAlDia && (cheque?.id == orderId || vioCambios) -> "No se pudo confirmar el saldo actual de esta cuenta: intenta de nuevo en un momento."
     else -> null
@@ -188,6 +190,9 @@ class TableOrderViewModel @Inject constructor(
     private val efectivoEnColaDeCobros: com.avoqado.pos.payment.data.CashPaymentRepository? = null,
 ) : ViewModel() {
 
+    /** D61: el cobro de la mesa vive aquí y no en la pantalla: sobrevive a girar el aparato (ver [CobroDeLaMesa]). */
+    internal val cobroDeLaMesa = CobroDeLaMesa()
+
     /** Json para serializar payloads de intents (mismas opciones que la red). */
     private val wireJson = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
 
@@ -257,6 +262,12 @@ class TableOrderViewModel @Inject constructor(
      * único dueño es «Enviar»: una recarga del borrador (acuse de la apertura) no la recupera ni le quita sus productos a la pantalla.
      */
     private var rondaEnVuelo: String? = null
+    /** D55: los renglones que «Enviar» capturó. Mientras se envía son de esa ronda (D16) y su desenlace los quita por id. */
+    private var renglonesEnVuelo: Set<String> = emptySet()
+    private fun vaEnLaRonda(lineItemId: String) = _isSending.value && lineItemId in renglonesEnVuelo
+    /** D55: lo que ya se está mandando no se quita ni se cambia (se perdería o la ronda iría distinta de lo que se ve); lo dice. */
+    private fun renglonEnVuelo(ids: Collection<String>): Boolean =
+        ids.any(::vaEnLaRonda).also { if (it) showBlockedReason(RENGLON_EN_VUELO) }
     private var checkLoadGeneration = 0L
 
     private val contextoDeSesion = tableSession.contextoActual()
@@ -327,6 +338,9 @@ class TableOrderViewModel @Inject constructor(
             } to firma
         } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (_: Exception) { null }
     }
+
+    /** D62: dónde se lee el borrador al revisar la cuenta que se fusiona (las pruebas lo corren en su propio hilo). */
+    internal var discoParaFusionar: kotlin.coroutines.CoroutineContext = kotlinx.coroutines.Dispatchers.IO
 
     private suspend fun leerTrabajo(s: TableSession.Active): TrabajoSinResolver? {
         val vId = venueId ?: return null
@@ -606,6 +620,9 @@ class TableOrderViewModel @Inject constructor(
         /** D16: la ronda YA está en la cola, pero la mesa cambió a media escritura (su saldo queda en gris). Nunca «intenta de nuevo». */
         const val RONDA_GUARDADA_MESA_CAMBIO = "Ronda guardada, pero la mesa cambió mientras se guardaba. Revisa la cuenta antes de cobrar."
 
+        /** D55: un renglón que «Enviar» ya está mandando no se quita ni se cambia hasta que termine (D16: sólo «Enviar» decide). */
+        const val RENGLON_EN_VUELO = "Ya se está enviando a cocina. Espera a que termine para cambiarlo."
+
         /** D16: la ronda no entró a la cola y el disco no dejó deshacerla: sigue en el borrador y se manda sola al reabrir. */
         const val RONDA_SE_RECUPERA_AL_REABRIR = "No se pudo terminar de guardar la ronda. No la vuelvas a enviar: se manda sola al reabrir la cuenta."
 
@@ -855,11 +872,12 @@ class TableOrderViewModel @Inject constructor(
         // Agotado AVISA, nunca bloquea (Square-parity 2026-08-12): el stock
         // queda en negativo como señal de descuadre.
         if (product.isOutOfStock) {
-            _actionMessage.value = "⚠️ \"${product.name}\" marcaba 0 — se agregó, revisa tus existencias"
+            showMessage("⚠️ \"${product.name}\" marcaba 0 — se agregó, revisa tus existencias")
         }
         val course = _selectedCourse.value
         val existing = _pending.value.firstOrNull { line ->
-            line.course == course &&
+            // D55: sumarle al renglón que ya va en la ronda en vuelo perdía la unidad (el desenlace lo quita por id).
+            !vaEnLaRonda(line.item.id) && line.course == course &&
                 (line.item.type as? CartItemType.ProductItem)?.productId == product.id &&
                 line.item.selectedModifiers.isEmpty() && line.item.promotionInstanceId == null && line.item.serviceCourse == selectedSnapshot() &&
                 // Una línea anotada («sin aceite») es de UN platillo: el siguiente toque va en su propia línea.
@@ -897,7 +915,7 @@ class TableOrderViewModel @Inject constructor(
         if (cuentaCerrada()) return
         // Ver addProduct: agotado avisa, nunca bloquea.
         if (product.isOutOfStock) {
-            _actionMessage.value = "⚠️ \"${product.name}\" marcaba 0 — se agregó, revisa tus existencias"
+            showMessage("⚠️ \"${product.name}\" marcaba 0 — se agregó, revisa tus existencias")
         }
         pendingLines = _pending.value + PendingLine(
             item = CartItem(
@@ -920,6 +938,7 @@ class TableOrderViewModel @Inject constructor(
 
     /** Asiento de una línea pendiente: cicla — → A1 → ... → Amax → —. */
     fun cyclePendingSeat(lineItemId: String, maxSeats: Int) {
+        if (renglonEnVuelo(listOf(lineItemId))) return
         pendingLines = _pending.value.map { line ->
             if (line.item.id != lineItemId) line
             else {
@@ -945,13 +964,18 @@ class TableOrderViewModel @Inject constructor(
 
     fun removePending(lineItemId: String) {
         val instance = _pending.value.firstOrNull { it.item.id == lineItemId }?.item?.promotionInstanceId
-        pendingLines = _pending.value.filterNot { it.item.id == lineItemId || instance != null && it.item.promotionInstanceId == instance }
+        val (fuera, quedan) = _pending.value.partition { it.item.id == lineItemId || instance != null && it.item.promotionInstanceId == instance }
+        if (renglonEnVuelo(fuera.map { it.item.id })) return
+        pendingLines = quedan
     }
 
     /** "Borrar nuevos artículos" (Acciones): drops every unsent line. */
     fun clearPending() {
-        pendingLines = emptyList()
-        _actionMessage.value = "Artículos sin enviar borrados"
+        // D55: lo que se está mandando lo decide «Enviar»; se borra sólo lo demás y se dice qué quedó (Codex r1 #1).
+        val (enVuelo, nuevos) = _pending.value.partition { vaEnLaRonda(it.item.id) }
+        pendingLines = enVuelo
+        if (nuevos.isNotEmpty() || enVuelo.isEmpty()) showMessage("Artículos sin enviar borrados")
+        if (enVuelo.isNotEmpty()) showBlockedReason(RENGLON_EN_VUELO)
     }
 
     /** Criterios de "Ordenar carrito" (Square). */
@@ -971,7 +995,7 @@ class TableOrderViewModel @Inject constructor(
             CartSort.NOMBRE -> _pending.value.sortedBy { it.item.name.lowercase() }
             CartSort.PRECIO -> _pending.value.sortedByDescending { it.item.unitPrice }
         }
-        _actionMessage.value = "Carrito ordenado — ${mode.label.lowercase()}"
+        showMessage("Carrito ordenado — ${mode.label.lowercase()}")
     }
 
     /** ¿Hay impresora de recibos? Square deshabilita "Caja abierta" sin caja. */
@@ -1004,13 +1028,13 @@ class TableOrderViewModel @Inject constructor(
     /** "Caja abierta": pulso ESC/POS al cajón por la impresora de recibos. */
     fun openCashDrawer() {
         val printer = printerService.getDefaultPrinter(PrinterRole.RECEIPT) ?: run {
-            _actionMessage.value = "No hay impresora de recibos en esta caja. Agrégala en Más › Impresoras y cajón."
+            showMessage("No hay impresora de recibos en esta caja. Agrégala en Más › Impresoras y cajón.")
             return
         }
         viewModelScope.launch {
             try {
                 printerService.openCashDrawer(printer)
-                _actionMessage.value = "Caja abierta"
+                showMessage("Caja abierta")
             } catch (e: Exception) {
                 showError("No se pudo abrir la caja: ${e.message}")
             }
@@ -1038,6 +1062,7 @@ class TableOrderViewModel @Inject constructor(
     fun updatePendingQuantity(lineItemId: String, quantity: Int) {
         if (quantity < 1) return removePending(lineItemId)
         if (_pending.value.any { it.item.id == lineItemId && it.item.promotionInstanceId != null }) return
+        if (renglonEnVuelo(listOf(lineItemId))) return
         pendingLines = _pending.value.map { line ->
             if (line.item.id == lineItemId) line.copy(item = line.item.copy(quantity = quantity)) else line
         }
@@ -1078,6 +1103,7 @@ class TableOrderViewModel @Inject constructor(
             } catch (_: ArithmeticException) { onDone(false, IMPORTE_RONDA_FUERA_DE_LIMITE); return }
               catch (_: IllegalStateException) { onDone(false, IMPORTE_RONDA_FUERA_DE_LIMITE); return }
         }
+        renglonesEnVuelo = lines.map { it.item.id }.toSet()
         _isSending.value = true
         viewModelScope.launch {
             bloqueoDeSaldo(vId, session, revisarSaldo = false)?.let { _isSending.value = false; onDone(false, it); return@launch }
@@ -1286,6 +1312,11 @@ class TableOrderViewModel @Inject constructor(
      */
     val blockedNotice: StateFlow<String?> = _blockedNotice.asStateFlow()
 
+    init {
+        // D55 (Codex r1 #2): «Ya se está enviando…» describe el envío; al terminar deja de ser cierto y se quita (sólo ESE aviso).
+        viewModelScope.launch { _isSending.collect { if (!it && _blockedNotice.value == RENGLON_EN_VUELO) invalidateBlockedNotice() } }
+    }
+
     /**
      * Aviso para el mesero: sale por el Snackbar de la pantalla.
      *
@@ -1298,6 +1329,7 @@ class TableOrderViewModel @Inject constructor(
     fun showMessage(text: String) {
         _actionMessage.value = text
         _actionIsError.value = false
+        _mensajeSinRed.value = null
         _actionHint.value = null
     }
 
@@ -1312,11 +1344,30 @@ class TableOrderViewModel @Inject constructor(
     fun showError(text: String, hint: String? = null) {
         _actionMessage.value = text
         _actionIsError.value = true
+        _mensajeSinRed.value = null
         _actionHint.value = hint
+    }
+
+    /**
+     * D14 (hz:87f4b879:D14): «Sin conexión… necesita internet» NO es un fallo (regla «todo funciona sin red»): se dice en gris con el
+     * wifi, nunca con el círculo rojo de [showError] ni con la palomita de [showMessage].
+     */
+    fun showSinRed(text: String) {
+        _actionMessage.value = text
+        _actionIsError.value = false
+        _mensajeSinRed.value = text
+        _actionHint.value = null
     }
 
     private val _actionIsError = MutableStateFlow(false)
     val actionIsError: StateFlow<Boolean> = _actionIsError.asStateFlow()
+
+    /**
+     * D14: el texto del último aviso de «Sin conexión» ([showSinRed]). El aviso en pantalla va en gris con el wifi sólo mientras
+     * [actionMessage] sea ESE texto (Codex r2 #2): muchos éxitos escriben [actionMessage] directo y no deben heredar el gris.
+     */
+    private val _mensajeSinRed = MutableStateFlow<String?>(null)
+    val mensajeSinRed: StateFlow<String?> = _mensajeSinRed.asStateFlow()
 
     private val _actionHint = MutableStateFlow<String?>(null)
     val actionHint: StateFlow<String?> = _actionHint.asStateFlow()
@@ -1367,7 +1418,7 @@ class TableOrderViewModel @Inject constructor(
 
     private fun requireOnline(accion: String): Boolean {
         if (connectivityMonitor.isConnected.value) return true
-        showError("Sin conexión — $accion necesita internet; se habilita al volver la señal")
+        showSinRed("Sin conexión — $accion necesita internet; se habilita al volver la señal")
         return false
     }
 
@@ -1569,7 +1620,7 @@ class TableOrderViewModel @Inject constructor(
         viewModelScope.launch {
             mutarCuenta(vId, session) { mutar { repository.compItem(vId, session.orderId, itemId, reason)  }}.fold(
                 onSuccess = {
-                    _actionMessage.value = "Artículo de cortesía — $reason"
+                    showMessage("Artículo de cortesía — $reason")
                     repository.refresh(vId)
                 },
                 onFailure = { e ->
@@ -1581,6 +1632,7 @@ class TableOrderViewModel @Inject constructor(
 
     fun consumeActionMessage() {
         _actionMessage.value = null
+        _mensajeSinRed.value = null
     }
 
     /** "Mover" — moves the check to another table. The session's table context
@@ -1609,7 +1661,7 @@ class TableOrderViewModel @Inject constructor(
             mutarCuenta(vId, session, revisarSaldo = false) { mutar { repository.assignOrder(vId, session.orderId, staffId)  }}.fold(
                 onSuccess = {
                     repository.refresh(vId)
-                    _actionMessage.value = "Cuenta asignada a $staffName"
+                    showMessage("Cuenta asignada a $staffName")
                 },
                 onFailure = { e -> showError(com.avoqado.pos.core.data.network.ServerErrorText.humanize(e, "No se pudo asignar la cuenta")) },
             )
@@ -1624,7 +1676,7 @@ class TableOrderViewModel @Inject constructor(
         viewModelScope.launch {
             mutarCuenta(vId, session) { mutar { repository.compWholeOrder(vId, session.orderId, reason)  }}.fold(
                 onSuccess = {
-                    _actionMessage.value = "Cuenta de cortesía — $reason"
+                    showMessage("Cuenta de cortesía — $reason")
                     repository.refresh(vId)
                 },
                 onFailure = { e ->
@@ -1644,7 +1696,7 @@ class TableOrderViewModel @Inject constructor(
                 com.avoqado.pos.tables.data.OrderDetailsRequest(name = name, notes = notes, covers = covers, customerId = customerId, orderType = orderType),
             )  }}.fold(
                 onSuccess = {
-                    _actionMessage.value = "Cuenta actualizada"
+                    showMessage("Cuenta actualizada")
                     repository.refresh(vId)
                 },
                 onFailure = { e -> showError(com.avoqado.pos.core.data.network.ServerErrorText.humanize(e, "No se pudo actualizar la cuenta")) },
@@ -1664,17 +1716,15 @@ class TableOrderViewModel @Inject constructor(
         val vId = venueId ?: return
         bloqueoDeSaldo(vId, session)?.let { showBlockedReason(it); return }
         if (pideAprobacion && !connectivityMonitor.isConnected.value) {
-            showError(DESCUENTO_CON_APROBACION_SIN_RED_MESA)
+            showSinRed(DESCUENTO_CON_APROBACION_SIN_RED_MESA)
             return
         }
         viewModelScope.launch {
             mutarCuenta(vId, session) { mutar { repository.applyOrderDiscount(vId, session.orderId, discountId, pideAprobacion) }}.fold(
-                onSuccess = { _actionMessage.value = "Descuento aplicado"; repository.refresh(vId) },
+                onSuccess = { showMessage("Descuento aplicado"); repository.refresh(vId) },
                 onFailure = { e ->
-                    showError(
-                        if (pideAprobacion && repository.esFalloDeRed(e)) DESCUENTO_CON_APROBACION_SIN_RED_MESA
-                        else com.avoqado.pos.core.data.network.ServerErrorText.humanize(e, "No se pudo aplicar el descuento"),
-                    )
+                    if (pideAprobacion && repository.esFalloDeRed(e)) showSinRed(DESCUENTO_CON_APROBACION_SIN_RED_MESA)
+                    else showError(com.avoqado.pos.core.data.network.ServerErrorText.humanize(e, "No se pudo aplicar el descuento"))
                 },
             )
         }
@@ -1688,7 +1738,7 @@ class TableOrderViewModel @Inject constructor(
         if (!requireOnline("quitar un descuento aplicado")) return
         viewModelScope.launch {
             mutarCuenta(vId, session) { mutar { repository.removeOrderDiscount(vId, session.orderId, orderDiscountId)  }}.fold(
-                onSuccess = { _actionMessage.value = "Descuento quitado"; repository.refresh(vId) },
+                onSuccess = { showMessage("Descuento quitado"); repository.refresh(vId) },
                 onFailure = { e -> showError(com.avoqado.pos.core.data.network.ServerErrorText.humanize(e, "No se pudo quitar el descuento")) },
             )
         }
@@ -1745,9 +1795,9 @@ class TableOrderViewModel @Inject constructor(
     fun selectMenu(menuId: String?) {
         _selectedMenuId.value = menuId
         _verTodo.value = menuId == null
-        _actionMessage.value = menuId?.let { id ->
+        showMessage(menuId?.let { id ->
             _menus.value.firstOrNull { it.id == id }?.let { "Menú: ${it.name}" }
-        } ?: "Catálogo completo"
+        } ?: "Catálogo completo")
     }
 
     // MARK: - Cobros por servicio
@@ -1770,7 +1820,7 @@ class TableOrderViewModel @Inject constructor(
         viewModelScope.launch {
             mutarCuenta(vId, session) { mutar { repository.applyServiceCharge(vId, session.orderId, serviceChargeId)  }}.fold(
                 onSuccess = {
-                    _actionMessage.value = "Cobro por servicio aplicado"
+                    showMessage("Cobro por servicio aplicado")
                     repository.refresh(vId)
                 },
                 onFailure = { e -> showError(com.avoqado.pos.core.data.network.ServerErrorText.humanize(e, "No se pudo aplicar el cobro")) },
@@ -1786,7 +1836,7 @@ class TableOrderViewModel @Inject constructor(
         viewModelScope.launch {
             mutarCuenta(vId, session) { mutar { repository.removeServiceCharge(vId, session.orderId, orderServiceChargeId)  }}.fold(
                 onSuccess = {
-                    _actionMessage.value = "Cobro por servicio quitado"
+                    showMessage("Cobro por servicio quitado")
                     repository.refresh(vId)
                 },
                 onFailure = { e -> showError(com.avoqado.pos.core.data.network.ServerErrorText.humanize(e, "No se pudo quitar el cobro")) },
@@ -1988,6 +2038,9 @@ class TableOrderViewModel @Inject constructor(
         bloqueoDeSaldo(vId, session, sourceOrderId)?.let { onDone(false, it); return }
         val offline = !connectivityMonitor.isConnected.value
         viewModelScope.launch {
+            // D62: un cobro del ORIGEN en la cola de COBROS se queda con la llave del origen; fusionado, «Pagar» del destino no lo ve.
+            motivoParaFusionar(efectivoDeLaCuentaEnColaDeCobros(efectivoEnColaDeCobros, draftStore, tableSession, vId, sourceOrderId,
+                discoParaFusionar))?.let { onDone(false, it); return@launch }
             mutarCuenta(vId, session, sourceOrderId) { mutar { repository.mergeOrders(vId, session.orderId, sourceOrderId)  }}.fold(
                 onSuccess = {
                     tableSession.finalizar(vId, setOf(sourceOrderId), contextoDeSesion)
@@ -2085,11 +2138,11 @@ class TableOrderViewModel @Inject constructor(
         viewModelScope.launch {
             mutarCuenta(vId, session) { mutar { repository.splitOrder(vId, session.orderId, refs)  }}.fold(
                 onSuccess = {
-                    _actionMessage.value = if (offline) {
+                    showMessage(if (offline) {
                         "Cuenta separada — ${itemIds.size} artículo(s); se sincroniza al volver la señal"
                     } else {
                         "Cuenta separada — ${itemIds.size} artículo(s) movidos"
-                    }
+                    })
                     repository.refresh(vId)
                 },
                 onFailure = { e -> showError(com.avoqado.pos.core.data.network.ServerErrorText.humanize(e, "No se pudo separar la cuenta")) },
@@ -2113,7 +2166,7 @@ class TableOrderViewModel @Inject constructor(
         viewModelScope.launch {
             mutarCuenta(vId, session) { mutar { repository.cancelOrder(vId, session.orderId, reason)  }}.fold(
                 onSuccess = {
-                    mutarCuenta(vId, session) { mutar { repository.clearTable(vId, session.tableId)  }}
+                    mutarCuenta(vId, session) { mutar { repository.clearTable(vId, session.tableId, session.orderId)  }}
                     repository.refresh(vId)
                     tableSession.finalizar(vId, session.idsDeLaOrden, contextoDeSesion)
                     onDone(true, "Cuenta anulada — Mesa ${session.tableNumber} liberada")
@@ -2171,7 +2224,7 @@ class TableOrderViewModel @Inject constructor(
         val vId = venueId ?: return
         val sentItems = _check.value?.items?.filter { it.productId != null } ?: emptyList()
         if (sentItems.isEmpty()) {
-            _actionMessage.value = "No hay artículos enviados para reimprimir"
+            showMessage("No hay artículos enviados para reimprimir")
             return
         }
         viewModelScope.launch {
@@ -2264,7 +2317,7 @@ class TableOrderViewModel @Inject constructor(
         val vId = venueId ?: return
         val courseItems = _check.value?.items?.filter { it.course == course && it.productId != null } ?: emptyList()
         if (courseItems.isEmpty()) {
-            _actionMessage.value = "No hay artículos en ese tiempo"
+            showMessage("No hay artículos en ese tiempo")
             return
         }
         viewModelScope.launch {
@@ -2275,7 +2328,7 @@ class TableOrderViewModel @Inject constructor(
             // impresora KITCHEN local. Abortar aquí dejaba a un local sin
             // estaciones configuradas sin poder reimprimir NADA.
             if (!config.stations.any { it.active } && printerService.getDefaultPrinter(PrinterRole.KITCHEN) == null) {
-                _actionMessage.value = "No hay ninguna impresora de cocina configurada"
+                showMessage("No hay ninguna impresora de cocina configurada")
                 return@launch
             }
             val routable = courseItems.map { item ->
@@ -2302,7 +2355,7 @@ class TableOrderViewModel @Inject constructor(
                 orderNumber = session.orderNumber,
                 orderType = "Mesa ${session.tableNumber} · ¡MARCHAR ${course ?: "Inmediato"}!",
             )
-            _actionMessage.value = "¡Marchando ${course ?: "Inmediato"}!"
+            showMessage("¡Marchando ${course ?: "Inmediato"}!")
         }
     }
 
@@ -2312,7 +2365,7 @@ class TableOrderViewModel @Inject constructor(
         if (cuentaCerrada()) return
         val courseItems = _check.value?.items?.filter { it.course == course && it.productId != null } ?: emptyList()
         if (courseItems.isEmpty()) {
-            _actionMessage.value = "No hay artículos en ese tiempo"
+            showMessage("No hay artículos en ese tiempo")
             return
         }
         val copies = try {
@@ -2320,7 +2373,7 @@ class TableOrderViewModel @Inject constructor(
         } catch (e: IllegalArgumentException) { showError(e.message ?: "Elige el paquete completo desde Combos"); return }
         pendingLines = _pending.value + copies
         _selectedCourse.value = course
-        _actionMessage.value = "${copies.sumOf { it.item.quantity }} artículo(s) repetidos en ${course ?: "Inmediato"}"
+        showMessage("${copies.sumOf { it.item.quantity }} artículo(s) repetidos en ${course ?: "Inmediato"}")
     }
 
     /** GET sólo para el documento: no acredita el cheque, el draft ni el saldo de cobro. */
@@ -2385,7 +2438,7 @@ class TableOrderViewModel @Inject constructor(
                     remainingAmount = balance?.remainingBalanceCents,
                 )
                 printerService.printReceipt(receipt, printer)
-                _actionMessage.value = "Pre-cuenta impresa"
+                showMessage("Pre-cuenta impresa")
             } catch (e: Exception) {
                 showError("No se pudo imprimir: ${com.avoqado.pos.core.data.network.ServerErrorText.humanize(e, "desconocido")}")
             }
@@ -2472,6 +2525,8 @@ class TableOrderViewModel @Inject constructor(
      */
     internal val motivoCobradaAqui: String? get() = tableSession.current()?.let { s ->
         when {
+            // D59 (Codex r2): la cuenta del servidor ya viene pagada (la cobraron en la terminal): el botón dice «Ya pagada».
+            _check.value?.let { it.id == s.orderId && it.paymentStatus.equals("PAID", ignoreCase = true) } == true -> MESA_YA_PAGADA
             s.isProvisional && saldoDeMesaConocido && saldoDeMesa.porPagarCents <= 0 &&
                 trabajoParaSaldo?.takeIf { it.first == venueId && it.second == s.idsDeLaOrden }?.third?.tipos
                     ?.contains(com.avoqado.pos.core.data.sync.SyncIntentTypes.PAY_CASH) == true -> CUENTA_COBRADA_AQUI
@@ -2512,6 +2567,8 @@ class TableOrderViewModel @Inject constructor(
         // D5 · B2b: con el piloto, la mesa del servidor que no se puede cobrar en línea se cobra con su saldo sin red (o dice por qué no).
         val motivo = motivoParaNoCobrarLaMesa(session.isProvisional, _check.value, session.orderId, cuentaAlDiaAqui,
             hayMutacionEnVuelo, vioCambios, trabajo)
+        // D59: pagada en el servidor no se cobra ni con el saldo sin red (su texto diría «cobrada aquí, falta subirla»).
+        if (motivo == MESA_YA_PAGADA) { showBlockedReason(motivo); return false }
         var sinRed: SaldoSinRed.Conocido? = null
         if (motivo != null) {
             // Codex b2b-r3 (F2): si el piloto se apagó mientras se leía, el camino de hoy (el motivo de siempre, sin `cobroSinRed`).

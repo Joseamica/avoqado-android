@@ -63,6 +63,8 @@ class AppState @Inject constructor(
     private val savedCartsRepository: com.avoqado.pos.pos.data.SavedCartsRepository? = null,
     /** D4 (5-nov): los paquetes vendidos por entregar: su fila arranca y para con la de los cobros. Default para las pruebas de JVM. */
     private val pendingGrantQueue: com.avoqado.pos.customers.data.PendingGrantQueue? = null,
+    /** D72: al volver la red se releen los tiempos de servicio si quedó su aviso. Default para las pruebas de JVM. */
+    private val serviceCoursesRepository: com.avoqado.pos.tables.data.ServiceCoursesRepository? = null,
 ) : ViewModel() {
 
     /**
@@ -262,6 +264,29 @@ class AppState @Inject constructor(
     /** A refreshed entitlement must not change the NavHost key or discard the current sale. */
     fun refreshPaidAccess() {
         if (_isLoggedIn.value) refreshPlanAndSettings(rebuildNavigation = false)
+    }
+
+    /**
+     * D72: relee los tiempos de servicio. Va en su propio trabajo: si la relectura tumba la bandera del servidor (la cocina
+     * contesta 500), esa caída no la cancela (Codex r1 #1). Entre una y otra espera 1 min, y el doble cada vez (tope 15 min):
+     * lo que se pide durante la espera no se pierde (Codex r2 #1), se hace al terminar si sigue el aviso con red. Así el rebote
+     * de un servidor que falla (bandera abajo → ping → arriba) no la repite en ciclo ni hace parpadear «Sin conexión» cada
+     * minuto, y un aviso que no cambia no se relee solo.
+     */
+    private fun releerTiempos(tiempos: com.avoqado.pos.tables.data.ServiceCoursesRepository) {
+        if (releyendoTiempos?.isActive == true) { otraRelecturaDeTiempos = true; return }
+        releyendoTiempos = viewModelScope.launch {
+            delay(1000)
+            var espera = 60_000L
+            do {
+                otraRelecturaDeTiempos = false
+                val venueId = secureStorage.venueId
+                if (!_isLoggedIn.value || venueId == null || !avisoDeTiemposConRed) break
+                tiempos.refresh(venueId)
+                delay(espera)
+                espera = (espera * 2).coerceAtMost(15 * 60_000L)
+            } while (otraRelecturaDeTiempos)
+        }
     }
 
     /**
@@ -490,6 +515,12 @@ class AppState @Inject constructor(
             ),
         )
 
+    /** D72: la relectura automática de los tiempos (incluye su minuto de espera), si hay red y servidor con su aviso, y si
+     *  alguien la pidió durante ese minuto. */
+    private var releyendoTiempos: Job? = null
+    private var avisoDeTiemposConRed = false
+    private var otraRelecturaDeTiempos = false
+
     init {
         viewModelScope.launch {
             combine(connectivityMonitor.isConnected, connectivityMonitor.isServerReachable) { connected, reachable ->
@@ -498,6 +529,18 @@ class AppState @Inject constructor(
                 if (ready) {
                     delay(1000)
                     refreshPaidAccess()
+                }
+            }
+        }
+        // D72: «No se pudieron actualizar los tiempos» sólo se quitaba al reabrir la cuenta. Con red y servidor y ese aviso en
+        // pantalla, se releen solos: al volver la red o al aparecer el aviso con la red ya arriba (Codex r1 #2).
+        serviceCoursesRepository?.let { tiempos ->
+            viewModelScope.launch {
+                combine(connectivityMonitor.isConnected, connectivityMonitor.isServerReachable, tiempos.notice) { red, servidor, aviso ->
+                    red && servidor && aviso != null
+                }.distinctUntilChanged().collect { listo ->
+                    avisoDeTiemposConRed = listo
+                    if (listo) releerTiempos(tiempos)
                 }
             }
         }
@@ -608,8 +651,9 @@ class AppState @Inject constructor(
             pendingGrantQueue?.stop()
             stopInventorySync()
             syncOutbox.stop()
-            detenerRedLocal()
+            // Hub D3: la sesión de mesa se borra ANTES de apagar el hub, así su despedida declara «ninguna» y la libera enseguida.
             tableSyncCoordinator.onSessionInvalidated()
+            detenerRedLocal()
             soltarAjustesDeLaSesion()
             // ponytail: los `stop()` de arriba y este borrado no son un solo paso; entre la comprobación y aquí no hay
             // espera, y el borrado igual sólo sale si la sesión sigue siendo la que se cerraba.

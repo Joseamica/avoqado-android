@@ -127,7 +127,7 @@ class SyncOutboxRetenidoTest {
             else cola.removeIf { it.id == id }
             Unit
         }
-        coEvery { apiService.syncIntents(VENUE, any()) } answers {
+        coEvery { apiService.syncIntents(VENUE, any(), any()) } answers {
             val request = secondArg<SyncIntentsRequest>()
             mandados += request.intents.map { it.id }
             SyncIntentsResponse(data = request.intents.map { wire ->
@@ -163,7 +163,7 @@ class SyncOutboxRetenidoTest {
                 """{"version":1,"enabled":true,"replayLaneVersion":1}""", 100)
         try {
             startReady(subject)
-            coEvery { apiService.syncIntents(VENUE, any()) } answers {
+            coEvery { apiService.syncIntents(VENUE, any(), any()) } answers {
                 val request = secondArg<SyncIntentsRequest>()
                 mandados += request.intents.map { it.id }
                 SyncIntentsResponse(data = request.intents.map { SyncAck(id = it.id, status = if (it.type == "KDS_ITEM_PROGRESS") "ACKED" else "RETRY") })
@@ -212,7 +212,7 @@ class SyncOutboxRetenidoTest {
 
     @Test fun `empty sync response preserves pending intent without a hot loop`() = runTest {
         val subject = outbox()
-        coEvery { apiService.syncIntents(VENUE, any()) } returns SyncIntentsResponse(data = emptyList())
+        coEvery { apiService.syncIntents(VENUE, any(), any()) } returns SyncIntentsResponse(data = emptyList())
         try {
             startReady(subject)
             cola += intent("round", 1, "ADD_ITEMS")
@@ -239,7 +239,7 @@ class SyncOutboxRetenidoTest {
                 pendingAtAck += store.load(VENUE, "real-order").pending.size
                 cola.removeIf { it.id == firstArg<String>() }; Unit
             }
-            coEvery { apiService.syncIntents(VENUE, any()) } returns SyncIntentsResponse(data = listOf(SyncAck(id = "open", status = "ACKED",
+            coEvery { apiService.syncIntents(VENUE, any(), any()) } returns SyncIntentsResponse(data = listOf(SyncAck(id = "open", status = "ACKED",
                 result = kotlinx.serialization.json.buildJsonObject {
                     put("localOrderId", kotlinx.serialization.json.JsonPrimitive("local-order")); put("orderId", kotlinx.serialization.json.JsonPrimitive("real-order"))
                 })))
@@ -267,7 +267,7 @@ class SyncOutboxRetenidoTest {
             val digest = java.security.MessageDigest.getInstance("SHA-256").digest("$VENUE\u0000real-order".toByteArray()).joinToString("") { "%02x".format(it) }
             val blocked = java.io.File(root, "$digest.json").apply { mkdirs(); resolve("owned-blocker").writeText("FULLTEST") }
             subject = outbox(listOf(intent("open", 1, "OPEN_TABLE").copy(payloadJson = "{\"localOrderId\":\"local-order\"}")), parent)
-            coEvery { apiService.syncIntents(VENUE, any()) } returns SyncIntentsResponse(data = listOf(SyncAck(id = "open", status = "ACKED",
+            coEvery { apiService.syncIntents(VENUE, any(), any()) } returns SyncIntentsResponse(data = listOf(SyncAck(id = "open", status = "ACKED",
                 result = kotlinx.serialization.json.buildJsonObject {
                     put("localOrderId", kotlinx.serialization.json.JsonPrimitive("local-order")); put("orderId", kotlinx.serialization.json.JsonPrimitive("real-order"))
                 })))

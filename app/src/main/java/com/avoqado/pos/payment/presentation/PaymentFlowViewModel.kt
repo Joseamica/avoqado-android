@@ -47,6 +47,10 @@ import com.avoqado.pos.payment.data.model.SincronizacionDelCobro
 import com.avoqado.pos.payment.data.model.CORTESIA_DE_CUENTA_LA_DA_UN_GERENTE
 import com.avoqado.pos.payment.data.model.CORTESIA_DE_CUENTA_PIDE_PIN
 import com.avoqado.pos.payment.data.model.CORTESIA_DE_CUENTA_SIN_RED
+import com.avoqado.pos.payment.data.model.CORTESIA_DE_PRODUCTO_LA_DA_UN_GERENTE
+import com.avoqado.pos.payment.data.model.CORTESIA_DE_PRODUCTO_PIDE_PIN
+import com.avoqado.pos.payment.data.model.CORTESIA_DE_PRODUCTO_SIN_RED
+import com.avoqado.pos.payment.data.model.SALDO_NO_LLEVA_PIN_DE_GERENTE
 import com.avoqado.pos.payment.data.model.DESCUENTO_CON_APROBACION_LO_APLICA_UN_GERENTE
 import com.avoqado.pos.payment.data.model.DESCUENTO_CON_APROBACION_PIDE_PIN
 import com.avoqado.pos.payment.data.model.DESCUENTO_CON_APROBACION_SIN_RED
@@ -869,10 +873,12 @@ class PaymentFlowViewModel @Inject constructor(
      * Los permisos de gerente que le faltan a esta venta para crearse, en orden. Codex r2 #2: si el SERVIDOR ya dijo que no (permisos
      * guardados viejos), manda él, no la lista del aparato.
      * - hz:e0b12f00:D2: un «Descuento de la cuenta» que deja en $0 los productos (`orders:comp`).
+     * - D15 (hz:87f4b879:D15): un PRODUCTO regalado (cortesía del renglón o descuento de catálogo tipo cortesía), también `orders:comp`.
      * - D4 (hz:f34960c5:D4): un % o fijo con «Requiere aprobación» (`tpv-orders:discount`).
      */
     private fun permisosQueFaltan(cart: CartState, roles: com.avoqado.pos.core.domain.RoleManager): List<String> = buildList {
-        if ((cart.descuentoDeCuentaRegala || pideCortesiaPorElServidor) && (!roles.canCompOrders || pideCortesiaPorElServidor)) {
+        val regala = cart.descuentoDeCuentaRegala || cart.regalaUnProducto || pideCortesiaPorElServidor
+        if (regala && (!roles.canCompOrders || pideCortesiaPorElServidor)) {
             add(PERMISO_DE_CORTESIA)
         }
         if ((cart.pideAprobacionDeGerente || pideAprobacionPorElServidor) && (!roles.canApproveDiscounts || pideAprobacionPorElServidor)) {
@@ -905,23 +911,28 @@ class PaymentFlowViewModel @Inject constructor(
         val permiso = permisosQueFaltan(cart, roles).firstOrNull { it !in permisosDeGerente } ?: return false
         val coordinador = managerOverrideCoordinator
         val esCortesia = permiso == PERMISO_DE_CORTESIA
-        val motivo = when {
-            !tpvSettingsRepository.managerPinOverrideEnabled.value || coordinador == null ->
-                if (esCortesia) CORTESIA_DE_CUENTA_LA_DA_UN_GERENTE else DESCUENTO_CON_APROBACION_LO_APLICA_UN_GERENTE
-            sinRed -> CORTESIA_DE_CUENTA_SIN_RED
-            else -> null
-        }
-        if (motivo != null || coordinador == null) {
+        // D14 (hz:87f4b879:D14): con el PIN apagado no hay nada que reintentar y no es una falla del cobro: aviso gris, sin «Reintentar».
+        if (!tpvSettingsRepository.managerPinOverrideEnabled.value || coordinador == null) {
             _state.value = PaymentFlowState.Error(
-                motivo ?: CORTESIA_DE_CUENTA_LA_DA_UN_GERENTE,
-                if (sinRed) PaymentErrorSource.NETWORK else PaymentErrorSource.SERVER,
+                if (esCortesia) textoDeCortesia(cart, CORTESIA_DE_PRODUCTO_LA_DA_UN_GERENTE, CORTESIA_DE_CUENTA_LA_DA_UN_GERENTE)
+                else DESCUENTO_CON_APROBACION_LO_APLICA_UN_GERENTE,
+                PaymentErrorSource.SOLO_GERENTE,
+            )
+            return true
+        }
+        if (sinRed) {
+            _state.value = PaymentFlowState.Error(
+                if (esCortesia) textoDeCortesia(cart, CORTESIA_DE_PRODUCTO_SIN_RED, CORTESIA_DE_CUENTA_SIN_RED) else DESCUENTO_CON_APROBACION_SIN_RED,
+                PaymentErrorSource.NETWORK,
             )
             return true
         }
         pidiendoPinDeCortesia = true
         val venta = ventaEnCurso
-        // D4: el gerente ve qué aprueba («Descuento: 10% gerencial»).
-        val contexto = if (esCortesia) null else nombresQuePidenAprobacion(cart)?.let { "Descuento: $it" }
+        // D4: el gerente ve qué aprueba («Descuento: 10% gerencial»); D15: y qué regala («Cortesía: Helado»), porque con los dos salen
+        // dos teclados seguidos.
+        val contexto = if (esCortesia) nombresQueRegala(cart)?.let { "Cortesía: $it" }
+            else nombresQuePidenAprobacion(cart)?.let { "Descuento: $it" }
         viewModelScope.launch {
             val token = try {
                 val autorizo = if (contexto == null) coordinador.preauthorize(permiso) else coordinador.preauthorize(permiso, contexto = contexto)
@@ -942,6 +953,23 @@ class PaymentFlowViewModel @Inject constructor(
         (listOfNotNull(cart.orderDiscount?.takeIf { it.pideAprobacion }?.name) +
             cart.items.filter { it.itemDiscountPideAprobacion && !it.isCortesia }.mapNotNull { it.itemDiscountName })
             .distinct().joinToString(" · ").takeIf { it.isNotBlank() }
+
+    /** D15: los productos que regala esta venta, para el teclado del gerente. null con el descuento de cuenta que regala (D2, sin texto). */
+    private fun nombresQueRegala(cart: CartState): String? =
+        if (cart.descuentoDeCuentaRegala) null
+        else cart.items.filter { it.regalaElProducto }.map { it.name }.distinct().joinToString(" · ").takeIf { it.isNotBlank() }
+
+    /** D15: el texto de la cortesía según lo que regala: sólo productos, o el descuento de la cuenta que la deja en $0 (D2). */
+    private fun textoDeCortesia(cart: CartState?, deProducto: String, deCuenta: String): String =
+        if (cart != null && cart.regalaUnProducto && !cart.descuentoDeCuentaRegala) deProducto else deCuenta
+
+    /**
+     * D15 (Codex r1 #1): la venta regala un producto y quien cobra no tiene el permiso (pidió el PIN), según el aparato o porque el
+     * SERVIDOR ya dijo que no (Codex r2 #1: permisos guardados viejos). Si la red se cae al crearla NO se encola: el token no va a
+     * disco (vale 60 s y una vez) y el SERVIDOR rechaza con 403 esa venta de la cola. Con el permiso propio se encola como hoy.
+     */
+    private fun cortesiaDeProductoConPin(cart: CartState): Boolean =
+        cart.regalaUnProducto && (rolesDeSaldo?.canCompOrders == false || pideCortesiaPorElServidor)
 
     /** Los tokens de este intento: los toma la venta que sale ahora y nadie más. */
     private fun tomarPermisoDeCortesia(): String? =
@@ -972,9 +1000,11 @@ class PaymentFlowViewModel @Inject constructor(
             apartadosDeEstaVenta.removeAll(llaves.toSet())
             if (apartadoDelIntento in llaves) apartadoDelIntento = null
         }
+        // D14: no es una falla del cobro: el siguiente toque pide el PIN («Volver a cobrar»), en gris.
         _state.value = PaymentFlowState.Error(
-            if (esAprobacion) DESCUENTO_CON_APROBACION_PIDE_PIN else CORTESIA_DE_CUENTA_PIDE_PIN,
-            PaymentErrorSource.SERVER,
+            if (esAprobacion) DESCUENTO_CON_APROBACION_PIDE_PIN
+            else textoDeCortesia(cartState, CORTESIA_DE_PRODUCTO_PIDE_PIN, CORTESIA_DE_CUENTA_PIDE_PIN),
+            PaymentErrorSource.PIDE_PIN,
         )
     }
 
@@ -2373,6 +2403,11 @@ class PaymentFlowViewModel @Inject constructor(
             val resultado = conTextoDelFolio(if (fila.fila == FilaDeLaCaja.T1) {
                 // 🔴 D2 (spec punto 18): esta entrada CREA la venta. Con el descuento del cliente y sin permiso ni PIN suficiente (un
                 // carrito restaurado por otra sesión), no sale nada: el mismo texto del 403.
+                // D15 (Codex r1 #2): esta puerta (`/gift-cards/pay-new-order`) no lleva el PIN de un gerente. Si la venta lo necesita
+                // (cortesía o descuento con aprobación, sin el permiso), no sale nada y se dice qué hacer; antes el SERVIDOR la rechazaba
+                // con un 403 «No tienes permiso».
+                if (rolesDeSaldo?.let { permisosQueFaltan(snapshot, it).isNotEmpty() } == true)
+                    return DesenlaceDeCobro.NoSalio(SALDO_NO_LLEVA_PIN_DE_GERENTE).also { resultadoDeSaldo.value = it }
                 if (!snapshot.puedeCrearOrdenConDescuentoDelCliente(attachedCustomerId, rolesDeSaldo?.canApplyDiscounts == true)) {
                     alFrenarPorDescuentoDelCliente()
                     return DesenlaceDeCobro.NoSalio(
@@ -3354,6 +3389,14 @@ class PaymentFlowViewModel @Inject constructor(
                                             message = DESCUENTO_CON_APROBACION_SIN_RED,
                                             source = PaymentErrorSource.NETWORK,
                                         )
+                                    } else if (isQueueable && cortesiaDeProductoConPin(cart)) {
+                                        // 🔴 D15 (Codex r1 #1): igual con un producto regalado con el PIN de un gerente: encolada
+                                        // subiría sin el token y el SERVIDOR la rechazaría (403). Se dice y se reintenta con red.
+                                        if (otra) return@fold
+                                        _state.value = PaymentFlowState.Error(
+                                            message = CORTESIA_DE_PRODUCTO_SIN_RED,
+                                            source = PaymentErrorSource.NETWORK,
+                                        )
                                     } else if (isQueueable) {
                                         val idEnCola = cashPaymentRepository.queueCashPayment(
                                             orderRequest = orderRequest,
@@ -3567,7 +3610,7 @@ class PaymentFlowViewModel @Inject constructor(
                         }
                         _state.value = PaymentFlowState.Error(
                             message = terminalResult.message,
-                            source = PaymentErrorSource.TERMINAL,
+                            source = if (terminalResult.sinCobroNiRechazo) PaymentErrorSource.NO_SE_COBRO else PaymentErrorSource.TERMINAL,
                             // C1: «Terminal ocupada» con salida — «Revisar ese cobro» sólo si el servidor nombró un cobro
                             // real (con `"unknown"` no hay a quién preguntar).
                             revisarCobroId = terminalResult.bloqueador?.revisable,
@@ -4162,6 +4205,12 @@ class PaymentFlowViewModel @Inject constructor(
                                         // 🔴 D4 (Codex r2 #1): igual que el cupón: sin red este descuento no entra, ni a la cola.
                                         _state.value = PaymentFlowState.Error(
                                             message = DESCUENTO_CON_APROBACION_SIN_RED,
+                                            source = PaymentErrorSource.NETWORK,
+                                        )
+                                    } else if (isQueueable && cortesiaDeProductoConPin(cart)) {
+                                        // 🔴 D15 (Codex r1 #1): un producto regalado con el PIN de un gerente tampoco va a la cola.
+                                        _state.value = PaymentFlowState.Error(
+                                            message = CORTESIA_DE_PRODUCTO_SIN_RED,
                                             source = PaymentErrorSource.NETWORK,
                                         )
                                     } else if (isQueueable) {
@@ -5565,7 +5614,7 @@ class PaymentFlowViewModel @Inject constructor(
         fun vigente() = secureStorage.venueId == mesa.venueId && tableSession.contextoActual() == mesa.contexto
         if (!vigente()) return
         viewModelScope.launch {
-            if (repo.clearTable(mesa.venueId, mesa.mesa.tableId).isFailure) {
+            if (repo.clearTable(mesa.venueId, mesa.mesa.tableId, orderId).isFailure) {
                 Log.d("🍽", "La orden de la mesa ${mesa.mesa.tableNumber} sigue con saldo: su sesión sigue viva")
                 return@launch
             }

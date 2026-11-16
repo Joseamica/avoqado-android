@@ -740,7 +740,7 @@ class TableOrderCuentaGarantizadaTest {
         val a = vm(provisional = true); val f = floor(); val done = CompletableDeferred<Result<Unit>>()
         try {
             session.start(session.current()!!.copy(mode = TableSession.Mode.PAYING))
-            coEvery { repository.clearTable(any(), any()) } coAnswers { done.await() }
+            coEvery { repository.clearTable(any(), any(), any()) } coAnswers { done.await() }
             f.finishTableAfterPayment(); runCurrent()
             assertTrue(a.exitToFloor()); f.startOrdering(table("b", "t2")) {}
             val b = session.current(); done.complete(Result.success(Unit)); advanceUntilIdle()
@@ -755,9 +755,9 @@ class TableOrderCuentaGarantizadaTest {
         val a = vm(); val f = floor()
         try {
             session.start(session.current()!!.copy(mode = TableSession.Mode.PAYING))
-            coEvery { repository.clearTable(any(), any()) } returns Result.success(Unit)
+            coEvery { repository.clearTable(any(), any(), any()) } returns Result.success(Unit)
             f.finishTableAfterPayment(cobroEnCola = true); advanceUntilIdle()
-            coVerify(exactly = 0) { repository.clearTable(any(), any()) }
+            coVerify(exactly = 0) { repository.clearTable(any(), any(), any()) }
             assertNull(session.current())
             // Pagada aquí y sin subir: al volver a abrirla no se cobra otra vez sin leer la cuenta del servidor.
             f.startOrdering(table(provisional = false)) {}
@@ -769,9 +769,9 @@ class TableOrderCuentaGarantizadaTest {
         val a = vm(); val f = floor()
         try {
             session.start(session.current()!!.copy(mode = TableSession.Mode.PAYING))
-            coEvery { repository.clearTable(any(), any()) } returns Result.success(Unit)
+            coEvery { repository.clearTable(any(), any(), any()) } returns Result.success(Unit)
             f.finishTableAfterPayment(); advanceUntilIdle()
-            coVerify(exactly = 1) { repository.clearTable("v-cuenta-garantizada", "t1") }
+            coVerify(exactly = 1) { repository.clearTable("v-cuenta-garantizada", "t1", "o1") }
             assertNull(session.current())
         } finally { a.viewModelScope.cancel(); f.viewModelScope.cancel() }
     }
@@ -868,7 +868,7 @@ class TableOrderCuentaGarantizadaTest {
             a.addCustomAmount("Ronda A", 11000); a.sendRound(); advanceUntilIdle(); assertTrue(a.exitToFloor())
             f.startOrdering(table("b", "t2")) {}; val b = session.current()
             coEvery { repository.cancelOrder(any(), any(), any()) } returns Result.success(Unit)
-            coEvery { repository.clearTable(any(), any()) } returns Result.success(Unit)
+            coEvery { repository.clearTable(any(), any(), any()) } returns Result.success(Unit)
             var completed = false
             f.bulkAnular(listOf(table()), "Cancelación autorizada") { ok, fail, _ -> assertEquals(1, ok); assertEquals(0, fail); completed = true }
             advanceUntilIdle(); assertTrue(completed); assertEquals(b, session.current())

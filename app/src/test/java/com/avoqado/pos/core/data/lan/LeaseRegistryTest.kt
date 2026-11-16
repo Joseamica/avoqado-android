@@ -179,6 +179,21 @@ class ArbiterElectionTest {
         assertNull(ArbiterElection.pick(emptyList()))
     }
 
+    @Test
+    fun `r2-H2 cambia el arbitro sube con otra eleccion y no con la misma eleccion republicada`() {
+        val x = LanPeer("X", "10.0.0.9", 8080, isWired = true, bootedAtMillis = 100)
+        val y = LanPeer("Y", "10.0.0.8", 8080, isWired = true, bootedAtMillis = 200)
+        val cocina = LanPeer("cpad", "10.0.0.5", 8080, isWired = true, bootedAtMillis = 0, sirveLeases = false)
+
+        assertTrue("X sale y queda Y", ArbiterElection.cambiaElArbitro(listOf(x, y), listOf(y)))
+        assertTrue("de nadie a X", ArbiterElection.cambiaElArbitro(emptyList(), listOf(x)))
+        assertTrue("de X a nadie", ArbiterElection.cambiaElArbitro(listOf(x), emptyList()))
+        assertFalse("llega Y, pero X sigue ganando", ArbiterElection.cambiaElArbitro(listOf(x), listOf(x, y)))
+        assertFalse("una pantalla de cocina no cambia la elección", ArbiterElection.cambiaElArbitro(listOf(x), listOf(cocina, x)))
+        assertFalse("X republicado con otro TXT", ArbiterElection.cambiaElArbitro(listOf(x), listOf(x.copy(kdsStations = setOf("barra")))))
+        assertFalse("sin árbitro antes ni después", ArbiterElection.cambiaElArbitro(emptyList(), listOf(cocina)))
+    }
+
     /**
      * Etapa 3 del KDS (3.5, D1): una tablet que SÓLO es pantalla de cocina anuncia `hub=0`. Si entrara a la elección
      * podría ganarla (cableada, más uptime) y no contestar un solo lease: todas las mesas caerían a NoHub.
