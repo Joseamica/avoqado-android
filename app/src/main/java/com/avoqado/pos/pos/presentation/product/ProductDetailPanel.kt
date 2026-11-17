@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -32,6 +33,7 @@ import androidx.compose.material.icons.Icons
 import com.avoqado.pos.core.util.formatMoney
 import com.avoqado.pos.designsystem.components.AvoqadoModalBottomSheet
 
+import com.avoqado.pos.designsystem.components.CantidadTecleable
 import com.avoqado.pos.designsystem.components.CircleBackButton
 import androidx.compose.material.icons.automirrored.filled.NoteAdd
 import androidx.compose.material.icons.filled.AttachMoney
@@ -389,7 +391,8 @@ private fun MainDetailView(
 ) {
     var showMissingRequired by remember { mutableStateOf(false) }
 
-    Column(modifier = Modifier.fillMaxSize()) {
+    // imePadding: la cantidad se teclea en la barra de abajo y el teclado del aparato la taparía (edge-to-edge anula adjustResize).
+    Column(modifier = Modifier.fillMaxSize().imePadding()) {
         if (showMissingRequired && missingRequiredGroups.isNotEmpty()) {
             Text(
                 text = "Falta elegir: ${missingRequiredGroups.joinToString(", ")}",
@@ -601,12 +604,7 @@ private fun MainDetailView(
                         modifier = Modifier.size(18.dp),
                     )
                 }
-                Text(
-                    text = "$quantity",
-                    style = MaterialTheme.typography.titleMedium,
-                    modifier = Modifier.width(40.dp),
-                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                )
+                CantidadTecleable(cantidad = quantity, onCantidad = onQuantityChange)
                 IconButton(
                     onClick = { onQuantityChange(quantity + 1) },
                     modifier = Modifier.size(36.dp),
