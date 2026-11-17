@@ -68,6 +68,7 @@ class LectorHidBus @Inject constructor() {
         deviceId: Int,
         eventTimeMs: Long,
         repeatCount: Int,
+        casillaDeCantidad: Boolean = com.avoqado.pos.designsystem.components.CasillaDeCantidad.activa,
     ): Boolean {
         if (accion == KeyEvent.ACTION_UP) return consumidas.remove(keyCode)
         if (accion != KeyEvent.ACTION_DOWN) return false
@@ -90,7 +91,15 @@ class LectorHidBus @Inject constructor() {
         val caracter = if (unicodeChar in 0x20..0xFFFF) Char(unicodeChar) else null
 
         return when (val decision = lector.procesar(caracter, esTerminador, esFisico, deviceId, eventTimeMs)) {
-            TeclaHid.DejarPasar -> false
+            // 🔴 Con la casilla de cantidad activa sólo vale el teclado de la pantalla (founder, 17-nov: en ANDROID no hay
+            // teclado). Una tecla física ahí es la pistola —su 1.er carácter, que LectorHid deja pasar mientras no la
+            // conoce, se volvía cantidad— o un Enter que soltaría la casilla y picaría otro botón (Codex r1 #1, r2 #6).
+            TeclaHid.DejarPasar -> if (casillaDeCantidad && esFisico && (caracter != null || esTerminador)) {
+                consumidas += keyCode
+                true
+            } else {
+                false
+            }
             TeclaHid.Consumir -> {
                 consumidas += keyCode
                 true

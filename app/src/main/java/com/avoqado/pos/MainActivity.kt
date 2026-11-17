@@ -176,10 +176,6 @@ class MainActivity : FragmentActivity() {
                 }
             }
 
-            // La casilla de cantidad escucha la pistola: su 1.er carácter suelto no debe quedarse como cantidad.
-            androidx.compose.runtime.CompositionLocalProvider(
-                com.avoqado.pos.designsystem.components.LocalCodigosDeLaPistola provides lectorHid.codigos,
-            ) {
             AvoqadoTheme(windowSizeClass = windowSizeClass) {
                 // 🔴 `imePadding` GLOBAL de la ventana principal. La app corre
                 // edge-to-edge, y con eso el `adjustResize` del manifiesto deja
@@ -219,7 +215,6 @@ class MainActivity : FragmentActivity() {
                     }
                 }
             }
-            } // LocalCodigosDeLaPistola
         }
     }
 

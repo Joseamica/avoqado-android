@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -390,7 +391,9 @@ private fun MainDetailView(
 ) {
     var showMissingRequired by remember { mutableStateOf(false) }
 
-    Column(modifier = Modifier.fillMaxSize()) {
+    // imePadding: la cantidad se teclea en la barra de abajo. En la tableta ya lo pone MainActivity (y esto aplica 0); en el
+    // teléfono el panel es una hoja, otra ventana, y sin esto el teclado taparía la cantidad y «Agregar» (Codex r2 #5).
+    Column(modifier = Modifier.fillMaxSize().imePadding()) {
         if (showMissingRequired && missingRequiredGroups.isNotEmpty()) {
             Text(
                 text = "Falta elegir: ${missingRequiredGroups.joinToString(", ")}",

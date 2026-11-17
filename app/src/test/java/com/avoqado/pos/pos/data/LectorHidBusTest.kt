@@ -172,4 +172,38 @@ class LectorHidBusTest {
             expectNoEvents()
         }
     }
+
+    // MARK: - La casilla de cantidad (founder, 17-nov): sólo vale el teclado de la pantalla
+
+    private fun LectorHidBus.enCasilla(c: Char, ms: Long, deviceId: Int = LECTOR): Boolean =
+        procesar(KeyEvent.ACTION_DOWN, keyCodeDe(c), c.code, deviceId, ms, 0, casillaDeCantidad = true)
+
+    @Test
+    fun `con la casilla de cantidad activa el 1er caracter de una pistola nueva no llega y el codigo sale igual`() = runTest {
+        val bus = LectorHidBus()
+
+        bus.codigos.test {
+            val consumidas = "7501055310838".mapIndexed { i, c -> bus.enCasilla(c, 1_000 + i * 10L) }
+            val enter = bus.procesar(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_ENTER, '\n'.code, LECTOR, 1_140, 0, casillaDeCantidad = true)
+
+            assertTrue("ni el 1.er carácter llega a la casilla", consumidas.all { it })
+            assertTrue(enter)
+            assertEquals("7501055310838", awaitItem())
+        }
+    }
+
+    @Test
+    fun `con la casilla activa el teclado de la pantalla si escribe y un Enter fisico suelto no`() {
+        val bus = LectorHidBus()
+
+        assertFalse(bus.enCasilla('2', ms = 1_000, deviceId = android.view.KeyCharacterMap.VIRTUAL_KEYBOARD))
+        assertTrue(bus.procesar(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_ENTER, '\n'.code, LECTOR, 5_000, 0, casillaDeCantidad = true))
+    }
+
+    @Test
+    fun `sin la casilla el 1er caracter de una pistola nueva pasa como siempre`() {
+        val bus = LectorHidBus()
+
+        assertFalse(bus.procesar(KeyEvent.ACTION_DOWN, keyCodeDe('7'), '7'.code, LECTOR, 1_000, 0, casillaDeCantidad = false))
+    }
 }

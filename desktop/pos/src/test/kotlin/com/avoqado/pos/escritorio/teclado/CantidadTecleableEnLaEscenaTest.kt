@@ -24,11 +24,8 @@ import androidx.compose.ui.test.pressKey
 import androidx.compose.ui.test.runComposeUiTest
 import androidx.compose.ui.unit.dp
 import com.avoqado.pos.designsystem.components.CantidadTecleable
-import com.avoqado.pos.designsystem.components.LocalCodigosDeLaPistola
+import com.avoqado.pos.designsystem.components.CasillaDeCantidad
 import com.avoqado.pos.designsystem.components.LocalEsEscritorio
-import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.flow.emptyFlow
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
@@ -39,10 +36,10 @@ class CantidadTecleableEnLaEscenaTest {
     private var clicsAlLado = 0
 
     /** La casilla con un botón al lado (en la hoja, «Agregar al carrito»): un Enter no debe picarlo. */
-    private fun ComposeUiTest.casilla(inicial: Int, codigos: Flow<String> = emptyFlow()): SemanticsNodeInteraction {
+    private fun ComposeUiTest.casilla(inicial: Int): SemanticsNodeInteraction {
         cantidad = inicial
         setContent {
-            CompositionLocalProvider(LocalEsEscritorio provides true, LocalCodigosDeLaPistola provides codigos) {
+            CompositionLocalProvider(LocalEsEscritorio provides true) {
                 MaterialTheme {
                     Column {
                         Box(Modifier.size(40.dp).clickable { clicsAlLado++ })
@@ -105,26 +102,13 @@ class CantidadTecleableEnLaEscenaTest {
         assertEquals(3, cantidad, "no 123")
     }
 
-    // ANDROID: LectorHid deja pasar el 1.er carácter de una pistola nueva y se come el resto; luego avisa el código entero.
-    @Test fun `el caracter suelto de la pistola se deshace cuando llega el codigo`() = runComposeUiTest {
-        val codigos = MutableSharedFlow<String>(extraBufferCapacity = 1)
-        val campo = casilla(inicial = 3, codigos = codigos)
-        campo.performTextInput("7")
+    // Los lectores de la pistola leen esta marca: mientras la casilla tiene el foco, un código no le llega.
+    @Test fun `la casilla avisa a la pistola mientras tiene el foco`() = runComposeUiTest {
+        val campo = casilla(inicial = 1)
         waitForIdle()
-        assertEquals(7, cantidad)
-        runOnIdle { codigos.tryEmit("7501632510590") }
+        assertEquals(true, CasillaDeCantidad.activa)
+        campo.performKeyInput { pressKey(Key.Enter) }
         waitForIdle()
-        assertEquals(3, cantidad)
-    }
-
-    @Test fun `un numero tecleado hace rato no se deshace con un codigo`() = runComposeUiTest {
-        val codigos = MutableSharedFlow<String>(extraBufferCapacity = 1)
-        val campo = casilla(inicial = 3, codigos = codigos)
-        campo.performTextInput("24")
-        waitForIdle()
-        Thread.sleep(2_100)
-        runOnIdle { codigos.tryEmit("7501632510590") }
-        waitForIdle()
-        assertEquals(24, cantidad)
+        assertEquals(false, CasillaDeCantidad.activa)
     }
 }

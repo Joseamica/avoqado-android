@@ -294,4 +294,22 @@ class LectorDePistolaTest {
         assertEquals(listOf("7501055310838"), codigos)
         assertTrue(reenviadas.isEmpty())
     }
+
+    // La casilla de cantidad no cuenta como «campo escribiendo»: ahí la pistola se separa de la persona como en el cobro.
+    @Test fun `con la casilla de cantidad activa el lector no deja caer el codigo en ella`() {
+        val campo = object : java.awt.Component() {
+            override fun getInputMethodRequests(): java.awt.im.InputMethodRequests =
+                java.lang.reflect.Proxy.newProxyInstance(javaClass.classLoader, arrayOf(java.awt.im.InputMethodRequests::class.java)) { _, _, _ -> null }
+                    as java.awt.im.InputMethodRequests
+        }
+        val casilla = Any()
+        kotlin.test.assertTrue(escribiendoEn(campo), "un campo cualquiera: la pistola escribe ahí (buscadores, notas)")
+        com.avoqado.pos.designsystem.components.CasillaDeCantidad.tomar(casilla)
+        try {
+            kotlin.test.assertFalse(escribiendoEn(campo), "la casilla de cantidad: el lector decide")
+        } finally {
+            com.avoqado.pos.designsystem.components.CasillaDeCantidad.soltar(casilla)
+        }
+        kotlin.test.assertTrue(escribiendoEn(campo))
+    }
 }
