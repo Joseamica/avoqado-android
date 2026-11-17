@@ -253,8 +253,8 @@ class TableOrderViewModel @Inject constructor(
     private val _isLoadingCheck = MutableStateFlow(false)
     /** D19 (Codex r4): cuándo empezó la lectura en vuelo (ms monotónicos), para que «Pagar» no la espere más de [ESPERA_DE_LA_RELECTURA_MS]. */
     private var lecturaEnVueloDesdeMs = 0L
-    /** Reloj monotónico en ms; las pruebas lo adelantan. */
-    internal var relojMs: () -> Long = { System.nanoTime() / 1_000_000 }
+    /** Reloj monotónico en ms que SÍ cuenta el sueño profundo (Codex r6: `nanoTime` no lo cuenta); las pruebas lo adelantan. */
+    internal var relojMs: () -> Long = { android.os.SystemClock.elapsedRealtime() }
     val isLoadingCheck: StateFlow<Boolean> = _isLoadingCheck.asStateFlow()
 
     private val _pending = MutableStateFlow<List<PendingLine>>(emptyList())

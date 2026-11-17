@@ -368,6 +368,28 @@ class MesaDelServidorSinRedTest {
         subject.viewModelScope.cancel()
     }
 
+    /**
+     * Codex r6: la tablet se duerme con la relectura en vuelo. El reloj de la espera es el de serie (sin reemplazarlo) y debe contar el
+     * sueño profundo: aquí `elapsedRealtime` avanza 15 s «dormido» mientras `nanoTime` casi no se mueve. Con `nanoTime` esto fallaba.
+     */
+    @Test fun `D19 la espera de Pagar cuenta el tiempo que la tablet estuvo dormida`() = runTest {
+        var dormido = 5_000_000L
+        io.mockk.mockkStatic(android.os.SystemClock::class)
+        try {
+            every { android.os.SystemClock.elapsedRealtime() } answers { dormido }
+            val subject = mesaConFoto()
+            coEvery { repo.getOrderDetail(any(), any()) } coAnswers { kotlinx.coroutines.CompletableDeferred<Result<OrderDetail>>().await() }
+            nadieContesta.value = true
+            advanceUntilIdle()
+            assertTrue(subject.isLoadingCheck.value)
+            assertFalse("recién empezó: espera", subject.preparePagar())
+            dormido += TableOrderViewModel.ESPERA_DE_LA_RELECTURA_MS // 15 s con la pantalla apagada
+            assertTrue("despierta: ya pasaron 15 s reales, cobra con lo que sabe la tablet", subject.preparePagar())
+            assertTrue(session.current()!!.cobroSinRed)
+            subject.viewModelScope.cancel()
+        } finally { io.mockk.unmockkStatic(android.os.SystemClock::class) }
+    }
+
     /** Codex r5: con la conexión yendo y viniendo, cada cambio relee; las lecturas encimadas no renuevan los 15 s de espera. */
     @Test fun `D19 relecturas encimadas no renuevan la espera de Pagar`() = runTest {
         val subject = mesaConFoto()
