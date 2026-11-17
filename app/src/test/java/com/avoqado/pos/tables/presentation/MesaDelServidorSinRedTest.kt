@@ -100,6 +100,10 @@ class MesaDelServidorSinRedTest {
 
     private val server = MockWebServer()
     private var conInternet = true
+    /** D19: «nadie contesta» del monitor (ping o salud sin respuesta). Sólo dispara lecturas: manda la respuesta de cada una. */
+    private val nadieContesta = MutableStateFlow(false)
+    /** D19 (Codex r3 #1): la bandera que apaga cualquier 5xx de cualquier pantalla. No dispara nada. */
+    private val bandera = MutableStateFlow(true)
     private var cuenta = OrderDetail("order-F", status = "PENDING", total = 0.0, version = 3)
     private var antesDelGet: (() -> Unit)? = null
 
@@ -210,6 +214,8 @@ class MesaDelServidorSinRedTest {
         every { config.getCurrentConfig() } returns PrintConfig()
         val connectivity = mockk<ConnectivityMonitor>(relaxed = true)
         every { connectivity.isConnected } answers { MutableStateFlow(conInternet) }
+        every { connectivity.isServerReachable } returns bandera
+        every { connectivity.sinRespuesta } returns nadieContesta
         return TableOrderViewModel(repository, session, config, mockk(relaxed = true), mockk<PrinterService>(relaxed = true), storage,
             outbox, mockk(relaxed = true), connectivity, mockk(relaxed = true), mockk(relaxed = true), mockk(relaxed = true), draftStore = drafts,
             planManager = plan, fotos = fotos, cobrosLocales = cobros, efectivoEnColaDeCobros = efectivoDeCobros)
@@ -265,6 +271,156 @@ class MesaDelServidorSinRedTest {
         assertTrue("«Cobrada aquí, falta subirla»", subject.cuentaCobradaAqui)
         assertFalse(subject.preparePagar())
         assertEquals(CUENTA_COBRADA_AQUI, subject.blockedNotice.value)
+        assertFalse(session.current()!!.cobroSinRed)
+        subject.viewModelScope.cancel()
+    }
+
+    // MARK: - D19 + D17 (16-nov): el internet se cae con el mesero DENTRO de la mesa
+
+    /**
+     * Acta de D9 (M6, $40 por $20) y paso 3b de D8 (M2 ocupada toda la caída): la cuenta se leyó con internet y nadie la volvió a leer al
+     * caerse, así que «Pagar» tomaba el camino con internet (cola de COBROS: ni aviso del cobro de más ni mesa libre). Ahora la caída
+     * obliga a releer, y como esa lectura no tiene respuesta, «Pagar» va por la cola de mesas, como si hubiera salido y vuelto a entrar.
+     */
+    @Test fun `P1 D19 D17 se cae el internet dentro de la mesa al dia y Pagar la cobra por la cola de mesas`() = runTest {
+        val subject = mesaConFoto()
+        assertTrue("leída con internet: hoy «Pagar» iría por la cola de COBROS", subject.chequeAlDia.value)
+        conInternet = false
+        nadieContesta.value = true // el ping se quedó sin respuesta: la franja ya dice «Sin conexión»
+        advanceUntilIdle()
+        assertFalse("la lectura que disparó la caída no tuvo respuesta", subject.chequeAlDia.value)
+
+        assertTrue(subject.preparePagar())
+        val pagando = session.current()!!
+        assertEquals(TableSession.Mode.PAYING, pagando.mode)
+        assertEquals(2500, pagando.totalCents)
+        assertTrue("el efectivo va por la cola de mesas: su acuse avisa si sobró (D19) y la mesa se suelta (D17)", pagando.cobroSinRed)
+        subject.viewModelScope.cancel()
+    }
+
+    /** Sólo dispara la lectura: si contesta (el ping mintió, o la red ya volvió), todo como con internet, también la tarjeta. */
+    @Test fun `D19 si la lectura contesta, o la red vuelve con la pantalla abierta, el cobro de siempre`() = runTest {
+        val subject = mesaConFoto()
+        nadieContesta.value = true // «nadie contesta», pero la red está bien
+        advanceUntilIdle()
+        assertTrue("la lectura contestó: sigue al día", subject.chequeAlDia.value)
+
+        nadieContesta.value = false; advanceUntilIdle()
+        conInternet = false
+        nadieContesta.value = true; advanceUntilIdle()
+        assertFalse(subject.chequeAlDia.value)
+        conInternet = true
+        nadieContesta.value = false // vuelve la red con la pantalla abierta
+        advanceUntilIdle()
+        assertTrue("se volvió a leer sin salir de la mesa", subject.chequeAlDia.value)
+
+        assertTrue(subject.preparePagar())
+        assertFalse("con la cuenta al día, el cobro de siempre (también tarjeta)", session.current()!!.cobroSinRed)
+        subject.viewModelScope.cancel()
+    }
+
+    /** Codex r3 #1: un 5xx de otra pantalla (lealtad) apaga y prende la bandera; eso no relee la cuenta (sin tormenta de lecturas). */
+    @Test fun `D19 la bandera que apaga un 5xx no dispara lecturas`() = runTest {
+        val subject = mesaConFoto()
+        val antes = server.requestCount
+        repeat(5) { bandera.value = false; advanceUntilIdle(); bandera.value = true; advanceUntilIdle() }
+        assertEquals("ninguna lectura de más", antes, server.requestCount)
+        assertTrue(subject.chequeAlDia.value)
+        subject.viewModelScope.cancel()
+    }
+
+    /** Codex r3 #2: con la relectura en vuelo, «Pagar» espera su respuesta en vez de fijar el camino sin red (sólo efectivo). */
+    @Test fun `D19 Pagar con la relectura en vuelo espera su respuesta`() = runTest {
+        val subject = mesaConFoto()
+        val respuesta = kotlinx.coroutines.CompletableDeferred<Result<OrderDetail>>()
+        coEvery { repo.getOrderDetail(any(), any()) } coAnswers { respuesta.await() }
+        nadieContesta.value = true
+        advanceUntilIdle()
+        assertTrue("la lectura sigue en vuelo", subject.isLoadingCheck.value)
+
+        assertFalse(subject.preparePagar())
+        assertEquals(CUENTA_SE_ACTUALIZA, subject.blockedNotice.value)
+        assertEquals(TableSession.Mode.ORDERING, session.current()!!.mode)
+
+        respuesta.complete(Result.failure(java.io.IOException("sin respuesta")))
+        advanceUntilIdle()
+        assertTrue(subject.preparePagar())
+        assertTrue("sin respuesta: por la cola de mesas", session.current()!!.cobroSinRed)
+        subject.viewModelScope.cancel()
+    }
+
+    /** Codex r4: la petición no tiene plazo total; si la relectura no termina (un cuerpo que gotea), «Pagar» no espera para siempre. */
+    @Test fun `D19 Pagar espera la relectura a lo mas 15 segundos`() = runTest {
+        val subject = mesaConFoto()
+        var ahora = 1_000_000L
+        subject.relojMs = { ahora }
+        coEvery { repo.getOrderDetail(any(), any()) } coAnswers { kotlinx.coroutines.CompletableDeferred<Result<OrderDetail>>().await() }
+        nadieContesta.value = true
+        advanceUntilIdle()
+        assertTrue(subject.isLoadingCheck.value)
+        ahora += TableOrderViewModel.ESPERA_DE_LA_RELECTURA_MS - 1
+        assertFalse(subject.preparePagar())
+        assertEquals(CUENTA_SE_ACTUALIZA, subject.blockedNotice.value)
+
+        ahora += 1
+        assertTrue("venció la espera: cobra con lo que sabe la tablet", subject.preparePagar())
+        assertTrue(session.current()!!.cobroSinRed)
+        subject.viewModelScope.cancel()
+    }
+
+    /**
+     * Codex r6: la tablet se duerme con la relectura en vuelo. El reloj de la espera es el de serie (sin reemplazarlo) y debe contar el
+     * sueño profundo: aquí `elapsedRealtime` avanza 15 s «dormido» mientras `nanoTime` casi no se mueve. Con `nanoTime` esto fallaba.
+     */
+    @Test fun `D19 la espera de Pagar cuenta el tiempo que la tablet estuvo dormida`() = runTest {
+        var dormido = 5_000_000L
+        io.mockk.mockkStatic(android.os.SystemClock::class)
+        try {
+            every { android.os.SystemClock.elapsedRealtime() } answers { dormido }
+            val subject = mesaConFoto()
+            coEvery { repo.getOrderDetail(any(), any()) } coAnswers { kotlinx.coroutines.CompletableDeferred<Result<OrderDetail>>().await() }
+            nadieContesta.value = true
+            advanceUntilIdle()
+            assertTrue(subject.isLoadingCheck.value)
+            assertFalse("recién empezó: espera", subject.preparePagar())
+            dormido += TableOrderViewModel.ESPERA_DE_LA_RELECTURA_MS // 15 s con la pantalla apagada
+            assertTrue("despierta: ya pasaron 15 s reales, cobra con lo que sabe la tablet", subject.preparePagar())
+            assertTrue(session.current()!!.cobroSinRed)
+            subject.viewModelScope.cancel()
+        } finally { io.mockk.unmockkStatic(android.os.SystemClock::class) }
+    }
+
+    /** Codex r5: con la conexión yendo y viniendo, cada cambio relee; las lecturas encimadas no renuevan los 15 s de espera. */
+    @Test fun `D19 relecturas encimadas no renuevan la espera de Pagar`() = runTest {
+        val subject = mesaConFoto()
+        var ahora = 1_000_000L
+        subject.relojMs = { ahora }
+        coEvery { repo.getOrderDetail(any(), any()) } coAnswers { kotlinx.coroutines.CompletableDeferred<Result<OrderDetail>>().await() }
+        nadieContesta.value = true; advanceUntilIdle() // primera relectura, sin respuesta
+        ahora += 10_000
+        nadieContesta.value = false; advanceUntilIdle() // otra, encimada
+        ahora += 4_999
+        assertTrue(subject.isLoadingCheck.value)
+        assertFalse("14.999 s desde la primera: todavía espera", subject.preparePagar())
+        ahora += 1
+        assertTrue("15 s desde la PRIMERA lectura, no desde la última", subject.preparePagar())
+        assertTrue(session.current()!!.cobroSinRed)
+        subject.viewModelScope.cancel()
+    }
+
+    /** Sin el piloto no hay camino sin red para una mesa del servidor: releer bloquearía el efectivo de hoy. No se relee. */
+    @Test fun `D19 con el piloto apagado la caida no cambia el cobro de hoy`() = runTest {
+        piloto = false
+        abrir()
+        val subject = vm()
+        leer(subject)
+        ronda(subject, 2500)
+        assertTrue(subject.chequeAlDia.value)
+        conInternet = false
+        nadieContesta.value = true
+        advanceUntilIdle()
+        assertTrue("sin piloto no se relee", subject.chequeAlDia.value)
+        assertTrue(subject.preparePagar())
         assertFalse(session.current()!!.cobroSinRed)
         subject.viewModelScope.cancel()
     }
