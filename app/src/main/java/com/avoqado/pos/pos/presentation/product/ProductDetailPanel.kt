@@ -20,7 +20,6 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -391,8 +390,7 @@ private fun MainDetailView(
 ) {
     var showMissingRequired by remember { mutableStateOf(false) }
 
-    // imePadding: la cantidad se teclea en la barra de abajo y el teclado del aparato la taparía (edge-to-edge anula adjustResize).
-    Column(modifier = Modifier.fillMaxSize().imePadding()) {
+    Column(modifier = Modifier.fillMaxSize()) {
         if (showMissingRequired && missingRequiredGroups.isNotEmpty()) {
             Text(
                 text = "Falta elegir: ${missingRequiredGroups.joinToString(", ")}",

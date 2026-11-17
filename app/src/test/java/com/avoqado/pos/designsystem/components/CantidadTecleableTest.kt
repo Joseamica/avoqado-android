@@ -25,9 +25,11 @@ class CantidadTecleableTest {
         assertEquals("12", soloDigitosDeCantidad("-12"))
     }
 
-    @Test fun `un cuarto digito no es cantidad (la pistola o un dedo de mas)`() {
-        assertFalse(desbordaLaCantidad("999"))
-        assertTrue(desbordaLaCantidad("2475"))
+    @Test fun `un cuarto digito o una letra no es cantidad (la pistola o un dedo de mas)`() {
+        assertFalse(noEsCantidad("999"))
+        assertTrue(noEsCantidad("2475"))
+        assertTrue(noEsCantidad("ABC123"))
+        assertFalse(noEsCantidad("1.2"))   // los signos del teclado numérico se tiran, no bloquean
         assertNull(cantidadTecleada("1000"))
     }
 }
