@@ -32,7 +32,7 @@ class BuscarConFlechasEnLaEscenaTest {
                 MaterialTheme {
                     SearchPillField(
                         query = "manchego", onQueryChange = {}, placeholder = "Buscar productos...",
-                        textFieldModifier = Modifier.flechasDeResultados(total, marcada, onMarcada = { marcada = it }) { elegido = it },
+                        textFieldModifier = Modifier.flechasDeResultados({ total }, { marcada }, onMarcada = { marcada = it }) { elegido = it },
                     )
                 }
             }
@@ -68,5 +68,17 @@ class BuscarConFlechasEnLaEscenaTest {
         campo.performKeyInput { pressKey(Key.Enter) }
         waitForIdle()
         assertEquals(-1, elegido)
+    }
+
+    // La pistola teclea su código y su Enter antes del siguiente cuadro (Codex r2 #4): el Enter no elige lo marcado antes.
+    @Test fun `el Enter de la pistola no elige el resultado marcado antes de su codigo`() = runComposeUiTest {
+        val campo = buscador(total = 5)
+        campo.performKeyInput { pressKey(Key.DirectionDown); pressKey(Key.DirectionDown) }
+        waitForIdle()
+        assertEquals(1, marcada)
+        campo.performKeyInput { pressKey(Key.Seven); pressKey(Key.Five); pressKey(Key.Enter) }   // en el mismo cuadro
+        waitForIdle()
+        assertEquals(-1, elegido)
+        assertEquals(-1, marcada)
     }
 }

@@ -136,7 +136,11 @@ fun SearchOverlayView(
                 modifier = Modifier.fillMaxWidth(),
                 textFieldModifier = Modifier.focusRequester(focusRequester).then(
                     if (LocalEsEscritorio.current) {
-                        Modifier.flechasDeResultados(results.size, marcadaVigente, onMarcada = { marcada = it }) { elegir(results[it]) }
+                        Modifier.flechasDeResultados(
+                            total = { results.size },
+                            marcada = { marcada.takeIf { it in results.indices } ?: -1 },
+                            onMarcada = { marcada = it },
+                        ) { elegir(results[it]) }
                     } else Modifier,
                 ),
             )
@@ -244,17 +248,22 @@ private fun FilaDeResultado(titulo: String, detalle: String?, precio: String, ma
 
 /**
  * Windows (founder, 17-nov, cliente con teclado: «bajar a seleccionar las opciones que me arroja la búsqueda con un enter»):
- * ↓ y ↑ mueven la marca por los [total] resultados y Enter elige el marcado. Va en el CAMPO, antes que él: el campo se
- * comería las flechas (mueven el cursor). Sin marca (-1), ↑ y Enter siguen su camino: la pistola termina cada código con
- * Enter, y cualquier letra nueva ya quitó la marca.
+ * ↓ y ↑ mueven la marca por los resultados y Enter elige el marcado. Va en el CAMPO, antes que él: el campo se comería las
+ * flechas (mueven el cursor). Sin marca (-1), ↑ y Enter siguen su camino: la pistola termina cada código con Enter.
+ *
+ * 🔴 Cualquier otra tecla quita la marca AL MOMENTO, no al redibujar (Codex r2 #4): la pistola teclea su código y su Enter
+ * en ~10 ms por tecla, antes del siguiente cuadro, y con la marca vieja ese Enter elegía el resultado anterior. Por eso
+ * [total] y [marcada] se leen al llegar la tecla (estado vivo), no los que había al pintar.
  */
-internal fun Modifier.flechasDeResultados(total: Int, marcada: Int, onMarcada: (Int) -> Unit, onElegir: (Int) -> Unit) =
+internal fun Modifier.flechasDeResultados(total: () -> Int, marcada: () -> Int, onMarcada: (Int) -> Unit, onElegir: (Int) -> Unit) =
     onPreviewKeyEvent { e ->
-        if (e.type != KeyEventType.KeyDown || total == 0) return@onPreviewKeyEvent false
+        if (e.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+        val hay = total()
+        val ahora = marcada()
         when (e.key) {
-            Key.DirectionDown -> { onMarcada((marcada + 1).coerceAtMost(total - 1)); true }
-            Key.DirectionUp -> if (marcada < 0) false else { onMarcada(marcada - 1); true }
-            Key.Enter, Key.NumPadEnter -> if (marcada in 0 until total) { onElegir(marcada); true } else false
-            else -> false
+            Key.DirectionDown -> if (hay == 0) false else { onMarcada((ahora + 1).coerceAtMost(hay - 1)); true }
+            Key.DirectionUp -> if (ahora < 0) false else { onMarcada(ahora - 1); true }
+            Key.Enter, Key.NumPadEnter -> if (ahora in 0 until hay) { onElegir(ahora); true } else false
+            else -> { if (ahora >= 0) onMarcada(-1); false }
         }
     }
