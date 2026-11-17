@@ -25,6 +25,7 @@ import kotlin.test.assertEquals
 class BuscarConFlechasEnLaEscenaTest {
     private var marcada by mutableIntStateOf(-1)
     private var elegido = -1
+    private var listaVigente = true
 
     private fun androidx.compose.ui.test.ComposeUiTest.buscador(total: Int): SemanticsNodeInteraction {
         setContent {
@@ -32,7 +33,7 @@ class BuscarConFlechasEnLaEscenaTest {
                 MaterialTheme {
                     SearchPillField(
                         query = "manchego", onQueryChange = {}, placeholder = "Buscar productos...",
-                        textFieldModifier = Modifier.flechasDeResultados({ total }, { marcada }, onMarcada = { marcada = it }) { elegido = it },
+                        textFieldModifier = Modifier.flechasDeResultados({ if (listaVigente) total else 0 }, { marcada }, onMarcada = { marcada = it }) { elegido = it },
                     )
                 }
             }
@@ -80,5 +81,15 @@ class BuscarConFlechasEnLaEscenaTest {
         waitForIdle()
         assertEquals(-1, elegido)
         assertEquals(-1, marcada)
+    }
+
+    // Una letra y ↓ antes del redibujo: la lista pintada es de lo escrito antes, y ↓ no debe marcarla (Codex r4 #3).
+    @Test fun `las flechas no marcan una lista que ya no es de lo escrito`() = runComposeUiTest {
+        val campo = buscador(total = 5)
+        listaVigente = false
+        campo.performKeyInput { pressKey(Key.DirectionDown); pressKey(Key.Enter) }
+        waitForIdle()
+        assertEquals(-1, marcada)
+        assertEquals(-1, elegido)
     }
 }

@@ -137,7 +137,8 @@ fun SearchOverlayView(
                 textFieldModifier = Modifier.focusRequester(focusRequester).then(
                     if (LocalEsEscritorio.current) {
                         Modifier.flechasDeResultados(
-                            total = { results.size },
+                            // La lista pintada es de `query`; si ya se escribió otra cosa (aún sin redibujar), es vieja.
+                            total = { if (viewModel.searchQuery.value == query) results.size else 0 },
                             marcada = { marcada.takeIf { it in results.indices } ?: -1 },
                             onMarcada = { marcada = it },
                         ) { elegir(results[it]) }
@@ -253,7 +254,8 @@ private fun FilaDeResultado(titulo: String, detalle: String?, precio: String, ma
  *
  * 🔴 Cualquier otra tecla quita la marca AL MOMENTO, no al redibujar (Codex r2 #4): la pistola teclea su código y su Enter
  * en ~10 ms por tecla, antes del siguiente cuadro, y con la marca vieja ese Enter elegía el resultado anterior. Por eso
- * [total] y [marcada] se leen al llegar la tecla (estado vivo), no los que había al pintar.
+ * [total] y [marcada] se leen al llegar la tecla (estado vivo), no los que había al pintar. Y [total] es 0 mientras la
+ * lista pintada no sea de lo que está escrito (una letra y ↓ antes del redibujo marcaban la lista anterior; Codex r4 #3).
  */
 internal fun Modifier.flechasDeResultados(total: () -> Int, marcada: () -> Int, onMarcada: (Int) -> Unit, onElegir: (Int) -> Unit) =
     onPreviewKeyEvent { e ->
@@ -262,7 +264,7 @@ internal fun Modifier.flechasDeResultados(total: () -> Int, marcada: () -> Int, 
         val ahora = marcada()
         when (e.key) {
             Key.DirectionDown -> if (hay == 0) false else { onMarcada((ahora + 1).coerceAtMost(hay - 1)); true }
-            Key.DirectionUp -> if (ahora < 0) false else { onMarcada(ahora - 1); true }
+            Key.DirectionUp -> if (ahora < 0 || hay == 0) false else { onMarcada(ahora - 1); true }
             Key.Enter, Key.NumPadEnter -> if (ahora in 0 until hay) { onElegir(ahora); true } else false
             else -> { if (ahora >= 0) onMarcada(-1); false }
         }

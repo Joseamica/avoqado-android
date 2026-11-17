@@ -111,4 +111,22 @@ class CantidadTecleableEnLaEscenaTest {
         waitForIdle()
         assertEquals(false, CasillaDeCantidad.activa)
     }
+
+    // Con un redibujo entre «02» y «34», la casilla reescribía «2» y el código 0234 terminaba en 234 (Codex r4 #1).
+    @Test fun `un codigo que empieza con 0 tampoco se vuelve cantidad`() = runComposeUiTest {
+        val campo = casilla(inicial = 3)
+        "0234".forEach { campo.performTextInput(it.toString()); waitForIdle() }
+        campo.performKeyInput { pressKey(Key.Enter) }
+        waitForIdle()
+        assertEquals(3, cantidad, "no 234")
+    }
+
+    @Test fun `el mas de afuera se ve en la casilla aunque tenga el foco`() = runComposeUiTest {
+        val campo = casilla(inicial = 3)
+        campo.performTextInput("5")
+        waitForIdle()
+        runOnIdle { cantidad = 6 }   // el «+»
+        waitForIdle()
+        assertEquals("6", campo.texto())
+    }
 }

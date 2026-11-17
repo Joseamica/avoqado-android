@@ -9,6 +9,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -70,7 +71,10 @@ internal fun cantidadTecleada(texto: String): Int? =
  */
 @Composable
 fun CantidadTecleable(cantidad: Int, onCantidad: (Int) -> Unit, modifier: Modifier = Modifier) {
-    var texto by remember(cantidad) { mutableStateOf(cantidad.toString()) }
+    var texto by remember { mutableStateOf(cantidad.toString()) }
+    // Si la cantidad cambió por fuera (el «+», otro renglón, la vuelta tras un código) la casilla la enseña; si es la que
+    // ya dice lo tecleado («02» = 2) no se toca: reescribirla perdía el 0 y «0234» de la pistola acababa en 234 (Codex r4 #1).
+    LaunchedEffect(cantidad) { if (cantidadTecleada(texto) != cantidad) texto = cantidad.toString() }
     var alTocarla by remember { mutableIntStateOf(cantidad) }
     var sorda by remember { mutableStateOf(false) }
     val yo = remember { Any() }
