@@ -547,12 +547,13 @@ class TableOrderViewModel @Inject constructor(
 
     init {
         // D19 + D17 (16-nov): con la pantalla de la mesa abierta, una caída del internet no hacía releer la cuenta: seguía «al día» y
-        // «Pagar» tomaba el camino con internet (cola de COBROS: sin aviso del cobro de más ni mesa libre). Con el piloto, cada cambio de
-        // conexión la vuelve a pedir. La bandera sólo DISPARA la lectura; decide su respuesta (`bandera-de-conexion-vieja-no-decide-el-
-        // texto`): sin respuesta deja de estar al día y «Pagar» va por la cola de mesas, como al salir y volver a entrar; con respuesta
-        // (bandera vieja, o la red que volvió) sigue o vuelve a estar al día. Sin piloto no se relee: bloquearía el efectivo de hoy.
+        // «Pagar» tomaba el camino con internet (cola de COBROS: sin aviso del cobro de más ni mesa libre). Con el piloto, cuando cambia
+        // «alguien contesta» (red del aparato y el ping o la salud, `sinRespuesta`: sólo un fallo de transporte, nunca un 5xx de otra
+        // pantalla, Codex r3 #1) la vuelve a pedir. Eso sólo DISPARA la lectura; decide su respuesta (`bandera-de-conexion-vieja-no-decide-
+        // el-texto`): sin respuesta deja de estar al día y «Pagar» va por la cola de mesas, como al salir y volver a entrar; con respuesta
+        // (la red que volvió) vuelve a estar al día. Sin piloto no se relee: bloquearía el efectivo de hoy.
         if (fotos != null) viewModelScope.launch {
-            combine(connectivityMonitor.isConnected, connectivityMonitor.isServerReachable) { red, servidor -> red && servidor }
+            combine(connectivityMonitor.isConnected, connectivityMonitor.sinRespuesta) { red, nadie -> red && !nadie }
                 .distinctUntilChanged().drop(1).collect {
                     val s = tableSession.current()
                     if (pilotoSinRed && s != null && !s.isProvisional && s.mode == TableSession.Mode.ORDERING && !hayMutacionEnVuelo &&
@@ -2615,6 +2616,14 @@ class TableOrderViewModel @Inject constructor(
         // D59: pagada en el servidor no se cobra ni con el saldo sin red (su texto diría «cobrada aquí, falta subirla»).
         if (motivo == MESA_YA_PAGADA) { showBlockedReason(motivo); return false }
         var sinRed: SaldoSinRed.Conocido? = null
+        // D19 (Codex r3 #2): con la cuenta del servidor releyéndose, «no al día» todavía no es «sin red»: el camino sin red no se fija
+        // antes de que conteste esa lectura (si contesta bien, el cobro de siempre; si no, éste). Sólo si esta pantalla ya la había leído:
+        // al entrar sin red (nunca leída) el piloto cobra como siempre, sin esperar a que venza la petición.
+        if (motivo != null && pilotoSinRed && !session.isProvisional && _isLoadingCheck.value &&
+            chequeLeidoEn == venueId?.let { it to session.orderId }) {
+            showBlockedReason(CUENTA_SE_ACTUALIZA)
+            return false
+        }
         if (motivo != null) {
             // Codex b2b-r3 (F2): si el piloto se apagó mientras se leía, el camino de hoy (el motivo de siempre, sin `cobroSinRed`).
             val saldo = (if (!session.isProvisional && trabajo != null && !hayMutacionEnVuelo && vId != null && pilotoSinRed)

@@ -100,8 +100,10 @@ class MesaDelServidorSinRedTest {
 
     private val server = MockWebServer()
     private var conInternet = true
-    /** D19: lo que la tablet cree de la conexión (la franja «Sin conexión»). Sólo dispara lecturas: manda la respuesta de cada una. */
-    private val servidorContesta = MutableStateFlow(true)
+    /** D19: «nadie contesta» del monitor (ping o salud sin respuesta). Sólo dispara lecturas: manda la respuesta de cada una. */
+    private val nadieContesta = MutableStateFlow(false)
+    /** D19 (Codex r3 #1): la bandera que apaga cualquier 5xx de cualquier pantalla. No dispara nada. */
+    private val bandera = MutableStateFlow(true)
     private var cuenta = OrderDetail("order-F", status = "PENDING", total = 0.0, version = 3)
     private var antesDelGet: (() -> Unit)? = null
 
@@ -212,7 +214,8 @@ class MesaDelServidorSinRedTest {
         every { config.getCurrentConfig() } returns PrintConfig()
         val connectivity = mockk<ConnectivityMonitor>(relaxed = true)
         every { connectivity.isConnected } answers { MutableStateFlow(conInternet) }
-        every { connectivity.isServerReachable } returns servidorContesta
+        every { connectivity.isServerReachable } returns bandera
+        every { connectivity.sinRespuesta } returns nadieContesta
         return TableOrderViewModel(repository, session, config, mockk(relaxed = true), mockk<PrinterService>(relaxed = true), storage,
             outbox, mockk(relaxed = true), connectivity, mockk(relaxed = true), mockk(relaxed = true), mockk(relaxed = true), draftStore = drafts,
             planManager = plan, fotos = fotos, cobrosLocales = cobros, efectivoEnColaDeCobros = efectivoDeCobros)
@@ -283,7 +286,7 @@ class MesaDelServidorSinRedTest {
         val subject = mesaConFoto()
         assertTrue("leída con internet: hoy «Pagar» iría por la cola de COBROS", subject.chequeAlDia.value)
         conInternet = false
-        servidorContesta.value = false // la franja ya dice «Sin conexión»
+        nadieContesta.value = true // el ping se quedó sin respuesta: la franja ya dice «Sin conexión»
         advanceUntilIdle()
         assertFalse("la lectura que disparó la caída no tuvo respuesta", subject.chequeAlDia.value)
 
@@ -295,24 +298,54 @@ class MesaDelServidorSinRedTest {
         subject.viewModelScope.cancel()
     }
 
-    /** La bandera sólo dispara la lectura: si el servidor sí contesta (bandera vieja, o la red ya volvió), todo como con internet. */
-    @Test fun `D19 una bandera vieja o la red de vuelta no mandan la mesa al camino sin red`() = runTest {
+    /** Sólo dispara la lectura: si contesta (el ping mintió, o la red ya volvió), todo como con internet, también la tarjeta. */
+    @Test fun `D19 si la lectura contesta, o la red vuelve con la pantalla abierta, el cobro de siempre`() = runTest {
         val subject = mesaConFoto()
-        servidorContesta.value = false // la bandera dice «sin servidor», pero la red está bien
+        nadieContesta.value = true // «nadie contesta», pero la red está bien
         advanceUntilIdle()
         assertTrue("la lectura contestó: sigue al día", subject.chequeAlDia.value)
 
+        nadieContesta.value = false; advanceUntilIdle()
         conInternet = false
-        servidorContesta.value = true; advanceUntilIdle()
-        servidorContesta.value = false; advanceUntilIdle()
+        nadieContesta.value = true; advanceUntilIdle()
         assertFalse(subject.chequeAlDia.value)
         conInternet = true
-        servidorContesta.value = true // vuelve la red con la pantalla abierta
+        nadieContesta.value = false // vuelve la red con la pantalla abierta
         advanceUntilIdle()
         assertTrue("se volvió a leer sin salir de la mesa", subject.chequeAlDia.value)
 
         assertTrue(subject.preparePagar())
         assertFalse("con la cuenta al día, el cobro de siempre (también tarjeta)", session.current()!!.cobroSinRed)
+        subject.viewModelScope.cancel()
+    }
+
+    /** Codex r3 #1: un 5xx de otra pantalla (lealtad) apaga y prende la bandera; eso no relee la cuenta (sin tormenta de lecturas). */
+    @Test fun `D19 la bandera que apaga un 5xx no dispara lecturas`() = runTest {
+        val subject = mesaConFoto()
+        val antes = server.requestCount
+        repeat(5) { bandera.value = false; advanceUntilIdle(); bandera.value = true; advanceUntilIdle() }
+        assertEquals("ninguna lectura de más", antes, server.requestCount)
+        assertTrue(subject.chequeAlDia.value)
+        subject.viewModelScope.cancel()
+    }
+
+    /** Codex r3 #2: con la relectura en vuelo, «Pagar» espera su respuesta en vez de fijar el camino sin red (sólo efectivo). */
+    @Test fun `D19 Pagar con la relectura en vuelo espera su respuesta`() = runTest {
+        val subject = mesaConFoto()
+        val respuesta = kotlinx.coroutines.CompletableDeferred<Result<OrderDetail>>()
+        coEvery { repo.getOrderDetail(any(), any()) } coAnswers { respuesta.await() }
+        nadieContesta.value = true
+        advanceUntilIdle()
+        assertTrue("la lectura sigue en vuelo", subject.isLoadingCheck.value)
+
+        assertFalse(subject.preparePagar())
+        assertEquals(CUENTA_SE_ACTUALIZA, subject.blockedNotice.value)
+        assertEquals(TableSession.Mode.ORDERING, session.current()!!.mode)
+
+        respuesta.complete(Result.failure(java.io.IOException("sin respuesta")))
+        advanceUntilIdle()
+        assertTrue(subject.preparePagar())
+        assertTrue("sin respuesta: por la cola de mesas", session.current()!!.cobroSinRed)
         subject.viewModelScope.cancel()
     }
 
@@ -325,7 +358,7 @@ class MesaDelServidorSinRedTest {
         ronda(subject, 2500)
         assertTrue(subject.chequeAlDia.value)
         conInternet = false
-        servidorContesta.value = false
+        nadieContesta.value = true
         advanceUntilIdle()
         assertTrue("sin piloto no se relee", subject.chequeAlDia.value)
         assertTrue(subject.preparePagar())
