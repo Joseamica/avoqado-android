@@ -42,11 +42,7 @@ class LectorHidBus @Inject constructor() {
      */
     fun recibirDelLectorIntegrado(texto: String?) {
         val codigo = texto?.trim().orEmpty()
-        if (codigo.isNotEmpty()) {
-            // También lo TECLEA como teclado virtual: si cayó en la casilla de cantidad, ella lo deshace.
-            com.avoqado.pos.designsystem.components.CasillaDeCantidad.avisarCodigo(codigo)
-            _codigos.tryEmit(codigo)
-        }
+        if (codigo.isNotEmpty()) _codigos.tryEmit(codigo)
     }
 
     /** @return `true` si la tecla NO debe llegar a la UI. */
@@ -109,7 +105,6 @@ class LectorHidBus @Inject constructor() {
                 true
             }
             is TeclaHid.Codigo -> {
-                com.avoqado.pos.designsystem.components.CasillaDeCantidad.avisarCodigo(decision.texto)
                 _codigos.tryEmit(decision.texto)
                 consumidas += keyCode
                 true
@@ -129,7 +124,8 @@ class LectorHidBus @Inject constructor() {
         )
 
         /**
-         * Una tecla FÍSICA (pistola o teclado de verdad, no el de la pantalla ni `adb input`) que escribe algo, o un Enter:
+         * Una tecla FÍSICA (pistola o teclado de verdad, no el de la pantalla ni `adb input`) que escribe algo, o un Enter o
+         * un Tab (lo que cierra un código; el Tab movería el foco, Codex r6 #7):
          * lo que la casilla de cantidad no recibe (founder, 17-nov: en ANDROID no hay teclado). La usa también la hoja del
          * teléfono, que es otra ventana y no pasa por `MainActivity.dispatchKeyEvent`.
          */
@@ -139,8 +135,9 @@ class LectorHidBus @Inject constructor() {
         internal fun esTeclaFisicaQueEscribe(deviceId: Int, unicodeChar: Int, keyCode: Int): Boolean {
             val esFisico = deviceId != KeyCharacterMap.VIRTUAL_KEYBOARD && deviceId > 0
             val escribe = unicodeChar in 0x20..0xFFFF
-            val esEnter = keyCode == KeyEvent.KEYCODE_ENTER || keyCode == KeyEvent.KEYCODE_NUMPAD_ENTER
-            return esFisico && (escribe || esEnter)
+            val cierra = keyCode == KeyEvent.KEYCODE_ENTER || keyCode == KeyEvent.KEYCODE_NUMPAD_ENTER ||
+                keyCode == KeyEvent.KEYCODE_TAB
+            return esFisico && (escribe || cierra)
         }
     }
 }

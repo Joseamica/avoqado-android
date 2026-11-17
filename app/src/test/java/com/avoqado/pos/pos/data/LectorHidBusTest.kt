@@ -211,25 +211,9 @@ class LectorHidBusTest {
     fun `una tecla fisica que escribe o un Enter cuentan, el teclado de la pantalla y Shift no`() {
         assertTrue(LectorHidBus.esTeclaFisicaQueEscribe(LECTOR, '7'.code, KeyEvent.KEYCODE_7))
         assertTrue(LectorHidBus.esTeclaFisicaQueEscribe(LECTOR, 0, KeyEvent.KEYCODE_ENTER))
+        assertTrue(LectorHidBus.esTeclaFisicaQueEscribe(LECTOR, '\t'.code, KeyEvent.KEYCODE_TAB))
         assertFalse(LectorHidBus.esTeclaFisicaQueEscribe(android.view.KeyCharacterMap.VIRTUAL_KEYBOARD, '7'.code, KeyEvent.KEYCODE_7))
         assertFalse(LectorHidBus.esTeclaFisicaQueEscribe(LECTOR, 0, KeyEvent.KEYCODE_SHIFT_LEFT))
         assertFalse(LectorHidBus.esTeclaFisicaQueEscribe(LECTOR, 0, KeyEvent.KEYCODE_BACK))
-    }
-
-    // El lector integrado de una Sunmi TECLEA el código y además lo avisa: la casilla de cantidad recibe el aviso.
-    @Test
-    fun `el codigo del lector integrado y el de una pistola se le avisan a la casilla activa`() {
-        val avisados = mutableListOf<String>()
-        val casilla = Any()
-        com.avoqado.pos.designsystem.components.CasillaDeCantidad.tomar(casilla) { avisados += it }
-        try {
-            val bus = LectorHidBus()
-            bus.recibirDelLectorIntegrado(" 12 ")
-            bus.rafaga("7501055310838")
-            bus.enter(ms = 1_140)
-            assertEquals(listOf("12", "7501055310838"), avisados)
-        } finally {
-            com.avoqado.pos.designsystem.components.CasillaDeCantidad.soltar(casilla)
-        }
     }
 }

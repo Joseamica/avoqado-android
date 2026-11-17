@@ -2,12 +2,7 @@ package com.avoqado.pos.escritorio.teclado
 
 import android.util.Log
 import com.avoqado.pos.pos.data.LectorHidBus
-import com.avoqado.pos.designsystem.components.CasillaDeCantidad
-import java.awt.AWTEvent
 import java.awt.KeyEventDispatcher
-import java.awt.Toolkit
-import java.awt.event.AWTEventListener
-import java.awt.event.MouseEvent
 import java.awt.KeyboardFocusManager
 import java.awt.Window
 import java.awt.event.KeyEvent
@@ -54,14 +49,9 @@ class LectorDePistola(
     private var partida = false
     private var turno = 0
 
-    /**
-     * @param casilla la casilla de CANTIDAD tiene el foco (founder, 17-nov): ahí ningún código puede caer. Se decide como en
-     *   el cobro (no como en un campo), y una ráfaga de 1 carácter o más que cierra con Enter/Tab ya es pistola: los códigos
-     *   cortos («12») se tragan sin emitir (podrían ser un dedo de más); los de [largoMinimo] o más se emiten como siempre.
-     * @return true si [e] NO sigue su camino ahora (se retuvo, o era del código).
-     */
-    fun procesar(e: KeyEvent, escribiendo: Boolean, casilla: Boolean = false): Boolean = when (e.id) {
-        KeyEvent.KEY_PRESSED -> alBajar(e, escribiendo && !casilla, casilla)
+    /** @return true si [e] NO sigue su camino ahora (se retuvo, o era del código). */
+    fun procesar(e: KeyEvent, escribiendo: Boolean): Boolean = when (e.id) {
+        KeyEvent.KEY_PRESSED -> alBajar(e, escribiendo)
         KeyEvent.KEY_TYPED -> when {
             tragarTipeoDelFinal && e.keyChar in FINALES -> { tragarTipeoDelFinal = false; true }
             retenidas.isEmpty() -> false
@@ -76,16 +66,7 @@ class LectorDePistola(
         else -> false
     }
 
-    /**
-     * Un clic con la casilla de cantidad activa: lo que se retenía de la PERSONA (una sola tecla, sin ráfaga) le llega antes
-     * que el clic. Sin esto, teclear 24 y picar «Agregar» en menos de [esperaMs] agregaba 2 (Codex r3 #1). Una ráfaga ya
-     * demostrada (2 o más teclas al ritmo de la pistola) se sigue reteniendo: es la pistola y no debe caer en la casilla.
-     */
-    fun antesDelClic() {
-        if (retenidas.isNotEmpty() && texto.length <= 1) soltar()
-    }
-
-    private fun alBajar(e: KeyEvent, escribiendo: Boolean, casilla: Boolean): Boolean {
+    private fun alBajar(e: KeyEvent, escribiendo: Boolean): Boolean {
         tragarTipeoDelFinal = false
         // La letra ya trae su Shift en los modificadores: un Shift suelto ni parte la ráfaga ni se retiene.
         if (e.keyCode in MODIFICADORES) return false
@@ -113,7 +94,7 @@ class LectorDePistola(
         }
         if (esFinal) {
             val codigo = texto.toString().trim()
-            if (retenidas.isEmpty() || !seguida || codigo.length < (if (casilla) 1 else largoMinimo)) {
+            if (retenidas.isEmpty() || !seguida || codigo.length < largoMinimo) {
                 soltar()
                 return false
             }
@@ -121,7 +102,7 @@ class LectorDePistola(
             tragarAlSoltar += e.keyCode
             tragarTipeoDelFinal = true
             descartar()
-            if (codigo.length >= largoMinimo) emitir(codigo)
+            emitir(codigo)
             return true
         }
         val c = e.keyChar
@@ -192,7 +173,6 @@ fun emisorDelBus(bus: LectorHidBus): (String) -> Unit {
  */
 object PistolaDeLaVentana {
     private var despachador: KeyEventDispatcher? = null
-    private var clics: AWTEventListener? = null
 
     fun instalar(ventana: Window, emitir: (String) -> Unit) {
         desinstalar()
@@ -208,23 +188,14 @@ object PistolaDeLaVentana {
             val origen = e.component ?: return@KeyEventDispatcher false
             val deLaCaja = origen === ventana || SwingUtilities.getWindowAncestor(origen) === ventana
             // inputMethodRequests != null = un campo de Compose escribiendo (lo mismo que lee TecladoDeLaVentana).
-            deLaCaja && runCatching {
-                lector.procesar(e, escribiendo = origen.inputMethodRequests != null, casilla = CasillaDeCantidad.activa)
-            }
+            deLaCaja && runCatching { lector.procesar(e, escribiendo = origen.inputMethodRequests != null) }
                 .onFailure { Log.w("Lector", "El lector de pistola falló; la tecla sigue su camino", it) }
                 .getOrDefault(false)
         }.also(focos::addKeyEventDispatcher)
-        // Un clic con la casilla de cantidad activa: lo retenido de la persona sale ANTES (los oyentes de AWT corren antes
-        // que el componente). El dedo en la pantalla táctil no pasa por aquí, pero nadie teclea y toca en 0.1 s.
-        clics = AWTEventListener { ev ->
-            if (ev.id == MouseEvent.MOUSE_PRESSED && CasillaDeCantidad.activa) runCatching { lector.antesDelClic() }
-        }.also { Toolkit.getDefaultToolkit().addAWTEventListener(it, AWTEvent.MOUSE_EVENT_MASK) }
     }
 
     fun desinstalar() {
         despachador?.let { KeyboardFocusManager.getCurrentKeyboardFocusManager().removeKeyEventDispatcher(it) }
         despachador = null
-        clics?.let { Toolkit.getDefaultToolkit().removeAWTEventListener(it) }
-        clics = null
     }
 }

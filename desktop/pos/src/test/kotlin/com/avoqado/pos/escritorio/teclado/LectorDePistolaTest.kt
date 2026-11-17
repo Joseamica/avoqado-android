@@ -45,8 +45,8 @@ class LectorDePistolaTest {
     )
 
     /** @return lo que contestó el lector por cada evento: true = no siguió su camino (todavía). */
-    private fun mandar(eventos: List<KeyEvent>, escribiendo: Boolean = false, casilla: Boolean = false): List<Boolean> =
-        eventos.map { lector.procesar(it, escribiendo, casilla) }
+    private fun mandar(eventos: List<KeyEvent>, escribiendo: Boolean = false): List<Boolean> =
+        eventos.map { lector.procesar(it, escribiendo) }
 
     /** Una pistola: un carácter cada 8 ms y Enter al final. */
     private fun pistola(texto: String, desdeMs: Long = 1_000, fin: Char = '\n'): List<KeyEvent> =
@@ -292,48 +292,6 @@ class LectorDePistolaTest {
         mandar(pistola("7501055310838", fin = '\t'))
 
         assertEquals(listOf("7501055310838"), codigos)
-        assertTrue(reenviadas.isEmpty())
-    }
-
-    // MARK: - La casilla de cantidad (founder, 17-nov: «tienes que arreglarlo»). Es un campo, pero ahí no cae ningún código.
-
-    @Test fun `P1 con la casilla un codigo corto con Enter no llega ni se emite`() {
-        mandar(pistola("12"), escribiendo = true, casilla = true)
-        vencenLosTemporizadores()
-        assertTrue(reenviadas.isEmpty(), "ni el 1 ni el 2 llegan a la casilla")
-        assertTrue(codigos.isEmpty(), "«12» puede ser un dedo de más: no se busca como producto")
-    }
-
-    @Test fun `P1 con la casilla un codigo normal no llega y se lee como siempre`() {
-        mandar(pistola("7501632510590"), escribiendo = true, casilla = true)
-        vencenLosTemporizadores()
-        assertTrue(reenviadas.isEmpty())
-        assertEquals(listOf("7501632510590"), codigos)
-    }
-
-    @Test fun `con la casilla la persona no pierde nada`() {
-        mandar(tecla('2', 1_000), escribiendo = true, casilla = true)
-        vencenLosTemporizadores()
-        mandar(tecla('4', 1_200), escribiendo = true, casilla = true)
-        vencenLosTemporizadores()
-        mandar(tecla('\n', 1_400), escribiendo = true, casilla = true)
-        assertEquals(listOf('2', '2', '2', '4', '4', '4'), reenviadas.map { it.keyChar })
-        assertTrue(codigos.isEmpty())
-    }
-
-    @Test fun `P1 un clic entrega antes lo que se retenia de la persona`() {
-        mandar(tecla('2', 1_000), escribiendo = true, casilla = true)
-        vencenLosTemporizadores()
-        reenviadas.clear()
-        mandar(tecla('4', 1_200), escribiendo = true, casilla = true)
-        assertTrue(reenviadas.isEmpty(), "el 4 todavía está retenido")
-        lector.antesDelClic()
-        assertEquals(listOf('4', '4', '4'), reenviadas.map { it.keyChar }, "sale antes que el clic: «Agregar» ve 24")
-    }
-
-    @Test fun `un clic a media rafaga de la pistola no le entrega nada a la casilla`() {
-        mandar(pistola("712345", fin = '\n').take(6), escribiendo = true, casilla = true)   // 7 y 1, al ritmo de la pistola
-        lector.antesDelClic()
         assertTrue(reenviadas.isEmpty())
     }
 }

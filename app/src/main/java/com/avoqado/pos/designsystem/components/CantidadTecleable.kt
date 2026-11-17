@@ -35,22 +35,16 @@ import androidx.compose.ui.unit.dp
 private const val MAX_DIGITOS = 3
 
 /**
- * ¿Hay una casilla de cantidad con el foco? La leen los lectores de la pistola: ANDROID (`LectorHidBus`, y la hoja del
- * teléfono) no le deja pasar teclas físicas, y WINDOWS (`LectorDePistola`) decide por ella qué es pistola. También recibe
- * cada código leído ([avisarCodigo]) para la casilla activa. Una dueña a la vez: soltar sólo suelta si sigue siendo suya.
+ * ¿Hay una casilla de cantidad con el foco? En ANDROID, con ella activa no llegan teclas físicas (la pistola): lo leen
+ * `LectorHidBus` (ventana principal) y la hoja del teléfono (`ProductDetailPanel`). Una dueña a la vez: soltar sólo suelta
+ * si sigue siendo suya.
  */
 object CasillaDeCantidad {
     @Volatile private var duena: Any? = null
-    @Volatile private var alLeer: ((String) -> Unit)? = null
     val activa: Boolean get() = duena != null
-    fun tomar(quien: Any, alLeerCodigo: (String) -> Unit) { duena = quien; alLeer = alLeerCodigo }
-    fun soltar(quien: Any) { if (duena === quien) { duena = null; alLeer = null } }
-    /** La pistola (o el lector integrado de una Sunmi) leyó [codigo]: la casilla activa revisa si se le coló. */
-    fun avisarCodigo(codigo: String) { alLeer?.invoke(codigo) }
+    fun tomar(quien: Any) { duena = quien }
+    fun soltar(quien: Any) { if (duena === quien) duena = null }
 }
-
-/** Cuánto vale un código avisado para compararlo con lo que la casilla recibe después (el lector de una Sunmi avisa y teclea). */
-private const val VIGENCIA_DEL_CODIGO_MS = 2_000L
 
 internal fun soloDigitosDeCantidad(texto: String): String = texto.filter(Char::isDigit)
 
@@ -68,15 +62,14 @@ internal fun cantidadTecleada(texto: String): Int? =
  * borrar el 1 (con el 1 adentro saldría 124). Cada número válido se aplica al momento, igual que el «+» (en una tableta
  * nadie suelta la casilla antes de tocar «Agregar»); Enter o «Listo» la sueltan.
  *
- * 🔴 La pistola nunca cambia la cantidad (Codex r1–r5; founder, 17-nov: «tienes que arreglarlo»). Decide quien ya sabe
- * separar pistola de persona, sin borrarle nada a la persona (un detector de ritmo aquí deshacía un «24» rápido, r5 #3):
+ * 🔴 La pistola (Codex r1–r6, docs/audit/2026-11-17-cantidad-tecleada/). Regla de oro: nunca quitarle una tecla a la
+ * persona (un detector de ritmo aquí, y retener teclas en WINDOWS, le comían el «4» de un «24⏎» rápido; r5 #3, r6 #1).
  * - ANDROID: con la casilla activa ([CasillaDeCantidad]) no le llegan teclas físicas, ni en la ventana principal
  *   (`LectorHidBus`) ni en la hoja del teléfono (`ProductDetailPanel`); sólo vale el teclado de la pantalla.
- * - WINDOWS: `LectorDePistola` retiene y decide; con la casilla, una ráfaga de 1 carácter o más que cierra con Enter/Tab ya
- *   es pistola, y antes de un clic entrega lo que retenía de la persona.
- * - Lo que aun así caiga aquí (el lector integrado de una Sunmi teclea Y avisa el código): si la casilla tiene justo el
- *   código avisado, o una letra, o un 4.º dígito, regresa a la cantidad que tenía al tocarla y se queda sorda hasta que se
- *   suelte (se vuelve a escanear).
+ * - Donde un código sí cae aquí (WINDOWS, el lector integrado de una Sunmi que teclea): una letra o un 4.º dígito no son
+ *   cantidad; la casilla regresa a la que tenía al tocarla y se queda sorda hasta soltarla (se vuelve a escanear).
+ * - Límite que ningún sistema separa: un código de 1 a 3 dígitos tecleado en la casilla es idéntico a una persona
+ *   escribiendo ese número; queda a la vista antes de «Agregar».
  */
 @Composable
 fun CantidadTecleable(cantidad: Int, onCantidad: (Int) -> Unit, modifier: Modifier = Modifier) {
@@ -86,7 +79,6 @@ fun CantidadTecleable(cantidad: Int, onCantidad: (Int) -> Unit, modifier: Modifi
     LaunchedEffect(cantidad) { if (cantidadTecleada(texto) != cantidad) texto = cantidad.toString() }
     var alTocarla by remember { mutableIntStateOf(cantidad) }
     var sorda by remember { mutableStateOf(false) }
-    var codigoAvisado by remember { mutableStateOf<Pair<String, Long>?>(null) }   // el código y cuándo se avisó (ms)
     val aplicar by rememberUpdatedState(onCantidad)
     val yo = remember { Any() }
     // Una vez que habló la pistola, se regresa a la cantidad de antes y se ignora lo demás hasta soltar la casilla.
@@ -95,10 +87,6 @@ fun CantidadTecleable(cantidad: Int, onCantidad: (Int) -> Unit, modifier: Modifi
         texto = alTocarla.toString()
         aplicar(alTocarla)
     }
-    // ¿Lo que tiene la casilla es justo el código que se acaba de leer? (el lector integrado lo teclea antes o después del aviso)
-    fun esElCodigoLeido(): Boolean = codigoAvisado?.let { (codigo, ms) ->
-        texto.isNotEmpty() && texto == codigo && System.currentTimeMillis() - ms < VIGENCIA_DEL_CODIGO_MS
-    } == true
     DisposableEffect(yo) { onDispose { CasillaDeCantidad.soltar(yo) } }
     val foco = LocalFocusManager.current
     val color = MaterialTheme.colorScheme.onSurface
@@ -112,7 +100,7 @@ fun CantidadTecleable(cantidad: Int, onCantidad: (Int) -> Unit, modifier: Modifi
                 noEsCantidad(nuevo) -> ensordecer()
                 else -> {
                     texto = soloDigitosDeCantidad(nuevo)
-                    if (esElCodigoLeido()) ensordecer() else cantidadTecleada(texto)?.let(onCantidad)
+                    cantidadTecleada(texto)?.let(onCantidad)
                 }
             }
         },
@@ -134,13 +122,9 @@ fun CantidadTecleable(cantidad: Int, onCantidad: (Int) -> Unit, modifier: Modifi
             }
             .onFocusChanged {
                 if (it.isFocused) {
-                    CasillaDeCantidad.tomar(yo) { codigo ->
-                        codigoAvisado = codigo.trim() to System.currentTimeMillis()
-                        if (!sorda && esElCodigoLeido()) ensordecer()
-                    }
+                    CasillaDeCantidad.tomar(yo)
                     alTocarla = cantidad
                     sorda = false
-                    codigoAvisado = null
                     texto = ""
                 } else {
                     CasillaDeCantidad.soltar(yo)

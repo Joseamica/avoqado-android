@@ -129,34 +129,4 @@ class CantidadTecleableEnLaEscenaTest {
         waitForIdle()
         assertEquals("6", campo.texto())
     }
-
-    // El lector integrado de una Sunmi teclea el código Y lo avisa, en cualquier orden: «12» no tiene letras ni 4 dígitos.
-    @Test fun `el codigo avisado que la casilla recibio entero se deshace`() = runComposeUiTest {
-        val campo = casilla(inicial = 3)
-        campo.performTextInput("1")
-        campo.performTextInput("2")
-        waitForIdle()
-        assertEquals(12, cantidad)
-        runOnIdle { CasillaDeCantidad.avisarCodigo("12") }
-        waitForIdle()
-        assertEquals(3, cantidad)
-    }
-
-    @Test fun `el codigo avisado antes de teclearse tambien se deshace`() = runComposeUiTest {
-        val campo = casilla(inicial = 3)
-        runOnIdle { CasillaDeCantidad.avisarCodigo("12") }
-        campo.performTextInput("1")
-        campo.performTextInput("2")
-        waitForIdle()
-        assertEquals(3, cantidad)
-    }
-
-    @Test fun `un codigo que no es lo tecleado no toca la cantidad`() = runComposeUiTest {
-        val campo = casilla(inicial = 3)
-        campo.performTextInput("24")
-        waitForIdle()
-        runOnIdle { CasillaDeCantidad.avisarCodigo("7501632510590") }   // una pistola reconocida: sus teclas no llegaron
-        waitForIdle()
-        assertEquals(24, cantidad)
-    }
 }
