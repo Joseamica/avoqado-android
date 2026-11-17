@@ -28,6 +28,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.launch
 import javax.inject.Inject
+import com.avoqado.pos.core.data.network.ServerErrorText
 
 data class PreparationServiceState(val items: List<PreparationLine> = emptyList(), val total: Int = 0,
     val cursor: String? = null, val hasMore: Boolean = false, val loading: Boolean = false,
@@ -35,6 +36,20 @@ data class PreparationServiceState(val items: List<PreparationLine> = emptyList(
     val sendingUrgent: Boolean = false, val localTotal: Int = 0, val serverTotalKnown: Boolean = false,
     val paperItems: List<PreparationPaperIssue> = emptyList(), val paperTotal: Int = 0,
     val paperCursor: String? = null, val paperHasMore: Boolean = false, val paperLoading: Boolean = false)
+
+/** D68 #3: lo que dice una lectura de cocina que falló por la red (lo que sí se ve es lo guardado en este aparato). */
+internal const val SIN_RED_AL_LEER = "Sin conexión: no se pudo consultar al servidor. Se muestra lo guardado en este aparato."
+
+/**
+ * D68 #3 (Codex r2 #2): cualquier corte de la red, también uno a media respuesta (`ProtocolException` «unexpected end of stream», un
+ * `IOException` sin clase propia), se dice en español; un rechazo del SERVIDOR o un motivo de la app conservan su texto. PURA.
+ */
+internal fun textoDeCocina(
+    e: Throwable,
+    fallback: String,
+    sinRed: String = "Sin conexión. Revisa la red e inténtalo de nuevo.",
+): String = if (e is java.io.IOException && e !is java.net.SocketTimeoutException) sinRed
+    else ServerErrorText.humanize(e, fallback, offlineMessage = sinRed)
 
 @HiltViewModel
 class PreparationServiceViewModel @Inject constructor(
@@ -75,7 +90,7 @@ class PreparationServiceViewModel @Inject constructor(
                     }
                     refreshPaper()
                     } catch (e: kotlinx.coroutines.CancellationException) { throw e }
-                    catch (e: Exception) { _state.value = _state.value.copy(message = e.message ?: "No se pudo recuperar la preparación guardada") }
+                    catch (e: Exception) { _state.value = _state.value.copy(message = textoAlLeer(e, "No se pudo recuperar la preparación guardada")) }
                 }
             } }
             viewModelScope.launch {
@@ -105,7 +120,7 @@ class PreparationServiceViewModel @Inject constructor(
                     paperItems = if (more) (previous.paperItems + page.items).distinctBy { it.intentId } else page.items,
                     paperTotal = page.total, paperCursor = page.cursor, paperHasMore = page.hasMore)
             } catch (e: CancellationException) { throw e }
-              catch (e: Exception) { if (epoch == generation) _state.value = _state.value.copy(message = e.message) }
+              catch (e: Exception) { if (epoch == generation) _state.value = _state.value.copy(message = textoAlLeer(e, "No se pudieron cargar los envíos a cocina")) }
             finally { if (epoch == generation) _state.value = _state.value.copy(paperLoading = false) }
         }
     }
@@ -116,10 +131,18 @@ class PreparationServiceViewModel @Inject constructor(
         viewModelScope.launch {
             try { service.resolvePaper(v, issue.intentId, reprint); if (epoch == generation) refreshPaper() }
             catch (e: CancellationException) { throw e }
-            catch (e: Exception) { if (epoch == generation) _state.value = _state.value.copy(message = e.message) }
+            catch (e: Exception) { if (epoch == generation) _state.value = _state.value.copy(message = textoDeCocina(e, "No se pudo resolver el envío")) }
         }
     }
     fun can(action: PreparationAction) = repository.can(action)
+
+    /**
+     * D68 #3 (prueba final del 13-nov): sin internet, «Enviar urgente» abría su hoja con «Connection reset» en inglés: la lectura
+     * enseñaba el texto crudo del sistema. Un fallo de red se dice en español y con lo que sí se ve (lo guardado en el aparato);
+     * un rechazo del SERVIDOR conserva su motivo ([ServerErrorText.humanize]).
+     */
+    private fun textoAlLeer(e: Exception, fallback: String = "No se pudieron cargar los productos") =
+        textoDeCocina(e, fallback, SIN_RED_AL_LEER)
     private fun selection(row: PreparationLine) = _state.value.items.filter {
         it.orderId == row.orderId && (if (row.orderItemId != null) it.orderItemId == row.orderItemId
             else it.externalId == row.externalId && it.sourceKey?.substringBeforeLast(':') == row.sourceKey?.substringBeforeLast(':'))
@@ -157,7 +180,7 @@ class PreparationServiceViewModel @Inject constructor(
                     _state.value = _state.value.copy(localTotal = page?.total ?: 0)
                     publish()
                 } catch (e: CancellationException) { throw e }
-                  catch (e: Exception) { if (current()) _state.value = _state.value.copy(message = e.message) }
+                  catch (e: Exception) { if (current()) _state.value = _state.value.copy(message = textoAlLeer(e)) }
                 if (readRemote) try {
                     val saved = repository.savedPage(venueId, orderId, remoteCursor, previous.history)
                     if (!current()) return@launch
@@ -168,7 +191,7 @@ class PreparationServiceViewModel @Inject constructor(
                         publish()
                     }
                 } catch (e: CancellationException) { throw e }
-                  catch (e: Exception) { if (current()) _state.value = _state.value.copy(message = e.message) }
+                  catch (e: Exception) { if (current()) _state.value = _state.value.copy(message = textoAlLeer(e)) }
                 if (negotiate || !repository.negotiated(venueId)) repository.refreshCapabilities(venueId)
                 if (!current()) return@launch
                 if (readRemote) {
@@ -182,7 +205,7 @@ class PreparationServiceViewModel @Inject constructor(
             } catch (e: CancellationException) { throw e }
               catch (e: Exception) { if (current()) {
                     if (remoteRows.isEmpty() && !_state.value.serverTotalKnown) remoteHasMore = false
-                    _state.value = _state.value.copy(message = e.message ?: "No se pudieron cargar los productos")
+                    _state.value = _state.value.copy(message = textoAlLeer(e))
                 } }
               finally { if (current()) _state.value = _state.value.copy(loading = false, hasMore = remoteHasMore || localHasMore) }
         }
@@ -201,7 +224,7 @@ class PreparationServiceViewModel @Inject constructor(
                 _state.value = current.copy(items = current.items.map { updated[it.stableKey] ?: it },
                     pendingKeys = current.pendingKeys + updated.keys, message = action.label + ": " + quantity + " · " + row.productName + ". Pendiente de sincronizar.")
             } catch (e: CancellationException) { throw e }
-            catch (e: Exception) { if (generation == epoch) _state.value = _state.value.copy(message = e.message ?: "No se pudo guardar la acción") }
+            catch (e: Exception) { if (generation == epoch) _state.value = _state.value.copy(message = textoDeCocina(e, "No se pudo guardar la acción")) }
         }
     }
     fun sendUrgent(keys: Set<String>, onSuccess: () -> Unit) {
@@ -219,7 +242,7 @@ class PreparationServiceViewModel @Inject constructor(
                     pendingKeys = _state.value.pendingKeys + updated.keys, message = "Urgencia guardada. Pendiente de sincronizar.")
                 onSuccess()
             } catch (e: CancellationException) { throw e }
-            catch (e: Exception) { if (generation == epoch) _state.value = _state.value.copy(message = e.message ?: "No se pudo guardar la urgencia") }
+            catch (e: Exception) { if (generation == epoch) _state.value = _state.value.copy(message = textoDeCocina(e, "No se pudo guardar la urgencia")) }
             finally { if (generation == epoch) _state.value = _state.value.copy(sendingUrgent = false) }
         }
     }

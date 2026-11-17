@@ -45,6 +45,9 @@ class LeaseServer(
         synchronized(lock) { presencias.dejarArbitraje() }
     }
 
+    /** Hub D6 bandas: las cajas que hoy le declaran a este aparato como árbitro (presencia viva, < 30 s). La línea del plano las cuenta. */
+    fun cajasQueDeclaran(): Set<String> = synchronized(lock) { presencias.vivas(monoMillis()) }
+
     /** Puro salvo por el reloj: es lo que se prueba sin abrir sockets. */
     fun respondTo(line: String): LeaseResponse {
         val request = LeaseProtocol.decodeRequest(line)

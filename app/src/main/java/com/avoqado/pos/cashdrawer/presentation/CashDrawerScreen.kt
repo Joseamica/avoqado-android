@@ -129,6 +129,14 @@ private fun TabletCashDrawerLayout(
                 reportSession!!.closedAt ?: System.currentTimeMillis(),
             )
         }
+        // D68 #13: si el corte se abrió sin red, al volver la red se pide el desglose otra vez (sólo si falta).
+        val enLineaDelCorte by viewModel.enLinea.collectAsState()
+        LaunchedEffect(reportSession!!.id, enLineaDelCorte) {
+            if (enLineaDelCorte) viewModel.recargarDesgloseSiFalta(
+                reportSession!!.openedAt,
+                reportSession!!.closedAt ?: System.currentTimeMillis(),
+            )
+        }
         val isPrintingCorte by viewModel.isPrintingCorte.collectAsState()
         DailyReportView(
             session = reportSession!!,
@@ -430,6 +438,14 @@ private fun PhoneCashDrawerLayout(
         val tenderBreakdown by viewModel.tenderBreakdown.collectAsState()
         LaunchedEffect(reportSession!!.id) {
             viewModel.loadTenderBreakdown(
+                reportSession!!.openedAt,
+                reportSession!!.closedAt ?: System.currentTimeMillis(),
+            )
+        }
+        // D68 #13: si el corte se abrió sin red, al volver la red se pide el desglose otra vez (sólo si falta).
+        val enLineaDelCorte by viewModel.enLinea.collectAsState()
+        LaunchedEffect(reportSession!!.id, enLineaDelCorte) {
+            if (enLineaDelCorte) viewModel.recargarDesgloseSiFalta(
                 reportSession!!.openedAt,
                 reportSession!!.closedAt ?: System.currentTimeMillis(),
             )
@@ -739,6 +755,11 @@ private fun CurrentDrawerContent(
             // reembolso o la venta de la terminal que sólo él conoce.
             viewModel.alEntrar()
             viewModel.loadTenderBreakdown(partialSession.openedAt, System.currentTimeMillis())
+        }
+        // D68 #13: lo mismo en el corte parcial.
+        val enLineaDelParcial by viewModel.enLinea.collectAsState()
+        LaunchedEffect(partialSession.id, enLineaDelParcial) {
+            if (enLineaDelParcial) viewModel.recargarDesgloseSiFalta(partialSession.openedAt, System.currentTimeMillis())
         }
         DailyReportView(
             session = partialSession,

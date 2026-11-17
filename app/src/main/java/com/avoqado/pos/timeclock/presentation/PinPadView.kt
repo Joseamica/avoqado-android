@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
@@ -51,6 +52,11 @@ fun PinPadView(
     maxLength: Int = 10,
     minLength: Int = 4,
     compact: Boolean = false,
+    /**
+     * D68 #1 (prueba final del 13-nov): un aviso («PIN incorrecto») en el renglón de los puntos, que tras un intento fallido queda
+     * vacío. Abajo del teclado, en la N86 (592 dp útiles), el diálogo lo cortaba y el PIN se borraba sin decir nada.
+     */
+    aviso: String? = null,
 ) {
     val dotSize = if (compact) 12.dp else 14.dp
     val dotSpacing = if (compact) AvoqadoTheme.spacing.sm else AvoqadoTheme.spacing.md
@@ -84,7 +90,8 @@ fun PinPadView(
     ) {
         // PIN dots — dynamic: show one filled dot per entered digit
         Row(
-            modifier = Modifier.height(20.dp),
+            // Crece sólo si el aviso no cabe en un renglón; sin aviso mide lo de siempre (nada salta).
+            modifier = Modifier.heightIn(min = 20.dp),
             horizontalArrangement = Arrangement.spacedBy(dotSpacing),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -92,6 +99,14 @@ fun PinPadView(
                 // Sin puntos de relleno: cuatro casillas vacías se leen como "el PIN
                 // es de 4", y el rango real es 4 a 10. El texto de abajo lo dice con
                 // palabras. El Row conserva su altura fija, así que nada salta.
+                aviso?.let {
+                    Text(
+                        text = it,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.error,
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                    )
+                }
             } else {
                 // Show one filled dot per entered digit
                 repeat(pin.length) {

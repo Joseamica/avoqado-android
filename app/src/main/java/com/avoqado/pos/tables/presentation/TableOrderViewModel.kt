@@ -2669,7 +2669,8 @@ class TableOrderViewModel @Inject constructor(
                     // Tiene cargos y su total NO es 0: el saldo llegó a 0 porque
                     // YA se pagó. Ofrecer "Pagar" aquí termina en un rechazo del
                     // server ("Order is already paid") que no explica nada.
-                    showBlockedReason("Esta cuenta ya está pagada. Libera la mesa o cámbiate a otra cuenta.")
+                    // D68 #6: si el SERVIDOR ya liberó la mesa (el plano la trae libre), no se pide liberarla otra vez.
+                    showBlockedReason(textoDeCuentaYaPagada(floorTables.value.firstOrNull { it.id == session.tableId }, session.isProvisional))
                 else -> {
                     // Cortesía al 100% (o descuento que se come el total): SÍ se
                     // cobra, y cobrar $0 es justo lo que la cierra. Anularla no

@@ -149,6 +149,8 @@ class TablesVersionPollerTest {
         assertFalse(poller.servidorViejo)
         coVerify(exactly = 0) { mesas.refresh(any()) }
         coVerify(exactly = 0) { plano.refresh(any()) }
+        // D8 (Codex r2 #1): sin red, la cola ya pudo saber de un rechazo de una mesa soltada.
+        coVerify(exactly = 1) { mesas.reconciliarMarcasSinRed("v1") }
     }
 
     @Test
