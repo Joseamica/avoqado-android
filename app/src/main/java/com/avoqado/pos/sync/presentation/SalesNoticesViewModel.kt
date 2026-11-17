@@ -361,6 +361,10 @@ fun salesNoticeBannerCount(summary:SalesNoticeSummary?, reservations:Int?, fallb
     }+summary.untouchedQ15+summary.untouchedRejected+reservations+payLaterCount
 }
 
+/** D68 #2: de [salesNoticeBannerCount], los avisos de pagos ya registrados (no frenan cerrar sesión); 0 si la banda usa el respaldo. */
+fun salesNoticeBannerApplied(summary:SalesNoticeSummary?, reservations:Int?):Int =
+    if(summary==null || reservations==null) 0 else summary.appliedUnacknowledged.coerceAtLeast(0)
+
 /** The banner's existing route, shared by the tablet and phone layouts. */
 fun openSalesNoticeBanner(opensPendingSales:Boolean, transactionsRegistered:Boolean, payLaterCount:Int=0,
     onPendingSales:()->Unit, onQuarantine:()->Unit) {

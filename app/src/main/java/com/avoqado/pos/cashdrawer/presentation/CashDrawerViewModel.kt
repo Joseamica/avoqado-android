@@ -38,6 +38,7 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -128,11 +129,50 @@ class CashDrawerViewModel @Inject constructor(
     private val _tenderBreakdown = MutableStateFlow<List<CashDrawerRepository.TenderRow>?>(null)
     val tenderBreakdown: StateFlow<List<CashDrawerRepository.TenderRow>?> = _tenderBreakdown.asStateFlow()
 
+    /**
+     * D68 #13 (prueba final del 13-nov): el corte hecho sin red seguía diciendo «No se pudo consultar el desglose por método de
+     * pago…» después de volver la red, hasta tocar «Reintentar». Lo que se arregla es SÓLO eso: con el desglose en «No se pudo
+     * consultar», al volver la red se pide otra vez ([recargarDesgloseSiFalta]). Codex r1–r5 encontraron carreras más viejas en
+     * esta pieza (otra caja a media carga, la impresión que escribe en la pantalla); no son de esta tarjeta y quedaron anotadas
+     * en el pizarrón. Aquí sólo: la última lectura que se pidió es la que se publica, y si la red volvió con una lectura en
+     * vuelo que después falla, se pide otra vez al terminar.
+     */
+    private var cargandoDesglose = false
+    private var generacionDelDesglose = 0
+    private var reintentoPendiente: Pair<Long, Long>? = null
+
     /** Fetch the payment-method breakdown for a session's window (corte de caja). */
     fun loadTenderBreakdown(fromMillis: Long, toMillis: Long) {
+        val generacion = ++generacionDelDesglose
+        cargandoDesglose = true
+        reintentoPendiente = null
         viewModelScope.launch {
-            _tenderBreakdown.value = repository.getTenderBreakdown(fromMillis, toMillis)
+            var desglose: List<CashDrawerRepository.TenderRow>? = null
+            try {
+                desglose = repository.getTenderBreakdown(fromMillis, toMillis)
+            } finally {
+                if (generacion == generacionDelDesglose) {
+                    _tenderBreakdown.value = desglose
+                    cargandoDesglose = false
+                    val otra = reintentoPendiente
+                    reintentoPendiente = null
+                    if (desglose == null && otra != null) loadTenderBreakdown(otra.first, otra.second)
+                }
+            }
         }
+    }
+
+    /** D68 #13: al volver la red, si el corte está en «No se pudo consultar», se pide otra vez (o al terminar la que va en vuelo). */
+    fun recargarDesgloseSiFalta(fromMillis: Long, toMillis: Long) {
+        if (_tenderBreakdown.value != null) return
+        if (cargandoDesglose) reintentoPendiente = fromMillis to toMillis else loadTenderBreakdown(fromMillis, toMillis)
+    }
+
+    /** D68 #13: con red y servidor; lo observa sólo la pantalla del corte (perezoso: las pruebas que no lo leen no lo arman). */
+    val enLinea: StateFlow<Boolean> by lazy {
+        kotlinx.coroutines.flow.combine(conectividad.isConnected, conectividad.isServerReachable) { red, servidor -> red && servidor }
+            .stateIn(viewModelScope, kotlinx.coroutines.flow.SharingStarted.Eagerly,
+                conectividad.isConnected.value && conectividad.isServerReachable.value)
     }
 
     // End of day ("Cierre del día") — day summary + blockers.
