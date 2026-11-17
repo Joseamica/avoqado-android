@@ -55,6 +55,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateListOf
@@ -178,6 +179,8 @@ private enum class DetailSubView {
 
 // MARK: - Main content (shared between side panel and bottom sheet)
 
+// Todo lo elegido aquí es DE ESTE producto: si la pistola trae otro con la ficha abierta, la ficha empieza de cero. Sin la
+// llave, el té heredaba la cantidad y los extras del café (con sus ids y su precio) y así llegaban al carrito (pizarrón D3, 17-nov).
 @Composable
 private fun ProductDetailContent(
     product: Product,
@@ -187,7 +190,7 @@ private fun ProductDetailContent(
     onDismiss: () -> Unit,
     conX: Boolean = true,
     ajusteDePrecio: AccesoAlAjuste = AccesoAlAjuste.LIBRE,
-) {
+) = key(product.id) {
     val addToCartTapThrottleMs = 800L
     val selectedModifiers = remember { mutableStateListOf<SelectedModifier>() }
     var quantity by remember { mutableIntStateOf(1) }

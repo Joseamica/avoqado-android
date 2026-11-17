@@ -75,6 +75,8 @@ class PaymentSyncService @Inject constructor(
     private val avisosDeVentas: com.avoqado.pos.core.data.sync.AvisosDeVentasSubidas = com.avoqado.pos.core.data.sync.AvisosDeVentasSubidas(),
     /** D12: la marca «la abrió aquí» de la orden que la cola crea al volver la red (antes de su `/pay`). */
     private val cuentasAbiertasAqui: com.avoqado.pos.orders.data.CuentasAbiertasAqui? = null,
+    /** D63: los cobros retenidos que un gerente dejó para soporte ya no frenan cerrar sesión ni cambiar de sucursal. */
+    private val cobrosParaSoporte: CobrosParaSoporte? = null,
 ) {
     // MARK: - Constants
 
@@ -1308,7 +1310,7 @@ class PaymentSyncService @Inject constructor(
      * y los de otras sucursales (sólo se ven con esa sucursal abierta).
      */
     suspend fun porRevisarPorSucursal(venueId: String): PorRevisar {
-        val filas = dao.getFailedPayments().filterNot(RevisionCanceladoCero::revisado)
+        val filas = dao.getFailedPayments().filterNot(RevisionCanceladoCero::revisado).filterNot(::dejadoParaSoporte)
         val aqui = filas.count { it.venueId == venueId }
         return PorRevisar(aqui = aqui, deOtraSucursal = filas.size - aqui)
     }
@@ -1326,7 +1328,35 @@ class PaymentSyncService @Inject constructor(
      */
     private suspend fun filasQueFrenan(): List<PendingPaymentEntity> =
         (dao.getUnsyncedPayments() + dao.enVueloDeTodas().filterNot(RevisionCanceladoCero::revisado) +
-            dao.getFailedPayments().filterNot(RevisionCanceladoCero::revisado)).distinctBy { it.id }
+            dao.getFailedPayments().filterNot(RevisionCanceladoCero::revisado)).distinctBy { it.id }.filterNot(::dejadoParaSoporte)
+
+    /**
+     * D63: las filas que esperan a una persona y que «Operaciones por revisar» no enseñaba en ningún lado, aunque el freno las cuenta:
+     * las viejas SIN sucursal (Codex r1 #1; la hoja sólo leía las de su sucursal exacta) y las de aquí sin motivo Q15 que no son
+     * `FAILED` (un `PENDING` heredado sin captura, Codex r3 #2: sin red no se le pone motivo y no estaba en ninguna lista). Las
+     * `FAILED` sin motivo ya salen en «Cobros sin confirmar» y las de motivo Q15 en «Cobros por revisar». Con o sin nota.
+     */
+    suspend fun retenidasSinOtraVista(): List<PendingPaymentEntity> {
+        val abierta = secureStorage.venueId?.takeIf { it.isNotBlank() } ?: return emptyList()
+        return (dao.getUnsyncedPayments() + dao.enVueloDeTodas() + dao.getFailedPayments()).distinctBy { it.id }
+            .filter { CobrosParaSoporte.aplica(it, abierta) && (it.venueId.isBlank() || (it.q15Reason == null && it.syncStatus != "FAILED")) }
+    }
+
+    /** D63: la fila tiene la nota de un gerente y sigue retenida ([CobrosParaSoporte.vigente]): se queda en el aparato, sin frenar. */
+    private fun dejadoParaSoporte(fila: PendingPaymentEntity): Boolean = cobrosParaSoporte?.vigente(fila) == true
+
+    /**
+     * D63: «Dejar para soporte» de un gerente. Relee la fila de la base (la de la hoja pudo cambiar) y guarda la nota con la sesión
+     * vigente. 🔴 No toca la fila: ni la borra, ni la sube, ni le cambia el estado (la respuesta del gerente no es prueba, Q15).
+     */
+    suspend fun dejarParaSoporte(id: String, declaracion: CobrosParaSoporte.Declaracion): CobrosParaSoporte.Resultado {
+        val notas = cobrosParaSoporte ?: return CobrosParaSoporte.Resultado.NO_SE_PUDO
+        val venueId = secureStorage.venueId?.takeIf { it.isNotBlank() } ?: return CobrosParaSoporte.Resultado.NO_APLICA
+        // Codex r1 #1: también la fila vieja sin sucursal, que el freno cuenta como de la abierta.
+        val fila = dao.findForVenue(venueId, id) ?: dao.findForVenue("", id) ?: return CobrosParaSoporte.Resultado.NO_APLICA
+        val nombre = listOfNotNull(secureStorage.userFirstName, secureStorage.userLastName).joinToString(" ").trim()
+        return notas.dejar(fila, venueId, declaracion, secureStorage.userId, nombre, secureStorage.userRole)
+    }
 
     /** D52: lo que frena, de UNA foto: lo de [deAqui] (la sucursal abierta y lo viejo sin sucursal) y lo de otras, por sucursal. */
     data class FrenoPorSucursal(val deAqui: Int, val deOtras: Map<String, Int>)
