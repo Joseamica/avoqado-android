@@ -42,7 +42,13 @@ class QuarantineViewModel @Inject constructor(
     private val payLaterQueue: com.avoqado.pos.payment.data.PayLaterQueue? = null,
     /** Paquetes cobrados sin entregar (D4, 5-nov). Default para las pruebas que construyen este ViewModel a mano. */
     private val pendingGrantQueue: com.avoqado.pos.customers.data.PendingGrantQueue? = null,
+    /** D68 #5: el catálogo de tipos de pago guardado en el aparato. Default para las pruebas que construyen este ViewModel a mano. */
+    private val tenderTypeRepository: com.avoqado.pos.payment.data.TenderTypeRepository? = null,
 ) : ViewModel() {
+
+    /** D68 #5: para que «Cobros interrumpidos» diga «Cobro con Transferencia» y no «Cobro con otro tipo de pago». */
+    val tiposDePago: StateFlow<List<com.avoqado.pos.payment.domain.TenderTypeOption>> =
+        tenderTypeRepository?.tenderTypes ?: MutableStateFlow(emptyList<com.avoqado.pos.payment.domain.TenderTypeOption>()).asStateFlow()
 
     /**
      * Paquetes que una persona tiene que ver: los que el servidor rechazó («Reintentar» o «Descartar») y aquéllos de cuyo cobro no se

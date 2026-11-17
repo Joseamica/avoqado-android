@@ -352,6 +352,7 @@ private fun MainScaffold(
     val pendingSalesCount=if(salesNotices.canRead) globalPendingSalesCount else 0
     val salesBannerCount=com.avoqado.pos.sync.presentation.salesNoticeBannerCount(
         salesSummary,reservationIssueCount,syncIssueCount,payLaterReviewCount)
+    val salesBannerApplied=com.avoqado.pos.sync.presentation.salesNoticeBannerApplied(salesSummary,reservationIssueCount)
     val salesBannerActionLabel=com.avoqado.pos.sync.presentation.salesNoticeBannerActionLabel(
         salesNotices.opensPendingSales,payLaterReviewCount)
     if (showQuarantineSheet) {
@@ -529,7 +530,7 @@ private fun MainScaffold(
                     com.avoqado.pos.kds.presentation.BannerDeReparto(vigilanteDeReparto)
                     com.avoqado.pos.sync.presentation.QuarantineBanner(count=salesBannerCount,
                         historyAvailable=salesSummary==null && roleManager.canResolveQuarantine,historyUnavailable=q15HistoryUnavailable,
-                        actionLabel=salesBannerActionLabel) {
+                        actionLabel=salesBannerActionLabel,applied=salesBannerApplied) {
                         com.avoqado.pos.sync.presentation.openSalesNoticeBanner(
                             salesNotices.opensPendingSales, MainTab.TRANSACTIONS in registeredTabs, payLaterReviewCount,
                             onPendingSales={ pendingCourtesyId=null;pendingSalesRequest++;navigateToTab(MainTab.TRANSACTIONS) },
@@ -831,7 +832,7 @@ private fun MainScaffold(
                     com.avoqado.pos.kds.presentation.BannerDeReparto(vigilanteDeReparto)
                     com.avoqado.pos.sync.presentation.QuarantineBanner(count=salesBannerCount,
                         historyAvailable=salesSummary==null && roleManager.canResolveQuarantine,historyUnavailable=q15HistoryUnavailable,
-                        actionLabel=salesBannerActionLabel) {
+                        actionLabel=salesBannerActionLabel,applied=salesBannerApplied) {
                         com.avoqado.pos.sync.presentation.openSalesNoticeBanner(
                             salesNotices.opensPendingSales, MainTab.TRANSACTIONS in registeredTabs, payLaterReviewCount,
                             onPendingSales={ pendingCourtesyId=null;pendingSalesRequest++;navigateToTab(MainTab.TRANSACTIONS) },

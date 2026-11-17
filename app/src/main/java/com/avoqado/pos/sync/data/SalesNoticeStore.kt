@@ -16,7 +16,12 @@ data class SalesNoticeCursor(val createdAt: Long, val origin: SalesNoticeOrigin,
 data class SalesNoticePage(val rows: List<SalesNoticeSnapshot>, val total: Int, val nextCursor: SalesNoticeCursor?)
 data class SalesNoticeSummary(val pendingCount: Int, val unseenCount: Int,
     val alertContributions: Map<String, Int>, val acknowledgedContributions: Map<String, Int>,
-    val untouchedQ15: Int = 0, val untouchedRejected: Int = 0)
+    val untouchedQ15: Int = 0, val untouchedRejected: Int = 0,
+    /**
+     * D68 #2 (prueba final del 13-nov): de lo que cuenta la banda, los avisos SIN «Entendido» de pagos que el SERVIDOR ya registró
+     * («Pago registrado · revisa las diferencias»). No frenan cerrar sesión: la banda los dice aparte para no contradecir al freno.
+     */
+    val appliedUnacknowledged: Int = 0)
 data class SalesNoticeVersion(val capture: String?, val body: String?, val result: String?, val reason: String?,
     val error: String?, val code: String?, val type: String, val method: String?, val amountCents: Int?, val tipCents: Int?,
     val tenderTypeId: String?, val tenderRevision: Int?, val reference: String?, val orderId: String?, val state: String)
@@ -92,6 +97,9 @@ data class SalesNoticeSnapshot(val venueId: String, val origin: String, val id: 
         return native(result,true) && (origin != "INTENT" || native(body))
     }
     /** Presentación de componentes conocidos; Entendido conserva todos los datos y no resuelve una revisión financiera. */
+    /** D68 #2: la misma condición que `appliedAlerts` del SQL (sin el «Entendido», que se mira aparte). */
+    fun appliedAlert(): Boolean = failedGroup+interruptedGroup+q15Group+rejectedGroup>0 && result != null &&
+        (origin=="PAYMENT" && state=="SYNCED" || origin=="INTENT" && state=="ACKED")
     fun registeredResult(): JsonObject? {
         // D5 · B3 (5b, C3): el efectivo de MESA de la cola de mesas (`PAY_CASH`, ACKED) también tiene resultado del servidor; sin
         // esto el gerente leía «Importe del servidor: Sin confirmar» aunque el acuse traía el saldo y lo cobrado de más.
@@ -159,7 +167,9 @@ internal object SalesNoticeSql {
             "COUNT(*) AS total,COALESCE(SUM(CASE WHEN a.id IS NULL AND s.failedGroup+s.interruptedGroup+s.q15Group+s.rejectedGroup>0 THEN 1 ELSE 0 END),0) AS unseenCount," +
             listOf("failedGroup","interruptedGroup","q15Group","rejectedGroup").joinToString(",") { "COALESCE(SUM(s.$it),0) AS $it,COALESCE(SUM(CASE WHEN a.id IS NOT NULL THEN s.$it ELSE 0 END),0) AS ack$it" } +
             ", (SELECT COUNT(*) FROM pos_sync_intents WHERE venue_id=? AND type!='PAY_CASH' AND q15Reason IS NOT NULL AND q15ReviewedAt IS NULL) AS untouchedQ15" +
-            ", (SELECT COUNT(*) FROM pos_sync_intents WHERE venue_id=? AND type!='PAY_CASH' AND status='REJECTED' AND q15Reason IS NULL) AS untouchedRejected"
+            ", (SELECT COUNT(*) FROM pos_sync_intents WHERE venue_id=? AND type!='PAY_CASH' AND status='REJECTED' AND q15Reason IS NULL) AS untouchedRejected" +
+            ", COALESCE(SUM(CASE WHEN a.id IS NULL AND s.failedGroup+s.interruptedGroup+s.q15Group+s.rejectedGroup>0 AND s.result IS NOT NULL AND " +
+            "((s.origin='PAYMENT' AND s.state='SYNCED') OR (s.origin='INTENT' AND s.state='ACKED')) THEN 1 ELSE 0 END),0) AS appliedAlerts"
         } else if(count) "COUNT(*)" else "s.*,a.actor AS acknowledgedActor,a.acknowledgedAt AS acknowledgedAt"
         val sql = "SELECT $select FROM ($payment UNION ALL $intent) s $join WHERE $where" +
             (if(count || aggregate) "" else " ORDER BY s.createdAt DESC,s.origin ASC,s.id ASC LIMIT 50")
@@ -173,7 +183,7 @@ internal object SalesNoticeSql {
 
 data class SalesNoticeAggregate(val total: Int=0,val unseenCount: Int=0,val failedGroup: Int=0,val interruptedGroup: Int=0,
     val q15Group: Int=0,val rejectedGroup: Int=0,val ackfailedGroup: Int=0,val ackinterruptedGroup: Int=0,
-    val ackq15Group: Int=0,val ackrejectedGroup: Int=0,val untouchedQ15: Int=0,val untouchedRejected: Int=0)
+    val ackq15Group: Int=0,val ackrejectedGroup: Int=0,val untouchedQ15: Int=0,val untouchedRejected: Int=0,val appliedAlerts: Int=0)
 
 @Dao
 abstract class SalesNoticeDao {
@@ -208,7 +218,8 @@ abstract class SalesNoticeDao {
                     ackfailedGroup=result.ackfailedGroup+if(ack)row.failedGroup else 0,
                     ackinterruptedGroup=result.ackinterruptedGroup+if(ack)row.interruptedGroup else 0,
                     ackq15Group=result.ackq15Group+if(ack)row.q15Group else 0,
-                    ackrejectedGroup=result.ackrejectedGroup+if(ack)row.rejectedGroup else 0)
+                    ackrejectedGroup=result.ackrejectedGroup+if(ack)row.rejectedGroup else 0,
+                    appliedAlerts=result.appliedAlerts+if(!ack && row.appliedAlert())1 else 0)
             }
             if(batch.size<50)break;cursor=batch.last().cursor
         } while(true)
@@ -223,7 +234,7 @@ abstract class SalesNoticeDao {
                 "Q15" to raw.q15Group-removed.q15Group,"REJECTED" to raw.rejectedGroup-removed.rejectedGroup),
             mapOf("FAILED" to raw.ackfailedGroup-removed.ackfailedGroup,"INTERRUPTED" to raw.ackinterruptedGroup-removed.ackinterruptedGroup,
                 "Q15" to raw.ackq15Group-removed.ackq15Group,"REJECTED" to raw.ackrejectedGroup-removed.ackrejectedGroup),
-            raw.untouchedQ15,raw.untouchedRejected)
+            raw.untouchedQ15,raw.untouchedRejected,raw.appliedAlerts-removed.appliedAlerts)
     }
     @Transaction
     open suspend fun acknowledge(snapshot: SalesNoticeSnapshot,actor: String,now: Long,reserved: Set<String>): Boolean {

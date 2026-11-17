@@ -3,8 +3,8 @@ package com.avoqado.pos.designsystem.components
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Text
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -13,7 +13,6 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.style.TextAlign
 import com.avoqado.pos.auth.data.SwitchUserResult
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.timeclock.presentation.PinPadView
@@ -76,8 +75,11 @@ fun SwitchUserSheet(
             )
         },
     ) {
+        // D68 #1 (prueba final del 13-nov): el error iba ABAJO del teclado y, en la N86, el diálogo (tope del 85 % de la pantalla)
+        // lo cortaba: el PIN se borraba sin decir nada. Ahora va en el renglón de los puntos, que tras el intento queda vacío
+        // (no cambia el alto), y si algo no cabe se desplaza en vez de perderse.
         Column(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState()),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.md),
         ) {
@@ -90,16 +92,8 @@ fun SwitchUserSheet(
                 maxLength = 10,
                 minLength = 4,
                 compact = true,
+                aviso = error,
             )
-            error?.let {
-                Text(
-                    text = it,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.error,
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-            }
         }
     }
 }
