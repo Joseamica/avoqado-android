@@ -36,6 +36,10 @@ class CobrosParaSoporteTest {
         revisadaEn: Long? = null,
     ) = PendingPaymentEntity(id, venue, "cajera", 12_900, 0, "CASH", "FAST", syncStatus = estado, q15Reason = motivo, q15ReviewedAt = revisadaEn)
 
+    /** Una fila de la cola de la app nueva: con su captura Q15 válida (la cola la sube sola). */
+    private fun conCaptura(f: PendingPaymentEntity) = f.copy(q15CaptureJson = ConciliacionDelCobro.guardarCaptura(
+        com.avoqado.pos.payment.data.CapturaDelCobro(f.venueId, f.id, amountCents = f.amountCents, tipCents = f.tipCents, method = "CASH")))
+
     // ── p1 · quién califica ──────────────────────────────────────────────────────────────────────────────────────────────────────
 
     @Test fun `P1 califica el conservado para revision, el retenido en la cola y todo fallido de esta sucursal`() {
@@ -56,7 +60,21 @@ class CobrosParaSoporteTest {
         assertTrue(CobrosParaSoporte.aplica(vieja, aqui))
         val sesion = mockk<SecureStorage>(relaxed = true) { every { venueId } returns aqui }
         val pagos = servicio(daoCon(enVuelo = listOf(vieja)), CobrosParaSoporte(PrefsEnMemoria().context), sesion)
-        assertEquals(listOf("reserva-vieja"), pagos.retenidasSinSucursal().map { it.id })
+        assertEquals(listOf("reserva-vieja"), pagos.retenidasSinOtraVista().map { it.id })
+    }
+
+    @Test fun `P1 Codex r3 2 el PENDING heredado sin captura de aqui tiene salida y se ve, sin red`() = runTest {
+        val heredado = fila(id = "heredado", estado = "PENDING", motivo = null)   // sin q15CaptureJson
+        assertTrue(CobrosParaSoporte.aplica(heredado, aqui))
+        val sesion = mockk<SecureStorage>(relaxed = true) { every { venueId } returns aqui }
+        val notas = CobrosParaSoporte(PrefsEnMemoria().context)
+        val pagos = servicio(daoCon(cola = listOf(heredado)), notas, sesion)
+        assertEquals(listOf("heredado"), pagos.retenidasSinOtraVista().map { it.id })
+        assertEquals(1, pagos.frenoPorSucursal(aqui).deAqui)
+
+        notas.dejar(heredado, aqui, Declaracion.NO_SE, "u-gerente", "Luis", "MANAGER")
+
+        assertEquals(0, pagos.frenoPorSucursal(aqui).deAqui)
     }
 
     @Test fun `P1 Codex r2 2 la nota conserva el rechazo que vio el gerente aunque un reintento lo borre de la fila`() = runTest {
@@ -83,21 +101,21 @@ class CobrosParaSoporteTest {
         }
         val notas = CobrosParaSoporte(PrefsEnMemoria().context)
         val pagos = servicio(dao, notas, sesion)
-        assertEquals(listOf("sin-sucursal"), pagos.retenidasSinSucursal().map { it.id })
+        assertEquals(listOf("sin-sucursal"), pagos.retenidasSinOtraVista().map { it.id })
         assertEquals(1, pagos.frenoPorSucursal(aqui).deAqui)
 
         assertEquals(Resultado.GUARDADA, pagos.dejarParaSoporte("sin-sucursal", Declaracion.NO_SE))
 
         assertEquals(0, pagos.frenoPorSucursal(aqui).deAqui)
         // Sigue a la vista, con su nota.
-        assertEquals(listOf("sin-sucursal"), pagos.retenidasSinSucursal().map { it.id })
+        assertEquals(listOf("sin-sucursal"), pagos.retenidasSinOtraVista().map { it.id })
         assertEquals("", notas.nota("sin-sucursal")?.venueId)
     }
 
     @Test fun `P1 no califica lo que sale solo, lo subido, lo revisado ni lo de otra sucursal`() {
         // Un EN_VUELO sin motivo es un cobro vivo o un «Cobro interrumpido» con «Sí se cobró» / «Conservar».
         assertFalse(CobrosParaSoporte.aplica(fila(estado = "EN_VUELO", motivo = null), aqui))
-        assertFalse(CobrosParaSoporte.aplica(fila(estado = "PENDING", motivo = null), aqui))
+        assertFalse(CobrosParaSoporte.aplica(conCaptura(fila(estado = "PENDING", motivo = null)), aqui))
         assertFalse(CobrosParaSoporte.aplica(fila(estado = "SYNCING", motivo = null), aqui))
         assertFalse(CobrosParaSoporte.aplica(fila(estado = "SYNCED", motivo = ConciliacionDelCobro.RESULTADO_NO_COMPROBADO), aqui))
         assertFalse(CobrosParaSoporte.aplica(fila(estado = "FAILED", revisadaEn = 1L), aqui))
@@ -175,7 +193,7 @@ class CobrosParaSoporteTest {
         val notas = CobrosParaSoporte(PrefsEnMemoria().context)
         notas.dejar(fila(estado = "FAILED", motivo = null), aqui, Declaracion.NO_SE, "u-gerente", "Luis", "MANAGER")
 
-        assertFalse(notas.vigente(fila(estado = "PENDING", motivo = null)))
+        assertFalse(notas.vigente(conCaptura(fila(estado = "PENDING", motivo = null))))
         assertTrue(notas.vigente(fila(estado = "FAILED", motivo = null)))
     }
 
@@ -219,7 +237,7 @@ class CobrosParaSoporteTest {
     @Test fun `P1 lo demas sigue frenando igual`() = runTest {
         val conservado = fila(id = "conservado")
         val otro = fila(id = "otro-conservado")
-        val enCola = fila(id = "en-cola", estado = "PENDING", motivo = null)
+        val enCola = conCaptura(fila(id = "en-cola", estado = "PENDING", motivo = null))
         val notas = CobrosParaSoporte(PrefsEnMemoria().context)
         notas.dejar(conservado, aqui, Declaracion.NO_SE, "u-gerente", "Luis", "MANAGER")
         val pagos = servicio(daoCon(enVuelo = listOf(conservado, otro), cola = listOf(enCola)), notas)

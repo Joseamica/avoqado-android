@@ -84,7 +84,7 @@ class QuarantineDejarParaSoporteTest {
         val sync = mockk<PaymentSyncService>(relaxed = true)
         val vieja = fallido.copy(id = "sin-sucursal", venueId = "", q15Reason = ConciliacionDelCobro.CAPTURA_SIN_EVIDENCIA)
         coEvery { sync.failedPayments() } returns listOf(fallido)
-        coEvery { sync.retenidasSinSucursal() } returns listOf(vieja)
+        coEvery { sync.retenidasSinOtraVista() } returns listOf(vieja)
         val gerente = vm("MANAGER", sync)
 
         gerente.load(); advanceUntilIdle()
@@ -94,7 +94,8 @@ class QuarantineDejarParaSoporteTest {
     }
 
     @Test fun `P2 la nota dice quien, cuando y que respondio`() {
-        val nota = CobrosParaSoporte.Nota("cobro-1", "venue-atole", Declaracion.NO_PAGO, "u-1", "Luis Pérez", "MANAGER", 1L, "FAILED", null, 12_900, 0)
+        val nota = CobrosParaSoporte.Nota(paymentId = "cobro-1", venueId = "venue-atole", declaracion = Declaracion.NO_PAGO, actorId = "u-1",
+            actorNombre = "Luis Pérez", actorRol = "MANAGER", marcadoEn = 1L, estado = "FAILED", importeCents = 12_900, propinaCents = 0)
         assertEquals("Dejado para soporte por Luis Pérez · 16 nov 14:02 · «No pagó»", textoDeNotaDeSoporte(nota, "16 nov 14:02"))
         assertEquals("Dejado para soporte por un gerente · 16 nov 14:02 · «No sé»",
             textoDeNotaDeSoporte(nota.copy(actorNombre = null, declaracion = Declaracion.NO_SE), "16 nov 14:02"))

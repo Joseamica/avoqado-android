@@ -119,14 +119,17 @@ class CobrosParaSoporte(private val prefs: android.content.SharedPreferences) {
          * cortesía de $0 ya revisada; y además `FAILED` (con o sin motivo: «Reintentar» no sirve si el servidor la rechaza siempre) o
          * `EN_VUELO`/`PENDING` CON motivo Q15 (retenidas: la cola no las manda). Un `EN_VUELO` sin motivo es un cobro vivo o un «Cobro
          * interrumpido» con sus propios botones. Codex r2 #1: un `EN_VUELO` viejo SIN sucursal y sin motivo tampoco tiene salida (la
-         * hoja de «Cobros interrumpidos» sólo lee los de la sucursal abierta y el barrido no lo toca), así que también califica. PURA.
+         * hoja de «Cobros interrumpidos» sólo lee los de la sucursal abierta y el barrido no lo toca), así que también califica. Codex r3
+         * #2: un `PENDING` heredado SIN captura nunca sube (la cola lo retiene con `CAPTURA_SIN_EVIDENCIA` en cuanto hay red) y, sin red,
+         * no se veía en ningún lado: también califica. PURA.
          */
         fun aplica(fila: PendingPaymentEntity, sucursal: String): Boolean =
             sucursal.isNotBlank() && (fila.venueId == sucursal || fila.venueId.isBlank()) && fila.q15ReviewedAt == null && !RevisionCanceladoCero.revisado(fila) &&
                 when (fila.syncStatus) {
                     "FAILED" -> true
                     "EN_VUELO" -> fila.q15Reason != null || fila.venueId.isBlank()
-                    "PENDING" -> fila.q15Reason != null
+                    "PENDING" -> fila.q15Reason != null ||
+                        ConciliacionDelCobro.leerCaptura(fila.q15CaptureJson, fila.venueId, fila.id) == null
                     else -> false
                 }
     }

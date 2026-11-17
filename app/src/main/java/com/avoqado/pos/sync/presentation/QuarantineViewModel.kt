@@ -305,9 +305,9 @@ class QuarantineViewModel @Inject constructor(
         val epoch = syncOutbox.contextoDeSesionQ15()
         viewModelScope.launch {
             val items = syncOutbox.rejectedIntents(venueId)
-            // D63 (Codex r1 #1): también las filas viejas SIN sucursal, que el freno cuenta como de ésta y nadie veía.
+            // D63 (Codex r1 #1, r3 #2): también lo que el freno cuenta y nadie veía (filas viejas sin sucursal, cola sin captura).
             val failed = (paymentSyncService.failedPayments().filter { it.venueId == venueId || it.venueId.isBlank() } +
-                paymentSyncService.retenidasSinSucursal()).distinctBy { it.id }
+                paymentSyncService.retenidasSinOtraVista()).distinctBy { it.id }
             val reservations = reservationRepository.quarantinedActions()
             // D52: lo pendiente de OTRAS sucursales de este aparato, con su nombre; se resuelve sólo con su sucursal abierta.
             val nombres = secureStorage.venuesList.associate { it.id to it.name }

@@ -1331,13 +1331,15 @@ class PaymentSyncService @Inject constructor(
             dao.getFailedPayments().filterNot(RevisionCanceladoCero::revisado)).distinctBy { it.id }.filterNot(::dejadoParaSoporte)
 
     /**
-     * D63 (Codex r1 #1): las filas viejas SIN sucursal que esperan a una persona. El freno las cuenta como de la sucursal abierta, pero
-     * «Operaciones por revisar» sólo enseñaba las de su sucursal exacta: nadie las veía. Con o sin nota (la hoja enseña la nota).
+     * D63: las filas que esperan a una persona y que «Operaciones por revisar» no enseñaba en ningún lado, aunque el freno las cuenta:
+     * las viejas SIN sucursal (Codex r1 #1; la hoja sólo leía las de su sucursal exacta) y las de aquí sin motivo Q15 que no son
+     * `FAILED` (un `PENDING` heredado sin captura, Codex r3 #2: sin red no se le pone motivo y no estaba en ninguna lista). Las
+     * `FAILED` sin motivo ya salen en «Cobros sin confirmar» y las de motivo Q15 en «Cobros por revisar». Con o sin nota.
      */
-    suspend fun retenidasSinSucursal(): List<PendingPaymentEntity> {
+    suspend fun retenidasSinOtraVista(): List<PendingPaymentEntity> {
         val abierta = secureStorage.venueId?.takeIf { it.isNotBlank() } ?: return emptyList()
         return (dao.getUnsyncedPayments() + dao.enVueloDeTodas() + dao.getFailedPayments()).distinctBy { it.id }
-            .filter { it.venueId.isBlank() && CobrosParaSoporte.aplica(it, abierta) }
+            .filter { CobrosParaSoporte.aplica(it, abierta) && (it.venueId.isBlank() || (it.q15Reason == null && it.syncStatus != "FAILED")) }
     }
 
     /** D63: la fila tiene la nota de un gerente y sigue retenida ([CobrosParaSoporte.vigente]): se queda en el aparato, sin frenar. */
