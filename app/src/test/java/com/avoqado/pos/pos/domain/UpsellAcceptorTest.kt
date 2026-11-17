@@ -111,6 +111,8 @@ class UpsellAcceptorTest {
                 cortesiaReason = any(),
                 priceAdjustment = any(),
                 discount = any(),
+                motivo = any(),
+                descuentoSugerido = any(),
             )
         } answers {
             val p = arg<Product>(0)
@@ -223,6 +225,8 @@ class UpsellAcceptorTest {
                 cortesiaReason = any(),
                 priceAdjustment = any(),
                 discount = any(),
+                motivo = any(),
+                descuentoSugerido = any(),
             )
         }
         // 🔴 Si esto se quedara en addProduct(), la línea entraría SIN el tamaño
@@ -239,7 +243,7 @@ class UpsellAcceptorTest {
 
         assertEquals(3500, result.cart.subtotalCents)
         verify(exactly = 1) { vm.addProduct(galleta) }
-        verify(exactly = 0) { vm.addProductWithModifiers(any(), any(), any(), any(), any(), any(), any(), any()) }
+        verify(exactly = 0) { vm.addProductWithModifiers(any(), any(), any(), any(), any(), any(), any(), any(), any(), any()) }
     }
 
     @Test

@@ -97,6 +97,8 @@ class CounterUpsellAcceptor(
                     product = product,
                     modifiers = card.modifiers.map { it.toSelectedModifier() },
                     discount = descuento,
+                    // f998c8: el descuento lo trae la sugerencia que configuró el negocio, no una persona: no pide motivo.
+                    descuentoSugerido = true,
                 )
             } else {
                 cartViewModel.addProduct(product)

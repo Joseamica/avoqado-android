@@ -410,6 +410,13 @@ class TpvSettingsRepository internal constructor(
      */
     val managerPinOverrideEnabled: StateFlow<Boolean> = _managerPinOverrideEnabled.asStateFlow()
 
+    private val _motivosDeDescuento = MutableStateFlow(
+        com.avoqado.pos.pos.domain.MotivosDeDescuento(secureStorage.discountReasonRequired, secureStorage.discountReasons),
+    )
+
+    /** Motivo obligatorio en los descuentos (encargo f998c8): el switch y la lista del negocio, también sin red (guardados). */
+    val motivosDeDescuento: StateFlow<com.avoqado.pos.pos.domain.MotivosDeDescuento> = _motivosDeDescuento.asStateFlow()
+
     private val _exchangesEnabled = MutableStateFlow(secureStorage.exchangesEnabled)
     val exchangesEnabled: StateFlow<Boolean> = _exchangesEnabled.asStateFlow()
 
@@ -628,6 +635,14 @@ class TpvSettingsRepository internal constructor(
                     val overrideEnabled = result.data?.managerPinOverrideEnabled ?: false
                     _managerPinOverrideEnabled.value = overrideEnabled
                     secureStorage.managerPinOverrideEnabled = overrideEnabled
+                    // f998c8: misma fila. Un servidor viejo no los manda ⇒ apagado y sin lista (lo de hoy: no se pide motivo).
+                    val motivos = com.avoqado.pos.pos.domain.MotivosDeDescuento(
+                        requerido = result.data?.discountReasonRequired ?: false,
+                        lista = result.data?.discountReasons.orEmpty().map { it.trim() }.filter { it.isNotEmpty() },
+                    )
+                    _motivosDeDescuento.value = motivos
+                    secureStorage.discountReasonRequired = motivos.requerido
+                    secureStorage.discountReasons = motivos.lista
                     val exchangesEnabled = result.data?.exchangesEnabled ?: false
                     _exchangesEnabled.value = exchangesEnabled
                     secureStorage.exchangesEnabled = exchangesEnabled
@@ -895,6 +910,9 @@ class TpvSettingsRepository internal constructor(
             // el GUARDADO, que es una sola llave para todo el aparato: la siguiente sucursal sin red lo heredaría.
             _managerPinOverrideEnabled.value = false
             secureStorage.managerPinOverrideEnabled = false
+            _motivosDeDescuento.value = com.avoqado.pos.pos.domain.MotivosDeDescuento.APAGADO
+            secureStorage.discountReasonRequired = false
+            secureStorage.discountReasons = emptyList()
             _exchangesEnabled.value = false
             secureStorage.exchangesEnabled = false
             _storeCreditOnly.value = false
@@ -1006,6 +1024,11 @@ internal data class VenueSettingsData(
      * ausente) se comporta exactamente como hoy.
      */
     val managerPinOverrideEnabled: Boolean = false,
+    /** Motivo obligatorio en los descuentos (encargo f998c8). Ausente (servidor viejo) ⇒ null ⇒ no se pide motivo, como hoy. */
+    @Serializable(with = com.avoqado.pos.transactions.data.model.BooleanTolerante::class)
+    val discountReasonRequired: Boolean? = null,
+    /** La lista de motivos del negocio. Ausente ⇒ null ⇒ vacía. */
+    val discountReasons: List<String>? = null,
     /** Venue-owned switch; absent or null on older servers means disabled. */
     val exchangesEnabled: Boolean? = null,
     /** Saldo a favor (aditivo, de VENUE): «Sólo saldo a favor». Ausente ⇒ null ⇒ como hoy (apagado). */

@@ -91,6 +91,15 @@ data class CartItem(
     /** D4: ese descuento pide la aprobación de un gerente ([com.avoqado.pos.pos.data.model.Discount.pideAprobacion]). */
     var itemDiscountPideAprobacion: Boolean = false,
     /**
+     * Encargo f998c8: el motivo que eligió la caja para el descuento de esta línea (el de catálogo y/o su «Ajuste de precio») y su
+     * comentario. Sólo se pide con «Pedir motivo» prendido; viaja como `discountReason`/`discountReasonComment` y se copia como texto
+     * a la fila del descuento en el SERVIDOR. Null en carritos viejos y cuando no se pide.
+     */
+    var discountReason: String? = null,
+    var discountReasonComment: String? = null,
+    /** f998c8: el descuento de la línea lo puso una sugerencia (upsell con descuento del negocio), no una persona: no pide motivo. */
+    var descuentoSugerido: Boolean = false,
+    /**
      * Venta por peso (báscula): kg con 3 decimales. Cuando está presente, [unitPrice] es el precio
      * POR KG en centavos, [quantity] queda fija en 1 y el total de línea = round(weightKg × unitPrice)
      * (half-up, igual que el server). Una línea con peso JAMÁS se fusiona con otra (D9).

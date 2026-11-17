@@ -297,7 +297,12 @@ data class SplitOrderRequest(val itemIds: List<String>)
 
 /** POST .../orders/:orderId/discounts body. */
 @Serializable
-data class ApplyOrderDiscountRequest(val discountId: String)
+data class ApplyOrderDiscountRequest(
+    val discountId: String,
+    /** f998c8: el motivo (y comentario) que eligió la caja con «Pedir motivo» prendido. Opcionales: el SERVIDOR nunca rechaza sin él. */
+    val reason: String? = null,
+    val reasonComment: String? = null,
+)
 
 /** POST .../orders/:orderId/items/:itemId/comp body — "Dar de cortesía". */
 @Serializable

@@ -259,6 +259,12 @@ data class CreateOrderRequest(
     val descuentoDeCatalogoId: String? = null,
     /** D4, sólo en el aparato (no viaja): ese descuento pide aprobación, así que la venta lleva ORDEN aunque sean puros importes. */
     val descuentoDeCatalogoPideAprobacion: Boolean = false,
+    /**
+     * f998c8: el motivo (y comentario) del descuento de la CUENTA. Se OMITE cuando es null. Con motivo, la venta lleva ORDEN aunque
+     * sean puros importes ([com.avoqado.pos.payment.data.OrderRepository.aceptaCrearOrden]): `/fast` no lleva descuento ni motivo.
+     */
+    val orderDiscountReason: String? = null,
+    val orderDiscountReasonComment: String? = null,
 )
 
 /** Una elección de la persona dentro de la promoción: qué grupo y qué opción. */
@@ -333,6 +339,12 @@ data class OrderItemRequest(
      * precio; se OMITE del payload cuando es null (apps viejas y líneas sin ajuste, idénticas a antes).
      */
     val adjustedUnitPrice: Int? = null,
+    /**
+     * f998c8: el motivo (y comentario) del descuento o del ajuste de esta línea. Se OMITE del payload cuando es null (lo de hoy). El
+     * SERVIDOR lo copia como texto a la fila del descuento y nunca rechaza una venta por él.
+     */
+    val discountReason: String? = null,
+    val discountReasonComment: String? = null,
 ) {
     /** Línea de promoción: el ref y nada más. Ver [promotionRef]. */
     companion object {

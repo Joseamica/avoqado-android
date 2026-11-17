@@ -93,6 +93,8 @@ fun ProductDetailPanel(
     product: Product,
     isTablet: Boolean = true,
     discounts: List<Discount> = emptyList(),
+    /** f998c8: «Pedir motivo en los descuentos» del negocio. Apagado (Mesas, pruebas) ⇒ el panel se porta como siempre. */
+    motivos: com.avoqado.pos.pos.domain.MotivosDeDescuento = com.avoqado.pos.pos.domain.MotivosDeDescuento.APAGADO,
     onAddToCart: (
         quantity: Int,
         modifiers: List<SelectedModifier>,
@@ -101,6 +103,7 @@ fun ProductDetailPanel(
         cortesiaReason: String?,
         priceAdjustment: Int?,
         discountId: String?,
+        motivo: com.avoqado.pos.pos.domain.MotivoElegido?,
     ) -> Unit,
     onDismiss: () -> Unit,
     /** Encargo 1afe04: qué hace la fila «Ajuste de precio» (permiso / PIN del encargado; en Mesas no sale). */
@@ -130,6 +133,7 @@ fun ProductDetailPanel(
                 ProductDetailContent(
                     product = product,
                     discounts = discounts,
+                    motivos = motivos,
                     onAddToCart = onAddToCart,
                     onDismiss = onDismiss,
                     ajusteDePrecio = ajusteDePrecio,
@@ -147,6 +151,7 @@ fun ProductDetailPanel(
             ProductDetailContent(
                 product = product,
                 discounts = discounts,
+                motivos = motivos,
                 onAddToCart = onAddToCart,
                 onDismiss = onDismiss,
                 ajusteDePrecio = ajusteDePrecio,
@@ -160,7 +165,7 @@ fun ProductDetailPanel(
 // MARK: - Sub-view navigation state
 
 private enum class DetailSubView {
-    MAIN, DISCOUNTS, PRICE_ADJUST, CORTESIA, NOTE,
+    MAIN, DISCOUNTS, PRICE_ADJUST, CORTESIA, NOTE, MOTIVO,
 }
 
 // MARK: - Main content (shared between side panel and bottom sheet)
@@ -169,7 +174,8 @@ private enum class DetailSubView {
 private fun ProductDetailContent(
     product: Product,
     discounts: List<Discount>,
-    onAddToCart: (Int, List<SelectedModifier>, String?, Boolean, String?, Int?, String?) -> Unit,
+    motivos: com.avoqado.pos.pos.domain.MotivosDeDescuento,
+    onAddToCart: (Int, List<SelectedModifier>, String?, Boolean, String?, Int?, String?, com.avoqado.pos.pos.domain.MotivoElegido?) -> Unit,
     onDismiss: () -> Unit,
     conX: Boolean = true,
     ajusteDePrecio: AccesoAlAjuste = AccesoAlAjuste.LIBRE,
@@ -252,6 +258,11 @@ private fun ProductDetailContent(
                                 return@MainDetailView
                             }
                             lastAddToCartTapAt = now
+                            // f998c8: con «Pedir motivo» y un descuento o ajuste puesto a mano, primero el motivo (como Toast).
+                            if (motivos.sePide && !isCortesia && (selectedDiscountId != null || priceAdjustment != null)) {
+                                currentSubView = DetailSubView.MOTIVO
+                                return@MainDetailView
+                            }
                             onAddToCart(
                                 quantity,
                                 selectedModifiers.toList(),
@@ -260,8 +271,31 @@ private fun ProductDetailContent(
                                 cortesiaReason,
                                 priceAdjustment,
                                 selectedDiscountId,
+                                null,
                             )
                         },
+                    )
+                }
+                DetailSubView.MOTIVO -> {
+                    MotivoSubView(
+                        motivos = motivos.lista,
+                        detalle = listOfNotNull(
+                            selectedDiscountId?.let { id -> discounts.firstOrNull { it.id == id }?.name ?: "Descuento" },
+                            priceAdjustment?.let { "Ajuste de precio" },
+                        ).joinToString(" · "),
+                        onConfirm = { motivo ->
+                            onAddToCart(
+                                quantity,
+                                selectedModifiers.toList(),
+                                note,
+                                isCortesia,
+                                cortesiaReason,
+                                priceAdjustment,
+                                selectedDiscountId,
+                                motivo,
+                            )
+                        },
+                        onBack = { currentSubView = DetailSubView.MAIN },
                     )
                 }
                 DetailSubView.NOTE -> {
@@ -965,6 +999,52 @@ private fun CortesiaSubView(
                 text = "Aplicar cortesía",
                 onClick = { selectedReason?.let { onApply(it) } },
                 enabled = selectedReason != null,
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+    }
+}
+
+// MARK: - Motivo del descuento (f998c8)
+
+@Composable
+private fun MotivoSubView(
+    motivos: List<String>,
+    detalle: String,
+    onConfirm: (com.avoqado.pos.pos.domain.MotivoElegido) -> Unit,
+    onBack: () -> Unit,
+) {
+    var elegido by remember { mutableStateOf<String?>(null) }
+    var comentario by remember { mutableStateOf("") }
+    Column(modifier = Modifier.fillMaxSize()) {
+        SubViewHeader(title = "Motivo del descuento", onBack = onBack)
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .padding(horizontal = AvoqadoTheme.spacing.xl)
+                .verticalScroll(rememberScrollState()),
+        ) {
+            Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
+            Text(
+                text = "El negocio pide un motivo para este descuento: $detalle.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
+            com.avoqado.pos.pos.presentation.components.SelectorDeMotivo(
+                motivos = motivos,
+                elegido = elegido,
+                comentario = comentario,
+                onElegir = { elegido = it },
+                onComentario = { comentario = it },
+            )
+        }
+        HorizontalDivider()
+        Box(modifier = Modifier.fillMaxWidth().padding(AvoqadoTheme.spacing.xl)) {
+            PrimaryButton(
+                text = "Agregar al carrito",
+                onClick = { elegido?.let { onConfirm(com.avoqado.pos.pos.domain.MotivoElegido.de(it, comentario)) } },
+                enabled = elegido != null,
                 modifier = Modifier.fillMaxWidth(),
             )
         }

@@ -323,6 +323,19 @@ class SecureStorage @Inject constructor(
         get() = prefs.getBoolean(KEY_MANAGER_PIN_OVERRIDE_ENABLED, false)
         set(value) { prefs.edit().putBoolean(KEY_MANAGER_PIN_OVERRIDE_ENABLED, value).apply() }
 
+    /**
+     * Motivo obligatorio en los descuentos (encargo f998c8): el switch y la lista del negocio activo, guardados para que elegir un
+     * motivo funcione sin red. Por VENUE: se borran al dejar la sucursal, como el PIN de encargado. La lista va una por renglón (el
+     * SERVIDOR junta los espacios, así que un motivo nunca trae un salto de línea).
+     */
+    var discountReasonRequired: Boolean
+        get() = prefs.getBoolean(KEY_DISCOUNT_REASON_REQUIRED, false)
+        set(value) { prefs.edit().putBoolean(KEY_DISCOUNT_REASON_REQUIRED, value).apply() }
+
+    var discountReasons: List<String>
+        get() = prefs.getString(KEY_DISCOUNT_REASONS, null)?.split('\n')?.filter { it.isNotBlank() } ?: emptyList()
+        set(value) { prefs.edit().putString(KEY_DISCOUNT_REASONS, value.joinToString("\n")).apply() }
+
     /** Last known switch for the active venue, cleared when leaving that venue. */
     var exchangesEnabled: Boolean
         get() = prefs.getBoolean(KEY_EXCHANGES_ENABLED, false)
@@ -876,6 +889,8 @@ class SecureStorage @Inject constructor(
         // lleguen los ajustes de la nueva sucursal: heredar un ON ajeno pintaría
         // candados que ese local no activó, y al tocarlos saldría el 403 pelón.
         this.managerPinOverrideEnabled = false
+        this.discountReasonRequired = false
+        this.discountReasons = emptyList()
         this.exchangesEnabled = false
         this.storeCreditOnly = false
         this.storeCreditAvailable = null
@@ -948,6 +963,8 @@ class SecureStorage @Inject constructor(
             .remove(KEY_PLAN_TIER)
             .remove(KEY_PLAN_EXEMPT)
             .remove(KEY_EXCHANGES_ENABLED)
+            .remove(KEY_DISCOUNT_REASON_REQUIRED)
+            .remove(KEY_DISCOUNT_REASONS)
             .remove(KEY_STORE_CREDIT_ONLY)
             .remove(KEY_STORE_CREDIT_AVAILABLE)
             .remove(KEY_VENUE_PERMISSIONS)
@@ -1035,6 +1052,8 @@ class SecureStorage @Inject constructor(
         private const val KEY_WASTE_PLAN_BLOCKED = "wastePlanBlockedVenues"
         private const val KEY_MANAGER_PIN_OVERRIDE_ENABLED = "managerPinOverrideEnabled"
         private const val KEY_EXCHANGES_ENABLED = "exchangesEnabled"
+        private const val KEY_DISCOUNT_REASON_REQUIRED = "discountReasonRequired"
+        private const val KEY_DISCOUNT_REASONS = "discountReasons"
         private const val KEY_STORE_CREDIT_ONLY = "storeCreditOnly"
         private const val KEY_STORE_CREDIT_AVAILABLE = "storeCreditAvailable"
         private const val KEY_VENUE_PERMISSIONS = "venuePermissions"

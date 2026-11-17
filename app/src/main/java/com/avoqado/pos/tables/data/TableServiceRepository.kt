@@ -784,14 +784,30 @@ class TableServiceRepository @Inject constructor(
      * lo subiría sin aprobar. Si la red falla, el fallo sube tal cual (la pantalla lo dice); en línea, el 403 `overridable` abre el
      * teclado del PIN en el `ForbiddenInterceptor` y reintenta.
      */
-    suspend fun applyOrderDiscount(venueId: String, orderId: String, discountId: String, pideAprobacion: Boolean = false): Result<Unit> {
+    suspend fun applyOrderDiscount(
+        venueId: String,
+        orderId: String,
+        discountId: String,
+        pideAprobacion: Boolean = false,
+        /** f998c8: el motivo que eligió la caja. Viaja en el cuerpo y, sin red, en el payload de `APPLY_DISCOUNT` (opcional). */
+        motivo: com.avoqado.pos.pos.domain.MotivoElegido? = null,
+    ): Result<Unit> {
         val enLinea = runCatching {
-            apiService.applyOrderDiscount(venueId, orderId, ApplyOrderDiscountRequest(discountId))
+            apiService.applyOrderDiscount(
+                venueId,
+                orderId,
+                ApplyOrderDiscountRequest(discountId, reason = motivo?.motivo, reasonComment = motivo?.comentario),
+            )
             Unit
         }
         val resultado = if (pideAprobacion) enLinea else enLinea.orQueueOffline(venueId, "APPLY_DISCOUNT", Unit) {
             putOrderRef(orderId)
             put("discountId", kotlinx.serialization.json.JsonPrimitive(discountId))
+            // f998c8: ADITIVO. Sin motivo el payload queda byte a byte igual (un servidor viejo lo ignora).
+            motivo?.let { m ->
+                put("reason", kotlinx.serialization.json.JsonPrimitive(m.motivo))
+                m.comentario?.let { put("reasonComment", kotlinx.serialization.json.JsonPrimitive(it)) }
+            }
         }
         return resultado.onFailure { Log.e(TAG, "❌ applyOrderDiscount failed: ${it.message}") }
     }
