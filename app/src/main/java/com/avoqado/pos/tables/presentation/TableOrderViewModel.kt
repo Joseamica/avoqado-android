@@ -251,6 +251,10 @@ class TableOrderViewModel @Inject constructor(
         }.stateIn(viewModelScope, kotlinx.coroutines.flow.SharingStarted.Eagerly, null)
 
     private val _isLoadingCheck = MutableStateFlow(false)
+    /** D19 (Codex r4): cuándo empezó la lectura en vuelo (ms monotónicos), para que «Pagar» no la espere más de [ESPERA_DE_LA_RELECTURA_MS]. */
+    private var lecturaEnVueloDesdeMs = 0L
+    /** Reloj monotónico en ms; las pruebas lo adelantan. */
+    internal var relojMs: () -> Long = { System.nanoTime() / 1_000_000 }
     val isLoadingCheck: StateFlow<Boolean> = _isLoadingCheck.asStateFlow()
 
     private val _pending = MutableStateFlow<List<PendingLine>>(emptyList())
@@ -623,6 +627,9 @@ class TableOrderViewModel @Inject constructor(
         /** D5 · B2b: el código del piloto «mesas sin red» (espejo EXACTO de la `Feature` del SERVIDOR). */
         const val CODIGO_PILOTO_SIN_RED = com.avoqado.pos.core.data.sync.FotosDeMesas.CODIGO_PILOTO
 
+        /** D19 (Codex r4): lo más que «Pagar» espera a una relectura en vuelo antes de cobrar con lo que sabe la tablet. */
+        internal const val ESPERA_DE_LA_RELECTURA_MS = 15_000L
+
         /** Base slots, always visible in the pending card (Square-style). */
         val BASE_COURSES: List<String?> = listOf(null, "Aperitivos", "Principales", "Postres")
 
@@ -810,6 +817,7 @@ class TableOrderViewModel @Inject constructor(
         val vId = venueId ?: return
         viewModelScope.launch {
             _isLoadingCheck.value = true
+            lecturaEnVueloDesdeMs = relojMs()
             // D45: cómo estaban los cobros de la cuenta en la cola de COBROS al pedirla; si cambian después, esta lectura no sirve para cobrar.
             val firmaAlLeer = cobrosEnColaDeCobros(session)?.second
             // D5 · B2b: con el piloto, la lectura se registra antes del GET (sin cobro abierto) y puede volverse foto limpia.
@@ -2618,9 +2626,10 @@ class TableOrderViewModel @Inject constructor(
         var sinRed: SaldoSinRed.Conocido? = null
         // D19 (Codex r3 #2): con la cuenta del servidor releyéndose, «no al día» todavía no es «sin red»: el camino sin red no se fija
         // antes de que conteste esa lectura (si contesta bien, el cobro de siempre; si no, éste). Sólo si esta pantalla ya la había leído:
-        // al entrar sin red (nunca leída) el piloto cobra como siempre, sin esperar a que venza la petición.
+        // al entrar sin red (nunca leída) el piloto cobra como siempre, sin esperar a que venza la petición. Y a lo más
+        // [ESPERA_DE_LA_RELECTURA_MS] (Codex r4): la petición no tiene plazo total, y un cuerpo que gotea no puede trabar el efectivo.
         if (motivo != null && pilotoSinRed && !session.isProvisional && _isLoadingCheck.value &&
-            chequeLeidoEn == venueId?.let { it to session.orderId }) {
+            chequeLeidoEn == venueId?.let { it to session.orderId } && relojMs() - lecturaEnVueloDesdeMs < ESPERA_DE_LA_RELECTURA_MS) {
             showBlockedReason(CUENTA_SE_ACTUALIZA)
             return false
         }

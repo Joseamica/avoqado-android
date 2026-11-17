@@ -349,6 +349,25 @@ class MesaDelServidorSinRedTest {
         subject.viewModelScope.cancel()
     }
 
+    /** Codex r4: la petición no tiene plazo total; si la relectura no termina (un cuerpo que gotea), «Pagar» no espera para siempre. */
+    @Test fun `D19 Pagar espera la relectura a lo mas 15 segundos`() = runTest {
+        val subject = mesaConFoto()
+        var ahora = 1_000_000L
+        subject.relojMs = { ahora }
+        coEvery { repo.getOrderDetail(any(), any()) } coAnswers { kotlinx.coroutines.CompletableDeferred<Result<OrderDetail>>().await() }
+        nadieContesta.value = true
+        advanceUntilIdle()
+        assertTrue(subject.isLoadingCheck.value)
+        ahora += TableOrderViewModel.ESPERA_DE_LA_RELECTURA_MS - 1
+        assertFalse(subject.preparePagar())
+        assertEquals(CUENTA_SE_ACTUALIZA, subject.blockedNotice.value)
+
+        ahora += 1
+        assertTrue("venció la espera: cobra con lo que sabe la tablet", subject.preparePagar())
+        assertTrue(session.current()!!.cobroSinRed)
+        subject.viewModelScope.cancel()
+    }
+
     /** Sin el piloto no hay camino sin red para una mesa del servidor: releer bloquearía el efectivo de hoy. No se relee. */
     @Test fun `D19 con el piloto apagado la caida no cambia el cobro de hoy`() = runTest {
         piloto = false
