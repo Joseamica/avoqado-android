@@ -1,5 +1,6 @@
 package com.avoqado.pos.pos.data.model
 
+import com.avoqado.pos.pos.presentation.cart.descuentoPideMotivo
 import com.avoqado.pos.payment.data.model.OrderItemRequest
 import com.avoqado.pos.payment.data.model.OrderModifierRequest
 import com.avoqado.pos.payment.data.model.PromotionRefRequest
@@ -114,14 +115,22 @@ private fun CartItem.toOrderItemRequest(): OrderItemRequest {
         isCortesia = isCortesia,
         cortesiaReason = cortesiaReason?.trim()?.takeIf { isCortesia && it.isNotEmpty() },
         discountId = itemDiscountId.takeUnless { isCortesia },
+        // f998c8: sólo con un descuento o ajuste que lo pide; la cortesía lleva su propio motivo.
+        discountReason = discountReason?.trim()?.takeIf { it.isNotEmpty() && descuentoPideMotivo },
+        discountReasonComment = discountReasonComment?.trim()?.takeIf { it.isNotEmpty() && descuentoPideMotivo && !discountReason.isNullOrBlank() },
         weightQuantity = weightKg,
         serviceCourse = serviceCourse,
         externalId = id.takeIf { isCortesia || delCatalogo || serviceCourse?.preparationVersion == 1 },
         displayedUnitPrice = unitPrice.takeIf { delCatalogo },
         catalogAt = catalogAt.takeIf { delCatalogo },
-        // D12: sólo un producto, nunca una cortesía, y sólo si el ajuste BAJA el precio (si no, no hay nada que descontar).
-        adjustedUnitPrice = priceAdjustment.takeIf {
-            type is CartItemType.ProductItem && !isCortesia && it != null && it < unitPrice
-        },
+        adjustedUnitPrice = ajusteQueViaja(),
     )
 }
+
+/**
+ * D12: el «Ajuste de precio» que viaja como `adjustedUnitPrice`: sólo un producto, nunca una cortesía, y sólo si BAJA el precio (si
+ * no, no hay nada que descontar). Encargo 1afe04: es también lo que pide «Aplicar descuentos en TPV» o el PIN del encargado
+ * ([com.avoqado.pos.pos.presentation.cart.CartState.llevaAjusteDePrecio]); el SERVIDOR pide el permiso por este mismo campo.
+ */
+internal fun CartItem.ajusteQueViaja(): Int? =
+    priceAdjustment.takeIf { type is CartItemType.ProductItem && !isCortesia && it != null && it < unitPrice }

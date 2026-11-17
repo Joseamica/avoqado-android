@@ -157,6 +157,9 @@ interface PendingPaymentDao {
     suspend fun contarRevisionesQ15(venueId: String, revisadas: Boolean, busqueda: String): Int
     @Query(Q15_HISTORY_PAGE_SQL)
     suspend fun paginaRevisionesQ15(venueId: String, revisadas: Boolean, busqueda: String, cursorFecha: Long?, cursorOrigen: String?, cursorId: String?): List<RevisionDelCobroRecord>
+    /** D1/A4: lo que sigue por revisar (motivo y resultado), observado: el aviso de quien no revisa sigue a la cola sin reabrir. */
+    @Query(Q15_POR_REVISAR_SQL)
+    fun observarPorRevisarQ15(venueId: String): Flow<List<PorRevisarQ15>>
     @Query(Q15_CAPTURED_ORDER_EXISTS_SQL)
     suspend fun hayCapturaDeOrdenQ15(venueId: String, orderRef: String): Boolean
 

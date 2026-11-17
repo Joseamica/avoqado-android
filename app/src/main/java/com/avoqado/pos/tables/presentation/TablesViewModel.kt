@@ -402,7 +402,11 @@ class TablesViewModel @Inject constructor(
                     return@launch
                 }
 
-                mutar { repository.openTable(vId, table.id, covers) }.fold(
+                // D8: si este aparato soltó sin red una cuenta de esta mesa y su cobro sigue en la cola, la nueva sale por la MISMA cola,
+                // detrás de él (en línea, el SERVIDOR la metería en la cuenta anterior mientras ésta no suba), como visita nueva.
+                val visitaNueva = repository.abrirComoVisitaNueva(vId, table.id)
+                (if (visitaNueva) Result.failure(DetrasDeLaCuentaSoltada())
+                else mutar { repository.openTable(vId, table.id, covers) }).fold(
                     onSuccess = { order ->
                         if (!vigente(original)) { desistir(); return@launch }
                         val opened = TableSession.Active(
@@ -433,7 +437,7 @@ class TablesViewModel @Inject constructor(
                         if (isNetworkError(e)) {
                             var aperturaLocal: TableSession.Active? = null
                             try {
-                                val opened = openTableOffline(vId, table, covers, original, sessionEpoch, entradas,
+                                val opened = openTableOffline(vId, table, covers, original, sessionEpoch, entradas, visitaNueva,
                                     onActivated = { aperturaLocal = it; soltarTicket() }, sigueOriginal = { vigente(original) },
                                     alComprometer = { enCurso.comprometida = true })
                                 if (opened == null || !vigenteAbierta(opened)) { desistir(); return@launch }
@@ -461,7 +465,7 @@ class TablesViewModel @Inject constructor(
 
     /** Apertura provisional sin red (el server la confirma en el replay). */
     private suspend fun openTableOffline(vId: String, table: DiningTable, covers: Int,
-        original: TableSession.Active?, sessionEpoch: Long, entradas: Long,
+        original: TableSession.Active?, sessionEpoch: Long, entradas: Long, visitaNueva: Boolean,
         onActivated: (TableSession.Active) -> Unit, sigueOriginal: () -> Boolean, alComprometer: () -> Unit): TableSession.Active? {
         val localOrderId = java.util.UUID.randomUUID().toString()
         // 🔴 La caja abierta AHORA va en el `OPEN_TABLE` (efectivo sin red en el turno correcto, Codex r4 #1): la cuenta nace en
@@ -480,6 +484,8 @@ class TablesViewModel @Inject constructor(
                 put("covers", kotlinx.serialization.json.JsonPrimitive(covers))
                 put("localOrderId", kotlinx.serialization.json.JsonPrimitive(localOrderId))
                 caja?.let { put("cashDrawerSessionId", kotlinx.serialization.json.JsonPrimitive(it)) }
+                // D8: la mesa la soltó sin red este aparato tras cobrarla: el SERVIDOR no mete esta cuenta en ninguna otra de la mesa.
+                if (visitaNueva) put("visitaNueva", kotlinx.serialization.json.JsonPrimitive(true))
             },
         )
         val opened = TableSession.Active(
@@ -505,6 +511,9 @@ class TablesViewModel @Inject constructor(
         android.util.Log.w("TablesViewModel", "📴 Mesa ${table.number} abierta OFFLINE (folio $folio)")
         return opened
     }
+
+    /** D8: la apertura va por la cola aunque haya red (la cuenta anterior de la mesa sigue en ella). Cuenta como fallo de red. */
+    private class DetrasDeLaCuentaSoltada : java.io.IOException("La cuenta anterior de la mesa sigue en la cola")
 
     /** Red caída/timeout — nunca un rechazo de negocio del server. */
     private fun isNetworkError(e: Throwable): Boolean = when (e) {
@@ -733,17 +742,32 @@ class TablesViewModel @Inject constructor(
             // D87: «liberar» también se rechaza cuando ESTA cuenta ya se pagó y OTRA de la mesa (cuenta aparte) todavía debe: se le
             // pregunta al SERVIDOR por la cuenta misma. Sin red el clear ya se encoló y pasó (D75), así que esto sólo corre con red.
             // ponytail: si el rechazo llega y esa lectura falla, la sesión sigue en PAYING hasta reabrir la mesa (como antes de D87).
-            val cleared = cobroEnCola || mutarCuenta(vId, session.idsDeLaOrden) { repository.clearTable(vId, session.tableId, session.orderId) }.isSuccess ||
+            // D8 (hz:033d44ca:D8): sin red, la mesa se suelta en ESTE plano si todo su dinero va por la cola de mesas, detrás de su
+            // «liberar» (nada en la cola de COBROS, D62): así se le puede abrir otra cuenta, que sale después por la misma cola.
+            val cleared = cobroEnCola || mutarCuenta(vId, session.idsDeLaOrden) {
+                repository.clearTable(vId, session.tableId, session.orderId).also { liberada ->
+                    if (liberada.isSuccess) repository.soltarTrasCobroSinRed(vId, session.tableId, session.orderId, session.idsDeLaOrden) {
+                        todoPorLaColaDeMesas(vId, session.orderId)
+                    }
+                }
+            }.isSuccess ||
                 repository.cuentaCobradaEnServidor(vId, session.orderId)
-            repository.refresh(vId)
+            // D8 (Codex r2 #5): la sesión se cierra ANTES del refresco. Sin red el GET puede tardar (WiFi sin internet) y «Venta nueva»
+            // cancela esta corrutina: la sesión cobrada quedaba en PAYING y «Cobrar» la volvía a ofrecer, con la mesa ya libre.
             if (cleared) {
                 tableSession.finalizar(vId, session.idsDeLaOrden, sessionEpoch)
                 // 🛰️ Soltar el lease: si no, la mesa queda "de este mesero"
                 // hasta que caduque el TTL y nadie más la puede abrir en 30s.
                 lanHub.release(session.tableId)
             }
+            repository.refresh(vId)
         }
     }
+
+    /** D8: ¿ningún cobro de esta cuenta quedó en la cola de COBROS (D62)? Sin poder leerlo, no (la mesa se queda como hoy). */
+    private suspend fun todoPorLaColaDeMesas(vId: String, orderId: String): Boolean =
+        efectivoDeLaCuentaEnColaDeCobros(efectivoEnColaDeCobros, draftStore, tableSession, vId, orderId, discoParaFusionar) ==
+            com.avoqado.pos.payment.data.EfectivoDelPedido.NINGUNO
 
     // MARK: - Acciones masivas del plano (Square: "Seleccionar cheques")
 

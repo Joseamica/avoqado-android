@@ -119,6 +119,18 @@ internal const val COBRO_AQUI_SIN_SUBIR =
 
 /** B3 (visto 1): la cuenta de la pantalla ya se cerró (su cobro y su liberación subieron). */
 internal const val CUENTA_CERRADA = "Esta cuenta ya se cerró. Regresa al plano."
+/** D68 #6: pagada y el plano ya trae la mesa libre (el SERVIDOR la liberó al subir el cobro): no se le pide liberarla otra vez. */
+internal const val CUENTA_PAGADA_MESA_LIBRE = "Esta cuenta ya está pagada y la mesa ya quedó libre. Regresa al plano."
+/** La cuenta pagada con la mesa todavía ocupada (o el plano sin leer): la salida es liberarla o ir a otra cuenta. */
+internal const val CUENTA_PAGADA_LIBERA_LA_MESA = "Esta cuenta ya está pagada. Libera la mesa o cámbiate a otra cuenta."
+
+/**
+ * D68 #6 (prueba final del 13-nov, K-C): tras subir el cobro y liberarse la mesa sola, la cuenta abierta decía «Libera la mesa» con la
+ * mesa ya libre. Sólo se afirma «ya quedó libre» si el plano LEÍDO del servidor la trae sin ninguna cuenta abierta y la cuenta no es
+ * provisional (sin red el plano no lo sabe); con la duda, el texto de siempre. PURA.
+ */
+internal fun textoDeCuentaYaPagada(mesaEnElPlano: com.avoqado.pos.tables.data.DiningTable?, provisional: Boolean): String =
+    if (!provisional && mesaEnElPlano != null && !mesaEnElPlano.hasOpenCheck) CUENTA_PAGADA_MESA_LIBRE else CUENTA_PAGADA_LIBERA_LA_MESA
 /** B3 C7: una cuenta en $0 (cortesía total) sin internet. */
 internal const val CUENTA_EN_CERO_SIN_RED = "Esta cuenta está en \$0.00: ciérrala cuando vuelva la conexión."
 

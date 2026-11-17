@@ -259,6 +259,12 @@ data class CreateOrderRequest(
     val descuentoDeCatalogoId: String? = null,
     /** D4, sólo en el aparato (no viaja): ese descuento pide aprobación, así que la venta lleva ORDEN aunque sean puros importes. */
     val descuentoDeCatalogoPideAprobacion: Boolean = false,
+    /**
+     * f998c8: el motivo (y comentario) del descuento de la CUENTA. Se OMITE cuando es null. Con motivo, la venta lleva ORDEN aunque
+     * sean puros importes ([com.avoqado.pos.payment.data.OrderRepository.aceptaCrearOrden]): `/fast` no lleva descuento ni motivo.
+     */
+    val orderDiscountReason: String? = null,
+    val orderDiscountReasonComment: String? = null,
 )
 
 /** Una elección de la persona dentro de la promoción: qué grupo y qué opción. */
@@ -333,6 +339,12 @@ data class OrderItemRequest(
      * precio; se OMITE del payload cuando es null (apps viejas y líneas sin ajuste, idénticas a antes).
      */
     val adjustedUnitPrice: Int? = null,
+    /**
+     * f998c8: el motivo (y comentario) del descuento o del ajuste de esta línea. Se OMITE del payload cuando es null (lo de hoy). El
+     * SERVIDOR lo copia como texto a la fila del descuento y nunca rechaza una venta por él.
+     */
+    val discountReason: String? = null,
+    val discountReasonComment: String? = null,
 ) {
     /** Línea de promoción: el ref y nada más. Ver [promotionRef]. */
     companion object {
@@ -428,11 +440,11 @@ const val CORTESIA_DE_CUENTA_PIDE_PIN =
  * permiso). Sin red no entra para nadie: la cola lo subiría sin aprobar. Se quita o se cobra al volver la red.
  */
 const val DESCUENTO_CON_APROBACION_SIN_RED =
-    "Sin conexión: este descuento necesita internet para que lo apruebe un gerente. Quita el descuento o cobra cuando vuelva la red."
+    "Sin conexión: este descuento o ajuste de precio necesita internet para que lo apruebe un gerente. Quítalo o cobra cuando vuelva la red."
 
 /** D4: el negocio tiene apagado el PIN de gerente; ese descuento sólo lo aplica alguien con el permiso, con su propia sesión. */
 const val DESCUENTO_CON_APROBACION_LO_APLICA_UN_GERENTE =
-    "Este descuento necesita la aprobación de un gerente. Pide a alguien con el permiso «Aplicar descuentos en TPV» que cobre con su sesión, o quita el descuento."
+    "Este descuento o ajuste de precio necesita la aprobación de un gerente. Pide a alguien con el permiso «Aplicar descuentos en TPV» que cobre con su sesión, o quítalo."
 
 /**
  * D15 (hz:87f4b879:D15): la venta regala un PRODUCTO (cortesía del renglón o descuento de catálogo tipo cortesía) y el negocio tiene
@@ -458,7 +470,7 @@ const val CORTESIA_DE_PRODUCTO_PIDE_PIN =
 
 /** D4: el SERVIDOR pidió la aprobación aunque la app no lo esperaba (catálogo o permisos de otro momento). No se creó nada. */
 const val DESCUENTO_CON_APROBACION_PIDE_PIN =
-    "Este descuento necesita la aprobación de un gerente. Vuelve a cobrar para pedir su PIN, o quita el descuento."
+    "Este descuento o ajuste de precio necesita la aprobación de un gerente. Vuelve a cobrar para pedir su PIN, o quítalo."
 
 /** El SERVIDOR calculó otro total que el de la pantalla (el cupón cambió de valor mientras tanto) y el efectivo ya no alcanza. */
 fun avisoDeEfectivoCortoPorCupon(totalRealCents: Int, recibidoCents: Int): String {

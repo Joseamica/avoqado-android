@@ -78,7 +78,9 @@ import com.avoqado.pos.pos.data.model.Product
 import com.avoqado.pos.pos.data.model.SelectedModifier
 import com.avoqado.pos.pos.domain.MENSAJE_SUBIR_PRECIO
 import com.avoqado.pos.pos.domain.ajusteAGuardar
+import com.avoqado.pos.pos.domain.AccesoAlAjuste
 import com.avoqado.pos.pos.domain.ajusteDePrecioPermitido
+import com.avoqado.pos.pos.domain.avisoDeLaFilaDeAjuste
 
 /**
  * Product detail panel matching iOS.
@@ -91,6 +93,8 @@ fun ProductDetailPanel(
     product: Product,
     isTablet: Boolean = true,
     discounts: List<Discount> = emptyList(),
+    /** f998c8: «Pedir motivo en los descuentos» del negocio. Apagado (Mesas, pruebas) ⇒ el panel se porta como siempre. */
+    motivos: com.avoqado.pos.pos.domain.MotivosDeDescuento = com.avoqado.pos.pos.domain.MotivosDeDescuento.APAGADO,
     onAddToCart: (
         quantity: Int,
         modifiers: List<SelectedModifier>,
@@ -99,8 +103,11 @@ fun ProductDetailPanel(
         cortesiaReason: String?,
         priceAdjustment: Int?,
         discountId: String?,
+        motivo: com.avoqado.pos.pos.domain.MotivoElegido?,
     ) -> Unit,
     onDismiss: () -> Unit,
+    /** Encargo 1afe04: qué hace la fila «Ajuste de precio» (permiso / PIN del encargado; en Mesas no sale). */
+    ajusteDePrecio: AccesoAlAjuste = AccesoAlAjuste.LIBRE,
 ) {
     if (isTablet) {
         // iPad-style: side panel overlay from right
@@ -126,8 +133,10 @@ fun ProductDetailPanel(
                 ProductDetailContent(
                     product = product,
                     discounts = discounts,
+                    motivos = motivos,
                     onAddToCart = onAddToCart,
                     onDismiss = onDismiss,
+                    ajusteDePrecio = ajusteDePrecio,
                 )
             }
         }
@@ -142,8 +151,10 @@ fun ProductDetailPanel(
             ProductDetailContent(
                 product = product,
                 discounts = discounts,
+                motivos = motivos,
                 onAddToCart = onAddToCart,
                 onDismiss = onDismiss,
+                ajusteDePrecio = ajusteDePrecio,
                 // En Windows la hoja ya trae su X, que sigue a la vista en Nota, Cortesía, Precio y Descuentos (Codex r1 #3).
                 conX = !com.avoqado.pos.designsystem.components.LocalEsEscritorio.current,
             )
@@ -154,7 +165,7 @@ fun ProductDetailPanel(
 // MARK: - Sub-view navigation state
 
 private enum class DetailSubView {
-    MAIN, DISCOUNTS, PRICE_ADJUST, CORTESIA, NOTE,
+    MAIN, DISCOUNTS, PRICE_ADJUST, CORTESIA, NOTE, MOTIVO,
 }
 
 // MARK: - Main content (shared between side panel and bottom sheet)
@@ -163,9 +174,11 @@ private enum class DetailSubView {
 private fun ProductDetailContent(
     product: Product,
     discounts: List<Discount>,
-    onAddToCart: (Int, List<SelectedModifier>, String?, Boolean, String?, Int?, String?) -> Unit,
+    motivos: com.avoqado.pos.pos.domain.MotivosDeDescuento,
+    onAddToCart: (Int, List<SelectedModifier>, String?, Boolean, String?, Int?, String?, com.avoqado.pos.pos.domain.MotivoElegido?) -> Unit,
     onDismiss: () -> Unit,
     conX: Boolean = true,
+    ajusteDePrecio: AccesoAlAjuste = AccesoAlAjuste.LIBRE,
 ) {
     val addToCartTapThrottleMs = 800L
     val selectedModifiers = remember { mutableStateListOf<SelectedModifier>() }
@@ -216,6 +229,7 @@ private fun ProductDetailContent(
                         missingRequiredGroups = missingRequiredGroups,
                         onDismiss = onDismiss,
                         conX = conX,
+                        ajusteDePrecio = ajusteDePrecio,
                         onQuantityChange = { quantity = it.coerceAtLeast(1) },
                         onModifierToggled = { modifier, isSelected, group ->
                             if (isSelected) {
@@ -244,6 +258,11 @@ private fun ProductDetailContent(
                                 return@MainDetailView
                             }
                             lastAddToCartTapAt = now
+                            // f998c8: con «Pedir motivo» y un descuento o ajuste puesto a mano, primero el motivo (como Toast).
+                            if (motivos.sePide && !isCortesia && (selectedDiscountId != null || priceAdjustment != null)) {
+                                currentSubView = DetailSubView.MOTIVO
+                                return@MainDetailView
+                            }
                             onAddToCart(
                                 quantity,
                                 selectedModifiers.toList(),
@@ -252,8 +271,31 @@ private fun ProductDetailContent(
                                 cortesiaReason,
                                 priceAdjustment,
                                 selectedDiscountId,
+                                null,
                             )
                         },
+                    )
+                }
+                DetailSubView.MOTIVO -> {
+                    MotivoSubView(
+                        motivos = motivos.lista,
+                        detalle = listOfNotNull(
+                            selectedDiscountId?.let { id -> discounts.firstOrNull { it.id == id }?.name ?: "Descuento" },
+                            priceAdjustment?.let { "Ajuste de precio" },
+                        ).joinToString(" · "),
+                        onConfirm = { motivo ->
+                            onAddToCart(
+                                quantity,
+                                selectedModifiers.toList(),
+                                note,
+                                isCortesia,
+                                cortesiaReason,
+                                priceAdjustment,
+                                selectedDiscountId,
+                                motivo,
+                            )
+                        },
+                        onBack = { currentSubView = DetailSubView.MAIN },
                     )
                 }
                 DetailSubView.NOTE -> {
@@ -339,6 +381,7 @@ private fun MainDetailView(
     missingRequiredGroups: List<String> = emptyList(),
     onDismiss: () -> Unit,
     conX: Boolean = true,
+    ajusteDePrecio: AccesoAlAjuste = AccesoAlAjuste.LIBRE,
     onQuantityChange: (Int) -> Unit,
     onModifierToggled: (com.avoqado.pos.pos.data.model.Modifier, Boolean, com.avoqado.pos.pos.data.model.ProductModifierGroup) -> Unit,
     onNavigate: (DetailSubView) -> Unit,
@@ -494,15 +537,19 @@ private fun MainDetailView(
             )
             HorizontalDivider(modifier = Modifier.padding(start = 56.dp))
 
-            ToggleOptionRow(
-                icon = Icons.Filled.AttachMoney,
-                title = "Ajuste de precio",
-                subtitle = priceAdjustment?.let {
-                    formatMoney(it / 100.0)
-                },
-                onClick = { onNavigate(DetailSubView.PRICE_ADJUST) },
-            )
-            HorizontalDivider(modifier = Modifier.padding(start = 56.dp))
+            // Encargo 1afe04 (founder «A», como Toast): bajar un precio a mano pide «Aplicar descuentos en TPV» o el PIN del encargado
+            // al cobrar. Sin permiso ni PIN, la fila se ve y dice por qué (no abre). En Mesas no sale: la cuenta no guarda el ajuste.
+            if (ajusteDePrecio != AccesoAlAjuste.NO_APLICA) {
+                ToggleOptionRow(
+                    icon = Icons.Filled.AttachMoney,
+                    title = "Ajuste de precio",
+                    subtitle = priceAdjustment?.let { formatMoney(it / 100.0) } ?: avisoDeLaFilaDeAjuste(ajusteDePrecio),
+                    onClick = {
+                        if (ajusteDePrecio != AccesoAlAjuste.LO_APLICA_UN_GERENTE) onNavigate(DetailSubView.PRICE_ADJUST)
+                    },
+                )
+                HorizontalDivider(modifier = Modifier.padding(start = 56.dp))
+            }
 
             ToggleOptionRow(
                 icon = Icons.Filled.CardGiftcard,
@@ -952,6 +999,52 @@ private fun CortesiaSubView(
                 text = "Aplicar cortesía",
                 onClick = { selectedReason?.let { onApply(it) } },
                 enabled = selectedReason != null,
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+    }
+}
+
+// MARK: - Motivo del descuento (f998c8)
+
+@Composable
+private fun MotivoSubView(
+    motivos: List<String>,
+    detalle: String,
+    onConfirm: (com.avoqado.pos.pos.domain.MotivoElegido) -> Unit,
+    onBack: () -> Unit,
+) {
+    var elegido by remember { mutableStateOf<String?>(null) }
+    var comentario by remember { mutableStateOf("") }
+    Column(modifier = Modifier.fillMaxSize()) {
+        SubViewHeader(title = "Motivo del descuento", onBack = onBack)
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .padding(horizontal = AvoqadoTheme.spacing.xl)
+                .verticalScroll(rememberScrollState()),
+        ) {
+            Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
+            Text(
+                text = "El negocio pide un motivo para este descuento: $detalle.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
+            com.avoqado.pos.pos.presentation.components.SelectorDeMotivo(
+                motivos = motivos,
+                elegido = elegido,
+                comentario = comentario,
+                onElegir = { elegido = it },
+                onComentario = { comentario = it },
+            )
+        }
+        HorizontalDivider()
+        Box(modifier = Modifier.fillMaxWidth().padding(AvoqadoTheme.spacing.xl)) {
+            PrimaryButton(
+                text = "Agregar al carrito",
+                onClick = { elegido?.let { onConfirm(com.avoqado.pos.pos.domain.MotivoElegido.de(it, comentario)) } },
+                enabled = elegido != null,
                 modifier = Modifier.fillMaxWidth(),
             )
         }

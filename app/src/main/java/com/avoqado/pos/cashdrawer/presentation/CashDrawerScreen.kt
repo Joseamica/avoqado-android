@@ -129,6 +129,14 @@ private fun TabletCashDrawerLayout(
                 reportSession!!.closedAt ?: System.currentTimeMillis(),
             )
         }
+        // D68 #13: si el corte se abrió sin red, al volver la red se pide el desglose otra vez (sólo si falta).
+        val enLineaDelCorte by viewModel.enLinea.collectAsState()
+        LaunchedEffect(reportSession!!.id, enLineaDelCorte) {
+            if (enLineaDelCorte) viewModel.recargarDesgloseSiFalta(
+                reportSession!!.openedAt,
+                reportSession!!.closedAt ?: System.currentTimeMillis(),
+            )
+        }
         val isPrintingCorte by viewModel.isPrintingCorte.collectAsState()
         DailyReportView(
             session = reportSession!!,
@@ -231,7 +239,7 @@ private fun TabletCashDrawerLayout(
                 onSessionTap = { session ->
                     viewModel.loadEventsForSession(session.id) { events ->
                         reportSession = session
-                        reportSinConfirmar = !viewModel.confirmadoConServidor.value
+                        reportSinConfirmar = !viewModel.confirmadoConServidor.value || viewModel.cierrePorConfirmar(session.id)
                         reportEvents = events
                         showDailyReport = true
                     }
@@ -434,6 +442,14 @@ private fun PhoneCashDrawerLayout(
                 reportSession!!.closedAt ?: System.currentTimeMillis(),
             )
         }
+        // D68 #13: si el corte se abrió sin red, al volver la red se pide el desglose otra vez (sólo si falta).
+        val enLineaDelCorte by viewModel.enLinea.collectAsState()
+        LaunchedEffect(reportSession!!.id, enLineaDelCorte) {
+            if (enLineaDelCorte) viewModel.recargarDesgloseSiFalta(
+                reportSession!!.openedAt,
+                reportSession!!.closedAt ?: System.currentTimeMillis(),
+            )
+        }
         val isPrintingCorte by viewModel.isPrintingCorte.collectAsState()
         DailyReportView(
             session = reportSession!!,
@@ -510,7 +526,7 @@ private fun PhoneCashDrawerLayout(
                     onSessionTap = { session ->
                         viewModel.loadEventsForSession(session.id) { events ->
                             reportSession = session
-                            reportSinConfirmar = !viewModel.confirmadoConServidor.value
+                            reportSinConfirmar = !viewModel.confirmadoConServidor.value || viewModel.cierrePorConfirmar(session.id)
                             reportEvents = events
                             showDailyReport = true
                         }
@@ -739,6 +755,11 @@ private fun CurrentDrawerContent(
             // reembolso o la venta de la terminal que sólo él conoce.
             viewModel.alEntrar()
             viewModel.loadTenderBreakdown(partialSession.openedAt, System.currentTimeMillis())
+        }
+        // D68 #13: lo mismo en el corte parcial.
+        val enLineaDelParcial by viewModel.enLinea.collectAsState()
+        LaunchedEffect(partialSession.id, enLineaDelParcial) {
+            if (enLineaDelParcial) viewModel.recargarDesgloseSiFalta(partialSession.openedAt, System.currentTimeMillis())
         }
         DailyReportView(
             session = partialSession,
@@ -1234,6 +1255,8 @@ private fun HistoryContent(
     onSessionTap: (CashDrawerSessionEntity) -> Unit = {},
 ) {
     val closedSessions by viewModel.closedSessions.collectAsState()
+    // D2 (Codex r1 #4): los cierres hechos sin internet que no han subido, en una lectura por cada lista nueva.
+    val porConfirmar = remember(closedSessions) { viewModel.cierresPorConfirmar() }
 
     if (closedSessions.isEmpty()) {
         Column(
@@ -1273,6 +1296,7 @@ private fun HistoryContent(
             items(closedSessions) { session ->
                 ClosedSessionCard(
                     session = session,
+                    sinConfirmar = porConfirmar?.contains(session.id) ?: true,
                     onClick = { onSessionTap(session) },
                 )
             }
@@ -1285,6 +1309,8 @@ private fun HistoryContent(
 @Composable
 private fun ClosedSessionCard(
     session: CashDrawerSessionEntity,
+    /** D2: su cierre sigue en la cola (cerrado sin internet). */
+    sinConfirmar: Boolean = false,
     onClick: () -> Unit = {},
 ) {
     val closedAtMillis = session.closedAt ?: session.openedAt
@@ -1359,17 +1385,20 @@ private fun ClosedSessionCard(
             val overShort = session.overShortCents ?: 0
             if (overShort != 0) {
                 Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
-                val (overShortLabel, overShortColor) = if (overShort > 0) {
-                    "Sobrante" to Success
-                } else {
-                    "Faltante" to Error
+                // D2 (Codex r1 #4): un cierre que no ha subido no acusa sobrante ni faltante (faltan los cobros de otras tablets).
+                val overShortLabel = com.avoqado.pos.cashdrawer.data.CorteTicketBuilder.etiquetaDeDiferencia(overShort, sinConfirmar)
+                val overShortColor = when {
+                    sinConfirmar -> MaterialTheme.colorScheme.onSurfaceVariant
+                    overShort > 0 -> Success
+                    else -> Error
                 }
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.End,
                 ) {
                     Text(
-                        text = "$overShortLabel: ${formatCurrency(kotlin.math.abs(overShort))}",
+                        text = "$overShortLabel: " + (if (sinConfirmar) (if (overShort > 0) "+" else "-") else "") +
+                            formatCurrency(kotlin.math.abs(overShort)),
                         style = MaterialTheme.typography.bodySmall,
                         fontWeight = FontWeight.SemiBold,
                         color = overShortColor,

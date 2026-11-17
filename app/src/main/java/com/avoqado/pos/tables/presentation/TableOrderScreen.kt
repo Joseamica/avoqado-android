@@ -279,6 +279,8 @@ fun TableOrderScreen(
     var showCustomerPicker by remember { mutableStateOf(false) }
     var showFulfillmentDialog by remember { mutableStateOf(false) }
     var showDiscountsDialog by remember { mutableStateOf(false) }
+    // f998c8: el descuento de la mesa que espera su motivo (id y si pide aprobación).
+    var descuentoDeMesaEsperandoMotivo by remember { mutableStateOf<Pair<String, Boolean>?>(null) }
     var showSplitCheckDialog by remember { mutableStateOf(false) }
     var showSortCartDialog by remember { mutableStateOf(false) }
     var showCalculator by remember { mutableStateOf(false) }
@@ -573,6 +575,7 @@ fun TableOrderScreen(
                                 cuentaCompletaAqui = cuentaCompletaAqui,
                                 cargandoCuenta = cargandoCuenta,
                                 motivoCobradaAqui = viewModel.motivoCobradaAqui,
+                                motivoSinCargos = viewModel.motivoParaNoPagarSinCargos(cargandoCuenta),
                                 onEnviar = { fireSend() },
                                 onPrintCuenta = { viewModel.printPreBill() },
                                 // Sin leer la cuenta, el toque la vuelve a pedir: «cuando vuelva la conexión» tiene que ser cierto.
@@ -713,7 +716,9 @@ fun TableOrderScreen(
                         modifier = Modifier.weight(1f),
                     )
                     Text(
-                        text = if (viewModel.saldoDeMesaConocido && saldoBarra.confirmado) centsDisplay(totalCents) else "Saldo por confirmar",
+                        text = if (viewModel.saldoDeMesaConocido && saldoBarra.confirmado &&
+                            !cuentaSinNadaALaVista(cuentaCompletaAqui, check?.items.orEmpty().size, cargandoCuenta)) centsDisplay(totalCents)
+                            else "Saldo por confirmar",
                         style = MaterialTheme.typography.titleMedium,
                         color = MaterialTheme.colorScheme.inverseOnSurface,
                     )
@@ -763,6 +768,7 @@ fun TableOrderScreen(
                                 cuentaCompletaAqui = cuentaCompletaAqui,
                                 cargandoCuenta = cargandoCuenta,
                                 motivoCobradaAqui = viewModel.motivoCobradaAqui,
+                                motivoSinCargos = viewModel.motivoParaNoPagarSinCargos(cargandoCuenta),
                                 onEnviar = { showPhoneCheck = false; fireSend() },
                                 onPrintCuenta = { viewModel.printPreBill() },
                                 // Sin leer la cuenta, el toque la vuelve a pedir: «cuando vuelva la conexión» tiene que ser cierto.
@@ -895,7 +901,7 @@ fun TableOrderScreen(
         ProductDetailPanel(
             product = product,
             isTablet = isTablet,
-            onAddToCart = { quantity, modifiers, note, isCortesia, cortesiaReason, _, _ ->
+            onAddToCart = { quantity, modifiers, note, isCortesia, cortesiaReason, _, _, _ ->
                 viewModel.addProductWithModifiers(
                     product, quantity, modifiers, note,
                     isCortesia = isCortesia, cortesiaReason = cortesiaReason,
@@ -903,6 +909,8 @@ fun TableOrderScreen(
                 selectedProduct = null
             },
             onDismiss = { selectedProduct = null },
+            // Encargo 1afe04: la cuenta de la mesa no guarda ajustes de precio (se tiraban en silencio): la fila no sale.
+            ajusteDePrecio = com.avoqado.pos.pos.domain.AccesoAlAjuste.NO_APLICA,
         )
     }
 
@@ -1407,9 +1415,28 @@ fun TableOrderScreen(
             available = allDiscounts.filter { it.scope == "ORDER" && it.active },
             applied = check?.discounts ?: emptyList(),
             // D4: el que pide la aprobación de un gerente no se encola sin red y abre el PIN si hace falta.
-            onApply = { id -> viewModel.applyDiscount(id, pideAprobacion = allDiscounts.firstOrNull { it.id == id }?.pideAprobacion == true) },
+            // f998c8: con «Pedir motivo», primero el motivo (sirve sin red: la lista está guardada en el aparato).
+            onApply = { id ->
+                val pide = allDiscounts.firstOrNull { it.id == id }?.pideAprobacion == true
+                if (viewModel.motivosDeDescuento.sePide) descuentoDeMesaEsperandoMotivo = id to pide
+                else viewModel.applyDiscount(id, pideAprobacion = pide)
+            },
             onRemove = { id -> viewModel.removeDiscount(id) },
             onDismiss = { showDiscountsDialog = false },
+        )
+    }
+    descuentoDeMesaEsperandoMotivo?.let { (id, pide) ->
+        val allDiscounts by catalogViewModel.discountsRepository.discounts.collectAsState()
+        com.avoqado.pos.pos.presentation.components.DialogoMotivoDeDescuento(
+            motivos = viewModel.motivosDeDescuento.lista,
+            titulo = "Motivo del descuento",
+            detalle = listOfNotNull(allDiscounts.firstOrNull { it.id == id }?.name),
+            textoConfirmar = "Aplicar descuento",
+            onConfirmar = { motivo ->
+                viewModel.applyDiscount(id, pideAprobacion = pide, motivo = motivo)
+                descuentoDeMesaEsperandoMotivo = null
+            },
+            onCancelar = { descuentoDeMesaEsperandoMotivo = null },
         )
     }
 
@@ -1639,6 +1666,8 @@ internal fun TableCheckPanel(
     cargandoCuenta: Boolean,
     /** 9b / B2b: ya se cobró aquí y falta subirla; el aviso del toque (ver `TableOrderViewModel.motivoCobradaAqui`). Null = no. */
     motivoCobradaAqui: String? = null,
+    /** A3: por qué «Pagar» sigue en gris sin cargos a la vista (ver `TableOrderViewModel.motivoParaNoPagarSinCargos`). */
+    motivoSinCargos: String = motivoSinArticulos(cuentaCompletaAqui, cargandoCuenta),
     onEnviar: () -> Unit,
     /**
      * Un botón gris SIN explicación es un toque mudo: el mesero no sabe si la app
@@ -1676,7 +1705,7 @@ internal fun TableCheckPanel(
             }
             // D3 (11-nov): sin leer la cuenta, aquí no se ve lo que pidió otro aparato; «Subtotal (0)» la hacía parecer vacía
             // y la cajera recapturó todo. Se dice, y que lo que se agregue SE SUMA. También con una copia vieja vacía (Codex r1).
-            if (!cuentaCompletaAqui && sentItems.isEmpty() && !cargandoCuenta) {
+            if (cuentaSinNadaALaVista(cuentaCompletaAqui, sentItems.size, cargandoCuenta)) {
                 Text(
                     text = "La cuenta todavía no se puede leer del servidor, así que aquí no se ve lo que ya tiene. " +
                         "Lo que agregues se suma a esa cuenta.",
@@ -1777,7 +1806,9 @@ internal fun TableCheckPanel(
             }
             // 19-oct (founder «si asi»): «Total» es la cuenta completa; con abonos, «Ya pagado»/«Por pagar» con los mismos números
             // del servidor que imprime la pre-cuenta (decisión del 12-oct). Antes «Total» era el saldo: «Total $137» sin decir de qué.
-            val conocido = saldoDeMesaConocido && saldo.confirmado
+            // A2 (ensayo 16-nov): sin leer la cuenta y sin nada de ella a la vista, el último total del plano ($25) ya no es la cuenta
+            // (otra tablet le agregó sin internet): «Saldo por confirmar», igual que el aviso de arriba. Sólo el texto; el cobro no cambia.
+            val conocido = saldoDeMesaConocido && saldo.confirmado && !cuentaSinNadaALaVista(cuentaCompletaAqui, sentItems.size, cargandoCuenta)
             val mostrado = saldo.conSinMandar(pendingTotalCents)
             val conAbonos = conocido && saldo.pagadoCents > 0
             FilaDeSaldo("Total", if (conocido) centsDisplay(mostrado.totalCents) else "Saldo por confirmar", fuerte = !conAbonos)
@@ -1853,7 +1884,7 @@ internal fun TableCheckPanel(
                 val sinCargos = itemCount <= 0
                 // Sin leer la cuenta al día, «sin artículos» no es «sin cargos» (D3, 11-nov): sigue bloqueado, con la verdad.
                 // 9b: ya cobrada aquí sin internet, no se ofrece cobrarla otra vez.
-                val motivoParaNoPagar = motivoSinArticulos(cuentaCompletaAqui, cargandoCuenta).takeIf { sinCargos }
+                val motivoParaNoPagar = motivoSinCargos.takeIf { sinCargos }
                     ?: motivoCobradaAqui
                 BlockedTapOverlay(
                     reason = motivoParaNoPagar,
@@ -1863,7 +1894,8 @@ internal fun TableCheckPanel(
                     PrimaryButton(
                         text = when {
                             motivoCobradaAqui != null -> "Ya pagada"
-                            saldoDeMesaConocido -> "Pagar ${centsDisplay(subtotalCents)}"
+                            saldoDeMesaConocido && !cuentaSinNadaALaVista(cuentaCompletaAqui, sentItems.size, cargandoCuenta) ->
+                                "Pagar ${centsDisplay(subtotalCents)}"
                             else -> "Pagar"
                         },
                         onClick = onPagar,
@@ -1880,6 +1912,10 @@ internal fun TableCheckPanel(
         }
     }
 }
+
+/** D3 (11-nov) y A2 (16-nov): la cuenta no se pudo leer y aquí no se ve nada de ella: ni su total ni lo que ya tiene. PURA. */
+internal fun cuentaSinNadaALaVista(cuentaCompletaAqui: Boolean, renglonesALaVista: Int, cargando: Boolean): Boolean =
+    !cuentaCompletaAqui && renglonesALaVista == 0 && !cargando
 
 /** Sent blocks: agrupados por RONDA (course + hora de envío), divisor negro entre grupos. */
 @Composable

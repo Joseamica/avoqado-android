@@ -32,6 +32,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.CancellationException
@@ -249,6 +251,10 @@ class TableOrderViewModel @Inject constructor(
         }.stateIn(viewModelScope, kotlinx.coroutines.flow.SharingStarted.Eagerly, null)
 
     private val _isLoadingCheck = MutableStateFlow(false)
+    /** D19 (Codex r4): cuándo empezó la lectura en vuelo (ms monotónicos), para que «Pagar» no la espere más de [ESPERA_DE_LA_RELECTURA_MS]. */
+    private var lecturaEnVueloDesdeMs = 0L
+    /** Reloj monotónico en ms que SÍ cuenta el sueño profundo (Codex r6: `nanoTime` no lo cuenta); las pruebas lo adelantan. */
+    internal var relojMs: () -> Long = { android.os.SystemClock.elapsedRealtime() }
     val isLoadingCheck: StateFlow<Boolean> = _isLoadingCheck.asStateFlow()
 
     private val _pending = MutableStateFlow<List<PendingLine>>(emptyList())
@@ -543,6 +549,23 @@ class TableOrderViewModel @Inject constructor(
         }
     }
 
+    init {
+        // D19 + D17 (16-nov): con la pantalla de la mesa abierta, una caída del internet no hacía releer la cuenta: seguía «al día» y
+        // «Pagar» tomaba el camino con internet (cola de COBROS: sin aviso del cobro de más ni mesa libre). Con el piloto, cuando cambia
+        // «alguien contesta» (red del aparato y el ping o la salud, `sinRespuesta`: sólo un fallo de transporte, nunca un 5xx de otra
+        // pantalla, Codex r3 #1) la vuelve a pedir. Eso sólo DISPARA la lectura; decide su respuesta (`bandera-de-conexion-vieja-no-decide-
+        // el-texto`): sin respuesta deja de estar al día y «Pagar» va por la cola de mesas, como al salir y volver a entrar; con respuesta
+        // (la red que volvió) vuelve a estar al día. Sin piloto no se relee: bloquearía el efectivo de hoy.
+        if (fotos != null) viewModelScope.launch {
+            combine(connectivityMonitor.isConnected, connectivityMonitor.sinRespuesta) { red, nadie -> red && !nadie }
+                .distinctUntilChanged().drop(1).collect {
+                    val s = tableSession.current()
+                    if (pilotoSinRed && s != null && !s.isProvisional && s.mode == TableSession.Mode.ORDERING && !hayMutacionEnVuelo &&
+                        tableSession.contextoActual() == contextoDeSesion && venueId == venueDeSesion) loadCheck()
+                }
+        }
+    }
+
     /** Selected course slot (null = "Inmediato"). New grid picks land here. */
     private val _selectedCourse = MutableStateFlow<String?>(null)
     val selectedCourse: StateFlow<String?> = _selectedCourse.asStateFlow()
@@ -603,6 +626,9 @@ class TableOrderViewModel @Inject constructor(
     companion object {
         /** D5 · B2b: el código del piloto «mesas sin red» (espejo EXACTO de la `Feature` del SERVIDOR). */
         const val CODIGO_PILOTO_SIN_RED = com.avoqado.pos.core.data.sync.FotosDeMesas.CODIGO_PILOTO
+
+        /** D19 (Codex r4): lo más que «Pagar» espera a una relectura en vuelo antes de cobrar con lo que sabe la tablet. */
+        internal const val ESPERA_DE_LA_RELECTURA_MS = 15_000L
 
         /** Base slots, always visible in the pending card (Square-style). */
         val BASE_COURSES: List<String?> = listOf(null, "Aperitivos", "Principales", "Postres")
@@ -790,6 +816,8 @@ class TableOrderViewModel @Inject constructor(
         }
         val vId = venueId ?: return
         viewModelScope.launch {
+            // Codex r5: lecturas encimadas (una conexión que va y viene) no renuevan la espera: cuenta desde que empezó a cargar.
+            if (!_isLoadingCheck.value) lecturaEnVueloDesdeMs = relojMs()
             _isLoadingCheck.value = true
             // D45: cómo estaban los cobros de la cuenta en la cola de COBROS al pedirla; si cambian después, esta lectura no sirve para cobrar.
             val firmaAlLeer = cobrosEnColaDeCobros(session)?.second
@@ -1714,7 +1742,11 @@ class TableOrderViewModel @Inject constructor(
      * encola ni dice «Descuento aplicado». En línea, sin el permiso, el SERVIDOR contesta 403 `overridable` y el teclado del PIN se
      * abre solo; sólo un 2xx dice «Descuento aplicado».
      */
-    fun applyDiscount(discountId: String, pideAprobacion: Boolean = false) {
+    /** f998c8: el switch y la lista de motivos del negocio (guardados con los ajustes: sirven sin red). */
+    val motivosDeDescuento: com.avoqado.pos.pos.domain.MotivosDeDescuento
+        get() = com.avoqado.pos.pos.domain.MotivosDeDescuento(secureStorage.discountReasonRequired, secureStorage.discountReasons)
+
+    fun applyDiscount(discountId: String, pideAprobacion: Boolean = false, motivo: com.avoqado.pos.pos.domain.MotivoElegido? = null) {
         val session = tableSession.current() ?: return
         val vId = venueId ?: return
         bloqueoDeSaldo(vId, session)?.let { showBlockedReason(it); return }
@@ -1723,7 +1755,7 @@ class TableOrderViewModel @Inject constructor(
             return
         }
         viewModelScope.launch {
-            mutarCuenta(vId, session) { mutar { repository.applyOrderDiscount(vId, session.orderId, discountId, pideAprobacion) }}.fold(
+            mutarCuenta(vId, session) { mutar { repository.applyOrderDiscount(vId, session.orderId, discountId, pideAprobacion, motivo) }}.fold(
                 onSuccess = { showMessage("Descuento aplicado"); repository.refresh(vId) },
                 onFailure = { e ->
                     if (pideAprobacion && repository.esFalloDeRed(e)) showSinRed(DESCUENTO_CON_APROBACION_SIN_RED_MESA)
@@ -2540,6 +2572,30 @@ class TableOrderViewModel @Inject constructor(
         }
     }
 
+    /**
+     * A3 (ensayo del 16-nov, `hz:033d44ca:D9`): por qué «Pagar» sigue en gris cuando aquí no se ve ningún cargo. Con el piloto, si la
+     * cuenta no se pudo leer y la tomó otra tablet (su saldo sin red está en gris por eso), se dice: esa tablet SÍ la puede cobrar sin
+     * internet. Lo demás, el aviso de siempre ([motivoSinArticulos]). Sólo cambia el texto: el botón sigue en gris igual.
+     */
+    internal fun motivoParaNoPagarSinCargos(cargando: Boolean): String {
+        val s = tableSession.current()
+        if (s != null && !cuentaCompletaAqui && !cargando && estadoSinRedVigente(s) == SaldoSinRed.EnGris(TOMADA_EN_OTRA_TABLET) &&
+            otraTabletLeAgrego(s)) return TOMADA_EN_OTRA_TABLET
+        return motivoSinArticulos(cuentaCompletaAqui, cargando)
+    }
+
+    /**
+     * Codex r1 #3: `tomadaAqui` se prende al MANDAR una ronda, no al abrir la mesa. Si esta tablet la abrió y todavía no le mandó nada,
+     * el saldo sin red también dice «la tomó otra tablet», y sería falso. Sólo se dice con prueba de que otra le agregó algo: el plano
+     * la trae con importe, o la última cuenta leída de ESTA orden tiene renglones. Sin prueba, el aviso de que no vio la cuenta completa.
+     */
+    private fun otraTabletLeAgrego(s: TableSession.Active): Boolean =
+        s.totalCents > 0 || _check.value?.takeIf { it.id == s.orderId }?.items?.isNotEmpty() == true
+
+    /** El motivo gris del saldo sin red, sin afirmar «otra tablet» sin prueba ([otraTabletLeAgrego]). */
+    private fun motivoGrisHonesto(s: TableSession.Active, motivo: String): String =
+        if (motivo == TOMADA_EN_OTRA_TABLET && !otraTabletLeAgrego(s)) SIN_CUENTA_COMPLETA else motivo
+
     suspend fun preparePagar(): Boolean {
         // B3 (visto 1): la cuenta ya se cerró (su cobro y su liberación subieron) con la pantalla abierta: se dice, no se calla.
         if (tableSession.current() == null) { showBlockedReason(CUENTA_CERRADA); return false }
@@ -2573,6 +2629,15 @@ class TableOrderViewModel @Inject constructor(
         // D59: pagada en el servidor no se cobra ni con el saldo sin red (su texto diría «cobrada aquí, falta subirla»).
         if (motivo == MESA_YA_PAGADA) { showBlockedReason(motivo); return false }
         var sinRed: SaldoSinRed.Conocido? = null
+        // D19 (Codex r3 #2): con la cuenta del servidor releyéndose, «no al día» todavía no es «sin red»: el camino sin red no se fija
+        // antes de que conteste esa lectura (si contesta bien, el cobro de siempre; si no, éste). Sólo si esta pantalla ya la había leído:
+        // al entrar sin red (nunca leída) el piloto cobra como siempre, sin esperar a que venza la petición. Y a lo más
+        // [ESPERA_DE_LA_RELECTURA_MS] (Codex r4): la petición no tiene plazo total, y un cuerpo que gotea no puede trabar el efectivo.
+        if (motivo != null && pilotoSinRed && !session.isProvisional && _isLoadingCheck.value &&
+            chequeLeidoEn == venueId?.let { it to session.orderId } && relojMs() - lecturaEnVueloDesdeMs < ESPERA_DE_LA_RELECTURA_MS) {
+            showBlockedReason(CUENTA_SE_ACTUALIZA)
+            return false
+        }
         if (motivo != null) {
             // Codex b2b-r3 (F2): si el piloto se apagó mientras se leía, el camino de hoy (el motivo de siempre, sin `cobroSinRed`).
             val saldo = (if (!session.isProvisional && trabajo != null && !hayMutacionEnVuelo && vId != null && pilotoSinRed)
@@ -2587,7 +2652,7 @@ class TableOrderViewModel @Inject constructor(
             if (sinRed == null) {
                 showBlockedReason(when {
                     saldo == null -> motivo
-                    saldo is SaldoSinRed.EnGris -> saldo.motivo
+                    saldo is SaldoSinRed.EnGris -> motivoGrisHonesto(session, saldo.motivo)
                     !vigente -> CUENTA_SE_ACTUALIZA
                     else -> CUENTA_COBRADA_AQUI
                 })
@@ -2640,12 +2705,13 @@ class TableOrderViewModel @Inject constructor(
                 // 🔴 Ninguno de estos tres dice ya "no tiene cargos" a lo bruto.
                 // Ese texto era falso en DOS de los tres casos, y el mesero se
                 // quedaba sin saber qué hacer.
-                articulos <= 0 -> showBlockedReason(motivoSinArticulos(cuentaCompletaAqui, _isLoadingCheck.value))
+                articulos <= 0 -> showBlockedReason(motivoParaNoPagarSinCargos(_isLoadingCheck.value))
                 totalDelCheque > 0 ->
                     // Tiene cargos y su total NO es 0: el saldo llegó a 0 porque
                     // YA se pagó. Ofrecer "Pagar" aquí termina en un rechazo del
                     // server ("Order is already paid") que no explica nada.
-                    showBlockedReason("Esta cuenta ya está pagada. Libera la mesa o cámbiate a otra cuenta.")
+                    // D68 #6: si el SERVIDOR ya liberó la mesa (el plano la trae libre), no se pide liberarla otra vez.
+                    showBlockedReason(textoDeCuentaYaPagada(floorTables.value.firstOrNull { it.id == session.tableId }, session.isProvisional))
                 else -> {
                     // Cortesía al 100% (o descuento que se come el total): SÍ se
                     // cobra, y cobrar $0 es justo lo que la cierra. Anularla no

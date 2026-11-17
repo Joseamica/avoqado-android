@@ -70,6 +70,7 @@ class CorteTicketBuilderTest {
         isPartial: Boolean = false,
         events: List<CashDrawerEventEntity> = eventos,
         showExpected: Boolean = true,
+        sinConfirmar: Boolean = false,
     ): String = String(
         CorteTicketBuilder.build(
             session = session,
@@ -79,6 +80,7 @@ class CorteTicketBuilderTest {
             paperWidth = PaperWidth.MM80,
             isPartial = isPartial,
             showExpected = showExpected,
+            sinConfirmar = sinConfirmar,
         ),
         Charsets.ISO_8859_1,
     )
@@ -142,6 +144,45 @@ class CorteTicketBuilderTest {
         val t = papel(session = cerrada.copy(actualAmountCents = 54_000))
         assertTrue(t.contains("Faltante"))
         assertFalse(t.contains("Sobrante"))
+    }
+
+    // MARK: - D2 (ensayo 16-nov, `hz:033d44ca:D9`): el corte sin internet
+
+    /**
+     * La cajera cerró sin internet contando el efectivo de TRES tablets; esta sólo conoce el suyo y decía «Sobrante $410.00»
+     * (el servidor cerró en $0.00 al volver). Sin confirmar no se nombra sobrante ni faltante: es una diferencia por confirmar, y el
+     * aviso dice que falta el efectivo de las otras tablets.
+     */
+    @Test
+    fun `D2 sin conexion el papel no acusa sobrante ni faltante y nombra a las otras tablets`() {
+        for (contado in listOf(55_000 + 41_000, 55_000 - 4_500)) {
+            val t = papel(session = cerrada.copy(actualAmountCents = contado), sinConfirmar = true)
+            assertFalse(t, t.contains("Sobrante"))
+            assertFalse(t, t.contains("Faltante"))
+            assertTrue(t, t.contains("Dif. por confirmar"))
+            assertTrue(t, t.contains("otras tablets"))
+        }
+        val t = papel(session = cerrada.copy(actualAmountCents = 55_000 + 41_000), sinConfirmar = true)
+        assertTrue("con su signo", t.contains("+\$410.00"))
+    }
+
+    @Test
+    fun `D2 con conexion el sobrante se sigue nombrando sobrante`() {
+        val t = papel(session = cerrada.copy(actualAmountCents = 55_000 + 41_000))
+        assertTrue(t.contains("Sobrante"))
+        assertFalse(t.contains("por confirmar"))
+    }
+
+    @Test
+    fun `D2 la etiqueta de la diferencia en pantalla`() {
+        assertEquals("Diferencia por confirmar", CorteTicketBuilder.etiquetaDeDiferencia(41_000, sinConfirmar = true))
+        assertEquals("Diferencia por confirmar", CorteTicketBuilder.etiquetaDeDiferencia(-4_500, sinConfirmar = true))
+        assertEquals("Diferencia", CorteTicketBuilder.etiquetaDeDiferencia(0, sinConfirmar = true))
+        assertEquals("Sobrante", CorteTicketBuilder.etiquetaDeDiferencia(41_000, sinConfirmar = false))
+        assertEquals("Faltante", CorteTicketBuilder.etiquetaDeDiferencia(-4_500, sinConfirmar = false))
+        assertTrue(CorteTicketBuilder.AVISO_SIN_CONFIRMAR.contains("otras tablets"))
+        // El papel de 58 mm lleva 32 caracteres por renglón.
+        CorteTicketBuilder.TICKET_SIN_CONFIRMAR.forEach { assertTrue(it, it.length <= 32) }
     }
 
     // MARK: - Desglose por método

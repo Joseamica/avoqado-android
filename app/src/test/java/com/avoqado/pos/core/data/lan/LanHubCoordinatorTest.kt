@@ -62,14 +62,14 @@ class LanHubCoordinatorTest {
     }
 
     @Test
-    fun `un árbitro que no contesta da isla a los 15 s, nunca bloquea`() = runTest {
+    fun `un árbitro que no contesta da isla tras 6 s de silencio, nunca bloquea (D14, antes a los 15 s)`() = runTest {
         val client = mockk<LeaseClient> { coEvery { estado(any(), any(), any()) } returns null }
         val mesas = caja()
         coordinador(listOf(yo, arbitroB), mesas, client).start()
         val apertura = mesas.abrirApertura("mesa-5", "s1", "Juan", "V1")
 
         assertEquals(LeaseOutcome.NoHub, mesas.esperar(apertura) { true })
-        assertEquals(MesasDeEstaCaja.PLAZO_PEDIR_MESA_MS, testScheduler.currentTime)
+        assertTrue("t=${testScheduler.currentTime}", testScheduler.currentTime in 6_000L..7_000L)
     }
 
     @Test

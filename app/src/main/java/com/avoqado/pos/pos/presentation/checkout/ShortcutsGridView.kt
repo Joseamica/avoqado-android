@@ -89,6 +89,7 @@ import com.avoqado.pos.pos.data.model.SelectedModifier
 import com.avoqado.pos.pos.presentation.cart.CartState
 import com.avoqado.pos.pos.presentation.cart.CartViewModel
 import com.avoqado.pos.pos.presentation.cart.Restauracion
+import com.avoqado.pos.pos.presentation.cart.motivoDeCuentaQueViaja
 import com.avoqado.pos.designsystem.theme.Warning
 import com.avoqado.pos.core.data.network.ServerErrorText
 
@@ -603,6 +604,11 @@ internal fun OrderDiscountsContent(
     val cartState by cartViewModel.cartState.collectAsState()
     val orderDiscounts = discounts.filter { it.discountScope == com.avoqado.pos.pos.data.model.DiscountScope.ORDER }
     var showManualDiscount by remember { mutableStateOf(false) }
+    // f998c8: con «Pedir motivo», el descuento elegido espera su motivo antes de ponerse (como Toast).
+    var esperandoMotivo by remember { mutableStateOf<Discount?>(null) }
+    fun aplicar(discount: Discount) {
+        if (cartViewModel.motivosDeDescuento.sePide) esperandoMotivo = discount else cartViewModel.applyOrderDiscount(discount)
+    }
 
     Column(modifier = modifier.fillMaxSize()) {
         Column(
@@ -628,11 +634,20 @@ internal fun OrderDiscountsContent(
                         tint = Success,
                         modifier = Modifier.size(20.dp),
                     )
-                    Text(
-                        text = "${discount.name} aplicado",
-                        style = MaterialTheme.typography.bodyMedium,
-                        modifier = Modifier.weight(1f),
-                    )
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "${discount.name} aplicado",
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                        // f998c8: el motivo que se eligió, a la vista.
+                        cartState.motivoDeCuentaQueViaja?.let { motivo ->
+                            Text(
+                                text = "Motivo: $motivo",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
                     Text(
                         text = "-${discount.displayValue}",
                         style = MaterialTheme.typography.titleSmall,
@@ -676,7 +691,7 @@ internal fun OrderDiscountsContent(
                             type = if (isPercentage) "PERCENTAGE" else "FIXED",
                             scope = "ORDER",
                         )
-                        cartViewModel.applyOrderDiscount(discount)
+                        aplicar(discount)
                         showManualDiscount = false
                     },
                 )
@@ -699,7 +714,7 @@ internal fun OrderDiscountsContent(
                             if (cartState.orderDiscount?.id == discount.id) {
                                 cartViewModel.applyOrderDiscount(null)
                             } else {
-                                cartViewModel.applyOrderDiscount(discount)
+                                aplicar(discount)
                             }
                         },
                     )
@@ -721,6 +736,19 @@ internal fun OrderDiscountsContent(
                 }
             }
         }
+    }
+    esperandoMotivo?.let { pendiente ->
+        com.avoqado.pos.pos.presentation.components.DialogoMotivoDeDescuento(
+            motivos = cartViewModel.motivosDeDescuento.lista,
+            titulo = "Motivo del descuento",
+            detalle = listOf(pendiente.name),
+            textoConfirmar = "Aplicar descuento",
+            onConfirmar = { motivo ->
+                cartViewModel.applyOrderDiscount(pendiente, motivo)
+                esperandoMotivo = null
+            },
+            onCancelar = { esperandoMotivo = null },
+        )
     }
 }
 
@@ -1233,13 +1261,16 @@ private fun CortesiaSubView(
                     onClick = {
                         showConfirmation = false
                         val discount = Discount(
-                            id = "cortesia_${System.currentTimeMillis()}",
+                            id = "${com.avoqado.pos.pos.presentation.cart.CORTESIA_DE_CUENTA_PREFIJO}${System.currentTimeMillis()}",
                             name = "Cortesía",
                             value = 100.0,
                             type = "PERCENTAGE",
                             scope = "ORDER",
                         )
-                        cartViewModel.applyOrderDiscount(discount)
+                        // f998c8 (Codex r2 #2): la cortesía trae su propia razón y no pide otra de la lista. Antes la razón escrita
+                        // se tiraba; ahora viaja como su motivo (y sale en Reportes → Descuentos).
+                        val escrita = cortesiaReason.trim().takeIf { it.isNotEmpty() }
+                        cartViewModel.applyOrderDiscount(discount, escrita?.let { com.avoqado.pos.pos.domain.MotivoElegido.de(it.take(60), null) })
                         onBack()
                     },
                     fullWidth = true,

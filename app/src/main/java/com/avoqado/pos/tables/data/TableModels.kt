@@ -188,7 +188,13 @@ data class TablesResponse(
      */
     val tablesVersion: String? = null,
     val floorPlanVersion: String? = null,
+    /** D8: lo que este servidor entiende de la cola sin red. Servidores viejos no lo mandan. */
+    val capabilities: TablesCapabilities? = null,
 )
+
+/** D8 (hz:033d44ca:D8): con `openTableNewVisit`, el SERVIDOR nunca mete una visita nueva (`OPEN_TABLE.visitaNueva`) en otra cuenta. */
+@Serializable
+data class TablesCapabilities(val openTableNewVisit: Boolean = false)
 
 /** VenueSettings que afectan al módulo de mesas. */
 @Serializable
@@ -291,7 +297,12 @@ data class SplitOrderRequest(val itemIds: List<String>)
 
 /** POST .../orders/:orderId/discounts body. */
 @Serializable
-data class ApplyOrderDiscountRequest(val discountId: String)
+data class ApplyOrderDiscountRequest(
+    val discountId: String,
+    /** f998c8: el motivo (y comentario) que eligió la caja con «Pedir motivo» prendido. Opcionales: el SERVIDOR nunca rechaza sin él. */
+    val reason: String? = null,
+    val reasonComment: String? = null,
+)
 
 /** POST .../orders/:orderId/items/:itemId/comp body — "Dar de cortesía". */
 @Serializable

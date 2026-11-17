@@ -66,6 +66,8 @@ import com.avoqado.pos.pos.data.model.CartItem
 import com.avoqado.pos.pos.data.model.CartItemType
 import com.avoqado.pos.pos.data.model.buildOrderItemRequests
 import com.avoqado.pos.pos.presentation.cart.CartState
+import com.avoqado.pos.pos.presentation.cart.comentarioDeCuentaQueViaja
+import com.avoqado.pos.pos.presentation.cart.motivoDeCuentaQueViaja
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.util.formatMoney
 import com.avoqado.pos.core.domain.printing.ComandaDispatcher
@@ -345,6 +347,20 @@ class PaymentFlowViewModel @Inject constructor(
     private val _terminalAvailability = MutableStateFlow(TerminalAvailability.CHECKING)
     val terminalAvailability: StateFlow<TerminalAvailability> = _terminalAvailability.asStateFlow()
 
+    /**
+     * D68 #12 (prueba final del 13-nov): la sonda corrió CON internet y sin terminal conectada (gris, «No hay terminales conectadas»),
+     * se cortó la red y el gris se quedó: el cajero leía «no hay terminales» cuando lo cierto era «sin internet», y sólo «Reintentar»
+     * lo destrababa. Ahora el gris sólo vale con red; sin red la fila se toca y el cobro dice «Sin conexión: el cobro con tarjeta
+     * necesita internet…» ([TARJETA_SIN_RED]). Sin monitor (pruebas a mano), como antes.
+     */
+    val terminalesNoConectadas: StateFlow<Boolean> by lazy {
+        combine(_terminalAvailability, connectivityMonitor?.isConnected ?: flowOf(true),
+            connectivityMonitor?.isServerReachable ?: flowOf(true)) { disponibilidad, ruta, servidor ->
+            terminalesNoConectadasCon(disponibilidad, ruta && servidor)
+        }.stateIn(viewModelScope, SharingStarted.Eagerly, terminalesNoConectadasCon(_terminalAvailability.value,
+            connectivityMonitor?.let { it.isConnected.value && it.isServerReachable.value } ?: true))
+    }
+
     private var cartState: CartState? = null
     // Copias del cobro, anteriores a cualquier suspensión; el piso/sucursal vivos pueden cambiar después.
     private var mesaDelCobro: com.avoqado.pos.tables.data.TableSession.Active? = null
@@ -575,6 +591,10 @@ class PaymentFlowViewModel @Inject constructor(
         // D5: sin orden todavía, el cupón no se aparta: el apartado se sube como venta de la cola, donde el cupón no se valida.
         val ordenExistente = ordenCapturada?.takeIf { it.isNotBlank() }
         if (cart.couponCode != null && ordenExistente == null) return Apartado.NINGUNO
+        // Encargo 1afe04 (Codex r2 #2 y r3): con un descuento que pide aprobación o un «Ajuste de precio» el apartado se guarda igual
+        // (si la app muere tras crear la venta, el efectivo no se pierde), pero NO se da por cobrado solo: sin red esa venta no se
+        // cobra ni se encola (D4 r2 #1), así que subirlo al reiniciar la registraría sin aprobar. Queda «sin confirmar» para una persona.
+        val seDaPorCobrada = !((cart.pideAprobacionDeGerente || pideAprobacionPorElServidor) && ordenExistente == null)
         try {
             cashPaymentRepository.reservarCobro(
                 orderRequest = pedido,
@@ -601,6 +621,7 @@ class PaymentFlowViewModel @Inject constructor(
                 enLugarDe = if (generacion == paymentGeneration) anterioresDeEstaVenta else emptyList(),
                 restanteEsperadoCents = restanteEsperadoCents,
                 antesDeGuardar = antesDeGuardar,
+                seDaPorCobradaAlAbandonar = seDaPorCobrada,
             )
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
@@ -951,7 +972,9 @@ class PaymentFlowViewModel @Inject constructor(
     /** D4: los nombres de los descuentos de esta venta que piden aprobación, para el teclado del gerente. */
     private fun nombresQuePidenAprobacion(cart: CartState): String? =
         (listOfNotNull(cart.orderDiscount?.takeIf { it.pideAprobacion }?.name) +
-            cart.items.filter { it.itemDiscountPideAprobacion && !it.isCortesia }.mapNotNull { it.itemDiscountName })
+            cart.items.filter { it.itemDiscountPideAprobacion && !it.isCortesia }.mapNotNull { it.itemDiscountName } +
+            // Encargo 1afe04: el encargado ve también que aprueba un «Ajuste de precio».
+            listOfNotNull(AJUSTE_DE_PRECIO.takeIf { cart.llevaAjusteDePrecio }))
             .distinct().joinToString(" · ").takeIf { it.isNotBlank() }
 
     /** D15: los productos que regala esta venta, para el teclado del gerente. null con el descuento de cuenta que regala (D2, sin texto). */
@@ -2351,6 +2374,19 @@ class PaymentFlowViewModel @Inject constructor(
             combine(conexionDelSaldo, servidorDelSaldo,
                 tarjetasRepository?.cambiosDeAjustes ?: MutableStateFlow<Map<String, EstadoDeAjustes>>(emptyMap())) { _, _, _ -> Unit }
                 .collect { actualizarFilaDeSaldo() }
+        }
+        // D68 #12: al volver la red con la pantalla de «¿cómo paga?» a la vista, se vuelve a preguntar por las terminales (en
+        // segundo plano, como al arrancar): lo que se supo antes de cortarse ya puede no ser cierto.
+        viewModelScope.launch {
+            var antes: Boolean? = null
+            combine(conexionDelSaldo, servidorDelSaldo) { conectado, servidor -> conectado && servidor }.collect { enLinea ->
+                val volvio = antes == false && enLinea
+                antes = enLinea
+                // Codex r1 #3: también mientras el cliente califica (la pantalla de «¿cómo paga?» viene después).
+                val eligiendo = _state.value is PaymentFlowState.SelectingPaymentMethod || _state.value is PaymentFlowState.CollectingTip ||
+                    _state.value is PaymentFlowState.CollectingRating
+                if (volvio && eligiendo && _terminalAvailability.value != TerminalAvailability.CHECKING) probeTerminalAvailability()
+            }
         }
         // El «Sin conexión» de un intento fallido deja de ser cierto al volver la red. Un rechazo del servidor se queda.
         viewModelScope.launch {
@@ -6407,6 +6443,9 @@ class PaymentFlowViewModel @Inject constructor(
             // D4: la etiqueta del descuento de cuenta del catálogo (el importe sigue en `discount`).
             descuentoDeCatalogoId = cart.descuentoDeCatalogoQueViaja,
             descuentoDeCatalogoPideAprobacion = cart.orderDiscount?.pideAprobacion == true,
+            // f998c8: el motivo del descuento de la cuenta (o la razón de la cortesía de la cuenta), sólo si es del descuento de ahora.
+            orderDiscountReason = cart.motivoDeCuentaQueViaja,
+            orderDiscountReasonComment = cart.comentarioDeCuentaQueViaja,
         )
     }
 
@@ -7013,6 +7052,9 @@ class PaymentFlowViewModel @Inject constructor(
         /** D4: el que aprueba un % o fijo con «Requiere aprobación» («Aplicar descuentos en TPV»). */
         private const val PERMISO_DE_APROBACION = "tpv-orders:discount"
 
+        /** Encargo 1afe04: el nombre del ajuste en el teclado del encargado («Descuento: Ajuste de precio»). */
+        private const val AJUSTE_DE_PRECIO = "Ajuste de precio"
+
         /** D15: por qué una venta en $0 es sólo efectivo. Mismo texto que iOS (`PaymentFlowViewModel.TEXTO_VENTA_EN_CERO`). */
         const val TEXTO_VENTA_EN_CERO = "Venta en \$0: no hay nada que cobrar con tarjeta."
         /** D5 · B1: por qué la mesa cobrada por la cola de mesas es sólo efectivo (la prende B2b). */
@@ -7103,3 +7145,9 @@ class PaymentFlowViewModel @Inject constructor(
         }
     }
 }
+
+/** D68 #12: «No hay terminales conectadas» (en gris) sólo si la sonda lo supo y el aparato SIGUE con red. PURA. */
+internal fun terminalesNoConectadasCon(
+    disponibilidad: PaymentFlowViewModel.TerminalAvailability,
+    enLinea: Boolean,
+): Boolean = disponibilidad == PaymentFlowViewModel.TerminalAvailability.NONE && enLinea

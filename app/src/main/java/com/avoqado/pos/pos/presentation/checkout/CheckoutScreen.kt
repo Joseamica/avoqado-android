@@ -438,6 +438,17 @@ fun CheckoutScreen(
     var createCustomerSearchText by remember { mutableStateOf("") }
     var showSavedSnackbar by remember { mutableStateOf(false) }
     var savedCartError by remember { mutableStateOf<String?>(null) }
+    // f998c8: la última puerta del motivo (qué descuentos lo piden y qué sigue al elegirlo). Null = no hay ventana.
+    var motivosPorPedir by remember { mutableStateOf<Pair<List<String>, () -> Unit>?>(null) }
+    // f998c8: el ajuste de precio de un producto YA en el carrito espera su motivo (renglón y precio nuevo).
+    var ajusteEsperandoMotivo by remember { mutableStateOf<Pair<String, Int>?>(null) }
+    /** f998c8: si algo pide motivo y no lo trae, abre la ventana y devuelve true; al elegir, se pone y sigue [siguiente]. */
+    fun faltaMotivo(siguiente: () -> Unit): Boolean {
+        val faltan = cartViewModel.descuentosSinMotivo()
+        if (faltan.isEmpty()) return false
+        motivosPorPedir = faltan to siguiente
+        return true
+    }
     var showBarcodeScanner by remember { mutableStateOf(false) }
     var showCreateProduct by remember { mutableStateOf(false) }
     var createProductInitialName by remember { mutableStateOf("") }
@@ -533,6 +544,8 @@ fun CheckoutScreen(
             openPayLaterCustomerPicker()
             return
         }
+        // f998c8: «Pagar después» también crea la venta: un descuento sin motivo lo pide antes (también para la fila sin red).
+        if (faltaMotivo { confirmPayLaterOrder() }) return
         // 27-oct (R7): el envío vive en el CARRITO, no en esta pantalla. La venta sale del carrito al mandarla y el
         // desenlace llega por `resultadoPagarDespues`, aunque la pantalla se recree.
         cartViewModel.pagarDespues(customerId)
@@ -576,6 +589,9 @@ fun CheckoutScreen(
         // recree (pendientes, Codex r2 #1 a r4 #1). Es una fracción de segundo; el siguiente «Cobrar» ya abre. Todos los
         // caminos al cobro (botón, F12, upsell, dividir) pasan por aquí.
         if (cartViewModel.hayConsultasDeCodigo) return
+        // f998c8: la última puerta del motivo. Un carrito restaurado, una venta que regresó del cobro con saldo o cualquier camino
+        // que no preguntó: lo que pide motivo y no lo trae se pide aquí, antes de fotografiar el carrito. Mesas tiene su propio flujo.
+        if (!isTablePaying && faltaMotivo { proceedToPayment() }) return
         cartViewModel.bloqueoDeEntrega()?.let { savedCartError = it; return }
         // D1 (26-oct): la primera parte de esta venta se guardó sin red; el resto se cobra en la MISMA venta cuando suba.
         if (!isTablePaying && cartViewModel.detenerCobroPorParteEnEspera()) return
@@ -1110,7 +1126,8 @@ fun CheckoutScreen(
             product = product,
             isTablet = isTablet,
             discounts = discounts,
-            onAddToCart = { quantity, modifiers, note, isCortesia, cortesiaReason, priceAdj, discountId ->
+            motivos = cartViewModel.motivosDeDescuento,
+            onAddToCart = { quantity, modifiers, note, isCortesia, cortesiaReason, priceAdj, discountId, motivo ->
                 cartViewModel.addProductWithModifiers(
                     product = product,
                     quantity = quantity,
@@ -1124,10 +1141,13 @@ fun CheckoutScreen(
                     // Antes sólo viajaba el id y el carrito cobraba precio de
                     // lista mientras la orden quedaba rebajada.
                     discount = discountId?.let { id -> discounts.firstOrNull { it.id == id } },
+                    motivo = motivo,
                 )
                 selectedProduct = null
             },
             onDismiss = { selectedProduct = null },
+            // Encargo 1afe04: se lee al abrir el producto (otra persona pudo entrar con su PIN).
+            ajusteDePrecio = remember(product.id) { cartViewModel.accesoAlAjusteDePrecio() },
         )
     }
 
@@ -1315,7 +1335,12 @@ fun CheckoutScreen(
                 selectedCartItem = cartViewModel.cartState.value.items.find { it.id == item.id }
             },
             onUpdatePriceAdjustment = { priceCents ->
-                cartViewModel.updateItemPriceAdjustment(item.id, priceCents)
+                // f998c8: un ajuste nuevo con «Pedir motivo» espera su motivo; quitarlo no pide nada.
+                if (priceCents != null && cartViewModel.motivosDeDescuento.sePide && !item.isCortesia) {
+                    ajusteEsperandoMotivo = item.id to priceCents
+                } else {
+                    cartViewModel.updateItemPriceAdjustment(item.id, priceCents)
+                }
                 selectedCartItem = cartViewModel.cartState.value.items.find { it.id == item.id }
             },
             onDelete = {
@@ -1323,6 +1348,37 @@ fun CheckoutScreen(
                 selectedCartItem = null
             },
             onDismiss = { selectedCartItem = null },
+        )
+    }
+
+    // f998c8: la ventana del motivo (la última puerta antes de cobrar o de «Pagar después»).
+    motivosPorPedir?.let { (faltan, siguiente) ->
+        com.avoqado.pos.pos.presentation.components.DialogoMotivoDeDescuento(
+            motivos = cartViewModel.motivosDeDescuento.lista,
+            titulo = if (faltan.size == 1) "Falta el motivo del descuento" else "Faltan motivos de descuentos",
+            detalle = faltan,
+            textoConfirmar = "Continuar",
+            onConfirmar = { motivo ->
+                cartViewModel.ponerMotivoEnLoQueFalta(motivo)
+                motivosPorPedir = null
+                siguiente()
+            },
+            onCancelar = { motivosPorPedir = null },
+        )
+    }
+    // f998c8: el motivo del ajuste de precio de un producto que ya estaba en el carrito.
+    ajusteEsperandoMotivo?.let { (itemId, precio) ->
+        com.avoqado.pos.pos.presentation.components.DialogoMotivoDeDescuento(
+            motivos = cartViewModel.motivosDeDescuento.lista,
+            titulo = "Motivo del ajuste de precio",
+            detalle = listOfNotNull(cartViewModel.cartState.value.items.find { it.id == itemId }?.name),
+            textoConfirmar = "Aplicar ajuste",
+            onConfirmar = { motivo ->
+                cartViewModel.updateItemPriceAdjustment(itemId, precio, motivo)
+                ajusteEsperandoMotivo = null
+                selectedCartItem = cartViewModel.cartState.value.items.find { it.id == itemId }
+            },
+            onCancelar = { ajusteEsperandoMotivo = null },
         )
     }
 

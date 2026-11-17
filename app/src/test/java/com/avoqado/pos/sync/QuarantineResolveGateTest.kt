@@ -182,4 +182,20 @@ class QuarantineResolveGateTest {
         assertEquals(texto, vm.describeMessage("ADD_ITEMS", texto))
         assertEquals(vm.resolutionHint("BUSINESS_RULE", "CLEAR_TABLE"), vm.resolutionHint("BUSINESS_RULE", "CLEAR_TABLE", "Table not found"))
     }
+
+    /**
+     * D7 (hz:033d44ca:D7): la ronda que llegó cuando otra caja ya había cobrado la cuenta. El SERVIDOR nuevo la pone en una cuenta
+     * aparte; uno viejo (o una venta sin mesa) todavía la rechaza en inglés. Se lee en español, como ronda (no como pago), y dice qué hacer.
+     */
+    @Test
+    fun `ronda rechazada porque otra caja ya cobro la cuenta se lee en espanol y como ronda`() = runTest(scheduler) {
+        val vm = buildViewModel("WAITER", emptyList())
+        val texto = "Cannot add items to a paid order"
+        assertEquals("Otra caja ya cobró esta cuenta antes de que llegara esta ronda: la ronda no entró a la cuenta.", vm.describeMessage("ADD_ITEMS", texto))
+        assertEquals("Lo de esta ronda no se cobró. Avisa a la caja para cobrarlo en una cuenta nueva de la mesa.",
+            vm.resolutionHint("BUSINESS_RULE", "ADD_ITEMS", texto))
+        // Sólo la ronda: el mismo texto en otra operación pasa igual.
+        assertEquals(texto, vm.describeMessage("APPLY_DISCOUNT", texto))
+        assertEquals("Producto agotado", vm.describeMessage("ADD_ITEMS", "Producto agotado"))
+    }
 }

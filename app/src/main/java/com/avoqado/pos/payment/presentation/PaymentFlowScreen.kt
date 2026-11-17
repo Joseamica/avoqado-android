@@ -142,7 +142,8 @@ fun PaymentFlowScreen(
     val metodosHabilitados by viewModel.metodosHabilitados.collectAsState()
     // Doble pantalla: cambia QUIÉN captura propina y calificación.
     val customerDisplayActive by viewModel.customerDisplayActive.collectAsState()
-    val terminalAvailability by viewModel.terminalAvailability.collectAsState()
+    // D68 #12: el gris «No hay terminales conectadas» sólo con red; sin red la fila lleva al aviso «Sin conexión».
+    val terminalesNoConectadas by viewModel.terminalesNoConectadas.collectAsState()
     val terminals by viewModel.onlineTerminals.collectAsState()
     val avisoDeOtroCobro by viewModel.avisoDeOtroCobro.collectAsState()
     val segundoAviso by viewModel.segundoAviso.collectAsState()
@@ -327,7 +328,7 @@ fun PaymentFlowScreen(
                         onManualMethodSelected = { viewModel.confirmManualChoice(it) },
                         tenderTypes = tenderTypes,
                         onCancel = cancelarElCobro,
-                        terminalsUnavailable = terminalAvailability == PaymentFlowViewModel.TerminalAvailability.NONE,
+                        terminalsUnavailable = terminalesNoConectadas,
                         // D15: una venta rápida en $0 también es sólo efectivo, con su razón.
                         saldoSinActualizar = !origen.permiteTarjeta || viewModel.ventaRapidaEnCero() || viewModel.cobroDeMesaSinRed(),
                         textoSoloEfectivo = textoSoloEfectivoDe(origen, viewModel.ventaRapidaEnCero(), viewModel.cobroDeMesaSinRed()),
@@ -356,7 +357,7 @@ fun PaymentFlowScreen(
                         onManualMethodSelected = { viewModel.confirmManualChoice(it) },
                         tenderTypes = tenderTypes,
                     onCancel = cancelarElCobro,
-                    terminalsUnavailable = terminalAvailability == PaymentFlowViewModel.TerminalAvailability.NONE,
+                    terminalsUnavailable = terminalesNoConectadas,
                         saldoSinActualizar = !origen.permiteTarjeta || viewModel.ventaRapidaEnCero() || viewModel.cobroDeMesaSinRed(),
                         textoSoloEfectivo = textoSoloEfectivoDe(origen, viewModel.ventaRapidaEnCero(), viewModel.cobroDeMesaSinRed()),
                         soloEfectivoSinRed = viewModel.cobroDeMesaSinRed(),

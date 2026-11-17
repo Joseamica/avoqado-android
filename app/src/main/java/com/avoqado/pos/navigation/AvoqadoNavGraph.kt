@@ -352,6 +352,7 @@ private fun MainScaffold(
     val pendingSalesCount=if(salesNotices.canRead) globalPendingSalesCount else 0
     val salesBannerCount=com.avoqado.pos.sync.presentation.salesNoticeBannerCount(
         salesSummary,reservationIssueCount,syncIssueCount,payLaterReviewCount)
+    val salesBannerApplied=com.avoqado.pos.sync.presentation.salesNoticeBannerApplied(salesSummary,reservationIssueCount)
     val salesBannerActionLabel=com.avoqado.pos.sync.presentation.salesNoticeBannerActionLabel(
         salesNotices.opensPendingSales,payLaterReviewCount)
     if (showQuarantineSheet) {
@@ -529,7 +530,7 @@ private fun MainScaffold(
                     com.avoqado.pos.kds.presentation.BannerDeReparto(vigilanteDeReparto)
                     com.avoqado.pos.sync.presentation.QuarantineBanner(count=salesBannerCount,
                         historyAvailable=salesSummary==null && roleManager.canResolveQuarantine,historyUnavailable=q15HistoryUnavailable,
-                        actionLabel=salesBannerActionLabel) {
+                        actionLabel=salesBannerActionLabel,applied=salesBannerApplied) {
                         com.avoqado.pos.sync.presentation.openSalesNoticeBanner(
                             salesNotices.opensPendingSales, MainTab.TRANSACTIONS in registeredTabs, payLaterReviewCount,
                             onPendingSales={ pendingCourtesyId=null;pendingSalesRequest++;navigateToTab(MainTab.TRANSACTIONS) },
@@ -818,6 +819,10 @@ private fun MainScaffold(
     } else {
         // iPhone-style: standard NavigationBar
         Scaffold(
+            // Como en la tablet: sin el alto de la barra del sistema abajo. La app la esconde,
+            // pero en Android 9 (N86) el sistema sigue reportándola (48 dp) y dejaba una franja
+            // vacía debajo de la barra de pestañas, y bajo Cambio cuando la barra no se muestra.
+            contentWindowInsets = WindowInsets.statusBars,
             topBar = {
                 androidx.compose.foundation.layout.Column {
                     ConnectivityBanner(
@@ -831,7 +836,7 @@ private fun MainScaffold(
                     com.avoqado.pos.kds.presentation.BannerDeReparto(vigilanteDeReparto)
                     com.avoqado.pos.sync.presentation.QuarantineBanner(count=salesBannerCount,
                         historyAvailable=salesSummary==null && roleManager.canResolveQuarantine,historyUnavailable=q15HistoryUnavailable,
-                        actionLabel=salesBannerActionLabel) {
+                        actionLabel=salesBannerActionLabel,applied=salesBannerApplied) {
                         com.avoqado.pos.sync.presentation.openSalesNoticeBanner(
                             salesNotices.opensPendingSales, MainTab.TRANSACTIONS in registeredTabs, payLaterReviewCount,
                             onPendingSales={ pendingCourtesyId=null;pendingSalesRequest++;navigateToTab(MainTab.TRANSACTIONS) },
@@ -846,7 +851,9 @@ private fun MainScaffold(
             bottomBar = {
                 // Mismo criterio que el layout de tablet: durante el cobro no se
                 // muestra, porque asoma por debajo del diálogo del pago.
-                if (!isPaying && !isExchanging) NavigationBar {
+                // Pegada a la orilla, sin el relleno de la barra del sistema (ver TabletTabBar):
+                // si el cajero la asoma con un deslizón, se encima unos segundos y se va sola.
+                if (!isPaying && !isExchanging) NavigationBar(windowInsets = WindowInsets(0, 0, 0, 0)) {
                     graphVisibleTabs.forEach { tab ->
                         val selected = tab == pestanaMarcada
                         NavigationBarItem(

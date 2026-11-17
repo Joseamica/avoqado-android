@@ -146,7 +146,7 @@ class AuthRepository @Inject constructor(
             LoginResult.Error(errorMessage)
         } catch (e: Exception) {
             Log.e("🔐", "❌ Login exception: ${e.message}")
-            LoginResult.Error("Error de conexión. Verifica tu internet.")
+            LoginResult.Error(textoDeFalloAlEntrar(e))
         }
     }
 
@@ -420,6 +420,17 @@ class AuthRepository @Inject constructor(
     companion object {
         /** Un intento de entrar cuya respuesta llegó después de que entró o salió alguien (D4). */
         const val OTRA_PERSONA_ENTRO = "Ya entró otra persona en este aparato."
+
+        /**
+         * C2 (ensayo 16-nov, `hz:033d44ca:D9`): entrar con correo y contraseña sin internet decía «Error de conexión. Verifica tu
+         * internet.» en rojo, como si algo estuviera roto. Sin red es un estado normal: se dice qué pasa y qué hacer, en gris.
+         */
+        const val SIN_CONEXION_PARA_ENTRAR =
+            "Sin conexión: para entrar con correo y contraseña se necesita internet. Inténtalo cuando vuelva la conexión."
+        const val NO_SE_PUDO_ENTRAR = "No se pudo iniciar sesión. Inténtalo de nuevo."
+
+        /** Un fallo de red (sin respuesta del servidor) es «sin conexión»; otra excepción, un fallo genérico. PURA. */
+        fun textoDeFalloAlEntrar(e: Throwable): String = if (e is java.io.IOException) SIN_CONEXION_PARA_ENTRAR else NO_SE_PUDO_ENTRAR
     }
 
     /**

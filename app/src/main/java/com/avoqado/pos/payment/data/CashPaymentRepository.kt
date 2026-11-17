@@ -215,6 +215,12 @@ class CashPaymentRepository @Inject constructor(
          * autorización de la caja que abrió la cuenta venció mientras tanto).
          */
         antesDeGuardar: (() -> Unit)? = null,
+        /**
+         * Encargo 1afe04 (Codex r3): `false` = si nadie la resuelve, NO se da por cobrada sola ([darPorCobradasLasAbandonadas]); queda
+         * «sin confirmar» y la decide una persona. Para una venta que pide la aprobación de un encargado (descuento o «Ajuste de
+         * precio»): sin red no se cobra ni se encola, así que darla por cobrada la subiría sin aprobar aunque la cajera no cobró.
+         */
+        seDaPorCobradaAlAbandonar: Boolean = true,
     ) {
         require(venueId == null || venueId.isNotBlank()) { "No venue" }
         val venue = venueId ?: secureStorage.venueId.orEmpty()
@@ -232,6 +238,7 @@ class CashPaymentRepository @Inject constructor(
             // una llave que ya se apartó (Codex r19: «Cancelar» y volver a cobrar) no toma otra.
             ventasYaEnLaCaja = if (primeraVez) salida?.ventasDelServidorEnLaCaja(cajaDelCobro, venue, hora) else null,
             lineasDelTicket = lineasDelTicket, restanteEsperadoCents = restanteEsperadoCents,
+            daPorCobradaAlAbandonar = seDaPorCobradaAlAbandonar,
         )
         val anteriores = enLugarDe.filter { it != entity.id }
         // Primero la marca en memoria y DESPUÉS la fila: quien observe la tabla nunca ve este
@@ -569,6 +576,8 @@ class CashPaymentRepository @Inject constructor(
         lineasDelTicket: String? = null,
         /** D12: sólo viaja en la captura (no hay columna): la conciliación lo compara con el saldo del servidor. */
         restanteEsperadoCents: Int? = null,
+        /** Encargo 1afe04: `false` = el apartado no se da por cobrado solo ([CashPaymentRepository.reservarCobro]). */
+        daPorCobradaAlAbandonar: Boolean = true,
     ): PendingPaymentEntity {
         val localId = idempotencyKey?.takeIf { it.isNotBlank() } ?: UUID.randomUUID().toString()
         // La misma regla que crear la orden en línea: una venta rápida DIVIDIDA también es ORDER (D2 etapa 2), así su parte
@@ -634,7 +643,7 @@ class CashPaymentRepository @Inject constructor(
             customerId = entity.customerId, orderRequestJson = entity.orderRequestJson,
             // 🔴 D2 v7: el apartado que guarda ESTA app se da por cobrado si nadie lo resuelve. Un reintento con la misma llave
             // conserva la captura de disco (y su marca): `filaAlReemplazar`.
-            daPorCobradaAlAbandonar = true.takeIf { estado == PaymentSyncStatus.EN_VUELO },
+            daPorCobradaAlAbandonar = true.takeIf { estado == PaymentSyncStatus.EN_VUELO && daPorCobradaAlAbandonar },
             // Codex r11 #1: la hora de ESTE intento; si ya había captura en disco, `filaAlReemplazar` conserva la del primero.
             primeraCapturaEn = capturadaEn,
             ventasYaEnLaCaja = ventasYaEnLaCaja,
