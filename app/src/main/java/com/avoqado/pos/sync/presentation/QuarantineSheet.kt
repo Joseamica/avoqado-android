@@ -159,7 +159,8 @@ fun QuarantineSheet(
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     } else {
-                        Text("Un gerente debe revisar este pago.", style = MaterialTheme.typography.bodyMedium)
+                        // D7: aquí caen rondas, mesas y cobros: el encabezado no dice «pago» (ensayo A5, 16-nov).
+                        Text("Un gerente debe revisar estas operaciones.", style = MaterialTheme.typography.bodyMedium)
                     }
                     if (historial.canRead) mensajeHistorial?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
                     HorizontalDivider()

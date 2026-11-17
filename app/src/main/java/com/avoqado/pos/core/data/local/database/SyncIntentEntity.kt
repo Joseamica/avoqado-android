@@ -30,6 +30,8 @@ data class FilaSinResolver(
 /** D5 · B2b: lo que la foto de una mesa necesita de la cola: lo posterior a ella (cualquier estado) y lo que sigue sin resolver. */
 /** D5 · B3 (C3): el rechazo de «Liberar mesa» porque la cuenta debe (código genérico `BUSINESS_RULE`, texto del SERVIDOR). */
 internal const val RECHAZO_MESA_CON_SALDO = "Cannot clear table with unpaid order"
+/** D7: la ronda que llegó a una cuenta que otra caja ya cobró (texto fijo del SERVIDOR: las apps lo comparan, no se traduce allá). */
+internal const val RECHAZO_RONDA_CUENTA_COBRADA = "Cannot add items to a paid order"
 /**
  * El mismo «Liberar mesa» rechazado varias veces porque la cuenta debe (misma mesa) cuenta una vez, como se ve en la lista. Un rechazo
  * con otro motivo cuenta aparte (Codex b2b-r4).

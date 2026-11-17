@@ -531,15 +531,22 @@ class QuarantineViewModel @Inject constructor(
      * «Cannot clear table with unpaid order ORD-…» (sin el saldo): se traduce por tipo y texto. Lo demás pasa igual.
      */
     fun describeMessage(type: String, message: String?): String? {
+        // D7: la ronda que llegó cuando otra caja ya había cobrado la cuenta (SERVIDOR viejo o venta sin mesa; el nuevo la pone aparte).
+        if (rondaACuentaCobrada(type, message)) return "Otra caja ya cobró esta cuenta antes de que llegara esta ronda: la ronda no entró a la cuenta."
         if (!mesaConSaldo(type, message)) return message
         val cuenta = message!!.removePrefix(com.avoqado.pos.core.data.local.database.RECHAZO_MESA_CON_SALDO).trim()
         return "La mesa sigue ocupada: la cuenta ${if (cuenta.isEmpty()) "" else "$cuenta "}todavía debe."
     }
 
+    private fun rondaACuentaCobrada(type: String, message: String?) =
+        type == "ADD_ITEMS" && message?.startsWith(com.avoqado.pos.core.data.local.database.RECHAZO_RONDA_CUENTA_COBRADA) == true
+
     private fun mesaConSaldo(type: String, message: String?) = type == "CLEAR_TABLE" && message?.startsWith(com.avoqado.pos.core.data.local.database.RECHAZO_MESA_CON_SALDO) == true
 
     /** Guía de resolución según la razón del rechazo. */
-    fun resolutionHint(errorCode: String?, type: String, message: String? = null): String = if (mesaConSaldo(type, message)) {
+    fun resolutionHint(errorCode: String?, type: String, message: String? = null): String = if (rondaACuentaCobrada(type, message)) {
+        "Lo de esta ronda no se cobró. Avisa a la caja para cobrarlo en una cuenta nueva de la mesa."
+    } else if (mesaConSaldo(type, message)) {
         "Si ya se cobró, la mesa se libera sola al subir el cobro. Si sigue ocupada en el plano, cobra lo que falta y libérala."
     } else if(type=="PAY_CASH" && errorCode!="STALE_DEVICE_SEQUENCE") {
         "El resultado de este pago no está confirmado. Conserva su folio y el efectivo registrado. No vuelvas a cobrar."
