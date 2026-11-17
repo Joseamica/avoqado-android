@@ -18,6 +18,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
@@ -28,9 +33,9 @@ import androidx.compose.ui.unit.dp
 private const val MAX_DIGITOS = 3
 
 /**
- * ¿Hay una casilla de cantidad con el foco? La leen los lectores de la pistola, para que un código no caiga en ella:
- * ANDROID (`LectorHidBus`) no le deja pasar teclas físicas y WINDOWS (`escribiendoEn`, en `LectorDePistola`) separa
- * pistola de persona como en el cobro. Una dueña a la vez: soltar sólo suelta si sigue siendo suya.
+ * ¿Hay una casilla de cantidad con el foco? La lee el lector de la pistola de ANDROID (`LectorHidBus`) para no dejarle
+ * pasar teclas físicas. (WINDOWS no: retener ahí las teclas de la cajera dejaba que un clic rápido en «Agregar» llegara
+ * antes que su último dígito; Codex r3 #1.) Una dueña a la vez: soltar sólo suelta si sigue siendo suya.
  */
 object CasillaDeCantidad {
     @Volatile private var duena: Any? = null
@@ -55,9 +60,13 @@ internal fun cantidadTecleada(texto: String): Int? =
  * borrar el 1 (con el 1 adentro saldría 124). Cada número válido se aplica al momento, igual que el «+» (en una tableta
  * nadie suelta la casilla antes de tocar «Agregar»); Enter o «Listo» la sueltan.
  *
- * 🔴 La pistola no escribe aquí: mientras la casilla tiene el foco, [CasillaDeCantidad] avisa a los lectores (Codex r1–r2).
- * Segunda capa, para lo que entra como teclado de la pantalla (el lector integrado de una Sunmi en modo teclado): una
- * letra o el 4.º dígito regresan la cantidad que había al tocarla, y la casilla se queda sorda hasta que se suelte.
+ * 🔴 La pistola (Codex r1–r3):
+ * - ANDROID, ventana principal: con la casilla activa ([CasillaDeCantidad]) `LectorHidBus` no le deja pasar teclas
+ *   físicas; sólo vale el teclado de la pantalla.
+ * - En lo que no pasa por ahí (WINDOWS, la hoja del teléfono, el lector integrado de una Sunmi en modo teclado), el código
+ *   cae en la casilla: una letra o el 4.º dígito regresan la cantidad que había al tocarla y la casilla se queda sorda
+ *   hasta que se suelte (se come el resto; se vuelve a escanear). Límite aceptado: un código de 1 a 3 dígitos sin letras
+ *   cuenta como cantidad, igual que el lector de toda la app no reconoce códigos de menos de 4.
  */
 @Composable
 fun CantidadTecleable(cantidad: Int, onCantidad: (Int) -> Unit, modifier: Modifier = Modifier) {
@@ -73,14 +82,16 @@ fun CantidadTecleable(cantidad: Int, onCantidad: (Int) -> Unit, modifier: Modifi
         onValueChange = { nuevo ->
             when {
                 sorda -> Unit
+                // Siempre se avisa, sin comparar con `cantidad`: dentro de una ráfaga la pantalla no se ha vuelto a pintar y
+                // ese valor va atrasado (Codex r2 #2, r3 #2). Avisar la misma cantidad no cambia nada.
                 noEsCantidad(nuevo) -> {
                     sorda = true
                     texto = alTocarla.toString()
-                    if (alTocarla != cantidad) onCantidad(alTocarla)
+                    onCantidad(alTocarla)
                 }
                 else -> {
                     texto = soloDigitosDeCantidad(nuevo)
-                    cantidadTecleada(texto)?.let { if (it != cantidad) onCantidad(it) }
+                    cantidadTecleada(texto)?.let(onCantidad)
                 }
             }
         },
@@ -90,7 +101,15 @@ fun CantidadTecleable(cantidad: Int, onCantidad: (Int) -> Unit, modifier: Modifi
         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Done),
         keyboardActions = KeyboardActions(onDone = { foco.clearFocus() }),
         // Al entrar se vacía; al salir enseña la cantidad real (una línea que no cambia, como la ya enviada, no miente).
-        modifier = modifier.width(48.dp).onFocusChanged {
+        modifier = modifier.width(48.dp)
+            // Un Enter de teclado (o de la pistola) se queda aquí: se traga al bajar y suelta la casilla al SUBIR. Si la
+            // soltara al bajar, el foco brincaría a otro botón y el «subir» lo picaría (Buscar en la D3; Codex r2 #6).
+            .onPreviewKeyEvent { e ->
+                if (e.key != Key.Enter && e.key != Key.NumPadEnter) return@onPreviewKeyEvent false
+                if (e.type == KeyEventType.KeyUp) foco.clearFocus()
+                true
+            }
+            .onFocusChanged {
             if (it.isFocused) {
                 CasillaDeCantidad.tomar(yo)
                 alTocarla = cantidad

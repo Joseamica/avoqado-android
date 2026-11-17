@@ -171,15 +171,6 @@ fun emisorDelBus(bus: LectorHidBus): (String) -> Unit {
  * Engancha [LectorDePistola] a la ventana de la caja con un KeyEventDispatcher de AWT, que ve cada tecla ANTES que Compose.
  * Si algo truena aquí, la tecla sigue su camino: el lector nunca deja al cajero sin teclado.
  */
-/**
- * ¿Hay un campo escribiendo, que la pistola debe dejar en paz? `inputMethodRequests != null` = un campo de Compose con el
- * foco (lo mismo que lee TecladoDeLaVentana). 🔴 Menos la casilla de CANTIDAD (founder, 17-nov): ahí un código caía entero
- * («24» + `7501…` = 247; `ABC123` = 123). Con ella activa el lector separa pistola de persona como en el cobro: el código
- * se emite (se agrega el producto) y lo que teclea la cajera le llega a la casilla.
- */
-internal fun escribiendoEn(origen: java.awt.Component): Boolean =
-    origen.inputMethodRequests != null && !com.avoqado.pos.designsystem.components.CasillaDeCantidad.activa
-
 object PistolaDeLaVentana {
     private var despachador: KeyEventDispatcher? = null
 
@@ -196,7 +187,8 @@ object PistolaDeLaVentana {
         despachador = KeyEventDispatcher { e ->
             val origen = e.component ?: return@KeyEventDispatcher false
             val deLaCaja = origen === ventana || SwingUtilities.getWindowAncestor(origen) === ventana
-            deLaCaja && runCatching { lector.procesar(e, escribiendo = escribiendoEn(origen)) }
+            // inputMethodRequests != null = un campo de Compose escribiendo (lo mismo que lee TecladoDeLaVentana).
+            deLaCaja && runCatching { lector.procesar(e, escribiendo = origen.inputMethodRequests != null) }
                 .onFailure { Log.w("Lector", "El lector de pistola falló; la tecla sigue su camino", it) }
                 .getOrDefault(false)
         }.also(focos::addKeyEventDispatcher)
