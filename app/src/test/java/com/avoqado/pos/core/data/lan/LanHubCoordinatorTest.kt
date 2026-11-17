@@ -62,14 +62,14 @@ class LanHubCoordinatorTest {
     }
 
     @Test
-    fun `un árbitro que no contesta da isla a los 15 s, nunca bloquea`() = runTest {
+    fun `un árbitro que no contesta da isla tras 6 s de silencio, nunca bloquea (D14, antes a los 15 s)`() = runTest {
         val client = mockk<LeaseClient> { coEvery { estado(any(), any(), any()) } returns null }
         val mesas = caja()
         coordinador(listOf(yo, arbitroB), mesas, client).start()
         val apertura = mesas.abrirApertura("mesa-5", "s1", "Juan", "V1")
 
         assertEquals(LeaseOutcome.NoHub, mesas.esperar(apertura) { true })
-        assertEquals(MesasDeEstaCaja.PLAZO_PEDIR_MESA_MS, testScheduler.currentTime)
+        assertTrue("t=${testScheduler.currentTime}", testScheduler.currentTime in 6_000L..7_000L)
     }
 
     @Test
@@ -117,8 +117,11 @@ internal class FakeDiscovery(peers: List<LanPeer>) : LanDiscoveryPort {
     override val peers = MutableStateFlow(peers)
     override var cambiosDeArbitro = 0L
         private set
-    override fun conectarHub(respondTo: (String) -> LeaseResponse) {}
-    override fun desconectarHub() {}
+    /** Hub D6 bandas: lo que el coordinador engancha (para preguntarle `en_mesa` como lo haría otra caja). */
+    var hub: ((String) -> LeaseResponse)? = null
+        private set
+    override fun conectarHub(respondTo: (String) -> LeaseResponse) { hub = respondTo }
+    override fun desconectarHub() { hub = null }
 
     /** Como `TransporteLan.publicarPeers` (Codex código r2 H2): cuenta el cambio de elección ANTES de publicar. */
     @Synchronized

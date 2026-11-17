@@ -116,6 +116,13 @@ object LeaseProtocol {
      */
     const val OP_QUIEN = "quien"
 
+    /**
+     * Hub D6 bandas (hz:033d44ca:D6, 16-nov): «¿estás en esta mesa?», directo a cada caja que se alcanza, además del árbitro. Con el WiFi
+     * que aísla una banda, dos cajas pueden elegir árbitros distintos; la caja preguntada contesta SÓLO de sí misma ([STATUS_OK] con
+     * `holder` si está, sin `holder` si no). Una app vieja contesta «Operación desconocida» y cuenta como «no sé».
+     */
+    const val OP_EN_MESA = "en_mesa"
+
     /** Rechazo explícito a un peer que habla otra versión del protocolo. */
     const val ERROR_VERSION_MISMATCH = "VERSION_MISMATCH"
 

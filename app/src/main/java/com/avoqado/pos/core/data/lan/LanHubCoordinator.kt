@@ -10,6 +10,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -37,6 +38,12 @@ private const val TAG = "LanHubCoordinator"
  *
  * Con un árbitro VIEJO (sin `pm=1`: ANDROID previo o iOS) el mismo reconciliador entra en modo compatible ([vueltaCompat]) y traduce
  * la declaración a los `acquire`/`renew`/`release` de siempre, uno a la vez.
+ *
+ * ── Hub D6 bandas: además, la pregunta DIRECTA (hz:033d44ca:D6, 16-nov) ─────
+ * Cada caja elige al árbitro con SUS peers. Con un WiFi que aísla una banda (la D3 y la SAMSUNG en 5 GHz no se ven; las dos ven a la
+ * N86 en 2.4 GHz) la N86 le declaraba a la SAMSUNG y la D3 se preguntaba a sí misma: abrió la mesa del mesero sin aviso. Por eso cada
+ * apertura también le pregunta `en_mesa` a cada caja que alcanza ([consultarDirecto]) y cada caja contesta de sí misma ([responder]).
+ * Una «ocupada» directa gana; «concedida» o «isla» del árbitro esperan a que la pregunta termine (`MesasDeEstaCaja.esperar`).
  */
 class LanHubCoordinator(
     private val discovery: LanDiscoveryPort,
@@ -49,6 +56,12 @@ class LanHubCoordinator(
     server: LeaseServer? = null,
     private val relojMs: () -> Long = { System.nanoTime() / 1_000_000 },
     private val scope: CoroutineScope = CoroutineScope(Dispatchers.IO + SupervisorJob()),
+    /**
+     * Hub D6 bandas (Codex r1 #4): las cajas que hoy le declaran a este aparato como árbitro, cada vez que pueden cambiar (un `estado`
+     * aceptado, cada vuelta del reconciliador para los vencimientos de 30 s, un relevo de árbitro y al apagarse). La línea del plano lo
+     * observa: con una foto que sólo se leía en la revisión del minuto, mentía hasta 60 s.
+     */
+    private val publicarMeDeclaran: (Set<String>) -> Unit = {},
 ) {
     /** Contesta cuando me eligen árbitro; con el mismo reloj monotónico que la caja. */
     private val server = server ?: LeaseServer(deviceId = deviceId, monoMillis = relojMs)
@@ -75,9 +88,12 @@ class LanHubCoordinator(
 
     /** Desde la 3.5 (D1) el hub NO abre socket ni descubrimiento: se engancha al transporte único y consume sus peers. */
     fun start() {
-        discovery.conectarHub(server::respondTo)
+        vivo = true
+        discovery.conectarHub(::responder)
         mesas.fijarVenue(venueId)
         mesas.nuevaEpoca()
+        mesas.consultaDirecta = true
+        enConsulta.clear() // las de un arranque anterior las retoma este (la pregunta vieja se canceló con su trabajo)
 
         trabajos?.cancel()
         trabajos = scope.launch {
@@ -98,15 +114,20 @@ class LanHubCoordinator(
                         } else {
                             server.dejarArbitraje()
                         }
+                        refrescarMeDeclaran()
                         despertar()
                     }
                 }
             }
-            launch { mesas.cambios.collect { despertar() } }
+            launch {
+                val aqui = this // la pregunta directa vive con el coordinador: `stop` la cancela junto con lo demás
+                mesas.cambios.collect { consultarNuevas(aqui); despertar() }
+            }
             launch {
                 // `isActive` arriba de cada vuelta: tras `stop()` una vuelta devuelve 0 y `withTimeoutOrNull(0)` no suspende, así que
                 // sin esto el bucle cancelado daba UNA vuelta completa más (y hasta mandaba otro `estado`).
                 while (isActive) {
+                    refrescarMeDeclaran() // los vencimientos de 30 s no avisan solos: cada vuelta (≤ 10 s) lo vuelve a mirar
                     val ms = try {
                         reconciliarUnaVez()
                     } catch (e: CancellationException) {
@@ -123,11 +144,16 @@ class LanHubCoordinator(
     }
 
     fun stop() {
+        synchronized(candadoDePublicar) {
+            vivo = false
+            publicarMeDeclaran(emptySet())
+        }
         val arbitro = ArbiterElection.pick(discovery.peers.value) // el último conocido, antes de desengancharse
         trabajos?.cancel() // no `scope.cancel()`: `sincronizarVenue` hace stop() → start() y el scope tiene que seguir vivo
         trabajos = null
         discovery.desconectarHub()
         mesas.nuevaEpoca() // una respuesta que le llegue tarde a este coordinador ya no resuelve nada
+        mesas.consultaDirecta = false // antes de soltar: una apertura nueva ya no espera una pregunta que nadie hará
         _myTables.value = emptySet()
         _hubAvailable.value = false
         _isArbiter.value = false
@@ -146,6 +172,93 @@ class LanHubCoordinator(
                 client.estado(arbitro, pedido(gen, seq, declaracion), LeaseClient.PLAZO_DESPEDIDA_MS)
             }
         }
+    }
+
+    /** Hub D6 bandas: las cajas que hoy le declaran a ESTE aparato como árbitro. Para la línea del plano: con ellas sí se coordina. */
+    fun cajasQueLeDeclaran(): Set<String> = server.cajasQueDeclaran() - deviceId
+
+    /** Entre `start` y `stop`: un coordinador apagado ya no publica (una línea tardía del socket no revive a nadie). */
+    @Volatile private var vivo = false
+
+    /**
+     * Codex r2 #1: revisar `vivo`, leer y publicar van juntos bajo este candado, igual que apagar y publicar el vacío. Sin él, un hilo del
+     * socket que ya había revisado `vivo` publicaba su foto vieja DESPUÉS del vacío de `stop`. Orden: este candado → el del `LeaseServer`.
+     */
+    private val candadoDePublicar = Any()
+
+    private fun refrescarMeDeclaran() = synchronized(candadoDePublicar) {
+        if (vivo) publicarMeDeclaran(cajasQueLeDeclaran())
+    }
+
+    // ── Hub D6 bandas: la pregunta directa ────────────────────────────────────
+
+    /** Las aperturas que todavía no se preguntaron, cada una UNA vez, en el trabajo del coordinador. */
+    private val enConsulta = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+
+    private fun consultarNuevas(en: CoroutineScope) {
+        for (a in mesas.porConsultarDirecto()) {
+            if (!enConsulta.add(a.id)) continue
+            en.launch {
+                try {
+                    consultarDirecto(a)
+                } finally {
+                    enConsulta.remove(a.id)
+                }
+            }
+        }
+    }
+
+    /**
+     * «¿Estás en esta mesa?» a cada caja que se alcanza (`pm=1`, `hub=1` y de esta sucursal en su anuncio), en paralelo, ≤ 1.5 s cada una.
+     * La primera «sí» resuelve en cuanto llega; al final, «nadie» (no cambia una «sí» ya puesta). Sin respuesta, error o app vieja: «no
+     * sé» de esa caja (isla con ella), nunca bloquea.
+     */
+    internal suspend fun consultarDirecto(a: Apertura) {
+        val otras = discovery.peers.value
+            .filter { it.deviceId != deviceId && it.presencia && it.sirveLeases && it.venueExplicito }
+            .distinctBy { it.deviceId }
+        if (otras.isNotEmpty()) {
+            val pedido = LeaseRequest(op = LeaseProtocol.OP_EN_MESA, tableId = a.tableId, deviceId = deviceId, venueId = venueId)
+            coroutineScope {
+                otras.forEach { p ->
+                    launch {
+                        val r = try {
+                            client.enMesa(p, pedido)
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (e: Exception) {
+                            null
+                        }
+                        val h = r?.holder?.takeIf { r.status == LeaseProtocol.STATUS_OK && it.tableId == a.tableId } ?: return@launch
+                        Log.i(TAG, "🤝 ${p.deviceId.take(6)} dice que está en la mesa ${a.tableId}: no se abre aquí")
+                        mesas.resolverDirecto(a.id, LeaseOutcome.Taken(h.holderName.ifBlank { "otro mesero" }))
+                    }
+                }
+            }
+        }
+        mesas.resolverDirecto(a.id, null)
+    }
+
+    /**
+     * Lo que contesta esta caja por el transporte: `en_mesa` de sí misma; lo demás, el [LeaseServer] de siempre. Corre en el hilo del
+     * socket: nada de red ni de suspensión.
+     */
+    internal fun responder(linea: String): LeaseResponse {
+        val pedido = LeaseProtocol.decodeRequest(linea)
+        if (pedido?.op != LeaseProtocol.OP_EN_MESA) {
+            return server.respondTo(linea).also { if (pedido?.op == LeaseProtocol.OP_ESTADO) refrescarMeDeclaran() }
+        }
+        if (pedido.version != LeaseProtocol.PROTOCOL_VERSION) {
+            return LeaseResponse(status = LeaseProtocol.STATUS_ERROR, message = LeaseProtocol.ERROR_VERSION_MISMATCH)
+        }
+        if (pedido.venueId != venueId) return LeaseResponse(status = LeaseProtocol.STATUS_ERROR, message = "Venue ajeno")
+        if (pedido.tableId.isEmpty() || pedido.tableId.length > MAX_MESA) return LeaseResponse(status = LeaseProtocol.STATUS_ERROR, message = "Mesa inválida")
+        if (!mesas.ocupa(pedido.tableId, venueId)) return LeaseResponse(status = LeaseProtocol.STATUS_OK)
+        val quien = runCatching { nombre() }.getOrNull()?.takeIf { it.isNotBlank() } ?: "otro mesero"
+        return LeaseResponse(
+            status = LeaseProtocol.STATUS_OK,
+            holder = WireLease(tableId = pedido.tableId, holderDeviceId = deviceId, holderStaffId = "", holderName = quien, epoch = 0, expiresAtMillis = 0),
+        )
     }
 
     /** Que el reconciliador dé una vuelta ya (la declaración pudo cambiar). */
@@ -181,6 +294,7 @@ class LanHubCoordinator(
 
         // 4. Yo soy el árbitro: en local, sin dar la vuelta por la red.
         val pedido = pedido(gen, seq, declaracion)
+        val enviadoMs = relojMs()
         val resp = if (soyYo) server.respondTo(LeaseProtocol.encode(pedido)) else client.estado(arbitro, pedido)
 
         // 5. Primero el contexto local: si cambió la época o el árbitro elegido, nada de lo que volvió vale (ni null, ni stale, ni
@@ -188,14 +302,41 @@ class LanHubCoordinator(
         //    r1 #3): una época nueva de otro hilo espera a que esto termine o lo encuentra ya invalidado.
         return aplicarSiSigue(epoca, { sigueElegido(arbitro, cambios) }) {
             trasValidar()
-            aplicarRespuesta(resp, arbitro, declaracion)
+            aplicarRespuesta(resp, arbitro, Callado(arbitro.deviceId, epoca, cambios, enviadoMs), declaracion)
         } ?: 0
     }
 
+    /**
+     * D14 (hz:033d44ca:D14): a quién se le habló y cuándo salió el mensaje. [silencio] guarda el PRIMERO de una racha sin respuesta:
+     * desde [desdeMs] ese árbitro, en esa época y en esa elección (`cambiosDeArbitro`, por X → Y → X, Codex D14 r1 #2), no ha contestado
+     * nada. Cualquier respuesta lo borra. Lo toca sólo el reconciliador, dentro del candado de la época.
+     */
+    private data class Callado(val arbitro: String, val epoca: Long, val cambios: Long, val desdeMs: Long) {
+        fun mismo(o: Callado) = arbitro == o.arbitro && epoca == o.epoca && cambios == o.cambios
+    }
+    private var silencio: Callado? = null
+
     /** Pasos 6 a 11 de [reconciliarUnaVez], dentro del candado de la época: nada de red ni de suspensión aquí. */
-    private fun aplicarRespuesta(resp: LeaseResponse?, arbitro: LanPeer, declaracion: MesasDeEstaCaja.Declaracion): Long {
-        // 6 y 8. Sin respuesta, u `ok` de otro árbitro: lo conocido no cambia. Nunca 0: un rechazo instantáneo no hace un bucle sin pausa.
-        if (resp == null || (resp.status == LeaseProtocol.STATUS_OK && resp.arbitro != arbitro.deviceId)) {
+    private fun aplicarRespuesta(resp: LeaseResponse?, arbitro: LanPeer, envio: Callado, declaracion: MesasDeEstaCaja.Declaracion): Long {
+        // 6. Sin respuesta. D14: el árbitro que se quedó sin WiFi seguía en la lista y cada apertura esperaba los 15 s enteros. Un silencio
+        //    corto se reintenta en 1 s (un bache con el árbitro vivo); cuando el mismo árbitro lleva [SILENCIO_PARA_ISLA_MS] sin contestar
+        //    nada de lo que se le mandó, las aperturas que viajaron en ESTA declaración van a isla, que es lo que les daba el plazo. Por
+        //    tiempo y no por número de faltas (Codex D14 r1 #1): dos rechazos al instante no son seis segundos de silencio. La pregunta
+        //    directa sigue: `esperar` la espera antes de abrir, y una «ocupada» directa gana.
+        if (resp == null) {
+            val racha = silencio?.takeIf { it.mismo(envio) } ?: envio
+            silencio = racha
+            val callaMs = relojMs() - racha.desdeMs
+            if (callaMs >= SILENCIO_PARA_ISLA_MS && declaracion.aperturas.isNotEmpty()) {
+                Log.w(TAG, "🏝️ El árbitro ${arbitro.deviceId.take(6)} lleva ${callaMs / 1000} s sin contestar — aperturas en isla")
+                declaracion.aperturas.forEach { mesas.resolver(it.id, LeaseOutcome.NoHub) }
+            }
+            return if (mesas.hayPendientes(venueId)) REINTENTO_MS else LATIDO_MS
+        }
+        silencio = null
+
+        // 8. `ok` de otro árbitro: lo conocido no cambia. Nunca 0: un rechazo instantáneo no hace un bucle sin pausa.
+        if (resp.status == LeaseProtocol.STATUS_OK && resp.arbitro != arbitro.deviceId) {
             return if (mesas.hayPendientes(venueId)) REINTENTO_MS else LATIDO_MS
         }
 
@@ -331,6 +472,15 @@ class LanHubCoordinator(
 
         /** Sin respuesta y con una apertura esperando: se reintenta pronto, nunca en 0. */
         const val REINTENTO_MS = 1_000L
+
+        /**
+         * D14: silencio del mismo árbitro (desde el primer mensaje sin respuesta) para dar en isla las aperturas que viajan. Dos plazos de
+         * un mensaje: al menos dos intentos enteros sin una sola respuesta, en la red del local, donde un aparato vivo contesta en ms.
+         */
+        const val SILENCIO_PARA_ISLA_MS = 2 * LeaseClient.PLAZO_HUB_MS
+
+        /** El mismo tope de un id que `Presencias` (MAX_ID). */
+        const val MAX_MESA = 64
     }
 }
 

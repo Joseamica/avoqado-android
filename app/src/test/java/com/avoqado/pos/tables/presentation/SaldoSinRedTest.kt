@@ -125,4 +125,14 @@ class SaldoSinRedTest {
         assertTrue(session.rehidratarSaldoSinRed("v1", session.current()!!, session.revisionActual(), 1))
         assertEquals(1, session.current()!!.valorRondasSinRedCents)
     }
+
+    /** D68 #6: «Libera la mesa» sólo si el plano no la trae ya libre; sin plano o provisional, el texto de siempre. */
+    @Test fun `D68 cuenta pagada con la mesa ya libre no pide liberarla`() {
+        val libre = com.avoqado.pos.tables.data.DiningTable(id = "m1", number = "1")
+        val ocupada = libre.copy(openOrders = listOf(com.avoqado.pos.tables.data.OpenCheckSummary(id = "o1")))
+        assertEquals(CUENTA_PAGADA_MESA_LIBRE, textoDeCuentaYaPagada(libre, provisional = false))
+        assertEquals(CUENTA_PAGADA_LIBERA_LA_MESA, textoDeCuentaYaPagada(ocupada, provisional = false))
+        assertEquals(CUENTA_PAGADA_LIBERA_LA_MESA, textoDeCuentaYaPagada(null, provisional = false))
+        assertEquals(CUENTA_PAGADA_LIBERA_LA_MESA, textoDeCuentaYaPagada(libre, provisional = true))
+    }
 }

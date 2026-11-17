@@ -84,6 +84,74 @@ class AvisoDeIslaTest {
         assertFalse(AvisoDeIsla.mostrar(true, yo.deviceId, listOf(yo, cocinaSinHub), setOf(cocinaSinHub.deviceId)))
     }
 
+    // MARK: - Hub D6 bandas (hz:033d44ca:D6, ensayo del 16-nov): la línea sigue a quien de verdad coordina
+
+    private val samsung = LanPeer("samsung-d118", "192.168.100.159", 37147)
+
+    @Test fun `D6 bandas - la D3 ve a la N86 pero no a la SAMSUNG que recuerda - dice que no ve a todas`() {
+        // Antes: la N86 a la vista apagaba la línea, y la D3 no avisaba que con la SAMSUNG trabajaba sola.
+        assertEquals(
+            AvisoDeIsla.TEXTO_PARCIAL,
+            AvisoDeIsla.texto(true, yo.deviceId, listOf(yo, n86), setOf(n86.deviceId, samsung.deviceId)),
+        )
+        assertFalse("no es la línea de «no ve a ninguna»", AvisoDeIsla.mostrar(true, yo.deviceId, listOf(yo, n86), setOf(samsung.deviceId)))
+    }
+
+    @Test fun `D6 bandas - la SAMSUNG no ve a la N86 pero la N86 le declara - no dice que no ve a ninguna`() {
+        // La SAMSUNG es árbitro de la N86: coordina con ella aunque NSD no la traiga. Le falta la D3 (5 GHz aislado): parcial.
+        val d3 = "d3-4f9f"
+        assertEquals(
+            AvisoDeIsla.TEXTO_PARCIAL,
+            AvisoDeIsla.texto(true, samsung.deviceId, listOf(samsung), setOf(n86.deviceId, d3), meDeclaran = setOf(n86.deviceId)),
+        )
+        // Sin la D3 en la memoria: la N86 le declara y no falta nadie ⇒ sin línea.
+        assertEquals(null, AvisoDeIsla.texto(true, samsung.deviceId, listOf(samsung), setOf(n86.deviceId), meDeclaran = setOf(n86.deviceId)))
+    }
+
+    @Test fun `D6 bandas - con todas a la vista o sin Hub no hay linea y sin nadie sigue la de siempre`() {
+        assertEquals(null, AvisoDeIsla.texto(true, yo.deviceId, listOf(yo, n86, samsung), setOf(n86.deviceId, samsung.deviceId)))
+        assertEquals(null, AvisoDeIsla.texto(false, yo.deviceId, listOf(yo, n86), setOf(samsung.deviceId)))
+        assertEquals(AvisoDeIsla.TEXTO, AvisoDeIsla.texto(true, yo.deviceId, listOf(yo), setOf(n86.deviceId, samsung.deviceId)))
+        // Sólo este aparato «se declara» a sí mismo: no cuenta como compañía.
+        assertEquals(AvisoDeIsla.TEXTO, AvisoDeIsla.texto(true, yo.deviceId, listOf(yo), setOf(n86.deviceId), meDeclaran = setOf(yo.deviceId)))
+    }
+
+    @Test fun `D6 bandas - el flujo cambia de texto cuando una caja que coordinaba se pierde`() = runTest {
+        val peers = MutableStateFlow(listOf(yo, n86))
+        val visto = mutableListOf<String?>()
+        backgroundScope.launch {
+            AvisoDeIsla.flujo(peers, { yo.deviceId }, { true }, { setOf(n86.deviceId, samsung.deviceId) }).collect { visto += it }
+        }
+        runCurrent()
+        assertTrue("Codex r2 #2: durante la gracia no emite nada (el null inicial es del ViewModel)", visto.isEmpty())
+        advanceTimeBy(AvisoDeIsla.GRACIA_MS + 1); runCurrent()
+        assertEquals("falta la SAMSUNG: parcial a los 10 s", AvisoDeIsla.TEXTO_PARCIAL, visto.last())
+        peers.value = listOf(yo) // también se pierde la N86
+        runCurrent()
+        assertEquals("Codex r1 4: ya se mostraba: cambia de texto sin otra gracia", AvisoDeIsla.TEXTO, visto.last())
+        peers.value = listOf(yo, n86, samsung) // vuelven las dos
+        runCurrent()
+        assertEquals("se quita al instante", null, visto.last())
+    }
+
+    @Test fun `Codex r1 4 - la caja que empieza a declararle cambia el texto al instante, sin esperar la revision del minuto`() = runTest {
+        val meDeclaran = MutableStateFlow(emptySet<String>())
+        val visto = mutableListOf<String?>()
+        // La SAMSUNG del ensayo: no ve a nadie por NSD, recuerda a la N86 y a la D3.
+        backgroundScope.launch {
+            AvisoDeIsla.flujo(MutableStateFlow(listOf(yo)), { yo.deviceId }, { true }, { setOf(n86.deviceId, "d3-4f9f") }, meDeclaran)
+                .collect { visto += it }
+        }
+        advanceTimeBy(AvisoDeIsla.GRACIA_MS + 1); runCurrent()
+        assertEquals(AvisoDeIsla.TEXTO, visto.last())
+        meDeclaran.value = setOf(n86.deviceId) // la N86 le empieza a declarar
+        runCurrent()
+        assertEquals(AvisoDeIsla.TEXTO_PARCIAL, visto.last())
+        meDeclaran.value = emptySet() // deja de declararle (vence a los 30 s): vuelve el de siempre, también al instante
+        runCurrent()
+        assertEquals(AvisoDeIsla.TEXTO, visto.last())
+    }
+
     // MARK: - Lo recordado (el disco del D12, sólo lectura)
 
     private val ahora = 1_800_000_000_000L
@@ -116,7 +184,7 @@ class AvisoDeIslaTest {
     @Test fun `la linea espera 10 s seguidos para salir y se quita al instante`() = runTest {
         val peers = MutableStateFlow(listOf(yo, n86))
         val visto = mutableListOf<Boolean>()
-        backgroundScope.launch { AvisoDeIsla.flujo(peers, { yo.deviceId }, { true }, { setOf(n86.deviceId) }).collect { visto += it } }
+        backgroundScope.launch { AvisoDeIsla.flujo(peers, { yo.deviceId }, { true }, { setOf(n86.deviceId) }).collect { visto += (it != null) } }
         runCurrent()
         assertEquals(listOf(false), visto)
 
@@ -135,7 +203,7 @@ class AvisoDeIslaTest {
     @Test fun `si la caja vuelve antes de 10 s la linea nunca sale - arranque o un bache`() = runTest {
         val peers = MutableStateFlow(listOf(yo))
         val visto = mutableListOf<Boolean>()
-        backgroundScope.launch { AvisoDeIsla.flujo(peers, { yo.deviceId }, { true }, { setOf(n86.deviceId) }).collect { visto += it } }
+        backgroundScope.launch { AvisoDeIsla.flujo(peers, { yo.deviceId }, { true }, { setOf(n86.deviceId) }).collect { visto += (it != null) } }
         runCurrent()
         advanceTimeBy(5_000); runCurrent()
         peers.value = listOf(yo, n86)
@@ -148,7 +216,7 @@ class AvisoDeIslaTest {
         val peers = MutableStateFlow(listOf(yo))
         var hub = true
         val visto = mutableListOf<Boolean>()
-        backgroundScope.launch { AvisoDeIsla.flujo(peers, { yo.deviceId }, { hub }, { setOf(n86.deviceId) }).collect { visto += it } }
+        backgroundScope.launch { AvisoDeIsla.flujo(peers, { yo.deviceId }, { hub }, { setOf(n86.deviceId) }).collect { visto += (it != null) } }
         advanceTimeBy(AvisoDeIsla.GRACIA_MS + 1); runCurrent()
         assertTrue(visto.last())
         hub = false
@@ -159,7 +227,7 @@ class AvisoDeIslaTest {
     @Test fun `Codex r1 4 - la revision del minuto no reinicia los 10 s de una ausencia que ya corria`() = runTest {
         val peers = MutableStateFlow(listOf(yo, n86))
         val visto = mutableListOf<Boolean>()
-        backgroundScope.launch { AvisoDeIsla.flujo(peers, { yo.deviceId }, { true }, { setOf(n86.deviceId) }).collect { visto += it } }
+        backgroundScope.launch { AvisoDeIsla.flujo(peers, { yo.deviceId }, { true }, { setOf(n86.deviceId) }).collect { visto += (it != null) } }
         runCurrent()
         advanceTimeBy(51_000); runCurrent()
         peers.value = listOf(yo) // se pierde en el segundo 51; la revisión llega en el 60
@@ -189,6 +257,7 @@ class AvisoDeIslaTest {
         val outbox = mockk<SyncOutbox>(relaxed = true)
         coEvery { outbox.trabajoSinResolverDeLaOrden(any(), any()) } returns TrabajoSinResolver(0, 0, emptySet(), 0)
         val plan = mockk<PlanManager>(relaxed = true).also { every { it.hasFeature(any()) } returns true }
+        every { hub.cajasQueLeDeclaran } returns MutableStateFlow(emptySet())
         val transporte = mockk<TransporteLan>().also {
             every { it.peers } returns peers
             every { it.deviceId } returns yo.deviceId
@@ -209,10 +278,10 @@ class AvisoDeIslaTest {
         val mira = backgroundScope.launch { vm.avisoDeIsla.collect {} }
         runCurrent()
         advanceTimeBy(AvisoDeIsla.GRACIA_MS + 1); runCurrent()
-        assertTrue("la línea está puesta", vm.avisoDeIsla.value)
+        assertEquals("la línea está puesta", AvisoDeIsla.TEXTO, vm.avisoDeIsla.value)
         bloque()
         runCurrent()
-        assertTrue("y sigue puesta", vm.avisoDeIsla.value)
+        assertEquals("y sigue puesta", AvisoDeIsla.TEXTO, vm.avisoDeIsla.value)
         mira.cancel()
     }
 
@@ -224,11 +293,11 @@ class AvisoDeIslaTest {
             val mira = backgroundScope.launch { vm.avisoDeIsla.collect {} }
             runCurrent()
             advanceTimeBy(AvisoDeIsla.GRACIA_MS + 1); runCurrent()
-            assertTrue(vm.avisoDeIsla.value)
+            assertEquals(AvisoDeIsla.TEXTO, vm.avisoDeIsla.value)
             mira.cancel() // sale de Mesas
             advanceTimeBy(5_001); runCurrent()
             peers.value = listOf(yo, n86) // mientras tanto vuelve la N86
-            assertFalse("al regresar no se entrega el true de la visita anterior", vm.avisoDeIsla.value)
+            assertEquals("al regresar no se entrega la línea de la visita anterior", null, vm.avisoDeIsla.value)
         } finally { vm.viewModelScope.cancel() }
     }
 

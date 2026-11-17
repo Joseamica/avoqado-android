@@ -170,6 +170,13 @@ la declara; salir es simplemente dejar de declararla.
   traduce lo que declara a `acquire`/`renew`/`release`, uno a la vez. Un árbitro nuevo atiende las ops viejas de las apps viejas,
   les niega la mesa que declara una caja nueva viva y borra los permisos viejos de una caja en cuanto ésta declara. El protocolo
   sigue en la versión 1 y las ops viejas salen por el cable byte por byte igual.
+- **Pregunta directa (Hub D6 bandas, 16-nov, hz:033d44ca:D6):** cada caja elige árbitro con SUS peers, y un WiFi que aísla una banda
+  (5 GHz) rompe la elección: en el ensayo la N86 (2.4 GHz) le declaraba a la SAMSUNG y la D3 (5 GHz, no ve a la SAMSUNG) se
+  preguntaba a sí misma, y abrió la mesa del mesero. Por eso cada apertura también manda `en_mesa` (protocolo v1) a cada peer `pm=1`,
+  `hub=1` y de la sucursal en su anuncio, en paralelo, ≤ 1.5 s; cada caja contesta SÓLO de sí misma (su mesa actual o una apertura
+  ya concedida o en isla). Una «ocupada» (directa o del árbitro) gana en cuanto llega; «concedida» o «isla» esperan a que la pregunta
+  termine. Sin respuesta, error o app vieja ⇒ «no sé» de esa caja. La contesta el coordinador (`LanHubCoordinator.responder` envuelve
+  al `LeaseServer`); `TransporteLan` y `EnrutadorLan` no cambian. Dos cajas que no se alcanzan siguen en isla entre sí.
 - 🔴 **Ante cualquier duda, isla:** sin árbitro, sin respuesta, `stale`, `error` o el plazo vencido ⇒ se abre como siempre. Los
   límites declarados (dos cuentas que el SERVIDOR junta al volver la red, árbitro apagado que NSD sigue listando ~108 s, plan
   guardado al abrir la app, bandas del WiFi) están en el §4 del spec:
@@ -415,7 +422,9 @@ marcado LISTO sin red no aparece en «Recientes» y «Deshacer» sigue sólo en 
   (ADD_ITEMS fusiona, PAY_CASH es idempotente, la propiedad de mesa rechaza
   cruces), pero es la capa que falta.
 - Indicador visual de árbitro en el plano. (El de **isla** ya está: D6, 12-nov-2026, `tables/presentation/AvisoDeIsla.kt`: con
-  el Hub, si falta una caja que el aparato recuerda y no ve a ninguna que coordine mesas, una línea gris en el plano; nunca bloquea.)
+  el Hub, si falta una caja que el aparato recuerda, una línea gris en el plano; nunca bloquea. Desde el 16-nov dice «no ve a las otras
+  cajas» si no coordina con ninguna y «no ve a todas las cajas» si coordina con alguna; coordina = la ve con `hub=1` o le declara a
+  este aparato como árbitro.)
 - El fix de impresión offline de **iOS** se hizo por paridad y lectura de código:
   **no se ha probado con un iPad y una impresora físicos.**
 - ~~Alta manual de impresora por IP~~ — HECHO 2026-08-04 en ambas.

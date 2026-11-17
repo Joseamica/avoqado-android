@@ -80,6 +80,8 @@ fun QuarantineSheet(
     historial:HistorialDelCobroViewModel = hiltViewModel(),
 ) {
     val revisiones by historial.filas.collectAsState()
+    // D68 #5: el nombre de cada tipo de pago del negocio, del catálogo guardado en el aparato (sirve sin red).
+    val tiposDePago by viewModel.tiposDePago.collectAsState()
     val totalRevisiones by historial.total.collectAsState()
     val revisadas by historial.revisadas.collectAsState()
     val busqueda by historial.busqueda.collectAsState()
@@ -159,7 +161,8 @@ fun QuarantineSheet(
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     } else {
-                        Text("Un gerente debe revisar este pago.", style = MaterialTheme.typography.bodyMedium)
+                        // D7: aquí caen rondas, mesas y cobros: el encabezado no dice «pago» (ensayo A5, 16-nov).
+                        Text("Un gerente debe revisar estas operaciones.", style = MaterialTheme.typography.bodyMedium)
                     }
                     if (historial.canRead) mensajeHistorial?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
                     HorizontalDivider()
@@ -224,7 +227,7 @@ fun QuarantineSheet(
                         items(cobrosInterrumpidos, key = { "interrumpido-${it.id}" }) { cobro ->
                             var abierto by rememberSaveable("interrumpido-${cobro.id}") { mutableStateOf(false) }
                             Column(Modifier.fillMaxWidth().padding(vertical = AvoqadoTheme.spacing.md), verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
-                                Text(tituloDelCobroInterrumpido(cobro.method, cobro.tenderTypeId), style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                                Text(tituloDelCobroInterrumpido(cobro.method, cobro.tenderTypeId, tiposDePago.firstOrNull { it.id == cobro.tenderTypeId }?.name), style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
                                 Text(formatMoney(cobro.amountCents), style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold)
                                 ReferenciaDeRevision("Folio ${cobro.id.take(8)}", formatTime(cobro.createdAt), abierto, { abierto = !abierto })
                                 Text("La app se cerró mientras registraba este cobro.", style = MaterialTheme.typography.bodyMedium)
@@ -315,7 +318,7 @@ fun QuarantineSheet(
                         if (deOtrasSucursales.isNotEmpty()) item { SeccionDeRevision("De otras sucursales") }
                         items(deOtrasSucursales, key = { "otra-sucursal-${it.cobro.id}" }) { pendiente ->
                             Column(Modifier.fillMaxWidth().padding(vertical = AvoqadoTheme.spacing.md), verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
-                                Text(tituloDelCobroInterrumpido(pendiente.cobro.method, pendiente.cobro.tenderTypeId), style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                                Text(tituloDelCobroInterrumpido(pendiente.cobro.method, pendiente.cobro.tenderTypeId, tiposDePago.firstOrNull { it.id == pendiente.cobro.tenderTypeId }?.name), style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
                                 Text(formatMoney(pendiente.cobro.amountCents), style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold)
                                 Text("Folio ${pendiente.cobro.id.take(8)} · ${formatTime(pendiente.cobro.createdAt)}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 Text(textoDeCobroDeOtraSucursal(pendiente.sucursal), style = MaterialTheme.typography.bodyMedium)
@@ -543,14 +546,34 @@ fun CancelacionesPendientesBanner(onClick: () -> Unit) {
 }
 
 @Composable
-fun QuarantineBanner(count: Int, historyAvailable: Boolean = false, historyUnavailable: Boolean = false, actionLabel: String = "Revisar", onClick: () -> Unit) {
+fun QuarantineBanner(count: Int, historyAvailable: Boolean = false, historyUnavailable: Boolean = false, actionLabel: String = "Revisar",
+    applied: Int = 0, onClick: () -> Unit) {
     if (count <= 0 && !historyAvailable && !historyUnavailable) return
     BannerDeRevision(
-        texto = if (historyUnavailable) "No se pudo leer el historial de cobros" else if (count <= 0) "Historial de cobros" else if (count == 1) "1 operación necesita revisión" else "$count operaciones necesitan revisión",
+        texto = textoDeLaBandaDeRevision(count, applied, historyUnavailable),
         necesitaAtencion = count > 0 || historyUnavailable,
         onClick = onClick,
         actionLabel = actionLabel,
     )
+}
+
+/**
+ * D68 #2 (prueba final del 13-nov): la banda decía «3 operaciones necesitan revisión» y el freno de «Cerrar sesión», «Hay 1 operación
+ * por revisar»: dos eran avisos de pagos que el SERVIDOR ya registró («Pago registrado · revisa las diferencias»), que no frenan. Esos
+ * [applied] se dicen aparte, con su nombre, para que la banda y el freno cuenten lo mismo. PURA.
+ */
+internal fun textoDeLaBandaDeRevision(count: Int, applied: Int, historyUnavailable: Boolean = false): String {
+    if (historyUnavailable) return "No se pudo leer el historial de cobros"
+    if (count <= 0) return "Historial de cobros"
+    val avisos = applied.coerceIn(0, count)
+    val porRevisar = count - avisos
+    val deAvisos = if (avisos == 1) "1 aviso de un pago ya registrado" else "$avisos avisos de pagos ya registrados"
+    val deRevision = if (porRevisar == 1) "1 operación necesita revisión" else "$porRevisar operaciones necesitan revisión"
+    return when {
+        avisos == 0 -> deRevision
+        porRevisar == 0 -> deAvisos
+        else -> "$deRevision · $deAvisos"
+    }
 }
 
 @Composable
@@ -626,8 +649,10 @@ private fun DecisionesDelCobro(onConservar: () -> Unit, onConfirmar: () -> Unit)
  * D53 (Codex r1 #3): el título de un cobro interrumpido dice CÓMO se cobró. Antes decía «Cobro en efectivo» siempre, también con una
  * transferencia o una tarjeta de otra terminal, y el gerente decidía «¿el cliente pagó?» con el dato equivocado. PURA.
  */
-internal fun tituloDelCobroInterrumpido(metodo: String, tipoDelCatalogo: String?): String {
-    if (tipoDelCatalogo != null) return "Cobro con otro tipo de pago"
+internal fun tituloDelCobroInterrumpido(metodo: String, tipoDelCatalogo: String?, nombreDelTipo: String? = null): String {
+    // D68 #5 (prueba final del 13-nov): con un tipo del negocio decía «Cobro con otro tipo de pago» aunque el aparato sabe su nombre
+    // («Transferencia»). Se dice con el nombre que le puso el negocio; sin él (otra sucursal, catálogo sin bajar), el genérico.
+    if (tipoDelCatalogo != null) return nombreDelTipo?.trim()?.takeIf { it.isNotEmpty() }?.let { "Cobro con $it" } ?: "Cobro con otro tipo de pago"
     val manual = runCatching { com.avoqado.pos.payment.domain.ManualPaymentMethod.valueOf(metodo) }.getOrNull()
     return if (manual != null) "Cobro con ${manual.label.lowercase()}" else "Cobro en efectivo"
 }
