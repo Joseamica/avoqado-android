@@ -122,6 +122,9 @@ fun QuarantineSheet(
 
     LaunchedEffect(Unit) { viewModel.load();historial.cargar() }
     LaunchedEffect(successMessage) { if (successMessage != null) historial.cargar() }
+    // D63 (Codex r4): «Conservar para revisión» avisa por el canal de error y le pone motivo Q15: el cobro pasa a «Cobros por
+    // revisar», donde está «Dejar para soporte». Sin recargar, había que cerrar y abrir la hoja para verlo.
+    LaunchedEffect(errorMessage) { if (errorMessage != null) historial.cargar() }
 
     AvoqadoFullScreenModal(
         title = "Operaciones por revisar",
