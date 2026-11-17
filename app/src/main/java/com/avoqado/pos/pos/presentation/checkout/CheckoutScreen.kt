@@ -70,6 +70,7 @@ import com.avoqado.pos.customers.domain.esTextoDeTelefono
 import com.avoqado.pos.customers.presentation.CustomersViewModel
 import com.avoqado.pos.designsystem.components.AtajoDeTeclado
 import com.avoqado.pos.designsystem.components.BarreraDeAtajos
+import com.avoqado.pos.designsystem.components.CantidadTecleable
 import com.avoqado.pos.designsystem.components.AvoqadoDialog
 import com.avoqado.pos.designsystem.components.TeclaDeAtajo
 import com.avoqado.pos.designsystem.components.AvoqadoPillTextField
@@ -2882,12 +2883,7 @@ private fun CartItemDetailContent(
                         else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
                     )
                 }
-                Text(
-                    text = "${item.quantity}",
-                    style = MaterialTheme.typography.titleMedium,
-                    modifier = Modifier.width(40.dp),
-                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                )
+                CantidadTecleable(cantidad = item.quantity, onCantidad = onUpdateQuantity)
                 Box(
                     modifier = Modifier
                         .size(36.dp)

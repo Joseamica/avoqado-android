@@ -1,0 +1,95 @@
+package com.avoqado.pos.escritorio.teclado
+
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.test.ExperimentalTestApi
+import androidx.compose.ui.test.SemanticsNodeInteraction
+import androidx.compose.ui.test.hasSetTextAction
+import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performKeyInput
+import androidx.compose.ui.test.pressKey
+import androidx.compose.ui.test.runComposeUiTest
+import com.avoqado.pos.designsystem.components.LocalEsEscritorio
+import com.avoqado.pos.designsystem.components.SearchPillField
+import androidx.compose.material3.MaterialTheme
+import com.avoqado.pos.pos.presentation.search.flechasDeResultados
+import kotlin.test.Test
+import kotlin.test.assertEquals
+
+/** «Buscar» en Windows: ↓/↑ por los resultados y Enter elige (founder, 17-nov; cliente con teclado). */
+@OptIn(ExperimentalTestApi::class)
+class BuscarConFlechasEnLaEscenaTest {
+    private var marcada by mutableIntStateOf(-1)
+    private var elegido = -1
+    private var listaVigente = true
+
+    private fun androidx.compose.ui.test.ComposeUiTest.buscador(total: Int): SemanticsNodeInteraction {
+        setContent {
+            CompositionLocalProvider(LocalEsEscritorio provides true) {
+                MaterialTheme {
+                    SearchPillField(
+                        query = "manchego", onQueryChange = {}, placeholder = "Buscar productos...",
+                        textFieldModifier = Modifier.flechasDeResultados({ if (listaVigente) total else 0 }, { marcada }, onMarcada = { marcada = it }) { elegido = it },
+                    )
+                }
+            }
+        }
+        return onNode(hasSetTextAction()).also { it.performClick() }
+    }
+
+    @Test fun `dos veces abajo y Enter elige el segundo`() = runComposeUiTest {
+        val campo = buscador(total = 5)
+        campo.performKeyInput { pressKey(Key.DirectionDown); pressKey(Key.DirectionDown) }
+        waitForIdle()
+        assertEquals(1, marcada)
+        campo.performKeyInput { pressKey(Key.Enter) }
+        waitForIdle()
+        assertEquals(1, elegido)
+    }
+
+    @Test fun `Enter sin nada marcado no elige (la pistola termina en Enter)`() = runComposeUiTest {
+        val campo = buscador(total = 5)
+        campo.performKeyInput { pressKey(Key.Enter) }
+        waitForIdle()
+        assertEquals(-1, elegido)
+    }
+
+    @Test fun `abajo no pasa del ultimo y arriba desde el primero quita la marca`() = runComposeUiTest {
+        val campo = buscador(total = 2)
+        campo.performKeyInput { repeat(4) { pressKey(Key.DirectionDown) } }
+        waitForIdle()
+        assertEquals(1, marcada)
+        campo.performKeyInput { repeat(2) { pressKey(Key.DirectionUp) } }
+        waitForIdle()
+        assertEquals(-1, marcada)
+        campo.performKeyInput { pressKey(Key.Enter) }
+        waitForIdle()
+        assertEquals(-1, elegido)
+    }
+
+    // La pistola teclea su código y su Enter antes del siguiente cuadro (Codex r2 #4): el Enter no elige lo marcado antes.
+    @Test fun `el Enter de la pistola no elige el resultado marcado antes de su codigo`() = runComposeUiTest {
+        val campo = buscador(total = 5)
+        campo.performKeyInput { pressKey(Key.DirectionDown); pressKey(Key.DirectionDown) }
+        waitForIdle()
+        assertEquals(1, marcada)
+        campo.performKeyInput { pressKey(Key.Seven); pressKey(Key.Five); pressKey(Key.Enter) }   // en el mismo cuadro
+        waitForIdle()
+        assertEquals(-1, elegido)
+        assertEquals(-1, marcada)
+    }
+
+    // Una letra y ↓ antes del redibujo: la lista pintada es de lo escrito antes, y ↓ no debe marcarla (Codex r4 #3).
+    @Test fun `las flechas no marcan una lista que ya no es de lo escrito`() = runComposeUiTest {
+        val campo = buscador(total = 5)
+        listaVigente = false
+        campo.performKeyInput { pressKey(Key.DirectionDown); pressKey(Key.Enter) }
+        waitForIdle()
+        assertEquals(-1, marcada)
+        assertEquals(-1, elegido)
+    }
+}
