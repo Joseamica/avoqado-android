@@ -218,10 +218,12 @@ class PaymentSyncService @Inject constructor(
             // ruido que promete algo que ese endpoint no hace.
             if (!esCobroDeOrden) {
                 payment.customerId?.takeIf { it.isNotBlank() }?.let { put("customerId", it) }
-                // La hora de la venta, sólo en EFECTIVO (sin tipo del catálogo): el SERVIDOR fecha la lealtad con ella (promoción
-                // vigente y tope diario de sellos) en vez de con la hora del reenvío. Es la de la fila (se guarda ANTES de la red), así
-                // que cada reintento manda la misma. Tarjeta y demás: sin campo, como hoy. Un SERVIDOR viejo lo ignora.
-                if (tenderId == null && payment.method == "CASH") put("createdAtLocal", horaDeLaVenta)
+                // La hora de la venta: el SERVIDOR fecha con ella la lealtad (promoción vigente y tope diario de sellos) y, desde D93
+                // (encargo 18cc7f, founder 16-nov «B», como Square), la guarda aparte SÓLO para los reportes (`clientCreatedAt`): el
+                // corte, el turno y el cajón siguen con la hora de llegada. Es la de la fila (se guarda ANTES de la red), así que cada
+                // reintento manda la misma. Con cualquier forma de pago (el «Efectivo» del catálogo, la tarjeta de una terminal ajena o
+                // la transferencia también se vendieron a esa hora). Un SERVIDOR viejo lo ignora.
+                put("createdAtLocal", horaDeLaVenta)
             }
             // 🔴 LA CAJA DE LA VENTA (efectivo sin red en el turno correcto): el servidor saca de ahí el turno de la venta, y una
             // venta cuyo turno ya cerró queda aparte con aviso en vez de caer en el turno nuevo. Sólo cuenta con

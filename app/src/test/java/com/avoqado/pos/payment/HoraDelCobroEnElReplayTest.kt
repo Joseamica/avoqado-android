@@ -82,13 +82,22 @@ class HoraDelCobroEnElReplayTest {
         assertEquals(cobradoA, (cuerpo["createdAtLocal"] as JsonPrimitive).long)
     }
 
-    @Test fun `la venta rapida con tarjeta u otro metodo no la manda`() {
+    /**
+     * D93 (encargo 18cc7f, founder 16-nov «B», como Square): lo vendido sin internet sale en los reportes a su hora real. Antes sólo la
+     * mandaba el efectivo sin tipo del catálogo (era sólo para la lealtad) y el «Efectivo» del catálogo o un cobro registrado a mano
+     * quedaban con la hora de subida. Ahora toda venta rápida reenviada la manda; el SERVIDOR la guarda aparte, sólo si es de las 24 h
+     * antes de su llegada.
+     */
+    @Test fun `P1 la venta rapida con tipo del catalogo, tarjeta externa o transferencia tambien manda su hora`() {
         for (m in listOf("CARD_EXTERNAL", "TRANSFER")) {
-            assertFalse(PaymentSyncService.buildReplayBody(fila("FAST").copy(method = m), "venue-1", esCobroDeOrden = false)
-                .contains("createdAtLocal"))
+            val cuerpo = Json.parseToJsonElement(PaymentSyncService.buildReplayBody(fila("FAST").copy(method = m), "venue-1", esCobroDeOrden = false))
+                .jsonObject
+            assertEquals(cobradoA, (cuerpo["createdAtLocal"] as JsonPrimitive).long)
         }
-        assertFalse(PaymentSyncService.buildReplayBody(fila("FAST").copy(tenderTypeId = "t1", tenderRevision = 1), "venue-1", false)
-            .contains("createdAtLocal"))
+        val conTipo = Json.parseToJsonElement(
+            PaymentSyncService.buildReplayBody(fila("FAST").copy(tenderTypeId = "t1", tenderRevision = 1), "venue-1", false),
+        ).jsonObject
+        assertEquals(cobradoA, (conTipo["createdAtLocal"] as JsonPrimitive).long)
     }
 
     @Test fun `con la cola real la hora del pay es la de la captura, la misma que la de la orden`() = runTest {
