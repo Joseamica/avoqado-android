@@ -819,6 +819,10 @@ private fun MainScaffold(
     } else {
         // iPhone-style: standard NavigationBar
         Scaffold(
+            // Como en la tablet: sin el alto de la barra del sistema abajo. La app la esconde,
+            // pero en Android 9 (N86) el sistema sigue reportándola (48 dp) y dejaba una franja
+            // vacía debajo de la barra de pestañas, y bajo Cambio cuando la barra no se muestra.
+            contentWindowInsets = WindowInsets.statusBars,
             topBar = {
                 androidx.compose.foundation.layout.Column {
                     ConnectivityBanner(
@@ -847,7 +851,9 @@ private fun MainScaffold(
             bottomBar = {
                 // Mismo criterio que el layout de tablet: durante el cobro no se
                 // muestra, porque asoma por debajo del diálogo del pago.
-                if (!isPaying && !isExchanging) NavigationBar {
+                // Pegada a la orilla, sin el relleno de la barra del sistema (ver TabletTabBar):
+                // si el cajero la asoma con un deslizón, se encima unos segundos y se va sola.
+                if (!isPaying && !isExchanging) NavigationBar(windowInsets = WindowInsets(0, 0, 0, 0)) {
                     graphVisibleTabs.forEach { tab ->
                         val selected = tab == pestanaMarcada
                         NavigationBarItem(
