@@ -503,20 +503,21 @@ class ReconciliadorDeMesasTest {
     }
 
     @Test
-    fun `p_null - sin respuesta nunca, cada envío sale 1 s o más después del anterior y a los 15 s da NoHub`() = runTest {
-        val red = red(arbitro("X")).also { it.fija = { null } } // conexión rechazada al instante
+    fun `p_null - sin respuesta, el reintento sale 1 s después (nunca en 0) y con 6 s de silencio da NoHub (D14, antes a los 15 s)`() = runTest {
+        val red = red(arbitro("X"))
         val mesas = caja()
         coordinador(red, mesas).start()
         runCurrent()
         advanceTimeBy(5_000)
 
+        red.fija = { null } // desde ahora, conexión rechazada al instante
         val apertura = mesas.abrirApertura("m14", "s1", "Ana", v)
         assertEquals(LeaseOutcome.NoHub, mesas.esperar(apertura) { true })
 
-        assertEquals(20_000L, testScheduler.currentTime)
+        assertEquals(11_000L, testScheduler.currentTime)
+        assertEquals((5_000L..11_000L step 1_000).toList(), red.envios.filter { it >= 5_000 })
+        advanceTimeBy(30_000) // ya sin aperturas: sólo el latido
         val envios = red.envios.filter { it >= 5_000 }
-        assertEquals(5_000L, envios.first())
-        assertTrue("hubo reintentos: $envios", envios.size >= 10)
         envios.zipWithNext().forEach { (antes, despues) -> assertTrue("$antes → $despues", despues - antes >= 1_000) }
     }
 
