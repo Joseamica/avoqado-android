@@ -123,10 +123,61 @@ private data class OpenDrawerRequest(
  * y todo se comporta como hoy. Mandar la llave nunca puede impedir registrar dinero.
  */
 @Serializable
-private data class PayInRequest(val amount: Double, val note: String? = null, val localId: String, val sessionId: String? = null)
+private data class PayInRequest(
+    val amount: Double,
+    val note: String? = null,
+    val localId: String,
+    val sessionId: String? = null,
+    /** Encargo 921513: la hora REAL del movimiento (ISO-8601), sólo del reenvío de la cola. Nula no viaja; un SERVIDOR viejo la ignora. */
+    val createdAt: String? = null,
+    /** Encargo 921513 (Codex r2): cuánto esperó en la cola, con el reloj del aparato. El SERVIDOR calcula «llegada − espera». */
+    val edadMs: Long? = null,
+)
 
 @Serializable
-private data class PayOutRequest(val amount: Double, val note: String? = null, val localId: String, val sessionId: String? = null)
+private data class PayOutRequest(
+    val amount: Double,
+    val note: String? = null,
+    val localId: String,
+    val sessionId: String? = null,
+    /** Encargo 921513: la hora REAL del movimiento (ISO-8601), sólo del reenvío de la cola. Nula no viaja; un SERVIDOR viejo la ignora. */
+    val createdAt: String? = null,
+    /** Encargo 921513 (Codex r2): cuánto esperó en la cola, con el reloj del aparato. El SERVIDOR calcula «llegada − espera». */
+    val edadMs: Long? = null,
+)
+
+/** La hora de un ingreso o retiro de la cola para el SERVIDOR: cuándo se hizo (ISO-8601) y cuánto lleva esperando. */
+data class HoraDelMovimiento(val createdAt: String?, val edadMs: Long?)
+
+/** El instante de un movimiento en el reloj que no se mueve a mano: el arranque del aparato y su `elapsedRealtime`. */
+data class InstanteMonotonico(val arranque: String, val ms: Long)
+
+/** Antes de esto no hay movimientos reales: una cola legada trae `at = 1` y esa hora no se manda (quedaría en la apertura). */
+private const val HORA_MINIMA_CREIBLE_MS = 1_577_836_800_000L // 2020-01-01T00:00:00Z
+
+/**
+ * Encargo 921513 (founder 16-nov «A»): la hora REAL de un ingreso o retiro que se REENVÍA desde la cola: su hora de pared [at] (ISO)
+ * y cuánto esperó, medido con el reloj MONOTÓNICO ([entonces] → [ahora]), que no cambia aunque alguien mueva el reloj de pared
+ * durante la espera (Codex r2 #1 y r3 #1: una resta de dos horas de pared no prueba tiempo transcurrido). El SERVIDOR guarda
+ * «llegada − espera», que además cancela un reloj de pared desfasado. Si el aparato se reinició mientras esperaba (otro arranque), o la
+ * operación es de una versión anterior (sin instante), sólo viaja la hora de pared. `null` sólo para una cola legada sin hora creíble.
+ * El SERVIDOR la acota a la vida de la caja.
+ */
+fun horaDelMovimientoParaElServidor(at: Long, entonces: InstanteMonotonico?, ahora: InstanteMonotonico): HoraDelMovimiento? {
+    // Codex r4 #3: el arranque de respaldo (`t<minuto>`, cuando no se pudo leer el boot_id) sale de la hora de pared y dos arranques
+    // pueden compartirlo: con él no se acredita una espera. Un boot_id real es hexadecimal y nunca empieza con «t».
+    val espera = entonces
+        ?.takeIf { it.arranque == ahora.arranque && !it.arranque.startsWith("t") }
+        ?.let { ahora.ms - it.ms }
+        ?.takeIf { it >= 0 }
+    // Codex r4 #1: una hora de pared imposible (antes de 2020) no viaja, pero una espera medida sí: el SERVIDOR usa «llegada − espera».
+    val hora = at.takeIf { it >= HORA_MINIMA_CREIBLE_MS }?.let { java.time.Instant.ofEpochMilli(it).toString() }
+    return if (hora == null && espera == null) null else HoraDelMovimiento(hora, espera)
+}
+
+/** El instante monotónico de ESTE momento (arranque + `elapsedRealtime`). */
+internal fun instanteMonotonicoAhora(): InstanteMonotonico =
+    InstanteMonotonico(com.avoqado.pos.core.data.lan.DuenoDeCuentas.ARRANQUE, android.os.SystemClock.elapsedRealtime())
 
 @Serializable
 private data class CloseDrawerRequest(val actualAmount: Double, val note: String? = null, val sessionId: String? = null)
@@ -514,6 +565,13 @@ internal data class PendingDrawerOp(
      * una versión anterior se lee igual (hay prueba).
      */
     val autorizacion: String? = null,
+    /**
+     * Encargo 921513 (Codex r3): el ARRANQUE del aparato (`DuenoDeCuentas.ARRANQUE`, el `boot_id`) y su reloj MONOTÓNICO
+     * (`SystemClock.elapsedRealtime`) cuando se hizo el ingreso o retiro. Con ellos, cuánto esperó en la cola no depende de que
+     * alguien mueva el reloj de pared mientras espera. Nulos en una cola de una versión anterior (se lee igual).
+     */
+    val arranque: String? = null,
+    val atMonotonico: Long? = null,
 )
 
 /**
@@ -1977,7 +2035,11 @@ class CashDrawerRepository @Inject constructor(
         Log.d(TAG, "✅ Pay-in recorded locally: $amountCents")
 
         // La fila local nace provisional y adopta el id del server si éste confirma.
-        val op = PendingDrawerOp("PAY_IN", session.id, amountCents, note, event.id, System.currentTimeMillis())
+        val instante = instanteMonotonicoAhora()
+        val op = PendingDrawerOp(
+            "PAY_IN", session.id, amountCents, note, event.id, System.currentTimeMillis(),
+            arranque = instante.arranque, atMonotonico = instante.ms,
+        )
         encolar(op)
         val confirmado = fireApiPayIn(amountCents, note, event.id, session.id)
         if (confirmado != null) quitar(op)
@@ -2080,7 +2142,11 @@ class CashDrawerRepository @Inject constructor(
             }
 
             // 2. La operación. La fila local nace provisional y adopta el id del server si éste confirma.
-            val op = PendingDrawerOp("PAY_OUT", session.id, amountCents, note, event.id, System.currentTimeMillis(), autorizacion = autorizacion)
+            val instante = instanteMonotonicoAhora()
+            val op = PendingDrawerOp(
+                "PAY_OUT", session.id, amountCents, note, event.id, System.currentTimeMillis(), autorizacion = autorizacion,
+                arranque = instante.arranque, atMonotonico = instante.ms,
+            )
             if (!runCatching { encolar(op, sucursal) }.getOrDefault(false)) {
                 Log.e(TAG, "❌ El retiro no quedó en la cola del aparato: se deshace y no se manda")
                 if (comprobante != null) runCatching { comprobantes?.quitar(comprobante.venueId, comprobante.localId) }
@@ -2166,12 +2232,21 @@ class CashDrawerRepository @Inject constructor(
      * la pantalla del retiro ([ResultadoDelRetiro.Rechazado]) o el aviso de Caja (el replay lo marca). Sólo el que trae
      * [PendingDrawerOp.autorizacion] lleva el token del gerente. El PAY_IN sale como siempre.
      */
-    private fun peticionDelMovimiento(op: PendingDrawerOp, localId: String, sucursal: String = venueId): Request {
+    private fun peticionDelMovimiento(op: PendingDrawerOp, localId: String, sucursal: String = venueId, esReenvio: Boolean = false): Request {
         val dollars = op.amountCents / 100.0
+        // Encargo 921513: sólo el REENVÍO de la cola manda la hora real (y cuánto esperó). El primer POST, no: el SERVIDOR pone la llegada.
+        val entonces = op.arranque?.let { a -> op.atMonotonico?.let { InstanteMonotonico(a, it) } }
+        val hora = if (esReenvio) horaDelMovimientoParaElServidor(op.at, entonces, instanteMonotonicoAhora()) else null
         val (path, body) = if (op.kind == "PAY_IN") {
-            "pay-in" to json.encodeToString(PayInRequest.serializer(), PayInRequest(amount = dollars, note = op.note, localId = localId, sessionId = op.sessionId))
+            "pay-in" to json.encodeToString(
+                PayInRequest.serializer(),
+                PayInRequest(amount = dollars, note = op.note, localId = localId, sessionId = op.sessionId, createdAt = hora?.createdAt, edadMs = hora?.edadMs),
+            )
         } else {
-            "pay-out" to json.encodeToString(PayOutRequest.serializer(), PayOutRequest(amount = dollars, note = op.note, localId = localId, sessionId = op.sessionId))
+            "pay-out" to json.encodeToString(
+                PayOutRequest.serializer(),
+                PayOutRequest(amount = dollars, note = op.note, localId = localId, sessionId = op.sessionId, createdAt = hora?.createdAt, edadMs = hora?.edadMs),
+            )
         }
         return Request.Builder().url("${baseUrlDe(sucursal)}/$path").post(body.toRequestBody("application/json".toMediaType())).apply {
             if (op.kind == "PAY_OUT") {
@@ -3115,7 +3190,7 @@ class CashDrawerRepository @Inject constructor(
         // migrada por `completarLlavesLegadas`; esto cubre la entrada que llega por `ademas`.
         val localId = op.localId?.takeIf { it.isNotBlank() } ?: localIdLegado(op)
         return try {
-            val request = peticionDelMovimiento(op, localId).newBuilder().conSello(selloDeLaPasadaEnCurso()).build()
+            val request = peticionDelMovimiento(op, localId, esReenvio = true).newBuilder().conSello(selloDeLaPasadaEnCurso()).build()
             val (code, resp) = withContext(Dispatchers.IO) {
                 val response = client.newCall(request).execute()
                 response.code to (response.body?.string() ?: "")
