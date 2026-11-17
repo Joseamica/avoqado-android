@@ -24,6 +24,7 @@ import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.input.key.utf16CodePoint
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
@@ -45,6 +46,13 @@ object CasillaDeCantidad {
     fun soltar(quien: Any) { if (duena === quien) duena = null }
 }
 
+/** Ritmo de pistola: ~10 ms entre teclas; una persona, 80–300 ms. El mismo umbral que `LectorDePistola` (60 ms). */
+private const val MAX_ENTRE_TECLAS_DE_PISTOLA_MS = 60L
+
+/** ¿Esta tecla llegó pegada a la anterior, al ritmo de una pistola? Por la hora del aparato ([horaDeLaTeclaMs]). */
+internal fun esRitmoDePistola(anteriorMs: Long?, ahoraMs: Long): Boolean =
+    anteriorMs != null && ahoraMs - anteriorMs in 0 until MAX_ENTRE_TECLAS_DE_PISTOLA_MS
+
 internal fun soloDigitosDeCantidad(texto: String): String = texto.filter(Char::isDigit)
 
 /** Una letra o más de [MAX_DIGITOS] dígitos no es una cantidad: es un código (o un dedo de más). */
@@ -61,13 +69,14 @@ internal fun cantidadTecleada(texto: String): Int? =
  * borrar el 1 (con el 1 adentro saldría 124). Cada número válido se aplica al momento, igual que el «+» (en una tableta
  * nadie suelta la casilla antes de tocar «Agregar»); Enter o «Listo» la sueltan.
  *
- * 🔴 La pistola (Codex r1–r3):
+ * 🔴 La pistola nunca cambia la cantidad (Codex r1–r4; founder, 17-nov: «tienes que arreglarlo»):
  * - ANDROID, ventana principal: con la casilla activa ([CasillaDeCantidad]) `LectorHidBus` no le deja pasar teclas
- *   físicas; sólo vale el teclado de la pantalla.
- * - En lo que no pasa por ahí (WINDOWS, la hoja del teléfono, el lector integrado de una Sunmi en modo teclado), el código
- *   cae en la casilla: una letra o el 4.º dígito regresan la cantidad que había al tocarla y la casilla se queda sorda
- *   hasta que se suelte (se come el resto; se vuelve a escanear). Límite aceptado: un código de 1 a 3 dígitos sin letras
- *   cuenta como cantidad, igual que el lector de toda la app no reconoce códigos de menos de 4.
+ *   físicas; sólo vale el teclado de la pantalla, y el código se lee como siempre.
+ * - Donde el código sí cae en la casilla (WINDOWS, la hoja del teléfono, el lector integrado de una Sunmi en modo teclado)
+ *   se reconoce por su RITMO: la 2.ª tecla a menos de 60 ms de la anterior es la pistola, de cualquier largo («12» incluido).
+ *   La casilla regresa a la cantidad que tenía al tocarla y se queda sorda hasta que se suelte (se vuelve a escanear).
+ *   Su 1.ª tecla alcanza a aplicarse ~10 ms antes de deshacerse.
+ * - Además, una letra o un 4.º dígito tampoco son cantidad (un lector lento que no alcance el ritmo).
  */
 @Composable
 fun CantidadTecleable(cantidad: Int, onCantidad: (Int) -> Unit, modifier: Modifier = Modifier) {
@@ -77,7 +86,14 @@ fun CantidadTecleable(cantidad: Int, onCantidad: (Int) -> Unit, modifier: Modifi
     LaunchedEffect(cantidad) { if (cantidadTecleada(texto) != cantidad) texto = cantidad.toString() }
     var alTocarla by remember { mutableIntStateOf(cantidad) }
     var sorda by remember { mutableStateOf(false) }
+    var ultimaTeclaMs by remember { mutableStateOf<Long?>(null) }
     val yo = remember { Any() }
+    // Una vez que habló la pistola, se regresa a la cantidad de antes y se ignora lo demás hasta soltar la casilla.
+    fun ensordecer() {
+        sorda = true
+        texto = alTocarla.toString()
+        onCantidad(alTocarla)
+    }
     DisposableEffect(yo) { onDispose { CasillaDeCantidad.soltar(yo) } }
     val foco = LocalFocusManager.current
     val color = MaterialTheme.colorScheme.onSurface
@@ -88,11 +104,7 @@ fun CantidadTecleable(cantidad: Int, onCantidad: (Int) -> Unit, modifier: Modifi
                 sorda -> Unit
                 // Siempre se avisa, sin comparar con `cantidad`: dentro de una ráfaga la pantalla no se ha vuelto a pintar y
                 // ese valor va atrasado (Codex r2 #2, r3 #2). Avisar la misma cantidad no cambia nada.
-                noEsCantidad(nuevo) -> {
-                    sorda = true
-                    texto = alTocarla.toString()
-                    onCantidad(alTocarla)
-                }
+                noEsCantidad(nuevo) -> ensordecer()
                 else -> {
                     texto = soloDigitosDeCantidad(nuevo)
                     cantidadTecleada(texto)?.let(onCantidad)
@@ -109,21 +121,30 @@ fun CantidadTecleable(cantidad: Int, onCantidad: (Int) -> Unit, modifier: Modifi
             // Un Enter de teclado (o de la pistola) se queda aquí: se traga al bajar y suelta la casilla al SUBIR. Si la
             // soltara al bajar, el foco brincaría a otro botón y el «subir» lo picaría (Buscar en la D3; Codex r2 #6).
             .onPreviewKeyEvent { e ->
-                if (e.key != Key.Enter && e.key != Key.NumPadEnter) return@onPreviewKeyEvent false
-                if (e.type == KeyEventType.KeyUp) foco.clearFocus()
-                true
+                if (e.key == Key.Enter || e.key == Key.NumPadEnter) {
+                    if (e.type == KeyEventType.KeyUp) foco.clearFocus()
+                    return@onPreviewKeyEvent true
+                }
+                // Sólo teclas que escriben (Shift, flechas y borrar no cuentan para el ritmo).
+                if (e.type != KeyEventType.KeyDown || e.utf16CodePoint < 0x20) return@onPreviewKeyEvent false
+                val ahora = horaDeLaTeclaMs(e)
+                val esPistola = esRitmoDePistola(ultimaTeclaMs, ahora)
+                ultimaTeclaMs = ahora
+                if (esPistola && !sorda) ensordecer()
+                sorda   // sorda: la tecla no llega al campo
             }
             .onFocusChanged {
-            if (it.isFocused) {
-                CasillaDeCantidad.tomar(yo)
-                alTocarla = cantidad
-                sorda = false
-                texto = ""
-            } else {
-                CasillaDeCantidad.soltar(yo)
-                texto = cantidad.toString()
-            }
-        },
+                if (it.isFocused) {
+                    CasillaDeCantidad.tomar(yo)
+                    alTocarla = cantidad
+                    sorda = false
+                    ultimaTeclaMs = null
+                    texto = ""
+                } else {
+                    CasillaDeCantidad.soltar(yo)
+                    texto = cantidad.toString()
+                }
+            },
         decorationBox = { campo ->
             Box(contentAlignment = Alignment.Center) {
                 if (texto.isEmpty()) {

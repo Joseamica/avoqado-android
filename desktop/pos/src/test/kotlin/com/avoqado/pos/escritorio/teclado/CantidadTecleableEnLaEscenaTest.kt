@@ -19,6 +19,7 @@ import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performImeAction
 import androidx.compose.ui.test.performKeyInput
+import androidx.compose.ui.test.performKeyPress
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.pressKey
 import androidx.compose.ui.test.runComposeUiTest
@@ -128,5 +129,29 @@ class CantidadTecleableEnLaEscenaTest {
         runOnIdle { cantidad = 6 }   // el «+»
         waitForIdle()
         assertEquals("6", campo.texto())
+    }
+
+    // Founder, 17-nov («tienes que arreglarlo»): un código corto (12) no tiene letras ni 4 dígitos; se reconoce por el RITMO.
+    private val origen = object : java.awt.Component() {}
+    private fun digito(c: Char, cuandoMs: Long) = teclaDeCompose(
+        java.awt.event.KeyEvent(origen, java.awt.event.KeyEvent.KEY_PRESSED, cuandoMs, 0, java.awt.event.KeyEvent.VK_0 + (c - '0'), c),
+    )
+
+    @Test fun `un codigo corto al ritmo de la pistola deja sorda la casilla`() = runComposeUiTest {
+        val campo = casilla(inicial = 3)
+        campo.performKeyPress(digito('1', 1_000))
+        campo.performKeyPress(digito('2', 1_010))
+        campo.performTextInput("5")
+        waitForIdle()
+        assertEquals(3, cantidad, "la pistola no deja nada y lo que sigue no entra")
+    }
+
+    @Test fun `dos teclas al ritmo de una persona si escriben`() = runComposeUiTest {
+        val campo = casilla(inicial = 3)
+        campo.performKeyPress(digito('1', 1_000))
+        campo.performKeyPress(digito('2', 1_120))
+        campo.performTextInput("5")
+        waitForIdle()
+        kotlin.test.assertNotEquals(3, cantidad, "una persona sí cambia la cantidad")
     }
 }
