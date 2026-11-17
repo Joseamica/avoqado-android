@@ -201,6 +201,15 @@ class CashDrawerViewModel @Inject constructor(
     private val _confirmadoConServidor = MutableStateFlow(true)
     val confirmadoConServidor: StateFlow<Boolean> = _confirmadoConServidor.asStateFlow()
 
+    /**
+     * D2 (Codex r1 #4): el cierre de ESTA caja sigue en la cola (cerrado sin internet): su diferencia todavía no es la del servidor.
+     * Si no se puede leer la cola, se dice «por confirmar» (nunca un sobrante o faltante sin respaldo).
+     */
+    fun cierrePorConfirmar(sessionId: String): Boolean = runCatching { repository.tieneCierrePendiente(sessionId) }.getOrDefault(true)
+
+    /** Lo mismo para toda la lista del historial, en una lectura. Null = no se pudo leer (la lista dice «por confirmar»). */
+    fun cierresPorConfirmar(): Set<String>? = runCatching { repository.cierresPendientes() }.getOrNull()
+
     /** Dos entradas seguidas no mandan dos syncs encimados: el segundo espera al primero. */
     private val candadoDelSync = Mutex()
 

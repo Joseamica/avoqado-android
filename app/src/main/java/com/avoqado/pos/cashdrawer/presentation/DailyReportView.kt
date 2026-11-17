@@ -420,14 +420,18 @@ fun DailyReportView(
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     } else {
-                        val (diffLabel, diffColor) = when {
-                            differenceCents > 0 -> "Sobrante" to Success
-                            differenceCents < 0 -> "Faltante" to Error
-                            else -> "Diferencia" to MaterialTheme.colorScheme.onSurface
+                        // D2 (ensayo 16-nov): sin confirmar con el servidor, ni «Sobrante» en verde ni «Faltante» en rojo: faltan los
+                        // cobros de las otras tablets. «Diferencia por confirmar», con su signo y sin color de alarma.
+                        val diffLabel = CorteTicketBuilder.etiquetaDeDiferencia(differenceCents, sinConfirmar)
+                        val diffColor = when {
+                            sinConfirmar || differenceCents == 0 -> MaterialTheme.colorScheme.onSurface
+                            differenceCents > 0 -> Success
+                            else -> Error
                         }
                         ReportRow(
                             label = diffLabel,
-                            value = formatCurrency(abs(differenceCents)),
+                            value = if (sinConfirmar && differenceCents != 0) (if (differenceCents > 0) "+" else "-") +
+                                formatCurrency(abs(differenceCents)) else formatCurrency(abs(differenceCents)),
                             valueColor = diffColor,
                             isBold = true,
                         )

@@ -31,19 +31,39 @@ object CorteTicketBuilder {
      */
     const val PREFIJO_REEMBOLSO = "Reembolso:"
 
-    /** Mismo texto en pantalla ([AVISO_SIN_CONFIRMAR]) y en iOS (`CortePrinter.swift`). */
+    /**
+     * Mismo texto en pantalla ([AVISO_SIN_CONFIRMAR]) y en iOS (`CortePrinter.swift`, ficha en el recetario).
+     * D2 (ensayo 16-nov, `hz:033d44ca:D9`): en un restaurante el efectivo de las OTRAS tablets cae en la misma caja; sin internet
+     * este aparato no lo conoce y el corte decía «Sobrante $410.00» (el servidor cerró en $0.00). El aviso lo nombra primero.
+     */
     const val AVISO_SIN_CONFIRMAR =
-        "Sin conexión: este corte sólo incluye lo registrado en este aparato. Reembolsos o cobros " +
-            "hechos desde el dashboard o la terminal pueden faltar. Vuelve a abrirlo con conexión."
+        "Sin conexión: este corte sólo cuenta lo cobrado en este aparato. Falta el efectivo que cobraron otras tablets, " +
+            "la terminal o el dashboard, así que la diferencia todavía no es real. Al volver la conexión se calcula sola: " +
+            "vuelve a abrirlo entonces."
 
-    /** La versión del papel: renglones cortos, sin depender de cómo parta el texto la impresora. */
+    /** La versión del papel: renglones cortos (≤ 32, el papel de 58 mm), sin depender de cómo parta el texto la impresora. */
     val TICKET_SIN_CONFIRMAR = listOf(
-        "SIN CONEXIÓN: sólo incluye lo",
-        "registrado en este aparato.",
-        "Reembolsos o cobros de la",
-        "terminal o del dashboard pueden",
-        "faltar. Reimprímelo con conexión.",
+        "SIN CONEXIÓN: sólo cuenta lo",
+        "cobrado en este aparato. Falta",
+        "lo de otras tablets, la",
+        "terminal o el dashboard: la",
+        "diferencia todavía no es real.",
+        "Reimprímelo con conexión.",
     )
+
+    /**
+     * D2: cómo se nombra la diferencia del conteo. Sin confirmar con el servidor no se acusa «Sobrante» ni «Faltante» (faltan los
+     * cobros de otros aparatos): es una «Diferencia por confirmar», con su signo. En el papel, [ETIQUETA_POR_CONFIRMAR_TICKET].
+     */
+    fun etiquetaDeDiferencia(diffCents: Int, sinConfirmar: Boolean): String = when {
+        diffCents == 0 -> "Diferencia"
+        sinConfirmar -> "Diferencia por confirmar"
+        diffCents > 0 -> "Sobrante"
+        else -> "Faltante"
+    }
+
+    /** La etiqueta corta del papel: cabe en dos columnas de 58 mm con el importe. */
+    const val ETIQUETA_POR_CONFIRMAR_TICKET = "Dif. por confirmar"
 
 
     /** Lo que el corte dice bajo los métodos escondidos cuando el conteo es ciego. */
@@ -288,14 +308,9 @@ object CorteTicketBuilder {
             p.printLine("obtener el corte definitivo.")
         } else {
             p.printTwoColumns("Conteo real", money(actual))
-            p.printTwoColumns(
-                when {
-                    diff > 0 -> "Sobrante"
-                    diff < 0 -> "Faltante"
-                    else -> "Diferencia"
-                },
-                money(kotlin.math.abs(diff)),
-            )
+            // D2: sin confirmar, ni sobrante ni faltante: la diferencia con su signo y «por confirmar».
+            if (sinConfirmar && diff != 0) p.printTwoColumns(ETIQUETA_POR_CONFIRMAR_TICKET, (if (diff > 0) "+" else "") + money(diff))
+            else p.printTwoColumns(etiquetaDeDiferencia(diff, sinConfirmar = false), money(kotlin.math.abs(diff)))
             p.setBold(false)
         }
         if (sinConfirmar) {

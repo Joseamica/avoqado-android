@@ -2607,6 +2607,9 @@ class CashDrawerRepository @Inject constructor(
     /** Visible para test: ¿hay un cierre de ESTA caja esperando al server? */
     fun tieneCierrePendiente(sessionId: String): Boolean = pendientes().any { it.kind == "CLOSE" && it.sessionId == sessionId }
 
+    /** D2 (Codex r1 #4): las cajas cuyo cierre sigue en la cola, en UNA lectura (la lista del historial las marca «por confirmar»). */
+    fun cierresPendientes(): Set<String> = pendientes().filter { it.kind == "CLOSE" }.map { it.sessionId }.toSet()
+
     /** Lo que una corrida del replay adoptó, indexado por el id LOCAL con el que estaba encolada. */
     data class ResultadoDelReplay(val adoptadas: Map<String, CashDrawerSessionEntity> = emptyMap())
 

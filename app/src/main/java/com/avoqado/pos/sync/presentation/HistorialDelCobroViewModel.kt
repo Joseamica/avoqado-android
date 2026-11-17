@@ -44,6 +44,8 @@ class HistorialDelCobroViewModel @Inject constructor(
     private val _revisadas=MutableStateFlow(false);val revisadas=_revisadas.asStateFlow()
     private val _busqueda=MutableStateFlow("");val busqueda=_busqueda.asStateFlow()
     private val _mensaje=MutableStateFlow<String?>(null);val mensaje=_mensaje.asStateFlow()
+    /** D1/A4: lo que ve quien NO puede revisar (cuántos cobros esperan y cuánto se cobró de más). Null = nada por revisar. */
+    private val _resumenSinPermiso=MutableStateFlow<String?>(null);val resumenSinPermiso=_resumenSinPermiso.asStateFlow()
     val canRead:Boolean get()=roles.canResolveQuarantine && vigente()
     private fun vigente(snapshot:Contexto=contexto)=snapshot.venue!=null && contexto==snapshot && contextoActual()==snapshot
     private fun limpiar() { _filas.value=emptyList();_total.value=0 }
@@ -56,7 +58,8 @@ class HistorialDelCobroViewModel @Inject constructor(
     fun cargar() {
         val actual=contextoActual()
         if(actual!=contexto) {
-            contexto=actual;limpiar();_mensaje.value=null;_cargando.value=false
+            contexto=actual;limpiar();_mensaje.value=null;observacionSinPermiso?.cancel();observacionSinPermiso=null
+            _resumenSinPermiso.value=null;_cargando.value=false
             _revisadas.value=false;_busqueda.value="";_nombres.value=emptyMap()
         }
         // Una vez por negocio/sesión (no en cada letra de la búsqueda); sin nombres, a lo más un reintento por minuto.
@@ -77,7 +80,8 @@ class HistorialDelCobroViewModel @Inject constructor(
     fun cargarMas() { if(!_cargando.value && _filas.value.size<_total.value) pagina(true) }
     private fun pagina(append:Boolean) {
         val version=++generation
-        if(!canRead) { limpiar();_cargando.value=false;_mensaje.value="Un gerente debe revisar este pago.";return }
+        if(!canRead) { limpiar();_cargando.value=false;_mensaje.value="Un gerente debe revisar este pago.";resumirSinPermiso();return }
+        observacionSinPermiso?.cancel();observacionSinPermiso=null;_resumenSinPermiso.value=null
         val snapshot=contexto
         val venue=requireNotNull(snapshot.venue);val reviewed=_revisadas.value;val search=_busqueda.value
         val previous=if(append) _filas.value else emptyList()
@@ -94,6 +98,25 @@ class HistorialDelCobroViewModel @Inject constructor(
             } catch(e:kotlinx.coroutines.CancellationException) { throw e }
             catch(e:Exception) { if(continuar(snapshot,version)) _mensaje.value="No se pudo leer el historial. El pago sigue conservado." }
             finally { if(version==generation) _cargando.value=false }
+        }
+    }
+    /**
+     * D1/A4: sin permiso no se lee el historial; sólo el motivo y el resultado de lo que sigue por revisar, OBSERVADO (Codex r1 #2:
+     * un cobro con diferencia que sube con la hoja abierta cambia el aviso sin reabrirla, como la franja). Un contexto nuevo (otra
+     * persona u otra sucursal) o un permiso ganado lo apagan.
+     */
+    private var observacionSinPermiso:kotlinx.coroutines.Job?=null
+    private fun resumirSinPermiso() {
+        val snapshot=contexto
+        observacionSinPermiso?.cancel()
+        val venue=snapshot.venue ?: run { _resumenSinPermiso.value=null;return }
+        observacionSinPermiso=viewModelScope.launch {
+            try {
+                dao.observarPorRevisarQ15(venue).collect { filas ->
+                    _resumenSinPermiso.value=if(vigente(snapshot) && !roles.canResolveQuarantine) RevisionParaQuienNoRevisa.texto(filas) else null
+                }
+            } catch(e:kotlinx.coroutines.CancellationException) { throw e }
+            catch(e:Exception) { if(vigente(snapshot)) _resumenSinPermiso.value="No se pudo leer lo que está por revisar. Avísale a un gerente." }
         }
     }
     fun puedeMarcar(row:RevisionDelCobroRecord)=canRead && row.venueId==contexto.venue && row.q15ReviewedAt==null &&
