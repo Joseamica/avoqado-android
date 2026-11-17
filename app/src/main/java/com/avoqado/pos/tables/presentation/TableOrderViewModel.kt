@@ -816,8 +816,9 @@ class TableOrderViewModel @Inject constructor(
         }
         val vId = venueId ?: return
         viewModelScope.launch {
+            // Codex r5: lecturas encimadas (una conexión que va y viene) no renuevan la espera: cuenta desde que empezó a cargar.
+            if (!_isLoadingCheck.value) lecturaEnVueloDesdeMs = relojMs()
             _isLoadingCheck.value = true
-            lecturaEnVueloDesdeMs = relojMs()
             // D45: cómo estaban los cobros de la cuenta en la cola de COBROS al pedirla; si cambian después, esta lectura no sirve para cobrar.
             val firmaAlLeer = cobrosEnColaDeCobros(session)?.second
             // D5 · B2b: con el piloto, la lectura se registra antes del GET (sin cobro abierto) y puede volverse foto limpia.

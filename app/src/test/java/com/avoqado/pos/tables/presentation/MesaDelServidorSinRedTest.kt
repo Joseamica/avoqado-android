@@ -368,6 +368,24 @@ class MesaDelServidorSinRedTest {
         subject.viewModelScope.cancel()
     }
 
+    /** Codex r5: con la conexión yendo y viniendo, cada cambio relee; las lecturas encimadas no renuevan los 15 s de espera. */
+    @Test fun `D19 relecturas encimadas no renuevan la espera de Pagar`() = runTest {
+        val subject = mesaConFoto()
+        var ahora = 1_000_000L
+        subject.relojMs = { ahora }
+        coEvery { repo.getOrderDetail(any(), any()) } coAnswers { kotlinx.coroutines.CompletableDeferred<Result<OrderDetail>>().await() }
+        nadieContesta.value = true; advanceUntilIdle() // primera relectura, sin respuesta
+        ahora += 10_000
+        nadieContesta.value = false; advanceUntilIdle() // otra, encimada
+        ahora += 4_999
+        assertTrue(subject.isLoadingCheck.value)
+        assertFalse("14.999 s desde la primera: todavía espera", subject.preparePagar())
+        ahora += 1
+        assertTrue("15 s desde la PRIMERA lectura, no desde la última", subject.preparePagar())
+        assertTrue(session.current()!!.cobroSinRed)
+        subject.viewModelScope.cancel()
+    }
+
     /** Sin el piloto no hay camino sin red para una mesa del servidor: releer bloquearía el efectivo de hoy. No se relee. */
     @Test fun `D19 con el piloto apagado la caida no cambia el cobro de hoy`() = runTest {
         piloto = false
