@@ -32,13 +32,4 @@ class CantidadTecleableTest {
         assertFalse(noEsCantidad("1.2"))   // los signos del teclado numérico se tiran, no bloquean
         assertNull(cantidadTecleada("1000"))
     }
-
-    @Test fun `dos teclas a menos de 60 ms son la pistola, a 80 ms o mas una persona`() {
-        assertFalse(esRitmoDePistola(null, 1_000))
-        assertTrue(esRitmoDePistola(1_000, 1_010))
-        assertTrue(esRitmoDePistola(1_000, 1_059))
-        assertFalse(esRitmoDePistola(1_000, 1_060))
-        assertFalse(esRitmoDePistola(1_000, 1_080))
-        assertFalse(esRitmoDePistola(1_000, 900))   // reloj hacia atrás: no se adivina
-    }
 }

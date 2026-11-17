@@ -72,6 +72,7 @@ fun SearchOverlayView(
     // La búsqueda se calcula fuera del hilo principal: puede ir un paso atrás del campo (ver `Busqueda`).
     val busqueda by viewModel.busqueda.collectAsState()
     val results = busqueda.resultadosPara(query)
+    val consultaPintada = query   // la consulta de ESTA lista, congelada al pintarla
     val focusRequester = remember { FocusRequester() }
     var abierta by remember { mutableStateOf<String?>(null) }
     // Windows: el renglón marcado con las flechas. Cada letra nueva (también la pistola) la quita: Enter sin marca sigue su camino.
@@ -137,8 +138,9 @@ fun SearchOverlayView(
                 textFieldModifier = Modifier.focusRequester(focusRequester).then(
                     if (LocalEsEscritorio.current) {
                         Modifier.flechasDeResultados(
-                            // La lista pintada es de `query`; si ya se escribió otra cosa (aún sin redibujar), es vieja.
-                            total = { if (viewModel.searchQuery.value == query) results.size else 0 },
+                            // La lista pintada es de `consultaPintada`; si ya se escribió otra cosa (aún sin redibujar),
+                            // es vieja. No `query`: ese estado ya trae lo nuevo antes del redibujo (Codex r5 #4).
+                            total = { if (viewModel.searchQuery.value == consultaPintada) results.size else 0 },
                             marcada = { marcada.takeIf { it in results.indices } ?: -1 },
                             onMarcada = { marcada = it },
                         ) { elegir(results[it]) }

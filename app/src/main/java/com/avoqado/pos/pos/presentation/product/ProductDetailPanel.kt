@@ -150,6 +150,12 @@ fun ProductDetailPanel(
             sheetState = sheetState,
         ) {
             com.avoqado.pos.designsystem.components.ImmersiveWindow()
+            // La hoja es otra ventana: sus teclas no pasan por MainActivity. Con la casilla de cantidad activa, una tecla
+            // física (la pistola) tampoco le llega aquí (Codex r3 #2, r5 #1).
+            com.avoqado.pos.giftcards.presentation.LectorHidDeLaVentana { evento ->
+                com.avoqado.pos.designsystem.components.CasillaDeCantidad.activa &&
+                    com.avoqado.pos.pos.data.LectorHidBus.esTeclaFisicaQueEscribe(evento)
+            }
             ProductDetailContent(
                 product = product,
                 discounts = discounts,

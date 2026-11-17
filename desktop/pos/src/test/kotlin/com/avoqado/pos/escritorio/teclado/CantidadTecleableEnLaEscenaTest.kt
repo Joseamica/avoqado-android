@@ -19,7 +19,6 @@ import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performImeAction
 import androidx.compose.ui.test.performKeyInput
-import androidx.compose.ui.test.performKeyPress
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.pressKey
 import androidx.compose.ui.test.runComposeUiTest
@@ -131,27 +130,33 @@ class CantidadTecleableEnLaEscenaTest {
         assertEquals("6", campo.texto())
     }
 
-    // Founder, 17-nov («tienes que arreglarlo»): un código corto (12) no tiene letras ni 4 dígitos; se reconoce por el RITMO.
-    private val origen = object : java.awt.Component() {}
-    private fun digito(c: Char, cuandoMs: Long) = teclaDeCompose(
-        java.awt.event.KeyEvent(origen, java.awt.event.KeyEvent.KEY_PRESSED, cuandoMs, 0, java.awt.event.KeyEvent.VK_0 + (c - '0'), c),
-    )
-
-    @Test fun `un codigo corto al ritmo de la pistola deja sorda la casilla`() = runComposeUiTest {
+    // El lector integrado de una Sunmi teclea el código Y lo avisa, en cualquier orden: «12» no tiene letras ni 4 dígitos.
+    @Test fun `el codigo avisado que la casilla recibio entero se deshace`() = runComposeUiTest {
         val campo = casilla(inicial = 3)
-        campo.performKeyPress(digito('1', 1_000))
-        campo.performKeyPress(digito('2', 1_010))
-        campo.performTextInput("5")
+        campo.performTextInput("1")
+        campo.performTextInput("2")
         waitForIdle()
-        assertEquals(3, cantidad, "la pistola no deja nada y lo que sigue no entra")
+        assertEquals(12, cantidad)
+        runOnIdle { CasillaDeCantidad.avisarCodigo("12") }
+        waitForIdle()
+        assertEquals(3, cantidad)
     }
 
-    @Test fun `dos teclas al ritmo de una persona si escriben`() = runComposeUiTest {
+    @Test fun `el codigo avisado antes de teclearse tambien se deshace`() = runComposeUiTest {
         val campo = casilla(inicial = 3)
-        campo.performKeyPress(digito('1', 1_000))
-        campo.performKeyPress(digito('2', 1_120))
-        campo.performTextInput("5")
+        runOnIdle { CasillaDeCantidad.avisarCodigo("12") }
+        campo.performTextInput("1")
+        campo.performTextInput("2")
         waitForIdle()
-        kotlin.test.assertNotEquals(3, cantidad, "una persona sí cambia la cantidad")
+        assertEquals(3, cantidad)
+    }
+
+    @Test fun `un codigo que no es lo tecleado no toca la cantidad`() = runComposeUiTest {
+        val campo = casilla(inicial = 3)
+        campo.performTextInput("24")
+        waitForIdle()
+        runOnIdle { CasillaDeCantidad.avisarCodigo("7501632510590") }   // una pistola reconocida: sus teclas no llegaron
+        waitForIdle()
+        assertEquals(24, cantidad)
     }
 }
