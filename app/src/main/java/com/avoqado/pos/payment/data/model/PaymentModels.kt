@@ -428,11 +428,11 @@ const val CORTESIA_DE_CUENTA_PIDE_PIN =
  * permiso). Sin red no entra para nadie: la cola lo subiría sin aprobar. Se quita o se cobra al volver la red.
  */
 const val DESCUENTO_CON_APROBACION_SIN_RED =
-    "Sin conexión: este descuento necesita internet para que lo apruebe un gerente. Quita el descuento o cobra cuando vuelva la red."
+    "Sin conexión: este descuento o ajuste de precio necesita internet para que lo apruebe un gerente. Quítalo o cobra cuando vuelva la red."
 
 /** D4: el negocio tiene apagado el PIN de gerente; ese descuento sólo lo aplica alguien con el permiso, con su propia sesión. */
 const val DESCUENTO_CON_APROBACION_LO_APLICA_UN_GERENTE =
-    "Este descuento necesita la aprobación de un gerente. Pide a alguien con el permiso «Aplicar descuentos en TPV» que cobre con su sesión, o quita el descuento."
+    "Este descuento o ajuste de precio necesita la aprobación de un gerente. Pide a alguien con el permiso «Aplicar descuentos en TPV» que cobre con su sesión, o quítalo."
 
 /**
  * D15 (hz:87f4b879:D15): la venta regala un PRODUCTO (cortesía del renglón o descuento de catálogo tipo cortesía) y el negocio tiene
@@ -458,7 +458,7 @@ const val CORTESIA_DE_PRODUCTO_PIDE_PIN =
 
 /** D4: el SERVIDOR pidió la aprobación aunque la app no lo esperaba (catálogo o permisos de otro momento). No se creó nada. */
 const val DESCUENTO_CON_APROBACION_PIDE_PIN =
-    "Este descuento necesita la aprobación de un gerente. Vuelve a cobrar para pedir su PIN, o quita el descuento."
+    "Este descuento o ajuste de precio necesita la aprobación de un gerente. Vuelve a cobrar para pedir su PIN, o quítalo."
 
 /** El SERVIDOR calculó otro total que el de la pantalla (el cupón cambió de valor mientras tanto) y el efectivo ya no alcanza. */
 fun avisoDeEfectivoCortoPorCupon(totalRealCents: Int, recibidoCents: Int): String {

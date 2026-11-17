@@ -907,6 +907,8 @@ fun TableOrderScreen(
                 selectedProduct = null
             },
             onDismiss = { selectedProduct = null },
+            // Encargo 1afe04: la cuenta de la mesa no guarda ajustes de precio (se tiraban en silencio): la fila no sale.
+            ajusteDePrecio = com.avoqado.pos.pos.domain.AccesoAlAjuste.NO_APLICA,
         )
     }
 

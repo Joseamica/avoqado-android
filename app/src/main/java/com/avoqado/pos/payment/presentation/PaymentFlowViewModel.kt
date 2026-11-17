@@ -589,6 +589,10 @@ class PaymentFlowViewModel @Inject constructor(
         // D5: sin orden todavía, el cupón no se aparta: el apartado se sube como venta de la cola, donde el cupón no se valida.
         val ordenExistente = ordenCapturada?.takeIf { it.isNotBlank() }
         if (cart.couponCode != null && ordenExistente == null) return Apartado.NINGUNO
+        // Encargo 1afe04 (Codex r2 #2 y r3): con un descuento que pide aprobación o un «Ajuste de precio» el apartado se guarda igual
+        // (si la app muere tras crear la venta, el efectivo no se pierde), pero NO se da por cobrado solo: sin red esa venta no se
+        // cobra ni se encola (D4 r2 #1), así que subirlo al reiniciar la registraría sin aprobar. Queda «sin confirmar» para una persona.
+        val seDaPorCobrada = !((cart.pideAprobacionDeGerente || pideAprobacionPorElServidor) && ordenExistente == null)
         try {
             cashPaymentRepository.reservarCobro(
                 orderRequest = pedido,
@@ -615,6 +619,7 @@ class PaymentFlowViewModel @Inject constructor(
                 enLugarDe = if (generacion == paymentGeneration) anterioresDeEstaVenta else emptyList(),
                 restanteEsperadoCents = restanteEsperadoCents,
                 antesDeGuardar = antesDeGuardar,
+                seDaPorCobradaAlAbandonar = seDaPorCobrada,
             )
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
@@ -965,7 +970,9 @@ class PaymentFlowViewModel @Inject constructor(
     /** D4: los nombres de los descuentos de esta venta que piden aprobación, para el teclado del gerente. */
     private fun nombresQuePidenAprobacion(cart: CartState): String? =
         (listOfNotNull(cart.orderDiscount?.takeIf { it.pideAprobacion }?.name) +
-            cart.items.filter { it.itemDiscountPideAprobacion && !it.isCortesia }.mapNotNull { it.itemDiscountName })
+            cart.items.filter { it.itemDiscountPideAprobacion && !it.isCortesia }.mapNotNull { it.itemDiscountName } +
+            // Encargo 1afe04: el encargado ve también que aprueba un «Ajuste de precio».
+            listOfNotNull(AJUSTE_DE_PRECIO.takeIf { cart.llevaAjusteDePrecio }))
             .distinct().joinToString(" · ").takeIf { it.isNotBlank() }
 
     /** D15: los productos que regala esta venta, para el teclado del gerente. null con el descuento de cuenta que regala (D2, sin texto). */
@@ -7039,6 +7046,9 @@ class PaymentFlowViewModel @Inject constructor(
         private const val PERMISO_DE_CORTESIA = "orders:comp"
         /** D4: el que aprueba un % o fijo con «Requiere aprobación» («Aplicar descuentos en TPV»). */
         private const val PERMISO_DE_APROBACION = "tpv-orders:discount"
+
+        /** Encargo 1afe04: el nombre del ajuste en el teclado del encargado («Descuento: Ajuste de precio»). */
+        private const val AJUSTE_DE_PRECIO = "Ajuste de precio"
 
         /** D15: por qué una venta en $0 es sólo efectivo. Mismo texto que iOS (`PaymentFlowViewModel.TEXTO_VENTA_EN_CERO`). */
         const val TEXTO_VENTA_EN_CERO = "Venta en \$0: no hay nada que cobrar con tarjeta."
