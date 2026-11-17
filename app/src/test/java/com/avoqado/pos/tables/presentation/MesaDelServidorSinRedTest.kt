@@ -100,6 +100,8 @@ class MesaDelServidorSinRedTest {
 
     private val server = MockWebServer()
     private var conInternet = true
+    /** D19: lo que la tablet cree de la conexión (la franja «Sin conexión»). Sólo dispara lecturas: manda la respuesta de cada una. */
+    private val servidorContesta = MutableStateFlow(true)
     private var cuenta = OrderDetail("order-F", status = "PENDING", total = 0.0, version = 3)
     private var antesDelGet: (() -> Unit)? = null
 
@@ -210,6 +212,7 @@ class MesaDelServidorSinRedTest {
         every { config.getCurrentConfig() } returns PrintConfig()
         val connectivity = mockk<ConnectivityMonitor>(relaxed = true)
         every { connectivity.isConnected } answers { MutableStateFlow(conInternet) }
+        every { connectivity.isServerReachable } returns servidorContesta
         return TableOrderViewModel(repository, session, config, mockk(relaxed = true), mockk<PrinterService>(relaxed = true), storage,
             outbox, mockk(relaxed = true), connectivity, mockk(relaxed = true), mockk(relaxed = true), mockk(relaxed = true), draftStore = drafts,
             planManager = plan, fotos = fotos, cobrosLocales = cobros, efectivoEnColaDeCobros = efectivoDeCobros)
@@ -265,6 +268,67 @@ class MesaDelServidorSinRedTest {
         assertTrue("«Cobrada aquí, falta subirla»", subject.cuentaCobradaAqui)
         assertFalse(subject.preparePagar())
         assertEquals(CUENTA_COBRADA_AQUI, subject.blockedNotice.value)
+        assertFalse(session.current()!!.cobroSinRed)
+        subject.viewModelScope.cancel()
+    }
+
+    // MARK: - D19 + D17 (16-nov): el internet se cae con el mesero DENTRO de la mesa
+
+    /**
+     * Acta de D9 (M6, $40 por $20) y paso 3b de D8 (M2 ocupada toda la caída): la cuenta se leyó con internet y nadie la volvió a leer al
+     * caerse, así que «Pagar» tomaba el camino con internet (cola de COBROS: ni aviso del cobro de más ni mesa libre). Ahora la caída
+     * obliga a releer, y como esa lectura no tiene respuesta, «Pagar» va por la cola de mesas, como si hubiera salido y vuelto a entrar.
+     */
+    @Test fun `P1 D19 D17 se cae el internet dentro de la mesa al dia y Pagar la cobra por la cola de mesas`() = runTest {
+        val subject = mesaConFoto()
+        assertTrue("leída con internet: hoy «Pagar» iría por la cola de COBROS", subject.chequeAlDia.value)
+        conInternet = false
+        servidorContesta.value = false // la franja ya dice «Sin conexión»
+        advanceUntilIdle()
+        assertFalse("la lectura que disparó la caída no tuvo respuesta", subject.chequeAlDia.value)
+
+        assertTrue(subject.preparePagar())
+        val pagando = session.current()!!
+        assertEquals(TableSession.Mode.PAYING, pagando.mode)
+        assertEquals(2500, pagando.totalCents)
+        assertTrue("el efectivo va por la cola de mesas: su acuse avisa si sobró (D19) y la mesa se suelta (D17)", pagando.cobroSinRed)
+        subject.viewModelScope.cancel()
+    }
+
+    /** La bandera sólo dispara la lectura: si el servidor sí contesta (bandera vieja, o la red ya volvió), todo como con internet. */
+    @Test fun `D19 una bandera vieja o la red de vuelta no mandan la mesa al camino sin red`() = runTest {
+        val subject = mesaConFoto()
+        servidorContesta.value = false // la bandera dice «sin servidor», pero la red está bien
+        advanceUntilIdle()
+        assertTrue("la lectura contestó: sigue al día", subject.chequeAlDia.value)
+
+        conInternet = false
+        servidorContesta.value = true; advanceUntilIdle()
+        servidorContesta.value = false; advanceUntilIdle()
+        assertFalse(subject.chequeAlDia.value)
+        conInternet = true
+        servidorContesta.value = true // vuelve la red con la pantalla abierta
+        advanceUntilIdle()
+        assertTrue("se volvió a leer sin salir de la mesa", subject.chequeAlDia.value)
+
+        assertTrue(subject.preparePagar())
+        assertFalse("con la cuenta al día, el cobro de siempre (también tarjeta)", session.current()!!.cobroSinRed)
+        subject.viewModelScope.cancel()
+    }
+
+    /** Sin el piloto no hay camino sin red para una mesa del servidor: releer bloquearía el efectivo de hoy. No se relee. */
+    @Test fun `D19 con el piloto apagado la caida no cambia el cobro de hoy`() = runTest {
+        piloto = false
+        abrir()
+        val subject = vm()
+        leer(subject)
+        ronda(subject, 2500)
+        assertTrue(subject.chequeAlDia.value)
+        conInternet = false
+        servidorContesta.value = false
+        advanceUntilIdle()
+        assertTrue("sin piloto no se relee", subject.chequeAlDia.value)
+        assertTrue(subject.preparePagar())
         assertFalse(session.current()!!.cobroSinRed)
         subject.viewModelScope.cancel()
     }

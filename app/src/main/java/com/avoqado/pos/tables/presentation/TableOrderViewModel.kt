@@ -32,6 +32,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.CancellationException
@@ -540,6 +542,22 @@ class TableOrderViewModel @Inject constructor(
                         tableSession.current()?.let { leerTrabajo(it) }?.intents == 0) invalidateBlockedNotice()
                 }
             }
+        }
+    }
+
+    init {
+        // D19 + D17 (16-nov): con la pantalla de la mesa abierta, una caída del internet no hacía releer la cuenta: seguía «al día» y
+        // «Pagar» tomaba el camino con internet (cola de COBROS: sin aviso del cobro de más ni mesa libre). Con el piloto, cada cambio de
+        // conexión la vuelve a pedir. La bandera sólo DISPARA la lectura; decide su respuesta (`bandera-de-conexion-vieja-no-decide-el-
+        // texto`): sin respuesta deja de estar al día y «Pagar» va por la cola de mesas, como al salir y volver a entrar; con respuesta
+        // (bandera vieja, o la red que volvió) sigue o vuelve a estar al día. Sin piloto no se relee: bloquearía el efectivo de hoy.
+        if (fotos != null) viewModelScope.launch {
+            combine(connectivityMonitor.isConnected, connectivityMonitor.isServerReachable) { red, servidor -> red && servidor }
+                .distinctUntilChanged().drop(1).collect {
+                    val s = tableSession.current()
+                    if (pilotoSinRed && s != null && !s.isProvisional && s.mode == TableSession.Mode.ORDERING && !hayMutacionEnVuelo &&
+                        tableSession.contextoActual() == contextoDeSesion && venueId == venueDeSesion) loadCheck()
+                }
         }
     }
 
