@@ -296,7 +296,8 @@ class CancelacionDeCobroCoordinator internal constructor(
                             }
                             val puedeInsistir = (desenlace.enVuelo || desenlace.sinFila) && consultas <= esperasDeSondeo.size
                             if (!puedeInsistir) {
-                                return quedarPendiente(intencion, sinRed = false, terminalLibre = CardChargeDecision.terminalLibreVentaEnDuda(probe))
+                                return quedarPendiente(intencion, sinRed = false, terminalLibre = CardChargeDecision.terminalLibreVentaEnDuda(probe),
+                                    sinFila = desenlace.sinFila)
                             }
                             delay(esperasDeSondeo[consultas - 1])
                         }
@@ -368,6 +369,8 @@ class CancelacionDeCobroCoordinator internal constructor(
         sinRed: Boolean,
         motivo: String? = null,
         terminalLibre: Boolean = false,
+        /** Codex android r1 #6: la última consulta dio 404 (la solicitud nunca llegó). */
+        sinFila: Boolean = false,
     ): EstadoDeCancelacion {
         val intentos = intencion.intentos + 1
         guardar(
@@ -376,6 +379,7 @@ class CancelacionDeCobroCoordinator internal constructor(
                 sinRed = sinRed,
                 motivo = motivo ?: intencion.motivo,
                 terminalLibre = terminalLibre,
+                sinFila = sinFila,
                 proximoIntentoEn = reloj() + espera(intentos),
             ),
         )

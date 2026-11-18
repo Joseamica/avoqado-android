@@ -91,18 +91,23 @@ object CancelacionDeCobro {
     const val CUERPO_SIN_RED =
         "Sin conexión en esta tablet: la cancelación se enviará en cuanto vuelva la red. La terminal podría seguir mostrando el cobro."
     /** D19 (4-nov): lo que dice una cancelación en «Por revisar». Sin red manda la red; con la terminal suelta, ya no «se cancela sola». */
-    fun cuerpoDeLaFila(sinRed: Boolean, terminalLibre: Boolean): String = when {
+    fun cuerpoDeLaFila(sinRed: Boolean, terminalLibre: Boolean, sinFila: Boolean = false): String = when {
         sinRed -> CUERPO_SIN_RED
         terminalLibre -> CUERPO_TERMINAL_LIBRE
+        sinFila -> CUERPO_NUNCA_LLEGO
         else -> CUERPO_PENDIENTE
     }
+
+    /** Codex android r1 #6: el cobro nunca llegó a Avoqado (404): ya no hay nada que se confirme solo; lo firma un gerente. */
+    const val CUERPO_NUNCA_LLEGO = "Este cobro no llegó a Avoqado: no consta si se cobró. Si no se cobró, un gerente lo firma aquí."
+
 
     /**
      * D19: la fila deja declarar «No se cobró» sólo cuando ya no hay nada que se confirme solo (terminal suelta), hay red y es un cobro
      * con solicitud (la declaración va por ella). Un aviso de cobro hecho nunca se declara.
      */
-    fun filaPuedeDeclarar(terminalLibre: Boolean, sinRed: Boolean, requestId: String?, esAvisoDeCobro: Boolean): Boolean =
-        terminalLibre && !sinRed && requestId != null && !esAvisoDeCobro
+    fun filaPuedeDeclarar(terminalLibre: Boolean, sinRed: Boolean, requestId: String?, esAvisoDeCobro: Boolean, sinFila: Boolean = false): Boolean =
+        (terminalLibre || sinFila) && !sinRed && requestId != null && !esAvisoDeCobro
 
     const val BOTON_VOLVER_A_CONSULTAR = "Volver a consultar"
     const val BOTON_SALIR_PENDIENTE = "Salir (queda pendiente)"
@@ -280,6 +285,9 @@ object CancelacionDeCobro {
     /** Debajo del título: la referencia de la fila y lo que deja la firma. */
     fun detalleDeLaFirma(folioCorto: String): String =
         "Folio $folioCorto. Firmas que revisaste la terminal y este cobro no aparece; queda en Avoqado con tu nombre y la hora."
+
+    /** Codex android r1 #7: la fila que revisaba el gerente se resolvió sola (y no consta que haya cobrado): ya no se firma. */
+    const val YA_SE_RESOLVIO = "Ese cobro ya se resolvió: ya no hace falta firmar."
 
     /** La firma no salió por falta de red: la fila sigue pendiente, nada se encola. */
     const val FIRMA_SIN_RED = "Sin conexión: la firma necesita internet. El cobro sigue por confirmar."

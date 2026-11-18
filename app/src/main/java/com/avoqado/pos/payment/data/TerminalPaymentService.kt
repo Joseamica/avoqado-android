@@ -443,6 +443,7 @@ class TerminalPaymentService @Inject constructor(
      */
     fun pendientesDeOtrasVentas(orderId: String?): List<ContextoDeCobro> {
         val orden = orderId?.takeIf { it.isNotBlank() }
+        val sucursal = secureStorage.venueId
         return vigentes().filter { orden == null || it.orderId != orden }
             .map {
                 contextoDeEntrada(it)
@@ -450,6 +451,9 @@ class TerminalPaymentService @Inject constructor(
                         it.requestId, venueId = null, terminalId = null, orderId = it.orderId, desdeMillis = it.cobradoEn, cobrado = it.cobrado,
                     )
             }
+            // 🔴 Codex android r1 #8: sólo los de la sucursal ACTIVA (el aviso de 10 min y «Cobros por confirmar»). Una entrada vieja
+            // cuyo contexto no dice de qué sucursal es se queda: no se sabe y una duda no se esconde. Los de otra se ven al entrar a ella.
+            .filter { it.venueId == null || it.venueId == sucursal }
             .reversed()
     }
 

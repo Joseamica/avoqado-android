@@ -245,6 +245,10 @@ class CancelacionDeCobroCoordinatorTest {
         assertTrue(transporte.llamadasBorrar.isEmpty())
         assertEquals(3, transporte.llamadasEstado.size)
         assertEquals(EstadoDeCancelacion.Pendiente(sinRed = false), c.estadoActual("req-1"))
+        // Codex android r1 #6: se anota que nunca llegó, para que el gerente la pueda firmar en «Operaciones por revisar».
+        assertTrue(store.leer("req-1")!!.sinFila)
+        assertTrue(com.avoqado.pos.payment.domain.CancelacionDeCobro.filaPuedeDeclarar(
+            terminalLibre = false, sinRed = false, requestId = "req-1", esAvisoDeCobro = false, sinFila = true))
     }
 
     @Test

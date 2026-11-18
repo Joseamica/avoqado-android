@@ -122,6 +122,8 @@ fun QuarantineSheet(
     val avisosDeCancelacion by cancelacionesViewModel.avisos.collectAsState()
     val cobrosPorConfirmar by cancelacionesViewModel.cobrosPorConfirmar.collectAsState()
     val pasoDelGerente by cancelacionesViewModel.paso.collectAsState()
+    val resultadoDeLaRevision by cancelacionesViewModel.resultado.collectAsState()
+    val importesRecuperados by cancelacionesViewModel.importesRecuperados.collectAsState() // se LEE en la fila: repinta al recuperarse
 
     LaunchedEffect(Unit) { viewModel.load();historial.cargar() }
     LaunchedEffect(cancelacionesViewModel) {
@@ -340,16 +342,19 @@ fun QuarantineSheet(
                             Column(Modifier.fillMaxWidth().padding(vertical = AvoqadoTheme.spacing.md), verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
                                 val esAvisoDeCobro = cancelacionesViewModel.esAvisoDeCobro(cancelacion)
                                 Text(if (esAvisoDeCobro) com.avoqado.pos.payment.domain.CancelacionDeCobro.SE_COBRO_AL_FINAL else com.avoqado.pos.payment.domain.CancelacionDeCobro.TITULO_PENDIENTE, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
-                                cancelacion.montoCents?.let { Text(formatMoney(it), style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold) }
+                                // Codex android r1 #11: el importe de SU solicitud; si no consta, «Importe por confirmar» mientras se recupera.
+                                val fila = cancelacionesViewModel.filaDe(cancelacion)
+                                val importe = fila?.montoCents ?: cancelacion.montoCents ?: cancelacion.requestId?.let { importesRecuperados[it] }
+                                Text(importeDeLaFila(importe), style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold)
                                 ReferenciaDeRevision("Folio ${cancelacion.id.take(8)}", formatTime(cancelacion.creadaEn), abierto, { abierto = !abierto })
                                 // D19 (4-nov): con la terminal ya suelta ya no «se cancela sola»; se dice y se deja declarar.
-                                if (!esAvisoDeCobro) Text(com.avoqado.pos.payment.domain.CancelacionDeCobro.cuerpoDeLaFila(cancelacion.sinRed, cancelacion.terminalLibre), style = MaterialTheme.typography.bodyMedium)
+                                if (!esAvisoDeCobro) Text(com.avoqado.pos.payment.domain.CancelacionDeCobro.cuerpoDeLaFila(cancelacion.sinRed, cancelacion.terminalLibre, cancelacion.sinFila), style = MaterialTheme.typography.bodyMedium)
                                 cancelacion.motivo?.takeIf { it.isNotBlank() }?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
                                 val consultando = cancelacion.id in cancelacionesEnCurso
                                 cancelacion.requestId?.let { avisosDeCancelacion[it] }?.let { Text(it, style = MaterialTheme.typography.bodyMedium, color = Warning) }
-                                // F1 (tarea 6): «Revisar» = la revisión del gerente (PIN primero), incluso si la solicitud nunca llegó a la TPV.
-                                val fila = cancelacionesViewModel.filaDe(cancelacion)
-                                if (fila != null && com.avoqado.pos.payment.domain.CancelacionDeCobro.filaPuedeDeclarar(cancelacion.terminalLibre, cancelacion.sinRed, cancelacion.requestId, esAvisoDeCobro)) {
+                                // F1 (tarea 6): «Revisar» = la revisión del gerente (PIN primero), incluso si la solicitud nunca llegó (404,
+                                // Codex android r1 #6).
+                                if (fila != null && com.avoqado.pos.payment.domain.CancelacionDeCobro.filaPuedeDeclarar(cancelacion.terminalLibre, cancelacion.sinRed, cancelacion.requestId, esAvisoDeCobro, cancelacion.sinFila)) {
                                     AccionDeRevision(text = com.avoqado.pos.payment.domain.CancelacionDeCobro.BOTON_REVISAR,
                                         onClick = { cancelacionesViewModel.revisar(fila) }, enabled = !consultando, principal = true)
                                 }
@@ -554,6 +559,15 @@ fun QuarantineSheet(
         onFirmar = cancelacionesViewModel::firmar,
         onCerrar = cancelacionesViewModel::cerrar,
     )
+    // Codex android r1 #7: la fila que revisaba el gerente se resolvió sola; se dice cómo quedó (su teclado ya se cerró).
+    resultadoDeLaRevision?.let {
+        com.avoqado.pos.designsystem.components.AvoqadoWarningToast(
+            message = com.avoqado.pos.payment.domain.CancelacionDeCobro.SECCION_COBROS_POR_CONFIRMAR,
+            subtitle = it,
+            onDismiss = cancelacionesViewModel::consumirResultado,
+            secondaryLabel = "Entendido",
+        )
+    }
 
     successMessage?.let {
         AvoqadoSuccessToast(message = it, onDismiss = viewModel::consumeSuccess)

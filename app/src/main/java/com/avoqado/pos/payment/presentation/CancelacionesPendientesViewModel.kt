@@ -60,7 +60,32 @@ class CancelacionesPendientesViewModel @Inject constructor(
     private val secureStorage: com.avoqado.pos.core.data.local.SecureStorage,
 ) : ViewModel() {
 
-    val pendientes: StateFlow<List<IntencionDeCancelarCobro>> = cancelacionDeCobro.pendientes
+    private val _paso = MutableStateFlow<PasoDelGerente>(PasoDelGerente.Cerrado)
+    val paso: StateFlow<PasoDelGerente> = _paso.asStateFlow()
+    private var idDelTeclado = 0L
+    /** La firma en vuelo. Mientras exista, otro [Firmar] espera a ésta (nunca manda otra) y el teclado no se cierra. */
+    private var envio: kotlinx.coroutines.Deferred<OverrideResult>? = null
+
+    private val _pendientes = MutableStateFlow(deLaSucursal(cancelacionDeCobro.pendientes.value))
+    /**
+     * Las cancelaciones pendientes de la sucursal ACTIVA (Codex android r1 #8): un gerente de A no ve ni firma las de B desde la sesión
+     * de A. Una vieja sin sucursal se ve (no se puede saber de cuál es). Se recalcula con cada cambio del coordinador y en [refrescar].
+     */
+    val pendientes: StateFlow<List<IntencionDeCancelarCobro>> = _pendientes.asStateFlow()
+
+    private fun deLaSucursal(todas: List<IntencionDeCancelarCobro>): List<IntencionDeCancelarCobro> {
+        val sucursal = secureStorage.venueId
+        return todas.filter { it.venueId.isBlank() || it.venueId == sucursal }
+    }
+
+    init {
+        viewModelScope.launch {
+            cancelacionDeCobro.pendientes.collect {
+                _pendientes.value = deLaSucursal(it)
+                revisarQueSigueVigente()
+            }
+        }
+    }
 
     val enCurso: StateFlow<Set<String>> = cancelacionDeCobro.enCurso
 
@@ -71,41 +96,50 @@ class CancelacionesPendientesViewModel @Inject constructor(
     /** Lo que contestó la firma de cada fila (por `requestId`) cuando NO liberó: el motivo del servidor, sin red o sesión renovada. */
     val avisos: StateFlow<Map<String, String>> = _avisos.asStateFlow()
 
+    private val _resultado = MutableStateFlow<String?>(null)
+    /** Codex android r1 #7: la fila que revisaba el gerente se resolvió sola mientras tecleaba; cómo quedó (se cierra su teclado). */
+    val resultado: StateFlow<String?> = _resultado.asStateFlow()
+    fun consumirResultado() { _resultado.value = null }
+
     // MARK: - «Cobros por confirmar»
 
     private val _cobros = MutableStateFlow<List<CobroPorConfirmar>>(emptyList())
     /** Los cobros con tarjeta en duda de este aparato que no son una cancelación pendiente (ésas tienen su propia sección). */
     val cobrosPorConfirmar: StateFlow<List<CobroPorConfirmar>> = _cobros.asStateFlow()
 
-    private val importesRecuperados = mutableMapOf<String, Int>()
+    private val _importes = MutableStateFlow<Map<String, Int>>(emptyMap())
+    /** Los importes que se recuperaron por ID (filas antiguas sin importe); la hoja lo observa para repintar. */
+    val importesRecuperados: StateFlow<Map<String, Int>> = _importes.asStateFlow()
     private val preguntandoImporte = mutableSetOf<String>()
 
     /**
-     * Relee la lista durable. Fuera: lo que ya consta que SÍ pasó, el cobro que sigue en vuelo (todavía no es una duda), lo que ya
-     * es una cancelación pendiente y lo de OTRA sucursal (un gerente de A no ve ni firma los de B desde la sesión de A: se ven al
-     * entrar a B). Una fila antigua cuyo contexto no dice de qué sucursal es se queda: no se puede saber y no se esconde una duda;
-     * el SERVIDOR no deja firmarla fuera de su sucursal. ponytail: una lectura del disco cada vez que se llama (la banda la pide cada 5 s); un flujo de
-     * cambios de la lista si alguna vez pesa.
+     * Relee la lista durable. Fuera: lo que ya consta que SÍ pasó, el cobro que sigue en vuelo (todavía no es una duda) y lo que ya
+     * es una cancelación pendiente. La lista ya es sólo de la sucursal activa (`pendientesDeOtrasVentas`, Codex android r1 #8).
+     * ponytail: una lectura del disco cada vez que se llama (la banda la pide cada 5 s); un flujo de cambios de la lista si alguna
+     * vez pesa.
      *
-     * @param recuperarImportes la hoja está abierta: a una fila sin importe se le pregunta a Avoqado por su ID (una vez a la vez).
+     * @param recuperarImportes la hoja está abierta: a una fila (también de cancelación, #11) sin importe se le pregunta a Avoqado
+     *   por su ID, una a la vez.
      */
     fun refrescar(recuperarImportes: Boolean = false) {
+        _pendientes.value = deLaSucursal(cancelacionDeCobro.pendientes.value)
         val cancelados = cancelacionDeCobro.pendientes.value.mapNotNullTo(HashSet()) { it.requestId }
         val enVuelo = terminalPaymentService.intentoEnVuelo()?.requestId
-        val sucursal = secureStorage.venueId
         val filas = terminalPaymentService.pendientesDeOtrasVentas(null)
             .filter { !it.cobrado && it.requestId != enVuelo && it.requestId !in cancelados }
-            .filter { it.venueId == null || it.venueId == sucursal }
             .map {
                 CobroPorConfirmar(
                     requestId = it.requestId,
                     venueId = it.venueId,
-                    montoCents = it.amountCents?.let { monto -> monto + (it.tipCents ?: 0) } ?: importesRecuperados[it.requestId],
+                    montoCents = it.amountCents?.let { monto -> monto + (it.tipCents ?: 0) } ?: _importes.value[it.requestId],
                     desdeMillis = it.desdeMillis,
                 )
             }
         _cobros.value = filas
-        if (recuperarImportes) filas.filter { it.montoCents == null }.forEach(::recuperarImporte)
+        revisarQueSigueVigente()
+        if (recuperarImportes) {
+            (filas + _pendientes.value.mapNotNull(::filaDe)).filter { it.montoCents == null }.forEach(::recuperarImporte)
+        }
     }
 
     private fun recuperarImporte(cobro: CobroPorConfirmar) {
@@ -113,7 +147,7 @@ class CancelacionesPendientesViewModel @Inject constructor(
         viewModelScope.launch {
             try {
                 val importe = terminalPaymentService.importeDelCobro(cobro.requestId, cobro.venueId) ?: return@launch
-                importesRecuperados[cobro.requestId] = importe
+                _importes.update { it + (cobro.requestId to importe) }
                 _cobros.update { filas -> filas.map { if (it.requestId == cobro.requestId) it.copy(montoCents = importe) else it } }
             } finally {
                 preguntandoImporte -= cobro.requestId
@@ -121,25 +155,51 @@ class CancelacionesPendientesViewModel @Inject constructor(
         }
     }
 
-    /** La fila de una cancelación pendiente, para la revisión del gerente; `null` si no hubo cobro (intención sólo de la orden). */
+    /**
+     * La fila de una cancelación pendiente, para la revisión del gerente; `null` si no hubo cobro (intención sólo de la orden). El
+     * importe es el de SU solicitud (contexto durable) y, si no lo guardó, el de la intención o el recuperado por ID (Codex android
+     * r1 #11); si no consta, `null` («Importe por confirmar»).
+     */
     fun filaDe(intencion: IntencionDeCancelarCobro): CobroPorConfirmar? {
         val requestId = intencion.requestId?.takeIf { it.isNotBlank() } ?: return null
+        val contexto = terminalPaymentService.contextoDe(requestId)
         return CobroPorConfirmar(
             requestId = requestId,
             venueId = intencion.venueId.takeIf { it.isNotBlank() },
-            montoCents = intencion.montoCents,
+            montoCents = contexto?.amountCents?.let { it + (contexto.tipCents ?: 0) } ?: intencion.montoCents ?: _importes.value[requestId],
             desdeMillis = intencion.creadaEn,
             cancelacionId = intencion.id,
         )
     }
 
+    /** ¿La fila sigue en duda? Una cancelación, mientras su intención siga viva; un cobro, mientras siga en la lista durable. */
+    private fun sigueVigente(cobro: CobroPorConfirmar): Boolean =
+        if (cobro.cancelacionId != null) cancelacionDeCobro.pendientes.value.any { it.id == cobro.cancelacionId }
+        else _cobros.value.any { it.requestId == cobro.requestId }
+
+    /**
+     * 🔴 Codex android r1 #7 (la prueba retirada de C4): si la fila que revisa el gerente se resolvió sola (la terminal confirmó, la
+     * cancelación cerró, otro aparato la firmó), su teclado se cierra y se dice cómo quedó; un PIN tardío ya no manda nada. Con una
+     * firma en vuelo no se toca: decide su respuesta.
+     */
+    private fun revisarQueSigueVigente() {
+        val abierto = _paso.value as? PasoDelGerente.Firmar ?: return
+        if (envio?.isActive == true || sigueVigente(abierto.cobro)) return
+        _paso.value = PasoDelGerente.Cerrado
+        _resultado.value = comoQuedo(abierto.cobro)
+    }
+
+    private fun comoQuedo(cobro: CobroPorConfirmar): String {
+        val siPaso = if (cobro.cancelacionId != null) {
+            cancelacionDeCobro.desenlaceConocido(cobro.requestId) is com.avoqado.pos.payment.domain.DesenlaceDeCancelacion.SeCobro
+        } else {
+            terminalPaymentService.yaCobrado(cobro.requestId)
+        }
+        return if (siPaso) CancelacionDeCobro.SE_COBRO_AL_FINAL else CancelacionDeCobro.YA_SE_RESOLVIO
+    }
+
     // MARK: - La revisión del gerente (un paso: el teclado dice qué se firma y [Firmar] lo manda)
 
-    private val _paso = MutableStateFlow<PasoDelGerente>(PasoDelGerente.Cerrado)
-    val paso: StateFlow<PasoDelGerente> = _paso.asStateFlow()
-    private var idDelTeclado = 0L
-    /** La firma en vuelo. Mientras exista, otro [Firmar] espera a ésta (nunca manda otra) y el teclado no se cierra. */
-    private var envio: kotlinx.coroutines.Deferred<OverrideResult>? = null
 
     /** «Revisar» en una fila: el teclado de ESA fila. Con una firma en vuelo no se abre otra. */
     fun revisar(cobro: CobroPorConfirmar) {
@@ -159,8 +219,10 @@ class CancelacionesPendientesViewModel @Inject constructor(
      * 🔴 Corre en `viewModelScope`: si el teclado se va con la firma viajando, la respuesta se aplica igual.
      */
     suspend fun firmar(pin: String): OverrideResult {
-        val paso = _paso.value as? PasoDelGerente.Firmar ?: return TECLADO_CERRADO
         envio?.takeIf { it.isActive }?.let { return it.await() }
+        // Codex android r1 #7: se relee justo antes de firmar; si la fila ya se resolvió, se cierra y no se manda nada.
+        refrescar()
+        val paso = _paso.value as? PasoDelGerente.Firmar ?: return TECLADO_CERRADO
         val cobro = paso.cobro
         val nuevo = viewModelScope.async {
             val r = terminalPaymentService.declararNoCobrado(cobro.requestId, cobro.venueId, supervisorPin = pin)

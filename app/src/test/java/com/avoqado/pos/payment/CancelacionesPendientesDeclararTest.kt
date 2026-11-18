@@ -40,7 +40,8 @@ class CancelacionesPendientesDeclararTest {
     }
     private val servicio = mockk<TerminalPaymentService>(relaxed = true).also {
         every { it.intentoEnVuelo() } returns null
-        every { it.pendientesDeOtrasVentas(null) } returns emptyList()
+        // La fila A está en la lista durable (la sucursal ya la filtra el servicio, `TerminalPaymentServiceHttpTest`).
+        every { it.pendientesDeOtrasVentas(null) } returns listOf(pendiente("req-a", 35_000))
     }
     private val intencion = IntencionDeCancelarCobro(id = "req-1", requestId = "req-1", venueId = "venue-1", montoCents = 35_000, creadaEn = 1, terminalLibre = true)
     private val a = CobroPorConfirmar(requestId = "req-a", venueId = "venue-1", montoCents = 35_000, desdeMillis = 1)
@@ -84,6 +85,7 @@ class CancelacionesPendientesDeclararTest {
     @Test
     fun `F1 la cancelacion liberada solo vuelve a consultar - el coordinador cancela la orden, aqui no se borra nada`() = runTest {
         coEvery { servicio.declararNoCobrado("req-1", "venue-1", "4321") } returns ResultadoDeDeclaracion.Liberada
+        cancelaciones.value = listOf(intencion)
         val vm = vm()
 
         vm.revisar(vm.filaDe(intencion)!!)
@@ -181,24 +183,6 @@ class CancelacionesPendientesDeclararTest {
     }
 
     @Test
-    fun `F1 Cobros por confirmar solo de la sucursal de la sesion`() = runTest {
-        every { servicio.pendientesDeOtrasVentas(null) } returns listOf(
-            pendiente("req-a", 1_000),
-            pendiente("req-de-b", 2_000).copy(venueId = "venue-2"),
-            pendiente("req-sin-sucursal", 3_000).copy(venueId = null),
-        )
-        val vm = vm()
-
-        vm.refrescar()
-        assertEquals("la de otra sucursal no se ve; una antigua sin sucursal sí (el servidor no deja firmarla fuera de la suya)",
-            listOf("req-a", "req-sin-sucursal"), vm.cobrosPorConfirmar.value.map { it.requestId })
-
-        sucursal = "venue-2" // entra a B
-        vm.refrescar()
-        assertEquals(listOf("req-de-b", "req-sin-sucursal"), vm.cobrosPorConfirmar.value.map { it.requestId })
-    }
-
-    @Test
     fun `F1 Cobros por confirmar - dudas de este aparato, sin lo cobrado, lo que va en vuelo ni las cancelaciones`() = runTest {
         cancelaciones.value = listOf(intencion)
         every { servicio.intentoEnVuelo() } returns com.avoqado.pos.payment.data.IntentoDeCobroEnVuelo("req-en-vuelo", "t1", "venue-1")
@@ -234,6 +218,57 @@ class CancelacionesPendientesDeclararTest {
         vm.refrescar()
         assertEquals("se recuerda", 12_000, vm.cobrosPorConfirmar.value.single().montoCents)
         coVerify(exactly = 1) { servicio.importeDelCobro("req-vieja", "venue-1") }
+    }
+
+    @Test
+    fun `Codex r1 7 - la cancelacion se resuelve mientras el gerente teclea - el teclado se cierra y un PIN tardio no manda nada`() = runTest {
+        cancelaciones.value = listOf(intencion)
+        val vm = vm()
+        vm.revisar(vm.filaDe(intencion)!!)
+
+        every { coordinador.desenlaceConocido("req-1") } returns com.avoqado.pos.payment.domain.DesenlaceDeCancelacion.NoSeCobro
+        cancelaciones.value = emptyList() // el coordinador la cerró (la terminal confirmó sola)
+
+        assertEquals("el teclado se va", PasoDelGerente.Cerrado, vm.paso.value)
+        assertEquals("y se dice cómo quedó", CancelacionDeCobro.YA_SE_RESOLVIO, vm.resultado.value)
+        vm.firmar("4321")
+        coVerify(exactly = 0) { servicio.declararNoCobrado(any(), any(), any()) }
+    }
+
+    @Test
+    fun `Codex r1 7 - el cobro por confirmar se resuelve mientras el gerente teclea - un PIN tardio no manda nada`() = runTest {
+        every { servicio.pendientesDeOtrasVentas(null) } returns listOf(pendiente("req-a", 35_000))
+        val vm = vm()
+        vm.refrescar()
+        vm.revisar(vm.cobrosPorConfirmar.value.single())
+
+        every { servicio.pendientesDeOtrasVentas(null) } returns emptyList() // A ya consta: SÍ pasó
+        every { servicio.yaCobrado("req-a") } returns true
+        vm.firmar("4321")
+
+        coVerify(exactly = 0) { servicio.declararNoCobrado(any(), any(), any()) }
+        assertEquals(PasoDelGerente.Cerrado, vm.paso.value)
+        assertEquals(CancelacionDeCobro.SE_COBRO_AL_FINAL, vm.resultado.value)
+    }
+
+    @Test
+    fun `Codex r1 8 - Cancelaciones pendientes solo de la sucursal activa, las viejas sin sucursal se ven`() = runTest {
+        cancelaciones.value = listOf(
+            intencion,
+            intencion.copy(id = "req-b", requestId = "req-b", venueId = "venue-2"),
+            intencion.copy(id = "req-vieja", requestId = "req-vieja", venueId = ""),
+        )
+        val vm = vm()
+        vm.refrescar()
+
+        assertEquals(listOf("req-1", "req-vieja"), vm.pendientes.value.map { it.id })
+    }
+
+    @Test
+    fun `Codex r1 11 - la fila de una cancelacion sin importe toma el de su solicitud`() = runTest {
+        every { servicio.contextoDe("req-1") } returns pendiente("req-1", 30_000, propina = 5_000)
+
+        assertEquals(35_000, vm().filaDe(intencion.copy(montoCents = null))?.montoCents)
     }
 
     @Test

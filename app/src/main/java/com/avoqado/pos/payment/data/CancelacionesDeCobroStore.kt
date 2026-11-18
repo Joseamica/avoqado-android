@@ -67,6 +67,11 @@ data class IntencionDeCancelarCobro(
      * versión anterior se lee igual.
      */
     val terminalLibre: Boolean = false,
+    /**
+     * Codex android r1 #6: la última consulta dio 404 — la solicitud nunca llegó a Avoqado. No prueba que no se cobró, pero ya no hay
+     * nada que se confirme solo: el gerente la puede firmar con su PIN (el SERVIDOR acepta la solicitud ausente). `false` por omisión.
+     */
+    val sinFila: Boolean = false,
 ) {
     val faseActual: FaseDeCancelacion get() = FaseDeCancelacion.de(fase)
 }

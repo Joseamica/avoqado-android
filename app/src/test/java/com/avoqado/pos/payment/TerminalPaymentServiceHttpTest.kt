@@ -389,6 +389,16 @@ class TerminalPaymentServiceHttpTest {
         assertEquals(1, server.requestCount)
     }
 
+    /** Codex android r1 #8: el aviso de 10 min (y «Cobros por confirmar») sólo con las dudas de la sucursal activa; una vieja sin sucursal se ve. */
+    @Test
+    fun `Codex r1 8 - los pendientes de otras ventas son solo de la sucursal activa`() {
+        pendientes = PendientesDeTarjeta.agregar(null, "r-1", "o-1", """{"requestId":"r-1","venueId":"venue-1","amountCents":100}""")
+        pendientes = PendientesDeTarjeta.agregar(pendientes, "r-b", "o-b", """{"requestId":"r-b","venueId":"venue-2","amountCents":200}""")
+        pendientes = PendientesDeTarjeta.agregar(pendientes, "r-vieja", null, """{"requestId":"r-vieja"}""")
+
+        assertEquals(setOf("r-1", "r-vieja"), service.pendientesDeOtrasVentas(null).map { it.requestId }.toSet())
+    }
+
     /** 🔴 F1 (tarea 6): una fila antigua sin importe le pregunta a Avoqado por su ID, sólo para mostrarlo. Nunca un cero inventado. */
     @Test
     fun `F1 el importe de una fila antigua sale del estado de la solicitud, con propina, y sin respuesta es null`() = runBlocking {
