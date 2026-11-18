@@ -8,36 +8,101 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.ViewModel
+import com.avoqado.pos.core.util.ConnectivityMonitor
 import com.avoqado.pos.designsystem.components.AvoqadoDialog
 import com.avoqado.pos.designsystem.components.PrimaryButton
 import com.avoqado.pos.pos.data.ClassCheckoutSeed
 import com.avoqado.pos.pos.presentation.cart.CartViewModel
+import com.avoqado.pos.reservations.data.ReservationRepository
+import com.avoqado.pos.reservations.data.model.ReservationStatus
+import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
+import javax.inject.Inject
+
+/** D13 (Codex r2 #3): lo que la reserva dice HOY. `null` = se cobra aquí. La inscripción de mostrador nace CONFIRMED. */
+internal fun yaNoSeCobraAqui(status: ReservationStatus, persona: String?): String? {
+    val de = persona?.takeIf { it.isNotBlank() }?.let { " de $it" }.orEmpty()
+    return when (status) {
+        ReservationStatus.PENDING, ReservationStatus.CONFIRMED -> null
+        ReservationStatus.CHECKED_IN -> "Recepción ya registró la llegada$de y abrió su cuenta: cóbrala desde Órdenes."
+        ReservationStatus.CANCELLED -> "La reserva$de se canceló: ya no se cobra aquí."
+        ReservationStatus.NO_SHOW -> "La reserva$de quedó como «No se presentó»: ya no se cobra aquí."
+        ReservationStatus.COMPLETED -> "La clase$de ya quedó completada: ya no se cobra aquí."
+    }
+}
+
+@HiltViewModel
+class ClasePendienteViewModel @Inject constructor(
+    private val reservations: ReservationRepository,
+    private val connectivity: ConnectivityMonitor,
+) : ViewModel() {
+    sealed interface Revision {
+        data object SeCobra : Revision
+        data class YaNo(val motivo: String) : Revision
+        /** Sin red (o el servidor no contestó a tiempo): se deja agregar y se dice que no se pudo revisar. */
+        data object SinRevisar : Revision
+    }
+
+    suspend fun revisar(seed: ClassCheckoutSeed.Seed): Revision {
+        val id = seed.reservationId ?: return Revision.SeCobra
+        if (!connectivity.isFullyConnected) return Revision.SinRevisar
+        val reserva = withTimeoutOrNull(5_000) { reservations.fetchOne(id, seed.venueId).getOrNull() } ?: return Revision.SinRevisar
+        return yaNoSeCobraAqui(reserva.status, seed.persona)?.let(Revision::YaNo) ?: Revision.SeCobra
+    }
+}
 
 /**
  * D13 (18-nov): una clase de «Inscribir y cobrar» que no pudo entrar en su momento ya no entra sola. Aquí se enseña y la
- * cajera decide: «Agregar al carrito» (sólo a una venta nueva), «La agrego después» (vuelve a salir al terminar la venta
- * actual) o «Ya no la cobro aquí» (recepción la cobró o la canceló; la reserva no se toca).
+ * cajera decide: «Agregar al carrito» (sólo a una venta nueva, tras preguntarle a recepción cómo va la reserva), «La agrego
+ * después» (vuelve a salir cuando la caja queda libre) o «Ya no la cobro aquí» (la reserva no se toca).
  */
 @Composable
-fun ClasePendiente(cart: CartViewModel) {
+fun ClasePendiente(cart: CartViewModel, vm: ClasePendienteViewModel = hiltViewModel()) {
     val enEspera by cart.clasesPendientes.collectAsState()
     val cartState by cart.cartState.collectAsState()
     val cliente by cart.selectedCustomer.collectAsState()
     val catalogo by cart.products.collectAsState()
+    val scope = rememberCoroutineScope()
+    val libre = cartState.isEmpty && cliente == null
     var vistas by remember { mutableStateOf(setOf<ClassCheckoutSeed.Seed>()) }
-    // Al terminar la venta actual vuelve a avisar.
-    LaunchedEffect(cartState.isEmpty) { if (cartState.isEmpty) vistas = emptySet() }
+    // Codex r2 #6: vuelve a avisar en cuanto la caja queda libre (también al quitar al cliente con el carrito ya vacío).
+    LaunchedEffect(libre) { if (libre) vistas = emptySet() }
+    var aviso by remember { mutableStateOf<String?>(null) }
+    aviso?.let { texto ->
+        AvoqadoDialog(title = "Clase pendiente", description = texto, onDismiss = { aviso = null },
+            actionButton = { PrimaryButton(text = "Entendido", onClick = { aviso = null }, fullWidth = true) }) {}
+        return
+    }
     val pendiente = remember(enEspera, vistas) { cart.clasesPendientesDeEsteNegocio().firstOrNull { it !in vistas } } ?: return
     var mensaje by remember(pendiente) { mutableStateOf<String?>(null) }
+    var revisando by remember(pendiente) { mutableStateOf(false) }
     val clase = catalogo.firstOrNull { it.id == pendiente.productId }?.name ?: "Clase"
     val lugares = if (pendiente.quantity > 1) " (${pendiente.quantity} lugares)" else ""
-    val libre = cartState.isEmpty && cliente == null
     AvoqadoDialog(title = "Clase pendiente de cobrar", onDismiss = { vistas = vistas + pendiente }) {
         Text(listOfNotNull(clase, pendiente.persona).joinToString(" · ") + lugares)
-        if (!libre) Text("Va en su propia venta: termina o guarda la venta actual para agregarla.")
+        if (!libre) Text("Va en su propia venta: termina o guarda la venta actual (y quita al cliente) para agregarla.")
         mensaje?.let { Text(it) }
-        PrimaryButton(text = "Agregar al carrito", enabled = libre, onClick = { mensaje = cart.agregarClasePendiente(pendiente) })
+        PrimaryButton(text = "Agregar al carrito", enabled = libre && !revisando, isLoading = revisando, onClick = {
+            revisando = true
+            scope.launch {
+                when (val r = vm.revisar(pendiente)) {
+                    is ClasePendienteViewModel.Revision.YaNo -> { cart.quitarClasePendiente(pendiente); aviso = r.motivo }
+                    else -> {
+                        // Se vuelve a revisar en el carrito: mientras se consultaba pudo empezar otra venta.
+                        mensaje = cart.agregarClasePendiente(pendiente)
+                        if (mensaje == null && r is ClasePendienteViewModel.Revision.SinRevisar) {
+                            aviso = "Sin conexión: no se pudo revisar con recepción si ya la registró. Revisa antes de cobrar."
+                        }
+                    }
+                }
+                revisando = false
+            }
+        })
         TextButton(onClick = { vistas = vistas + pendiente }) { Text("La agrego después") }
         TextButton(onClick = { cart.quitarClasePendiente(pendiente) }) { Text("Ya no la cobro aquí") }
     }

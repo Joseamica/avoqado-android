@@ -1582,7 +1582,10 @@ class CartViewModel @Inject constructor(
             }
             val product = productsRepository.products.value.firstOrNull { it.id == seed.productId }
             if (product == null) {
-                Log.w("🛒", "Class seed product ${seed.productId} not in catalog — cannot seed cart")
+                // D13 (Codex r2 #8): antes se perdía con un log (el lugar ya estaba apartado en el servidor). Ahora queda en
+                // «Clase pendiente», donde la cajera ve que no está en el catálogo o la quita.
+                Log.w("🛒", "Class seed product ${seed.productId} not in catalog — goes to pending")
+                classCheckoutSeed.esperar(seed)
                 return@launch
             }
             // Don't clobber a different reservation already linked to the cart:
@@ -1624,6 +1627,11 @@ class CartViewModel @Inject constructor(
         }
         val product = productsRepository.products.value.firstOrNull { it.id == seed.productId }
             ?: return "Esta clase ya no está en el catálogo de esta sucursal."
+        // D13 (Codex r2 #1): un carrito vacío todavía puede ser la copia guardada de otra persona (le quitaron todo). La clase
+        // empieza una venta NUEVA, para que su cobro no retire esa copia ni herede nada de ella.
+        val antes = _cartState.value.identidadDeVenta
+        clearCart()
+        if (_cartState.value.identidadDeVenta == antes) return "No se pudo empezar una venta nueva para la clase."
         classCheckoutSeed.quitarDeEspera(seed)
         addProductWithModifiers(product, quantity = seed.quantity, modifiers = emptyList())
         seed.reservationId?.let { resId -> _cartState.update { it.copy(reservationId = resId) } }

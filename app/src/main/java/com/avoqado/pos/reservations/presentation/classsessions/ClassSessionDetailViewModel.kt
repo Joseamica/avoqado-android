@@ -175,6 +175,9 @@ class ClassSessionDetailViewModel @Inject constructor(
             return
         }
         if (_isSubmitting.value) return
+        // D13 (Codex r2 #4): la sucursal de la inscripción se lee AL PEDIR; si la cajera cambia de sucursal mientras viaja, la
+        // clase sigue siendo de la sucursal donde se inscribió.
+        val sucursalAlInscribir = secureStorage.venueId
         viewModelScope.launch {
             _isSubmitting.value = true
             repository.addAttendee(sessionId, request).fold(
@@ -186,7 +189,7 @@ class ClassSessionDetailViewModel @Inject constructor(
                             reservationId = attendee.id,
                             // D13: para el aviso «Clase pendiente» y para que no entre en otra sucursal.
                             persona = request.guestName,
-                            venueId = secureStorage.venueId,
+                            venueId = sucursalAlInscribir,
                         ),
                     )
                     refresh()

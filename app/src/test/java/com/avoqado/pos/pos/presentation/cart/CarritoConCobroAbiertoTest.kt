@@ -31,6 +31,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -510,5 +511,35 @@ class CarritoConCobroAbiertoTest {
 
         assertTrue(vm.clasesPendientesDeEsteNegocio().isEmpty())
         assertTrue(vm.cartState.value.isEmpty)
+    }
+
+    @Test
+    fun `D13 la clase pendiente empieza una venta nueva aunque el carrito vacio fuera otra venta`() {
+        // Codex r2 #1: la cajera vació (renglón por renglón) la copia de Beto y quitó al cliente; el carrito conserva su identidad.
+        val semilla = ClassCheckoutSeed().apply { put(bea()) }
+        val vm = carrito(semilla)
+        vm.abrirCobro()
+        vm.consumePendingClassSeed()
+        vm.cerrarCobro()
+        val deBeto = vm.cartState.value.identidadDeVenta
+
+        assertNull(vm.agregarClasePendiente(bea()))
+
+        assertNotEquals("la clase va en su propia venta", deBeto, vm.cartState.value.identidadDeVenta)
+        assertNull(vm.cartState.value.carritoGuardadoId)
+        assertEquals(listOf("Café"), vm.cartState.value.items.map { it.name })
+    }
+
+    @Test
+    fun `D13 si su producto no esta en el catalogo la clase queda pendiente en vez de perderse`() {
+        // Codex r2 #8: antes salía con un log, con el lugar ya apartado en el servidor.
+        val fantasma = ClassCheckoutSeed.Seed(productId = "ya-no-existe", quantity = 1, reservationId = "res-x", persona = "Xime", venueId = "venue-1")
+        val semilla = ClassCheckoutSeed().apply { put(fantasma) }
+        val vm = carrito(semilla)
+
+        vm.consumePendingClassSeed()
+
+        assertEquals(listOf(fantasma), vm.clasesPendientesDeEsteNegocio())
+        assertEquals("Esta clase ya no está en el catálogo de esta sucursal.", vm.agregarClasePendiente(fantasma))
     }
 }

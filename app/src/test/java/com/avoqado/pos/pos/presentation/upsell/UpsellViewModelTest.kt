@@ -352,4 +352,23 @@ class UpsellViewModelTest {
         dispatcher.scheduler.advanceUntilIdle()
         io.mockk.coVerify(exactly = 0) { repo.recordImpression(any(), any()) }
     }
+
+    @Test
+    fun `D13 el registro pendiente de A no se cuenta en la venta C aunque se haya cerrado la tira de B`() {
+        // Codex r2 #7: el cliente de A tocó «No, gracias»; la cajera restaura B (nueva sugerencia, minimizada) y luego C.
+        val vm = viewModel()
+        val a = cart("cafe")
+        assertNotNull(vm.offer(a, UpsellContext.COUNTER))
+        vm.finish(emptyList(), 0)
+        val b = cart("cafe")
+        assertNotNull(vm.offer(b, UpsellContext.COUNTER))
+        val c = cart("cafe")
+        vm.soltarMomentoSiEsOtraVenta(c.identidadDeVenta)          // al restaurar C se cierra la tira de B
+
+        vm.soltarSiEsOtraVenta(c.identidadDeVenta)                 // «Cobrar» de C
+        vm.onOrderPaid("orden-C")
+        dispatcher.scheduler.advanceUntilIdle()
+
+        io.mockk.coVerify(exactly = 0) { repo.convertImpression(any(), "orden-C") }
+    }
 }
