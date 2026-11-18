@@ -348,11 +348,16 @@ fun CheckoutScreen(
     var capturaDePeso by remember { mutableStateOf<CapturaDePeso?>(null) }
     val aperturasDePeso = remember { java.util.concurrent.atomic.AtomicLong() }
     // Codex D7 r2 #3: volver a leer el producto que ya se está pesando no es otra apertura (no borra su peso tecleado).
-    val abrirCapturaDePeso: (Product) -> Unit = {
-        if (capturaDePeso?.product?.id != it.id) capturaDePeso = CapturaDePeso(it, aperturasDePeso.incrementAndGet())
+    val abrirCapturaDePeso: (Product) -> Unit = { nuevo ->
+        val abierta = capturaDePeso
+        // Codex D7 r3 #3: el mismo producto toma su ficha vigente (su precio nuevo) sin cambiar de apertura, como develop.
+        capturaDePeso = if (abierta?.product?.id == nuevo.id) abierta.copy(product = nuevo)
+        else CapturaDePeso(nuevo, aperturasDePeso.incrementAndGet())
     }
-    // D7 (Codex D7 r1 #1): etiquetas de báscula que se están leyendo con una apertura abierta: su «Agregar» espera.
-    val etiquetasEnCamino = remember { androidx.compose.runtime.mutableStateMapOf<Long, Int>() }
+    // D7 (Codex D7 r1 #1): etiquetas de báscula que se están leyendo con una apertura abierta (lectura → apertura): su
+    // «Agregar» espera, a lo más 3 s (Codex D7 r3 #2: con WiFi sin internet la consulta podía tardar 30 s).
+    val etiquetasEnCamino = remember { androidx.compose.runtime.mutableStateMapOf<Long, Long>() }
+    val lecturasDeEtiqueta = remember { java.util.concurrent.atomic.AtomicLong() }
     // Cómo se ve el mostrador en ESTE aparato: densidad de la cuadrícula y orden
     // de las pestañas. Es estado y no una lectura suelta porque la pestaña
     // "Configurar" lo cambia sin salir de la pantalla — el cajero tiene que ver
@@ -1211,7 +1216,7 @@ fun CheckoutScreen(
             product = product,
             isTablet = isTablet,
             scaleState = scaleState,
-            leyendoEtiqueta = { (etiquetasEnCamino[captura.apertura] ?: 0) > 0 },
+            leyendoEtiqueta = { etiquetasEnCamino.containsValue(captura.apertura) },
             onRetryScale = scaleCaptureViewModel::retry,
             onAdd = { weightKg ->
                 // D8 (Codex r2): con el cobro abierto (su F12 en WINDOWS, o un toque que le ganó al «No, gracias») el peso no
@@ -1576,11 +1581,15 @@ fun CheckoutScreen(
             // resuelve, su «Agregar» espera (si no, la misma pesada entraba dos veces).
             val capturaAlLeer = capturaDePeso
             val esperaLaCaptura = capturaAlLeer?.takeIf { puedeSerEtiquetaDeBascula(barcode) }?.apertura
-            esperaLaCaptura?.let { etiquetasEnCamino[it] = (etiquetasEnCamino[it] ?: 0) + 1 }
+            val lectura = lecturasDeEtiqueta.incrementAndGet()
+            esperaLaCaptura?.let { apertura ->
+                etiquetasEnCamino[lectura] = apertura
+                checkoutScope.launch { kotlinx.coroutines.delay(3_000); etiquetasEnCamino.remove(lectura) }
+            }
             val result = try {
                 cartViewModel.resolveScannedBarcode(barcode)
             } finally {
-                esperaLaCaptura?.let { a -> (etiquetasEnCamino[a] ?: 1).let { if (it <= 1) etiquetasEnCamino.remove(a) else etiquetasEnCamino[a] = it - 1 } }
+                etiquetasEnCamino.remove(lectura)
             }
             // La consulta pudo tardar (red): si mientras tanto se abrió el cobro, no se aplica (pendientes, Codex r1 #2).
             if (!entra() || com.avoqado.pos.giftcards.domain.LectorParaTarjetas.abierta.value) return@launch
