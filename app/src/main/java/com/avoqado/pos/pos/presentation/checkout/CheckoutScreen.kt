@@ -749,6 +749,7 @@ fun CheckoutScreen(
                     if (showSearch) {
                         SearchOverlayView(
                             viewModel = cartViewModel,
+                            teclasDeLaHoja = cartViewModel::procesarTecla,   // la hoja de tallas es otra ventana (D6)
                             onProductTap = { product ->
                                 handleProductTap(product, cartViewModel, { selectedProduct = it }, { weightProduct = it })
                                 showSearch = false
@@ -819,6 +820,7 @@ fun CheckoutScreen(
                                 InputTab.PRODUCTS -> {
                                     ProductGridView(
                                         viewModel = cartViewModel,
+                                        teclasDeLaHoja = cartViewModel::procesarTecla,   // la hoja de tallas es otra ventana (D6)
                                         onProductTap = { product ->
                                             handleProductTap(
                                                 product,
@@ -1000,6 +1002,7 @@ fun CheckoutScreen(
                 if (showSearch) {
                     SearchOverlayView(
                         viewModel = cartViewModel,
+                        teclasDeLaHoja = cartViewModel::procesarTecla,   // la hoja de tallas es otra ventana (D6)
                         onProductTap = { product ->
                             handleProductTap(product, cartViewModel, { selectedProduct = it }, { weightProduct = it })
                             showSearch = false
@@ -1070,6 +1073,7 @@ fun CheckoutScreen(
                             InputTab.PRODUCTS -> {
                                 ProductGridView(
                                     viewModel = cartViewModel,
+                                    teclasDeLaHoja = cartViewModel::procesarTecla,   // la hoja de tallas es otra ventana (D6)
                                     onProductTap = { product ->
                                         handleProductTap(
                                             product,
@@ -1149,6 +1153,8 @@ fun CheckoutScreen(
             onDismiss = { selectedProduct = null },
             // Encargo 1afe04: se lee al abrir el producto (otra persona pudo entrar con su PIN).
             ajusteDePrecio = remember(product.id) { cartViewModel.accesoAlAjusteDePrecio() },
+            // En el teléfono la ficha es otra ventana: sin esto, la pistola no llegaba con ella abierta (D5).
+            teclasDeLaHoja = cartViewModel::procesarTecla,
         )
     }
 
@@ -1507,6 +1513,18 @@ fun CheckoutScreen(
             val result = cartViewModel.resolveScannedBarcode(barcode)
             // La consulta pudo tardar (red): si mientras tanto se abrió el cobro, no se aplica (pendientes, Codex r1 #2).
             if (!entra() || com.avoqado.pos.giftcards.domain.LectorParaTarjetas.abierta.value) return@launch
+            // Una hoja abierta (la ficha cuando es hoja —teléfono o ventana angosta— y la de tallas) va encima de toda la caja:
+            // lo que abra este código (la consulta de saldo y su cobro, «Crear nuevo», el peso, un aviso) quedaría DETRÁS, con su
+            // «Agregar» vivo (D5/D6, Codex r1 #1 y r2). Se cierran aquí, al APLICAR el código: uno que el cobro descartó arriba no
+            // cierra nada. Sólo un producto que abre la ficha la deja: cambia a él, o sigue igual si es el mismo (D3).
+            val abreLaFicha = result is ScannedBarcodeResult.ProductFound && !result.product.soldByWeight && result.product.hasModifiers
+            // La tarjeta de un cliente leída antes de que el cajero eligiera otro no se aplica (abajo): no cierra nada (Codex r3 #1).
+            val seAplica = result !is ScannedBarcodeResult.CustomerCardFound ||
+                cartViewModel.selectedCustomer.value?.id == clienteAlEscanear
+            if (seAplica) {
+                cartViewModel.cerrarHojas()
+                if (!isTablet && !abreLaFicha) selectedProduct = null
+            }
             when (result) {
                 is ScannedBarcodeResult.GiftCardFound -> {
                     val venue = tarjetasViewModel.venueActual

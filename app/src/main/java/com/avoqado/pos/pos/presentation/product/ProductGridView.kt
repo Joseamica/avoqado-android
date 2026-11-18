@@ -37,6 +37,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -78,6 +79,8 @@ fun ProductGridView(
     menuCategoryIds: Set<String>? = null,
     /** «Menú del aparato»: cuando viene, la cuadrícula ofrece la tarjeta «Todo ▸» (null = no la ofrece, como Mesas hoy). */
     onVerTodo: (() -> Unit)? = null,
+    /** El lector de la pistola para la hoja de tallas (otra ventana); sólo el cobro lo pasa (D6). */
+    teclasDeLaHoja: ((android.view.KeyEvent) -> Boolean)? = null,
     /** Qué tan densa se ve la cuadrícula EN ESTE APARATO. El default lee la
      *  preferencia local, así que las pantallas que no la manejan (mesas) la
      *  respetan sin tener que enterarse. El mostrador la pasa explícita para
@@ -97,6 +100,7 @@ fun ProductGridView(
     val familias by viewModel.familias.collectAsState()
     // La hoja abierta guarda sólo el groupId y lee la familia VIGENTE (Codex 7).
     var abierta by remember { mutableStateOf<String?>(null) }
+    var cierresAlAbrir by remember { mutableIntStateOf(0) }   // D6: los cierres que ya había al tocarla
 
     // Prepaid credit packs (membresías), shown as tiles when onPackTap is set.
     val creditsVM: com.avoqado.pos.customers.presentation.CustomerCreditsViewModel =
@@ -110,11 +114,11 @@ fun ProductGridView(
         allProductsUnfiltered = allProductsUnfiltered, categoriesUnfiltered = categoriesUnfiltered, isLoading = isLoading,
         familias = familias, packs = if (onPackTap != null) packs else emptyList(), onPackTap = onPackTap,
         menuCategoryIds = menuCategoryIds, onVerTodo = onVerTodo, tileSize = tileSize,
-        onProductTap = tapOrInfo, onFamiliaTap = { abierta = it.groupId },
+        onProductTap = tapOrInfo, onFamiliaTap = { cierresAlAbrir = viewModel.cierresDeHojas.value; abierta = it.groupId },
     )
 
     // La variante elegida sigue el MISMO camino que tocar un producto suelto en esta pantalla (R1).
-    HojaDeLaFamiliaAbierta(viewModel, abierta, onCerrar = { abierta = null }, onElegir = tapOrInfo)
+    HojaDeLaFamiliaAbierta(viewModel, abierta, onCerrar = { abierta = null }, onElegir = tapOrInfo, teclasDeLaHoja = teclasDeLaHoja, cierresAlAbrir = cierresAlAbrir)
 }
 
 /** La cuadrícula sin ViewModel (la pinta `ProductGridView` y la prueba de escritorio de «Menú del aparato»). */

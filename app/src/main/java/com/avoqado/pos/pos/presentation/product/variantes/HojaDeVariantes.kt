@@ -57,6 +57,8 @@ fun HojaDeVariantes(
     onCerrar: () -> Unit,
     struckProductIds: Set<String> = emptySet(),
     disableOutOfStock: Boolean = false,
+    /** La hoja es otra ventana: sin esto sus teclas no llegan al lector de la pistola (D6). */
+    teclas: ((android.view.KeyEvent) -> Boolean)? = null,
 ) {
     var seleccion by remember(familia.groupId) { mutableStateOf(seleccionInicial(familia)) }
     // Una entrega por apertura (Codex P1-2): dos activaciones de «Agregar» pendientes antes de que Compose desmonte la hoja no suman dos
@@ -78,6 +80,7 @@ fun HojaDeVariantes(
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
     ) {
         ImmersiveWindow()
+        teclas?.let { com.avoqado.pos.giftcards.presentation.LectorHidDeLaVentana(it) }
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -177,12 +180,28 @@ internal fun avisoDeExistencia(v: Product): String? = when {
  * catálogo vigente y se entrega a `onElegir`, que es el MISMO camino que tocar un producto suelto en esa pantalla (R1).
  */
 @Composable
-fun HojaDeLaFamiliaAbierta(viewModel: CartViewModel, abierta: String?, onCerrar: () -> Unit, onElegir: (Product) -> Unit) {
+fun HojaDeLaFamiliaAbierta(
+    viewModel: CartViewModel,
+    abierta: String?,
+    onCerrar: () -> Unit,
+    onElegir: (Product) -> Unit,
+    /** El cobro pasa el lector de la pistola (D6); Mesas no (lee sólo en «Escanear») y la hoja se porta como siempre. */
+    teclasDeLaHoja: ((android.view.KeyEvent) -> Boolean)? = null,
+    /** `CartViewModel.cierresDeHojas` en el momento del TOQUE que abrió la familia (no al pintarla: Codex r4 #1). */
+    cierresAlAbrir: Int = 0,
+) {
     val familias by viewModel.familias.collectAsState()
     val familia = abierta?.let { familias[it] }
     LaunchedEffect(abierta, familia == null) { if (abierta != null && familia == null) onCerrar() }
+    // Un código leído con la hoja abierta no contesta «¿qué talla?»: cuando el cobro lo APLICA (no al leerlo: uno que el cobro
+    // descarta no la cierra), la hoja se cierra para que se vea lo que abrió, en vez de quedar detrás con «Agregar» vivo (D6, Codex r2).
+    if (familia != null && teclasDeLaHoja != null) {
+        val cierres by viewModel.cierresDeHojas.collectAsState()
+        LaunchedEffect(cierres) { if (cierres > cierresAlAbrir) onCerrar() }
+    }
     familia?.let { f ->
         HojaDeVariantes(
+            teclas = teclasDeLaHoja,
             familia = f,
             onElegir = { v ->
                 onCerrar()

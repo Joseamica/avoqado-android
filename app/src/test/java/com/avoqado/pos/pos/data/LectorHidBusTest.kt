@@ -201,6 +201,17 @@ class LectorHidBusTest {
     }
 
     @Test
+    fun `con la casilla activa una tecla fisica sostenida tampoco escribe al repetirse`() {
+        // Codex D5 r1 #3: la 1.ª pulsación se consumía pero sus repeticiones (repeatCount > 0) llegaban a la casilla.
+        val bus = LectorHidBus()
+
+        assertTrue(bus.enCasilla('2', ms = 1_000))
+        assertTrue("la repetición tampoco llega", bus.procesar(KeyEvent.ACTION_DOWN, keyCodeDe('2'), '2'.code, LECTOR, 1_500, 1, casillaDeCantidad = true))
+        assertTrue("y su ACTION_UP se consume", bus.procesar(KeyEvent.ACTION_UP, keyCodeDe('2'), '2'.code, LECTOR, 1_600, 0, casillaDeCantidad = true))
+        assertFalse("sin la casilla, sostenerla sigue escribiendo", bus.procesar(KeyEvent.ACTION_DOWN, keyCodeDe('2'), '2'.code, LECTOR, 2_000, 1, casillaDeCantidad = false))
+    }
+
+    @Test
     fun `sin la casilla el 1er caracter de una pistola nueva pasa como siempre`() {
         val bus = LectorHidBus()
 

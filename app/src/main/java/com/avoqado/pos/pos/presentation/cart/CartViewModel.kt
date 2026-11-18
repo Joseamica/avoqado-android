@@ -651,6 +651,18 @@ class CartViewModel @Inject constructor(
     val codigosEscaneados: kotlinx.coroutines.flow.SharedFlow<String>
         get() = lectorHidBus.codigos
 
+    /** La misma puerta que `MainActivity.dispatchKeyEvent`, para una hoja (otra ventana) abierta sobre el cobro. */
+    fun procesarTecla(evento: android.view.KeyEvent): Boolean = lectorHidBus.procesar(evento)
+
+    /**
+     * Cuántas veces el cobro APLICÓ un código leído: la hoja de tallas abierta antes de ese momento se cierra para no tapar lo
+     * que abrió (D6, Codex r2). Es un contador y no un aviso suelto: la hoja compara con el que había al tocar la familia, así
+     * que un cierre que llega entre el toque y el momento en que la hoja empieza a escuchar no se pierde (Codex r4 #1).
+     */
+    private val _cierresDeHojas = MutableStateFlow(0)
+    val cierresDeHojas: StateFlow<Int> = _cierresDeHojas.asStateFlow()
+    fun cerrarHojas() { _cierresDeHojas.update { it + 1 } }
+
     /**
      * 🔴 DINERO. El CARRITO —no la pantalla— sabe si hay un cobro abierto y cuántos códigos leídos se están consultando.
      * Vive aquí porque la pantalla se recrea (cambiar de pestaña) y con ella se perdía: un vale lento podía entrar después
