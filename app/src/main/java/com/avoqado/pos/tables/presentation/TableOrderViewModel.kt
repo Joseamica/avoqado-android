@@ -2304,8 +2304,10 @@ class TableOrderViewModel @Inject constructor(
                         )
                     }
                 }
-                val deLaCola = enCola.groupBy { com.avoqado.pos.tables.data.kitchenCourseLabel(it.item.serviceCourse, it.course) }
-                    .map { (course, lines) -> course to lines.map { com.avoqado.pos.tables.data.renglonDeCocinaDeRonda(it) } }
+                // Por RONDA y tiempo, como salió su primer papel (Codex r5): dos rondas con el mismo platillo no se juntan en un renglón,
+                // así el rechazo de una nunca se lleva el renglón válido de la otra.
+                val deLaCola = enCola.groupBy { rondaDe(it.externalId) to com.avoqado.pos.tables.data.kitchenCourseLabel(it.item.serviceCourse, it.course) }
+                    .map { (llave, lines) -> llave.second to lines.map { com.avoqado.pos.tables.data.renglonDeCocinaDeRonda(it) } }
                 (deLaCuenta + deLaCola).forEach { (course, delGrupo) ->
                     val deLaColaEnGrupo = delGrupo.any { rondaDe(it.externalId) != null }
                     val ruteo = PrintRoutingMapper.rutear(delGrupo, config, omitirSinComanda = true)
@@ -2313,15 +2315,11 @@ class TableOrderViewModel @Inject constructor(
                     // Lo de la cuenta sale como siempre (todas sus hojas juntas). Lo de una ronda en cola, hoja por hoja (Codex r3 R2 y
                     // r4 #2): el rechazo de su ronda se pregunta justo antes de CADA hoja; la anterior pudo tardar.
                     val tandas = if (deLaColaEnGrupo) ruteo.plans.map { listOf(it) } else listOf(ruteo.plans)
+                    // El grupo de la cola es de UNA ronda: antes de cada hoja se pregunta si el SERVIDOR ya la rechazó.
+                    val rondaDelGrupo = if (deLaColaEnGrupo) delGrupo.firstNotNullOfOrNull { rondaDe(it.externalId) } else null
                     for (tanda in tandas) {
-                        val planes = if (!deLaColaEnGrupo) tanda else tanda.mapNotNull { plan ->
-                            val vivos = plan.lines.filter { linea ->
-                                linea.orderItemIds.none { id -> delGrupo.firstOrNull { it.orderItemId == id }?.externalId
-                                    ?.let(::rondaDe)?.let { rondaRechazada(it) } == true }
-                            }
-                            if (vivos.size < plan.lines.size) rechazadas++
-                            plan.copy(lines = vivos).takeIf { vivos.isNotEmpty() }
-                        }
+                        if (rondaDelGrupo != null && rondaRechazada(rondaDelGrupo)) { rechazadas++; continue }
+                        val planes = tanda
                         if (planes.isEmpty()) continue
                         val r = comandaPrinter.printComandas(
                             plans = planes,

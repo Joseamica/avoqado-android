@@ -240,14 +240,17 @@ class ReplayDeEntregasKds @Inject constructor(
         }
     }
 
-    /** nab17320: si no se puede leer, se imprime como antes (duplicado, nunca pérdida). */
+    /**
+     * nab17320: ¿la fila sigue pendiente? Si la base no deja leer, esta pasada NO la imprime (Codex r5 #1: pudo haberse cantado);
+     * la fila, si de verdad sigue, la retoma el siguiente tic (un minuto): espera, nunca pérdida.
+     */
     private suspend fun sigueEnLaTabla(fila: EntregaKdsPendienteEntity): Boolean = try {
         dao.existe(fila.entregaId).also { if (!it) Log.i(TAG, "✋ ${fila.entregaId} ya se resolvió por otro camino: no se imprime") }
     } catch (e: CancellationException) {
         throw e
     } catch (e: Exception) {
-        Log.w(TAG, "No se pudo revisar si ${fila.entregaId} sigue pendiente: ${e.message}")
-        true
+        Log.w(TAG, "No se pudo revisar si ${fila.entregaId} sigue pendiente: ${e.message} — el siguiente tic lo intenta")
+        false
     }
 
     /** I1: si la sucursal ya no es la vigente, se deja todo (nada se borra) y la pasada termina. */
