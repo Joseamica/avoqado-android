@@ -993,4 +993,23 @@ class CartViewModelDescuentoDelClienteTest {
         )
         assertEquals(AvisoDescuentoDelCliente.Accion.PEDIR_AUTORIZACION, aviso.accion)
     }
+
+    @Test
+    fun `6k D9 el PIN del gerente que llega con el cobro abierto no se pone en la venta que se cobra`() {
+        permisos = listOf("orders:read")
+        val vm = carrito().conPlayeraYCecilia()
+        val respuesta = kotlinx.coroutines.CompletableDeferred<Boolean>()
+        coEvery { coordinador.preauthorize("discounts:apply", llaveCecilia, any()) } coAnswers { respuesta.await() }
+        every { coordinador.tomarPreautorizado("discounts:apply", llaveCecilia) } returns "tok-1"
+        vm.pedirAutorizacionDelDescuento()
+        vm.abrirCobro()
+        val antes = vm.cartState.value
+
+        respuesta.complete(true)
+
+        assertEquals(antes, vm.cartState.value)
+        assertNull(vm.cartState.value.autorizacionDelDescuento)
+        assertNull(vm.cartState.value.orderDiscount)
+        assertEquals(AVISO_COBRO_ABIERTO, vm.avisoDelCobroAbierto.value)
+    }
 }

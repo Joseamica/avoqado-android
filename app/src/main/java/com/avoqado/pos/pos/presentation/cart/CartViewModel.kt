@@ -385,6 +385,8 @@ sealed interface Restauracion {
     data object BloqueadaPorAbono : Restauracion
     /** 27-oct (Codex): la copia está ligada a una cuenta de «Pagar después» viva; venderla otra vez la duplicaría. */
     data object YaDejadaParaDespues : Restauracion
+    /** D9: con el cobro abierto no se sustituye la venta que se cobra. */
+    data object CobroAbierto : Restauracion
 }
 
 /** Mismo texto en iOS (`AreaTicketCartError.noPagarDespues`). */
@@ -420,6 +422,9 @@ data class EnvioPagarDespues(val cliente: String, val totalCents: Int)
 
 // «Pagar después» sin red (27-oct). Mismos textos en iOS.
 const val GUARDANDO_LA_CUENTA = "Guardando la cuenta…"
+
+/** D9: lo que la cajera tocó con el cobro abierto no entra a la venta que se cobra. */
+const val AVISO_COBRO_ABIERTO = "Se abrió el cobro: eso no entró a la venta. Para cambiarla, cancela el cobro."
 const val PAGAR_DESPUES_CUPON_SIN_RED = "Sin conexión: el cupón necesita internet. Quita el cupón o espera la conexión para dejar esta cuenta abierta."
 const val PAGAR_DESPUES_PREMIO_SIN_RED = "Sin conexión: el premio de sellos necesita internet. Quita el premio o espera la red."
 const val PAQUETES_NO_PAGAR_DESPUES = "Los paquetes se cobran en el momento: no se pueden dejar para pagar después."
@@ -656,6 +661,18 @@ class CartViewModel @Inject constructor(
     val codigosEscaneados: kotlinx.coroutines.flow.SharedFlow<String>
         get() = lectorHidBus.codigos
 
+    /** La misma puerta que `MainActivity.dispatchKeyEvent`, para una hoja (otra ventana) abierta sobre el cobro. */
+    fun procesarTecla(evento: android.view.KeyEvent): Boolean = lectorHidBus.procesar(evento)
+
+    /**
+     * Cuántas veces el cobro APLICÓ un código leído: la hoja de tallas abierta antes de ese momento se cierra para no tapar lo
+     * que abrió (D6, Codex r2). Es un contador y no un aviso suelto: la hoja compara con el que había al tocar la familia, así
+     * que un cierre que llega entre el toque y el momento en que la hoja empieza a escuchar no se pierde (Codex r4 #1).
+     */
+    private val _cierresDeHojas = MutableStateFlow(0)
+    val cierresDeHojas: StateFlow<Int> = _cierresDeHojas.asStateFlow()
+    fun cerrarHojas() { _cierresDeHojas.update { it + 1 } }
+
     /**
      * 🔴 DINERO. El CARRITO —no la pantalla— sabe si hay un cobro abierto y cuántos códigos leídos se están consultando.
      * Vive aquí porque la pantalla se recrea (cambiar de pestaña) y con ella se perdía: un vale lento podía entrar después
@@ -665,8 +682,50 @@ class CartViewModel @Inject constructor(
     @Volatile var cobroAbierto: Boolean = false
         private set
     fun abrirCobro() { cobroAbierto = true }
+
+    /**
+     * 🔴 DINERO (D9). Con el cobro abierto, la venta que se cobra (su foto) no cambia por nada que no sea el propio cobro: un
+     * toque que termina tarde, una ventana que quedó abierta, el PIN o el referido que llegan tarde, la clase de «Inscribir y
+     * cobrar». Cada entrada de la cajera y cada resultado tardío lo consulta AL PRINCIPIO, antes de cualquier efecto (disco,
+     * red, colas): o pasa todo o no pasa nada. Antes cada camino de la pantalla traía su barrera y siempre faltaba otro (D8).
+     * Mapa de entradas: docs/audit/2026-11-18-carrito-con-cobro-abierto/promesa.md.
+     */
+    private fun cobroLoImpide(avisar: Boolean = true): Boolean {
+        if (!cobroAbierto || escribeElCobro.get() > 0) return false
+        if (avisar) _avisoDelCobroAbierto.value = AVISO_COBRO_ABIERTO
+        return true
+    }
+
+    /**
+     * Lo que escribe el propio cobro (aplicar lo cobrado, «Saldo pendiente», vaciar al terminar, recuperar la foto, traer los
+     * vales del servidor) llama por dentro a entradas con candado. La marca es POR HILO: un toque de la cajera que corre en otro
+     * hilo a la vez no se cuela por ella.
+     */
+    private val escribeElCobro = ThreadLocal.withInitial { 0 }
+    private inline fun <T> delCobro(bloque: () -> T): T {
+        escribeElCobro.set(escribeElCobro.get() + 1)
+        try { return bloque() } finally { escribeElCobro.set(escribeElCobro.get() - 1) }
+    }
+
+    /** Para lo que la pantalla decide sin pasar por el carrito (la división de «Dividir»): con el cobro abierto, avisa y dice que no. */
+    fun avisarSiElCobroEstaAbierto(): Boolean = cobroLoImpide()
+
+    /** El «vaciarVenta» del cobro (recuperar con saldo de tarjeta de regalo): sí vacía con el cobro abierto. */
+    fun vaciarDesdeElCobro() = delCobro { clearCart() }
+
+    /** Se pinta ENCIMA del cobro: la cajera tocó algo que ya no entró a la venta que se cobra. */
+    private val _avisoDelCobroAbierto = MutableStateFlow<String?>(null)
+    val avisoDelCobroAbierto: StateFlow<String?> = _avisoDelCobroAbierto.asStateFlow()
+    fun consumeAvisoDelCobroAbierto() { _avisoDelCobroAbierto.value = null }
+
     fun cerrarCobro() {
+        val estabaAbierto = cobroAbierto
         cobroAbierto = false
+        _avisoDelCobroAbierto.value = null   // decía «cancela el cobro»: ya no aplica (Codex r2 #11)
+        vendedoresPorAplicar?.let { vendedoresPorAplicar = null; aplicarVendedores(it, alCerrarElCobro = true) }
+        if (cocinaPorAplicar) { cocinaPorAplicar = false; freezePreparationForPendingProducts() }
+        // Mientras estuvo abierto, el carrito vivo no se pintaba en la pantalla del cliente (Codex r5 #7: la venta de tarjetas).
+        if (estabaAbierto) refreshCustomerDisplay()
         // D4: lo que la venta intentó cobrar ya no está en pantalla: desde ahora lo decide su evidencia (también su duda).
         pendingGrantQueue?.soltarVenta()
     }
@@ -986,7 +1045,8 @@ class CartViewModel @Inject constructor(
      * (Codex D1 código r1 #2-#6: ajustar el saldo, vaciar el carrito o soltar al cliente en automático cobraba de más, borraba
      * mercancía agregada o dejaba pegado al cliente).
      */
-    private fun adoptarOrdenDeLaParte(vigente: PendingSplitOrder, subida: com.avoqado.pos.payment.data.EstadoDeParte.Subida) {
+    private fun adoptarOrdenDeLaParte(vigente: PendingSplitOrder, subida: com.avoqado.pos.payment.data.EstadoDeParte.Subida) = delCobro {
+        // D9 (Codex r1 #1): es el desenlace del cobro que guardó la parte; llega en otra corrutina, quizá con su recibo abierto.
         vigente.parteEnCola?.let(::limpiarCreacionIncierta)
         observadorDeParte?.cancel()
         val cart = _cartState.value
@@ -1081,6 +1141,7 @@ class CartViewModel @Inject constructor(
      * continúa su orden. Con otra venta en el carrito pide terminarla primero; nunca la mezcla ni la borra.
      */
     fun cobrarSaldoDeVales() {
+        if (cobroLoImpide()) return
         viewModelScope.launch {
             if (!_cartState.value.isEmpty) {
                 _avisoDeVales.value = VALES_SALDO_CON_OTRA_VENTA
@@ -1105,6 +1166,8 @@ class CartViewModel @Inject constructor(
             val saldo = orden.remainingBalance.moneyToCents().takeIf { it > 0 }
                 ?: (orden.total.moneyToCents() - orden.paidAmount.moneyToCents()).coerceAtLeast(0)
             if (saldo <= 0) return@launch
+            // D9 (Codex r1 #2): el renglón y el vínculo van juntos o no va ninguno.
+            if (cobroLoImpide()) return@launch
             addCustomAmount(name = "Saldo pendiente", amountCents = saldo)
             markPendingSplitOrder(orden.id)
         }
@@ -1275,7 +1338,8 @@ class CartViewModel @Inject constructor(
                 // Dejarlo puesto hacía que la primera orden del local B naciera con un
                 // `customerId` del local A — un id de OTRO tenant dentro de la orden.
                 Log.d("🛒", "Venue switched — clearing cart")
-                finalizarVenta()
+                delCobro { finalizarVenta() }   // D9 (Codex r2 #9): el cambio de sucursal termina la venta aunque quedara la marca
+                refreshCustomerDisplay()        // D9 (Codex r3 #8): aunque la marca del cobro tape el espejo del carrito
                 fetchStaff()
             }
         }
@@ -1287,7 +1351,9 @@ class CartViewModel @Inject constructor(
                 // Espejo a la pantalla del cliente (POS de doble pantalla): el
                 // cliente ve su carrito en vivo mientras el cajero teclea.
                 // No-op en equipos de una sola pantalla.
-                customerDisplay.showCart(state)
+                // D9: con el cobro abierto la pantalla es del cobro (propina, calificación): una actualización del sistema en el
+                // carrito vivo no la tapa. Al cerrarlo, la pantalla de cobro llama a `refreshCustomerDisplay()`.
+                if (!cobroAbierto) customerDisplay.showCart(state)
             }
         }
     }
@@ -1389,27 +1455,16 @@ class CartViewModel @Inject constructor(
                     // siguen usando la lista completa.
                     val staff = todos.soloVendedores()
                     _staffOptions.value = staff
-                    val selectedId = _cartState.value.selectedStaffId
-                    val selected = staff.firstOrNull { it.id == selectedId }
-                    if (selected != null && selected.fullName != _cartState.value.selectedStaffName) {
-                        selectStaff(selected.id, selected.fullName)
-                    } else if (selectedId.isNotBlank() && selected == null) {
-                        secureStorage.clearSelectedStaffForCurrentVenue()
-                        _cartState.value = defaultCartState()
-                        // El aviso era del carrito que se acaba de vaciar (igual que en `clearCart()`; A3 m1).
-                        _avisoDelCarrito.value = null
-                        // Segundo reemplazo directo de `_cartState` que no pasa por
-                        // `clearCart()`: el vínculo con la venta a medio cobrar se
-                        // limpia aquí por la misma razón que en `restoreSavedCart`.
-                        _pendingSplitOrder.value = null
-                        // 🔴 Y el cliente también: este camino YA se comportaba como
-                        // fin de venta (vacía el carrito y suelta el vínculo), sólo le
-                        // faltaba soltarlo. Pasa cuando dan de baja al mesero
-                        // seleccionado desde el dashboard: el carrito se vacía solo y
-                        // el cliente se quedaba en el encabezado, así que la venta
-                        // siguiente —de otra persona— nacía con su id.
-                        setSelectedCustomer(null)
+                    // D9 (Codex r3 #1, #2): con el cobro abierto la venta no cambia —vaciarla perdía el «Saldo pendiente» de un
+                    // abono y un nombre nuevo frenaba el saldo de regalo—; se aplica al cerrarlo. El disco sí se limpia ya, para
+                    // que la venta siguiente no herede al vendedor dado de baja.
+                    if (cobroAbierto) {
+                        vendedoresPorAplicar = staff
+                        val guardado = _cartState.value.selectedStaffId
+                        if (guardado.isNotBlank() && staff.none { it.id == guardado }) secureStorage.clearSelectedStaffForCurrentVenue()
+                        return@fold
                     }
+                    aplicarVendedores(staff)
                 },
                 onFailure = { error ->
                     _staffError.value = error.message ?: "No se pudo cargar staff"
@@ -1419,7 +1474,43 @@ class CartViewModel @Inject constructor(
         }
     }
 
+    /** Lo que la recarga de vendedores hace con la venta en pantalla. Al cerrar un cobro, la venta sigue (puede traer un abono). */
+    private fun aplicarVendedores(staff: List<StaffMember>, alCerrarElCobro: Boolean = false) {
+        val selectedId = _cartState.value.selectedStaffId
+        val selected = staff.firstOrNull { it.id == selectedId }
+        if (selected != null && selected.fullName != _cartState.value.selectedStaffName) {
+            selectStaff(selected.id, selected.fullName)
+        } else if (selectedId.isNotBlank() && selected == null) {
+            secureStorage.clearSelectedStaffForCurrentVenue()
+            // Al cerrar un cobro la venta sigue (puede traer el «Saldo pendiente» de un abono): sólo deja de llevar al vendedor
+            // dado de baja. Fuera del cobro se vacía como siempre (CartSplitContinuidadTest; lo de un abono, en deuda: Codex r4 #1).
+            if (alCerrarElCobro) {
+                val sinVendedor = defaultCartState()
+                _cartState.update { it.copy(selectedStaffId = sinVendedor.selectedStaffId, selectedStaffName = sinVendedor.selectedStaffName) }
+                return
+            }
+            _cartState.value = defaultCartState()
+            // El aviso era del carrito que se acaba de vaciar (igual que en `clearCart()`; A3 m1).
+            _avisoDelCarrito.value = null
+            // Segundo reemplazo directo de `_cartState` que no pasa por
+            // `clearCart()`: el vínculo con la venta a medio cobrar se
+            // limpia aquí por la misma razón que en `restoreSavedCart`.
+            _pendingSplitOrder.value = null
+            // 🔴 Y el cliente también: este camino YA se comportaba como
+            // fin de venta (vacía el carrito y suelta el vínculo), sólo le
+            // faltaba soltarlo. Pasa cuando dan de baja al mesero
+            // seleccionado desde el dashboard: el carrito se vacía solo y
+            // el cliente se quedaba en el encabezado, así que la venta
+            // siguiente —de otra persona— nacía con su id.
+            setSelectedCustomer(null)
+        }
+    }
+
+    private var vendedoresPorAplicar: List<StaffMember>? = null
+    private var cocinaPorAplicar = false
+
     fun selectStaff(staffId: String, staffName: String) {
+        if (cobroLoImpide()) return
         val normalizedStaffName = staffName.ifBlank { "Staff" }
         secureStorage.saveSelectedStaffForCurrentVenue(staffId, normalizedStaffName)
         _cartState.update { state ->
@@ -1463,6 +1554,7 @@ class CartViewModel @Inject constructor(
      * duplicate the line.
      */
     fun consumePendingTableCobrar() {
+        if (cobroLoImpide(avisar = false)) return
         val session = tableSession.current() ?: return
         if (session.mode != com.avoqado.pos.tables.data.TableSession.Mode.PAYING) return
         val label = "Cuenta Mesa ${session.tableNumber}"
@@ -1479,10 +1571,18 @@ class CartViewModel @Inject constructor(
     }
 
     fun consumePendingClassSeed() {
+        // D9: con el cobro abierto, o con una venta a medio cobrar (su «Saldo pendiente» frenaría el siguiente «Cobrar», Codex r6
+        // #1), la clase no entra y la semilla NO se consume: la pantalla la vuelve a pedir al cerrarse el cobro.
+        if (cobroLoImpide(avisar = false) || hayVentaAMedias()) return
         val seed = classCheckoutSeed.consume() ?: return
         viewModelScope.launch {
             if (productsRepository.products.value.isEmpty()) {
                 productsRepository.fetchProducts()
+            }
+            // D9 (Codex r1 #3): el cobro se abrió mientras cargaba el catálogo: la semilla regresa y entra al cerrarlo.
+            if (cobroLoImpide(avisar = false) || hayVentaAMedias()) {
+                classCheckoutSeed.devolver(seed)
+                return@launch
             }
             val product = productsRepository.products.value.firstOrNull { it.id == seed.productId }
             if (product == null) {
@@ -1513,6 +1613,7 @@ class CartViewModel @Inject constructor(
     }
 
     private fun freezePreparationForPendingProducts() {
+        if (cobroAbierto) { cocinaPorAplicar = true; return }   // D9: se aplica en `cerrarCobro()`
         if (_pendingSplitOrder.value != null) return
         val immediate = immediateServiceCourse() ?: return
         val courses = serviceCoursesRepository?.courses?.value.orEmpty()
@@ -1540,6 +1641,7 @@ class CartViewModel @Inject constructor(
     }
 
     fun addProduct(product: Product) {
+        if (cobroLoImpide()) return
         // Agotado AVISA, nunca bloquea (Square-parity 2026-08-12): el registro
         // del sistema puede estar desfasado y el producto sí existir en el
         // anaquel. El stock queda en negativo como señal de descuadre.
@@ -1612,6 +1714,7 @@ class CartViewModel @Inject constructor(
         /** f998c8: el descuento lo trae una sugerencia (upsell), no una persona: no pide motivo. */
         descuentoSugerido: Boolean = false,
     ) {
+        if (cobroLoImpide()) return
         // Ver addProduct: agotado avisa, nunca bloquea.
         avisarSiAgotado(product)
         val newItem = CartItem(
@@ -1651,6 +1754,7 @@ class CartViewModel @Inject constructor(
      * panel de captura (no bloquea aquí — el backend es la autoridad al cobrar).
      */
     fun addProductByWeight(product: Product, weightKg: Double) {
+        if (cobroLoImpide()) return
         if (weightKg <= 0) return
         val newItem = CartItem(
             type = CartItemType.ProductItem(product.id),
@@ -1670,10 +1774,12 @@ class CartViewModel @Inject constructor(
 
     /** Cumplimiento de la venta rápida (selector en el header del carrito). */
     fun setOrderType(orderType: String) {
+        if (cobroLoImpide()) return
         _cartState.update { it.copy(orderType = orderType) }
     }
 
     fun addCustomAmount(name: String, amountCents: Int) {
+        if (cobroLoImpide()) return
         val item = CartItem(
             type = CartItemType.CustomAmount,
             name = name,
@@ -1689,6 +1795,7 @@ class CartViewModel @Inject constructor(
     private var lastPackAddAt: Long = 0
 
     fun addCreditPack(pack: com.avoqado.pos.articles.data.model.CreditPack) {
+        if (cobroLoImpide()) return
         // Debounce accidental double-taps on the grid tile: two identical pack
         // lines within 1.5s is a mis-tap (and would double-charge + double-grant).
         val now = System.currentTimeMillis()
@@ -1735,6 +1842,7 @@ class CartViewModel @Inject constructor(
         extras: Map<String, List<SelectedModifier>> = emptyMap(),
         piezasConExtras: Set<String> = emptySet(),
     ): Boolean {
+        if (cobroLoImpide()) return false
         val elegidas = opcionesElegidas(promotion, selecciones)
         if (elegidas.isNullOrEmpty()) {
             Log.w("🎁", "Promoción sin elección completa, no se agrega: ${promotion.name}")
@@ -1777,6 +1885,7 @@ class CartViewModel @Inject constructor(
      * y el cajero no tendría cómo notarlo.
      */
     fun quitarPromocion(instanceId: String) {
+        if (cobroLoImpide()) return
         quitarLineasDePromocion(instanceId)
         // D2: sin el combo, el descuento del cliente que bloqueaba vuelve a ponerse solo (si no se quitó). Sólo aquí, en lo que
         // quita el cajero: el cobro por producto quita renglones pagados con [removeItem] y su orden ya decidió su descuento.
@@ -1795,6 +1904,7 @@ class CartViewModel @Inject constructor(
     }
 
     fun removeItem(itemId: String) {
+        if (cobroLoImpide()) return
         // 🔴 La promoción se quita completa venga de donde venga el borrado
         // (deslizar, anular artículos, panel de detalle). El aviso previo
         // ("Se quitará el combo completo") lo da la UI; esta red de seguridad
@@ -1813,10 +1923,16 @@ class CartViewModel @Inject constructor(
                 return
             }
             val venta = _cartState.value.identidadDeVenta
+            // D9 (Codex r3 #6): mientras el servidor quita el vale, el cobro no se abre (la misma espera que la pistola).
+            consultasDeCodigo.update { it + 1 }
             viewModelScope.launch {
-                runCatching { areaTicketRepository.removeTicket(areaTicketId) }
-                    .onSuccess { replaceAreaTicketLines(it, venta) }
-                    .onFailure { Log.e("🎟️", "No se pudo quitar el vale: ${it.message}") }
+                try {
+                    runCatching { areaTicketRepository.removeTicket(areaTicketId) }
+                        .onSuccess { replaceAreaTicketLines(it, venta) }
+                        .onFailure { Log.e("🎟️", "No se pudo quitar el vale: ${it.message}") }
+                } finally {
+                    consultasDeCodigo.update { it - 1 }
+                }
             }
             return
         }
@@ -1849,6 +1965,7 @@ class CartViewModel @Inject constructor(
      * quitan lo pagado con [removeItem], sin pasar por aquí.
      */
     fun quitarPorElCajero(itemId: String): Boolean {
+        if (cobroLoImpide()) return false
         // Lo que se agregó encima sí se quita (es la salida de la regla 11); lo de la venta con abono, no.
         if (vaciarBloqueadoPorAbono() && _pendingSplitOrder.value?.itemIds?.contains(itemId) == true) {
             _avisoDeVales.value = com.avoqado.pos.payment.presentation.VALES_CON_ABONO
@@ -1866,6 +1983,7 @@ class CartViewModel @Inject constructor(
      * selector; esto lo cierra para cualquier otro camino. **iOS** pone la misma regla en su `CartViewModel.items`.
      */
     fun updateQuantity(itemId: String, newQuantity: Int) {
+        if (cobroLoImpide()) return
         if (esLineaFija(itemId)) return
         if (newQuantity <= 0) {
             quitarPorElCajero(itemId)
@@ -1881,6 +1999,7 @@ class CartViewModel @Inject constructor(
     }
 
     fun incrementQuantity(itemId: String) {
+        if (cobroLoImpide()) return
         if (esLineaFija(itemId)) return
         _cartState.update { state ->
             state.copy(
@@ -1893,6 +2012,7 @@ class CartViewModel @Inject constructor(
     }
 
     fun decrementQuantity(itemId: String) {
+        if (cobroLoImpide()) return
         if (esLineaFija(itemId)) return
         // Bajar de 1 es quitar el renglón: pasa por el mismo candado que deslizar (D5).
         if ((_cartState.value.items.find { it.id == itemId }?.quantity ?: 0) <= 1) {
@@ -1922,6 +2042,7 @@ class CartViewModel @Inject constructor(
     }
 
     fun applyOrderDiscount(discount: Discount?, motivo: com.avoqado.pos.pos.domain.MotivoElegido? = null) {
+        if (cobroLoImpide()) return
         if (_cartState.value.items.any { it.locked }) return
         // D2: quitar el del cliente desde la hoja de descuentos es su «Quitar»; otro descuento encima lo quita y lo dice.
         if (discount == null) quitarDescuentoDelCliente() else quitarElDelClientePorOtro()
@@ -1939,10 +2060,12 @@ class CartViewModel @Inject constructor(
     }
 
     fun setOrderNote(note: String?) {
+        if (cobroLoImpide()) return
         _cartState.update { it.copy(orderNote = note) }
     }
 
     fun markItemAsCortesia(itemId: String, reason: String?) {
+        if (cobroLoImpide()) return
         // Una promoción no se regala línea por línea: el server cobra la
         // promoción completa, así que poner la línea en $0 aquí cobraría algo
         // distinto de lo que queda en la orden. Se quita el combo y se da el
@@ -1961,6 +2084,7 @@ class CartViewModel @Inject constructor(
     }
 
     fun updateItemNote(itemId: String, note: String?) {
+        if (cobroLoImpide()) return
         if (_cartState.value.items.any { it.id == itemId && it.locked }) return
         _cartState.update { state ->
             state.copy(
@@ -1972,6 +2096,7 @@ class CartViewModel @Inject constructor(
     }
 
     fun updateItemCortesia(itemId: String, isCortesia: Boolean, reason: String?) {
+        if (cobroLoImpide()) return
         if (esLineaFija(itemId)) return
         _cartState.update { state ->
             state.copy(
@@ -1984,6 +2109,7 @@ class CartViewModel @Inject constructor(
     }
 
     fun updateItemPriceAdjustment(itemId: String, priceCents: Int?, motivo: com.avoqado.pos.pos.domain.MotivoElegido? = null) {
+        if (cobroLoImpide()) return
         if (esLineaFija(itemId)) return
         _cartState.update { state ->
             state.copy(
@@ -2013,10 +2139,12 @@ class CartViewModel @Inject constructor(
 
     /** f998c8: pone el motivo que eligió la caja en todo lo que lo pide y no lo trae (la última puerta antes de cobrar). */
     fun ponerMotivoEnLoQueFalta(motivo: com.avoqado.pos.pos.domain.MotivoElegido) {
+        if (cobroLoImpide()) return
         _cartState.update { it.conMotivoEnLoQueFalta(motivo) }
     }
 
     fun saveCurrentCart(name: String? = null): Boolean {
+        if (cobroLoImpide()) return false
         if (detenerPorPagarDespues()) return false
         if (bloqueoDeEntrega() != null) return false
         val state = _cartState.value
@@ -2119,6 +2247,7 @@ class CartViewModel @Inject constructor(
         )
 
     fun clearCart() {
+        if (cobroLoImpide()) return
         bloqueoDeEntrega()?.let { _avisoDelCarrito.value = it; return }
         if (areaTicketRepository.session.current() != null) {
             viewModelScope.launch {
@@ -2171,6 +2300,7 @@ class CartViewModel @Inject constructor(
      * pasa por [aplicarCobroConfirmado], que decide si la venta cerró o sigue viva.
      */
     fun finalizarVenta() {
+        if (cobroLoImpide()) return
         bloqueoDeEntrega()?.let { _avisoDelCarrito.value = it; return }
         clearCart()
         setSelectedCustomer(null)
@@ -2182,6 +2312,7 @@ class CartViewModel @Inject constructor(
      * se perdió vuelve con el mismo contenido y el servidor devuelve ESE vale en vez de crear otro.
      */
     fun vaciar() {
+        if (cobroLoImpide()) return
         if (detenerPorPagarDespues()) return
         secureStorage.venueId?.let { secureStorage.soltarLlaveDeEmisionDeVales(it) }
         finalizarVenta()
@@ -2257,7 +2388,7 @@ class CartViewModel @Inject constructor(
         descuentoDeCuentaCongelado: DescuentoCongelado? = null,
         /** D7: `remainingBalanceCents` lo confirmó el SERVIDOR (no es la resta local). */
         saldoDelServidor: Boolean = false,
-    ): CobroAplicado {
+    ): CobroAplicado = delCobro {
         // 🔴 Se fotografía ANTES de tocar nada: cerrar la venta borra la validación,
         // el código y el staff, y la captura corre después. Ver [ReferralPendiente].
         val identidadOriginal = _cartState.value.identidadDeVenta
@@ -2337,7 +2468,7 @@ class CartViewModel @Inject constructor(
             setSelectedCustomer(null)
             Log.d("🛒", "Venta cerrada ($rama) — se suelta el cliente")
         }
-        return CobroAplicado(rama = rama, ventaTerminada = ventaTerminada, referralPendiente = referralPendiente)
+        CobroAplicado(rama = rama, ventaTerminada = ventaTerminada, referralPendiente = referralPendiente)
     }
 
     /**
@@ -2669,6 +2800,7 @@ class CartViewModel @Inject constructor(
      * servidor lo canjea al crearla y el cobro usa el monto que él confirma.
      */
     fun setPendingStampReward(premio: com.avoqado.pos.loyalty.data.PremioPorAplicar?): Boolean {
+        if (cobroLoImpide()) return false
         // 🔴 Con una venta a medio cobrar, la orden YA decidió su premio: la parte siguiente cobra contra
         // ella sin volver a crearla, así que un premio nuevo (o quitarlo) cambiaría lo cobrado sin
         // canjearse (hallazgo P1 de Codex, ronda 2).
@@ -2704,6 +2836,7 @@ class CartViewModel @Inject constructor(
         descuentoDelCliente: com.avoqado.pos.customers.data.model.DescuentoDelCliente?,
         traeSuDescuento: Boolean,
     ) {
+        if (cobroLoImpide()) return
         val anterior = _selectedCustomer.value
         val previous = anterior?.id
         val id = customerId?.trim()?.takeIf { it.isNotEmpty() }
@@ -2845,6 +2978,7 @@ class CartViewModel @Inject constructor(
 
     /** «Quitar» en la línea del descuento del cliente: vale para esta venta y este cliente (aunque lo vuelvan a elegir). */
     fun quitarDescuentoDelCliente() {
+        if (cobroLoImpide()) return
         // Con una venta a medio cobrar su orden ya lleva el descuento: quitarlo aquí cobraría distinto de lo registrado.
         if (hayVentaAMedias()) return
         val id = _selectedCustomer.value?.id ?: return
@@ -2860,6 +2994,7 @@ class CartViewModel @Inject constructor(
      * cuenta sin ninguno de los dos.
      */
     fun usarDescuentoDelCliente() {
+        if (cobroLoImpide()) return
         val cliente = _selectedCustomer.value ?: return
         val d = cliente.descuentoDelCliente ?: return
         if (!autorizadoPara(_cartState.value, cliente.id, d.discountId) && !puedeAplicarDescuentos()) {
@@ -2901,6 +3036,7 @@ class CartViewModel @Inject constructor(
      * cuenta crece después y pasa el tope, el aviso pide otro. Necesita red: sin ella se dice y no se abre el teclado.
      */
     fun pedirAutorizacionDelDescuento() {
+        if (cobroLoImpide()) return
         _eventosDelAviso.update { it.copy(sinRedAlPedir = false) }
         if (cobrandoUnaMesa()) return
         val cliente = _selectedCustomer.value ?: return
@@ -2930,6 +3066,8 @@ class CartViewModel @Inject constructor(
             // Canceló o venció; o llegó tarde y ya es otro cliente u otro descuento (Codex r5): no se guarda ni se cambia nada.
             val ahora = _selectedCustomer.value
             if (token == null || ahora?.id != cliente.id || ahora?.descuentoDelCliente?.discountId != descuento.id) return@launch
+            // D9: el gerente puso su PIN, pero el cobro ya se abrió con la venta de antes: no se le pone a la que se cobra.
+            if (cobroLoImpide()) return@launch
             _cartState.update {
                 it.copy(autorizacionDelDescuento = com.avoqado.pos.pos.data.model.AutorizacionDelDescuento(token, monto, cliente.id, descuento.id))
             }
@@ -2939,6 +3077,7 @@ class CartViewModel @Inject constructor(
     }
 
     fun onReferralCodeChange(code: String) {
+        if (cobroLoImpide()) return
         _referralCode.value = code
         // Editing the code after a result invalidates the result so the
         // banner doesn't lie about the new (untested) code.
@@ -2958,6 +3097,7 @@ class CartViewModel @Inject constructor(
      * discount that the previous validation may have applied.
      */
     fun validateReferralCode() {
+        if (cobroLoImpide()) return
         val venueId = secureStorage.venueId
         if (venueId.isNullOrBlank()) {
             Log.w("🎁", "validateReferralCode skipped: no venueId")
@@ -2986,6 +3126,11 @@ class CartViewModel @Inject constructor(
                 if (_referralValidation.value is ReferralCaptureUiState.Validating) {
                     _referralValidation.value = ReferralCaptureUiState.Idle
                 }
+                return@launch
+            }
+            // D9: el cobro se abrió mientras se validaba: la venta que se cobra no cambia (ni se pone ni se quita el descuento).
+            if (cobroLoImpide()) {
+                if (_referralValidation.value is ReferralCaptureUiState.Validating) _referralValidation.value = ReferralCaptureUiState.Idle
                 return@launch
             }
             resultado.fold(
@@ -3020,6 +3165,7 @@ class CartViewModel @Inject constructor(
 
     /** Resets referral state and any discount it had applied. */
     fun clearReferral() {
+        if (cobroLoImpide()) return
         _referralCode.value = ""
         _referralValidation.value = ReferralCaptureUiState.Idle
         clearReferralDiscountOnly()
@@ -3092,6 +3238,8 @@ class CartViewModel @Inject constructor(
         val code: String,
         val customerId: String,
         val staffId: String,
+        /** D9 (Codex r2 #4): la venta de la que es (`identidadDeVenta` antes de cerrarla); null en copias viejas. */
+        val venta: String? = null,
     )
 
     /**
@@ -3109,7 +3257,7 @@ class CartViewModel @Inject constructor(
         val staffId = _cartState.value.selectedStaffId.takeIf { it.isNotBlank() }
             ?: secureStorage.userId
             ?: return null
-        return ReferralPendiente(code = code, customerId = customerId, staffId = staffId)
+        return ReferralPendiente(code = code, customerId = customerId, staffId = staffId, venta = _cartState.value.identidadDeVenta)
     }
 
     suspend fun captureReferralOnPayment(
@@ -3138,8 +3286,14 @@ class CartViewModel @Inject constructor(
             onSuccess = { true },
             onFailure = { e ->
                 (e as? ReferralValidationException)?.let { ex ->
-                    _referralValidation.value = ReferralCaptureUiState.Invalid(ex.reason)
-                    clearReferralDiscountOnly(reponerElDelCliente = false)
+                    // D9 (Codex r1 #7): el rechazo es de ESTA captura. Si el carrito ya trae otro referido u otro cliente (la venta
+                    // siguiente), no se le toca; si es el mismo, es el desenlace de su propio cobro.
+                    val esElMismo = _referralCode.value.trim() == captura.code && _selectedCustomer.value?.id == captura.customerId &&
+                        (captura.venta == null || captura.venta == _cartState.value.identidadDeVenta)
+                    if (esElMismo) {
+                        _referralValidation.value = ReferralCaptureUiState.Invalid(ex.reason)
+                        clearReferralDiscountOnly(reponerElDelCliente = false)
+                    }
                 }
                 Log.e("🎁", "captureReferralOnPayment failed", e)
                 false
@@ -3166,6 +3320,8 @@ class CartViewModel @Inject constructor(
      * ([saveCurrentCart]) y restaurarlas pregunta. `false` si la copia no se pudo retirar (el vale sigue sin confirmar).
      */
     fun alRecuperarVale(intento: com.avoqado.pos.areatickets.data.IntentoDeVale): Boolean {
+        // D9 (Codex r1 #4): ni la copia ni la venta en cobro se tocan; el vale sigue sin confirmar y «Recuperar» lo vuelve a pedir.
+        if (cobroLoImpide()) return false
         // Codex r7 #1: la copia se retira sólo si SIGUE siendo esa mercancía. Si la volvieron a guardar con otra, se queda: trae la
         // marca del D1 (se puso al emitir y guardar la conserva) y restaurarla pregunta.
         val copia = intento.carritoGuardadoId?.let { id -> savedCartsRepository.savedCarts.value.firstOrNull { it.id == id } }
@@ -3210,6 +3366,7 @@ class CartViewModel @Inject constructor(
         _cartState.value.carritoGuardadoId?.let { savedCartsRepository.marcarCobroIniciado(it) } ?: true
 
     fun restoreSavedCart(savedCart: SavedCart, confirmado: Boolean = false): Restauracion {
+        if (cobroLoImpide()) return Restauracion.CobroAbierto
         // 27-oct (Codex A-5): la copia de una cuenta de «Pagar después» viva no se vende otra vez, ni confirmando: el cobro
         // normal crearía otra venta por la misma mercancía (la llave sólo protege otro «Pagar después»).
         if (savedCart.pagarDespuesSinDesenlace || payLaterQueue?.copiaLigada(savedCart.id) == true) {
@@ -3330,6 +3487,8 @@ class CartViewModel @Inject constructor(
     }
 
     fun deleteSavedCart(cartId: String) {
+        // D9 (Codex r1 #5): puede ser la copia de la venta que se está cobrando, la que sirve si el cobro queda en duda.
+        if (cobroLoImpide()) return
         savedCartsRepository.deleteCart(cartId)
         Log.d("🛒", "Deleted saved cart: $cartId")
     }
@@ -3416,6 +3575,8 @@ class CartViewModel @Inject constructor(
      * hasta que está a salvo. Una venta con premio de sellos nunca entra a la fila para mandarse (R8).
      */
     suspend fun createPayLaterOrder(customerId: String): ResultadoPagarDespues {
+        // Sin el ámbar: el diálogo de «Pagar después» ya dice el rechazo (Codex r2 #11: eran dos avisos).
+        if (cobroLoImpide(avisar = false)) return ResultadoPagarDespues.Error(AVISO_COBRO_ABIERTO)
         bloqueoDeEntrega()?.let { return ResultadoPagarDespues.Error(it) }
         val cliente = _selectedCustomer.value?.takeIf { it.id == customerId } ?: SelectedCustomer(customerId, "Cliente")
         _pagarDespuesEnCurso.value = EnvioPagarDespues(cliente.name, _cartState.value.totalCents)
@@ -3721,7 +3882,12 @@ class CartViewModel @Inject constructor(
         }
     }
 
+    /** El «restaurarVenta» del propio cobro (un rechazo del saldo devuelve su foto al carrito): pasa con el cobro abierto. */
+    fun restaurarFotoDelCobro(foto: com.avoqado.pos.giftcards.domain.FotoDeLaVenta): Boolean = delCobro { restaurarFoto(foto) }
+
     fun restaurarFoto(foto: com.avoqado.pos.giftcards.domain.FotoDeLaVenta): Boolean {
+        // D9 (Codex r1 #11): «Venta por recuperar» puede ofrecer otra venta con el recibo abierto; sólo el cobro trae su foto.
+        if (cobroLoImpide()) return false
         if (!_cartState.value.isEmpty) return false
         val duenos = duenosDeLaFoto.values.toList()
         if (duenos.any { !it.first() }) return false

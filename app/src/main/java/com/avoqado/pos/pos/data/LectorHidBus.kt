@@ -73,8 +73,13 @@ class LectorHidBus @Inject constructor() {
         if (accion == KeyEvent.ACTION_UP) return consumidas.remove(keyCode)
         if (accion != KeyEvent.ACTION_DOWN) return false
         // Una tecla SOSTENIDA se repite sola cada ~50 ms: parecería una ráfaga sin serlo.
-        // Un lector nunca repite; la persona que la sostiene sigue viendo su tecla.
-        if (repeatCount > 0) return false
+        // Un lector nunca repite; la persona que la sostiene sigue viendo su tecla, salvo en la casilla de cantidad, donde
+        // ninguna tecla física escribe: ni la 1.ª pulsación ni sus repeticiones (Codex D5 r1 #3).
+        if (repeatCount > 0) {
+            if (!(casillaDeCantidad && esTeclaFisicaQueEscribe(deviceId, unicodeChar, keyCode))) return false
+            consumidas += keyCode
+            return true
+        }
         // 🔴 Un lector que escribe una MAYÚSCULA manda Shift↓ A↓ A↑ Shift↑: el Shift llega como
         // tecla propia con `unicodeChar = 0`. Si contara como "tecla que no escribe nada",
         // partiría la ráfaga y ningún código con mayúsculas llegaría entero. Los modificadores

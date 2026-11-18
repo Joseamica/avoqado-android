@@ -269,4 +269,52 @@ class UpsellViewModelTest {
 
         io.mockk.coVerify(exactly = 0) { repo.recordImpression(any(), any()) }
     }
+
+    @Test
+    fun `D9 resuelto el momento no se vuelve a ofrecer en la misma venta, en la siguiente si`() {
+        val vm = viewModel()
+        val venta = cart("cafe")
+        assertNotNull(vm.offer(venta, UpsellContext.COUNTER))
+
+        vm.finish(emptyList(), 0)   // el cliente contestó en su pantalla; la cajera toca «Cobrar» otra vez
+
+        assertNull(vm.offer(venta, UpsellContext.COUNTER))
+        assertNotNull(vm.offer(cart("cafe"), UpsellContext.COUNTER))
+    }
+
+    @Test
+    fun `D9 al cancelar el cobro la venta se puede volver a ofrecer y la impresion vieja ya no convierte`() {
+        val vm = viewModel()
+        val a = cart("cafe")
+        vm.offer(a, UpsellContext.COUNTER)
+        vm.finish(emptyList(), 0)
+
+        vm.cancelPendingConversion()   // la cajera canceló el cobro (o salió a «Dividir importe»)
+
+        assertNotNull(vm.offer(a, UpsellContext.COUNTER))
+        vm.onOrderPaid("orden-A")   // el momento nuevo sigue abierto: nada que convertir
+        dispatcher.scheduler.advanceUntilIdle()
+        io.mockk.coVerify(exactly = 0) { repo.convertImpression(any(), any()) }
+    }
+
+    @Test
+    fun `D9 restaurar otra venta encima suelta la sugerencia pendiente, repintar la misma no`() {
+        val vm = viewModel()
+        val a = cart("cafe")
+        vm.offer(a, UpsellContext.COUNTER)
+        vm.finish(emptyList(), 0)   // el cliente de A contestó en su pantalla
+
+        vm.soltarSiEsOtraVenta(a.identidadDeVenta)           // la pantalla se repintó: sigue siendo A
+        vm.onOrderPaid("orden-A")
+        dispatcher.scheduler.advanceUntilIdle()
+        io.mockk.coVerify(exactly = 1) { repo.convertImpression(any(), "orden-A") }
+
+        vm.offer(cart("pan"), UpsellContext.COUNTER)
+        vm.finish(emptyList(), 0)
+        vm.soltarSiEsOtraVenta(cart("pan").identidadDeVenta)  // restauraron B encima
+        vm.onOrderPaid("orden-B")
+        dispatcher.scheduler.advanceUntilIdle()
+        io.mockk.coVerify(exactly = 0) { repo.convertImpression(any(), "orden-B") }
+    }
 }
+

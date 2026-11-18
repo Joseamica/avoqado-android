@@ -111,6 +111,15 @@ fun ProductDetailPanel(
     onDismiss: () -> Unit,
     /** Encargo 1afe04: qué hace la fila «Ajuste de precio» (permiso / PIN del encargado; en Mesas no sale). */
     ajusteDePrecio: AccesoAlAjuste = AccesoAlAjuste.LIBRE,
+    /**
+     * Las teclas de la hoja del teléfono, que es otra ventana y no pasa por `MainActivity.dispatchKeyEvent`. El cobro pasa
+     * el lector de la pistola (`CartViewModel.procesarTecla`): sin él, un código leído con la hoja abierta se perdía en
+     * silencio (pizarrón D5, 17-nov). El default sólo protege la casilla de cantidad (Mesas lee en «Escanear»).
+     */
+    teclasDeLaHoja: (android.view.KeyEvent) -> Boolean = { evento ->
+        com.avoqado.pos.designsystem.components.CasillaDeCantidad.activa &&
+            com.avoqado.pos.pos.data.LectorHidBus.esTeclaFisicaQueEscribe(evento)
+    },
 ) {
     if (isTablet) {
         // iPad-style: side panel overlay from right
@@ -152,11 +161,8 @@ fun ProductDetailPanel(
         ) {
             com.avoqado.pos.designsystem.components.ImmersiveWindow()
             // La hoja es otra ventana: sus teclas no pasan por MainActivity. Con la casilla de cantidad activa, una tecla
-            // física (la pistola) tampoco le llega aquí (Codex r3 #2, r5 #1).
-            com.avoqado.pos.giftcards.presentation.LectorHidDeLaVentana { evento ->
-                com.avoqado.pos.designsystem.components.CasillaDeCantidad.activa &&
-                    com.avoqado.pos.pos.data.LectorHidBus.esTeclaFisicaQueEscribe(evento)
-            }
+            // física (la pistola) tampoco le llega aquí (Codex r3 #2, r5 #1); el lector de la pistola ya lo decide igual.
+            com.avoqado.pos.giftcards.presentation.LectorHidDeLaVentana(teclasDeLaHoja)
             ProductDetailContent(
                 product = product,
                 discounts = discounts,
