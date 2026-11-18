@@ -289,6 +289,32 @@ class TpvSettingsRepositoryFiltroTest {
         assertEquals(listOf("a"), r.terminalNavigation.value.visibleCategoryIds)
     }
 
+    // MARK: - na5c51e4: el «PIN de gerente» también llega con el refresco suave (cada 5 min)
+
+    private fun conPin(pin: Boolean, panel: String? = null, cats: String = "[\"a\"]") =
+        """{ "success": true, "data": { "settings": { "showReviewScreen": false },
+          "managerPinOverrideEnabled": $pin, "exchangesEnabled": $pin,
+          ${panel?.let { "\"componentsStatus\": { \"promotionsPanel\": \"$it\" }," } ?: ""}
+          "deviceTerminal": { "id": "t-1", "visibleCategoryIds": $cats, "visibleMenuIds": null } } }"""
+
+    @Test
+    fun `P2 el refresco suave toma el PIN de gerente que el negocio prendio o apago`() = runBlocking {
+        val r = repo(escalonado(
+            ok(conPin(false)) to null,
+            ok(conPin(true)) to null,
+            ok(conPin(false)) to null,
+        ).client)
+        r.refreshSettingsForVenue(VENUE_ID)
+        assertEquals(false, r.managerPinOverrideEnabled.value)
+
+        r.refrescarFiltroDelAparato(VENUE_ID)
+        assertEquals("se prendió en el DASHBOARD", true, r.managerPinOverrideEnabled.value)
+        assertEquals(true, r.exchangesEnabled.value)
+
+        r.refrescarFiltroDelAparato(VENUE_ID)
+        assertEquals("se apagó en el DASHBOARD", false, r.managerPinOverrideEnabled.value)
+    }
+
     private companion object {
         const val VENUE_ID = "venue-a"
     }
