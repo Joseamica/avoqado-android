@@ -111,7 +111,7 @@ class ComandaDeLaRondaSinRedTest {
 
         assertNotEquals("No hay artículos enviados para reimprimir", mesa.actionMessage.value)
         val planes = mutableListOf<List<TicketPlan>>()
-        io.mockk.coVerify { impresora.printComandas(io.mockk.capture(planes), any(), any(), any(), any(), any(), any(), any()) }
+        io.mockk.coVerify { impresora.printComandas(capture(planes), any(), any(), any(), any(), any(), any(), any()) }
         assertTrue("la reimpresión lleva el Café de la ronda en cola: $planes", planes.flatten().toString().contains("Café"))
     }
 
