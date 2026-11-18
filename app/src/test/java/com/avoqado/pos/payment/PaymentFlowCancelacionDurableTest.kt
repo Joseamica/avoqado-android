@@ -556,28 +556,6 @@ class PaymentFlowCancelacionDurableTest {
     }
 
     @Test
-    fun `volver a consultar reintenta en el momento`() = runTest {
-        stubOrdenCreada()
-        cobroEnVuelo()
-        transporte.programarEstados(ChargeStatusProbe.Known("UNKNOWN", false))
-
-        cobrarConTarjeta()
-        advanceTimeBy(1_000)
-        viewModel.cancelarVenta()
-        advanceTimeBy(5_000)
-        runCurrent()
-        val antes = transporte.llamadasEstado.size
-
-        transporte.programarEstados(cancelado)
-        viewModel.volverAConsultarCancelacion()
-        advanceTimeBy(5_000)
-        runCurrent()
-
-        assertEquals(antes + 1, transporte.llamadasEstado.size)
-        assertTrue(viewModel.debeSalir.value)
-    }
-
-    @Test
     fun `P1 un resultado tardio del cobro tras constar que no se cobro no vuelve a armar la llave`() = runTest {
         stubOrdenCreada()
         cobroEnVuelo(resultadoTardio = TerminalPaymentResult.Undetermined("x", "req-1"))
@@ -680,9 +658,10 @@ class PaymentFlowCancelacionDurableTest {
     private fun kotlinx.coroutines.test.TestScope.enCancelacionPendiente(
         venueDelCobro: String = "venue-1",
         venueDelContexto: String = "venue-1",
+        resultadoTardio: TerminalPaymentResult = TerminalPaymentResult.Undetermined("x", "req-1"),
     ) {
         stubOrdenCreada()
-        cobroEnVuelo()
+        cobroEnVuelo(resultadoTardio)
         every { terminalPaymentService.intentoEnVuelo() } returns IntentoDeCobroEnVuelo("req-1", "t1", venueDelCobro)
         every { terminalPaymentService.contextoDe("req-1") } returns ContextoDeCobro(
             requestId = "req-1", venueId = venueDelContexto, terminalId = "t1", orderId = "order-1", amountCents = 1500, tipCents = 0,
@@ -698,6 +677,44 @@ class PaymentFlowCancelacionDurableTest {
         assertTrue("montaje: ${viewModel.state.value}", viewModel.state.value is PaymentFlowState.CancelacionPendiente)
         assertNotNull("montaje: la intención sigue viva", store.leer("req-1"))
         assertTrue("montaje: la orden no se ha tocado", transporte.llamadasBorrar.isEmpty())
+    }
+
+    /**
+     * Codex android r1 #1: el cajero sale de la cancelación pendiente de A, abre el selector de terminales de B y llega la respuesta
+     * del envío ORIGINAL de A. Esa respuesta no puede volverse el «último intento» de B: Esc en B no vuelve a observar A ni aplica a B
+     * el pago de A.
+     */
+    @Test
+    fun `Codex r1 1 - la respuesta tardia del envio de A no es el ultimo intento de B y Esc en B no aplica el pago de A`() = runTest {
+        enCancelacionPendiente(resultadoTardio = TerminalPaymentResult.Success(paymentId = "pay-a", requestId = "req-1"))
+        viewModel.salirDejandoPendiente()
+        viewModel.consumirSalida()
+        every { terminalPaymentService.intentoEnVuelo() } returns null
+        viewModel.startPaymentFlow(cardCart())
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        runCurrent()
+        assertTrue("montaje: B elige terminal: ${viewModel.state.value}", viewModel.state.value is PaymentFlowState.SelectingTerminal)
+
+        advanceTimeBy(600_000) // llega la respuesta del envío original de A: SÍ pasó
+        runCurrent()
+        io.mockk.verify { terminalPaymentService.aplicarDesenlaceTardio("req-1", any(), any()) } // montaje: A respondió tarde
+        val cancelsAntes = transporte.llamadasCancel.size
+        val consultasAntes = transporte.llamadasEstado.size
+        // Si B volviera a observar la cancelación de A, su desenlace sería este: A SÍ cobró.
+        transporte.programarEstados(ChargeStatusProbe.Known("COMPLETED", inProgress = false, paymentId = "pay-a"))
+        coEvery { terminalPaymentService.resolveOutcome("req-1", any(), any()) } returns
+            TerminalPaymentResult.Success(paymentId = "pay-a", requestId = "req-1")
+
+        viewModel.cancelarVenta() // Esc / «Cancelar» en el selector de B
+        advanceTimeBy(10_000)
+        runCurrent()
+
+        assertFalse("B no se vuelve la cancelación de A: ${viewModel.state.value}",
+            viewModel.state.value is PaymentFlowState.CancelandoCobro || viewModel.state.value is PaymentFlowState.CancelacionPendiente)
+        assertFalse("el pago de A nunca se aplica a B", viewModel.state.value is PaymentFlowState.Success)
+        assertTrue("B sale como siempre", viewModel.debeSalir.value)
+        assertEquals("Esc en B no pide cancelar A otra vez", cancelsAntes, transporte.llamadasCancel.size)
+        assertEquals("Esc en B no vuelve a consultar A", consultasAntes, transporte.llamadasEstado.size)
     }
 
     @Test

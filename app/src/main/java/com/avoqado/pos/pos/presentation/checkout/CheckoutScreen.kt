@@ -2226,6 +2226,8 @@ fun CheckoutScreen(
                 },
                 splitConfig = pendingSplitConfig,
                 resumeOrderId = resumeOrderId,
+                // Codex android r1 #2: el mismo carrito vuelve contra el folio de su tarjeta en duda.
+                onSalirConTarjetaEnDuda = cartViewModel::recordarOrdenEnDuda,
             )
         }
     }

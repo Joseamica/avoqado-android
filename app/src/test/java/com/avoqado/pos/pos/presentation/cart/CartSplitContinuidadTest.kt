@@ -101,6 +101,40 @@ class CartSplitContinuidadTest {
         markPendingSplitOrder(orderId)
     }
 
+    // ── Codex android r1 #2: la tarjeta en duda conserva el folio de ESTA compra ─────────────────
+
+    @Test
+    fun `Codex r1 2 - el mismo carrito con la tarjeta en duda vuelve contra su folio`() = runTest {
+        val vm = createViewModel()
+        vm.addCustomAmount(name = "Pizza", amountCents = 15_000)
+        vm.recordarOrdenEnDuda("order-a")
+
+        assertEquals("order-a", vm.resolvePendingSplitOrderForCharge())
+        assertEquals("cerrar y volver a abrir el cobro: el mismo folio", "order-a", vm.resolvePendingSplitOrderForCharge())
+    }
+
+    @Test
+    fun `Codex r1 2 - si el cajero cambia el carrito, el vinculo con la orden en duda se va`() = runTest {
+        val vm = createViewModel()
+        vm.addCustomAmount(name = "Pizza", amountCents = 15_000)
+        vm.recordarOrdenEnDuda("order-a")
+        vm.addCustomAmount(name = "Refresco", amountCents = 2_500)
+
+        assertNull("otra compra: folio nuevo", vm.resolvePendingSplitOrderForCharge())
+        assertNull("y ya no vuelve", vm.resolvePendingSplitOrderForCharge())
+    }
+
+    @Test
+    fun `Codex r1 2 - vaciar el carrito suelta la orden en duda`() = runTest {
+        val vm = createViewModel()
+        vm.addCustomAmount(name = "Pizza", amountCents = 15_000)
+        vm.recordarOrdenEnDuda("order-a")
+        vm.clearCart()
+        vm.addCustomAmount(name = "Pizza", amountCents = 15_000)
+
+        assertNull(vm.resolvePendingSplitOrderForCharge())
+    }
+
     // ── Sin split: nada que reusar ──────────────────────────────────────────────
 
     @Test

@@ -28,7 +28,7 @@ import com.avoqado.pos.customers.presentation.CreateCustomerView
 import com.avoqado.pos.customers.presentation.CustomersView
 import com.avoqado.pos.payment.presentation.PaymentProcessingView
 import com.avoqado.pos.payment.presentation.PaymentErrorView
-import com.avoqado.pos.payment.presentation.PaymentUndeterminedView
+import com.avoqado.pos.payment.presentation.TarjetaPorConfirmarView
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -76,9 +76,12 @@ fun ExchangeScreen(viewModel: ExchangeViewModel, onClose: () -> Unit,
                         send.phase == ExchangeSendPhase.CANCELLED -> PaymentErrorView(
                             message = message ?: send.message.orEmpty(), onRetry = onStartAgain, onCancel = onClose,
                             retryLabel = TextosCambio.PROBAR_OTRA_VEZ, cancelLabel = TextosCambio.CERRAR, titleLabel = TextosCambio.CANCELADO)
-                        send.phase == ExchangeSendPhase.UNCERTAIN && send.result != null -> PaymentUndeterminedView(
-                            message = message ?: send.message.orEmpty(), isChecking = false, onRecheck = payments::retry,
-                            onSalir = onClose, recheckLabel = TextosCambio.CONFIRMAR_ESTADO)
+                        // 🔴 F1 (Codex android r1 #10): la diferencia con tarjeta en duda es la misma pantalla de duda — su importe y sólo
+                        // [Seguir]. El cambio queda guardado; al volver a abrirlo se recupera, y la tarjeta en duda la ve el gerente en
+                        // «Operaciones por revisar».
+                        send.phase == ExchangeSendPhase.UNCERTAIN && send.result != null -> TarjetaPorConfirmarView(
+                            montoDelCobro = exchangeMoney(state.calculation.differenceCents), confirmando = false, sinRed = false,
+                            onSeguir = onClose)
                         else -> Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(AvoqadoTheme.spacing.lg),
                             verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.md)) {
                             Text(message ?: send.message.orEmpty(), style = MaterialTheme.typography.titleMedium)

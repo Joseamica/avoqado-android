@@ -77,6 +77,7 @@ import io.mockk.mockk
 import io.mockk.slot
 import io.mockk.verify
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestScope
@@ -694,14 +695,10 @@ class PaymentFlowViewModelTest {
             "jamás dar por pagada la venta actual con el cobro de otra",
             viewModel.state.value is PaymentFlowState.Success,
         )
-        // El desenlace se anuncia por el canal que CIERRA el flujo: el cajero vino a resolver
-        // un pendiente, no a cobrar, así que vuelve a su carrito con el mensaje en pantalla.
-        // Antes se quedaba dentro del flujo y el aviso se desvanecía mientras ya le pedían la
-        // calificación de la venta nueva — el desenlace de un cobro real pasaba volando.
-        assertNotNull(
-            "resolver un cobro ajeno tiene que avisar y devolver al cajero a donde estaba",
-            viewModel.previousChargeResolved.value,
-        )
+        // 🔴 Codex android r1 #3: «Ver» sólo muestra A. Resolverlo NO cierra el cobro de B (le borraba la división): B vuelve a su
+        // selector, y el «SÍ pasó» de A queda en su aviso, con su «Entendido».
+        assertNull("nada de A cierra el cobro de B", viewModel.previousChargeResolved.value)
+        assertTrue("B sigue en su selector: ${viewModel.state.value}", viewModel.state.value is PaymentFlowState.SelectingTerminal)
     }
 
     @Test
@@ -776,10 +773,14 @@ class PaymentFlowViewModelTest {
             releaseGet.countDown()
             repeat(50) { Thread.sleep(10); runCurrent() }
             assertEquals(1, gets.get())
-            assertNotNull(viewModel.previousChargeResolved.value)
+            // Codex android r1 #3: B no se cierra; vuelve a su selector con el «SÍ pasó» de A en el aviso.
+            assertNull(viewModel.previousChargeResolved.value)
+            assertTrue(viewModel.state.value is PaymentFlowState.SelectingTerminal)
             // H2 (26-sep): el cobro probado de la venta A queda MARCADO —no vuelve a la duda— hasta su «Entendido».
             assertEquals(listOf(true), PendientesDeTarjeta.leer(pendientes).map { it.cobrado })
-            viewModel.reconocerCobroAnteriorResuelto()
+            val aviso = viewModel.avisoDeOtroCobro.value!!
+            assertTrue(aviso.yaCobrado)
+            viewModel.descartarAvisoDeOtroCobro(aviso.requestId) // su «Entendido»
             assertTrue(PendientesDeTarjeta.leer(pendientes).isEmpty())
             assertFalse(viewModel.state.value is PaymentFlowState.Success)
         } finally {
@@ -863,7 +864,9 @@ class PaymentFlowViewModelTest {
         viewModel.revisarCobroDeOtraVenta(viewModel.avisoDeOtroCobro.value!!.requestId)
         advanceUntilIdle()
         assertFalse(viewModel.state.value is PaymentFlowState.Success)
-        assertNotNull(viewModel.previousChargeResolved.value)
+        // Codex android r1 #3: nada de A cierra el cobro de B.
+        assertNull(viewModel.previousChargeResolved.value)
+        assertTrue(viewModel.state.value is PaymentFlowState.SelectingTerminal)
     }
 
     @Test
@@ -3858,6 +3861,63 @@ class PaymentFlowViewModelTest {
     }
 
     @Test
+    fun `Codex r1 2 - Seguir con la tarjeta en duda entrega al carrito el folio que creo este cobro, una vez`() = runTest {
+        enCobroSinConfirmar("req-a")
+        every { terminalPaymentService.pendienteDeLaVenta("order-1") } returns "req-a"
+
+        viewModel.salirDejandoPendiente()
+
+        assertEquals("order-1", viewModel.consumirOrdenEnDuda())
+        assertNull("se entrega una sola vez", viewModel.consumirOrdenEnDuda())
+    }
+
+    @Test
+    fun `Codex r1 2 - sin tarjeta en duda de esa orden no se conserva ningun folio`() = runTest {
+        enCobroSinConfirmar("req-a")
+        every { terminalPaymentService.pendienteDeLaVenta(any()) } returns null
+
+        viewModel.salirDejandoPendiente()
+
+        assertNull(viewModel.consumirOrdenEnDuda())
+    }
+
+    @Test
+    fun `Codex r1 3 - Seguir en la revision de otra venta vuelve al selector de B sin cerrarlo`() = runTest {
+        stubOrderCreation()
+        every { terminalPaymentService.pendientesDeOtrasVentas(any()) } returns listOf(pendiente("req-vieja", "orden-7", haceMin = 2))
+        coEvery { terminalPaymentService.resolveOutcome("req-vieja", any()) } returns
+            TerminalPaymentResult.Undetermined(CardChargeDecision.UNDETERMINED_MESSAGE, "req-vieja")
+        viewModel.startPaymentFlow(cardCart())
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        advanceUntilIdle()
+        viewModel.revisarCobroDeOtraVenta("req-vieja")
+        advanceUntilIdle()
+        assertTrue("montaje: viendo A", viewModel.state.value is PaymentFlowState.Undetermined)
+
+        viewModel.seguirDesdeLaDuda()
+        advanceUntilIdle()
+
+        assertFalse("B no se cierra", viewModel.debeSalir.value)
+        assertTrue("B sigue en su selector: ${viewModel.state.value}", viewModel.state.value is PaymentFlowState.SelectingTerminal)
+    }
+
+    @Test
+    fun `Codex r1 11 - el importe de una fila antigua se sigue preguntando hasta saberlo`() = runTest {
+        var veces = 0
+        coEvery { terminalPaymentService.importeDelCobro("req-vieja", null) } coAnswers { if (++veces < 3) null else 12_000 }
+
+        val importe = async { viewModel.esperarImporteDelCobro("req-vieja", null) }
+        advanceTimeBy(9_000)
+        runCurrent()
+        assertFalse("sin red: sigue esperando", importe.isCompleted)
+        advanceTimeBy(2_000)
+        runCurrent()
+
+        assertEquals(12_000, importe.await())
+        assertEquals(3, veces)
+    }
+
+    @Test
     fun `F1 Seguir dos veces no cancela, no cierra la cuenta ni reenvia el cobro`() = runTest {
         enCobroSinConfirmar("req-a")
 
@@ -4000,9 +4060,31 @@ class PaymentFlowViewModelTest {
         advanceUntilIdle()
 
         assertFalse("confirmar el cobro anterior NUNCA paga la venta actual", viewModel.state.value is PaymentFlowState.Success)
-        assertEquals("El cobro anterior sí se había realizado", viewModel.previousChargeResolved.value)
+        // 🔴 Codex android r1 #3: «Ver» sólo muestra A. Que A se resuelva no cierra el cobro de B (ni le borra su división): B vuelve a
+        // elegir terminal, y el «SÍ pasó» de A sigue en su aviso.
+        assertNull("nada de A cierra el cobro de B", viewModel.previousChargeResolved.value)
+        assertFalse(viewModel.debeSalir.value)
+        assertTrue("B sigue en su selector: ${viewModel.state.value}", viewModel.state.value is PaymentFlowState.SelectingTerminal)
         coVerify(exactly = 0) { terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any()) }
         coVerify(exactly = 0) { orderRepository.createOrder(any(), any(), any(), any(), any(), capturedVenueId = any()) }
+    }
+
+    @Test
+    fun `Codex r1 3 - Ver A y que A conste como no cobrado no cierra el cobro de B`() = runTest {
+        stubOrderCreation()
+        every { terminalPaymentService.pendientesDeOtrasVentas(any()) } returns listOf(pendiente("req-vieja", "orden-7", haceMin = 2))
+        coEvery { terminalPaymentService.resolveOutcome("req-vieja", any()) } returns
+            TerminalPaymentResult.Error("Consta que no se cobró", requestId = "req-vieja")
+
+        viewModel.startPaymentFlow(cardCart())
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        advanceUntilIdle()
+        viewModel.revisarCobroDeOtraVenta("req-vieja")
+        advanceUntilIdle()
+
+        assertNull(viewModel.previousChargeResolved.value)
+        assertFalse(viewModel.debeSalir.value)
+        assertTrue("B sigue en su selector: ${viewModel.state.value}", viewModel.state.value is PaymentFlowState.SelectingTerminal)
     }
 
     @Test
@@ -4349,9 +4431,14 @@ class PaymentFlowViewModelTest {
         viewModel.recheckCardCharge()
         advanceUntilIdle()
 
-        coVerify(exactly = 3) { terminalPaymentService.resolveOutcome("r-viejo") }
+        // Codex android r1 #3: al resolverse vuelve al selector de ESTA venta, que repite su revisión de fondo (con este servicio
+        // simulado, A sigue en la lista sin marcar): por eso «al menos» 3, todas por ESE cobro.
+        coVerify(atLeast = 3) { terminalPaymentService.resolveOutcome("r-viejo") }
+        coVerify(exactly = 0) { terminalPaymentService.resolveOutcome(match { it != "r-viejo" }) }
         assertFalse("el cobro de otra venta no paga ésta", viewModel.state.value is PaymentFlowState.Success)
-        assertEquals("El cobro anterior sí se había realizado", viewModel.previousChargeResolved.value)
+        // Codex android r1 #3: vuelve al selector de ESTA venta, sin cerrarla.
+        assertNull(viewModel.previousChargeResolved.value)
+        assertTrue(viewModel.state.value is PaymentFlowState.SelectingTerminal)
     }
 
     @Test

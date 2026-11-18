@@ -1371,6 +1371,10 @@ class PaymentFlowViewModel @Inject constructor(
 
     fun consumirSalida() { _debeSalir.value = false }
 
+    /** Codex android r1 #2: la orden de esta compra cuya tarjeta quedó en duda al salir con [Seguir]; se entrega UNA vez al anfitrión. */
+    private var ordenEnDudaAlSalir: String? = null
+    fun consumirOrdenEnDuda(): String? = ordenEnDudaAlSalir.also { ordenEnDudaAlSalir = null }
+
     init {
         // Refresca el catálogo de tipos de pago al entrar al flujo de cobro. Es
         // cache-first: si falla, conserva la última lista buena — nunca deja al
@@ -3143,6 +3147,25 @@ class PaymentFlowViewModel @Inject constructor(
         reconcileThenOffer(requestId, currentBaseAmount() + currentTipCents, encabezado = PREVIOUS_CHARGE_PREFIX)
 
     /**
+     * 🔴 Codex android r1 #3: la revisión de un cobro de OTRA venta («Ver» del aviso o «Revisar ese cobro») termina regresando al
+     * selector de ESTA venta, intacta: ni se cierra su cobro ni se pierde su división. Lo que siga en vuelo de esa revisión ya no
+     * gobierna la pantalla (la generación cambia) y su desenlace va a la lista durable, como cualquier resultado tardío.
+     */
+    private fun volverDeLaRevision(total: Int) {
+        paymentGeneration++
+        cobroEnRevision = null
+        ofrecerTerminales(total)
+    }
+
+    /**
+     * F1 (tarea 6): [Seguir] en la pantalla de la duda. Revisando el cobro de OTRA venta, vuelve al selector de ésta (Codex android
+     * r1 #3); con la duda de ESTA venta, sale dejándola pendiente ([salirDejandoPendiente]).
+     */
+    fun seguirDesdeLaDuda() {
+        if (revisaCobroDeOtraVenta()) volverDeLaRevision(currentBaseAmount() + currentTipCents) else salirDejandoPendiente()
+    }
+
+    /**
      * C1 (fix round 4, m1 de la re-revisión): ¿ese cobro lo mandó ESTA tablet? Está en su lista durable (una duda
      * cuenta aunque su contexto no se pueda leer) o lo soltó este proceso. Entonces su venta puede seguir abierta y el
      * texto sin red no invita al efectivo, igual que desde el aviso. Sólo decide el TEXTO: lo que se guarda o no lo sigue
@@ -3610,9 +3633,13 @@ class PaymentFlowViewModel @Inject constructor(
                     // D14: también la de una cuenta que ya existía cobrada fuera de la bandeja.
                     deLaBandeja = cobroDeLaBandeja ?: cobroFueraDeLaBandeja(),
                 )
-                recordarIntentoDeCobro(terminalResult)
+                // 🔴 Codex android r1 #1: sólo la respuesta de ESTE flujo es su «último intento». La del envío original de A que llega
+                // con B ya abierto (el cajero salió con [Seguir]) iba aquí ANTES de mirar la generación, y Esc en B volvía a observar
+                // la cancelación de A y le aplicaba a B el pago de A.
+                val esDeEsteFlujo = generation == paymentGeneration
+                if (esDeEsteFlujo) recordarIntentoDeCobro(terminalResult)
                 if (terminalResult is TerminalPaymentResult.Success && terminalResult.alreadyRecovered) return
-                if (generation != paymentGeneration) {
+                if (!esDeEsteFlujo) {
                     // El cajero canceló mientras el envío seguía en vuelo (hasta 330 s): no se
                     // marca Success/Error ni se imprime sobre una pantalla de la que ya se fue.
                     // Pero el DINERO no se descarta con la navegación — ver handleStaleCardResult.
@@ -5005,7 +5032,10 @@ class PaymentFlowViewModel @Inject constructor(
                         // viejo pasara volando mientras la pantalla ya le pedía otra cosa.
                         // Vuelve a donde estaba, con el carrito intacto, y él decide. H2: la entrada queda marcada en
                         // disco hasta que se cierre «Cobro anterior resuelto» (o venza su ventana).
-                        resolverCobroAnterior("El cobro anterior sí se había realizado", cobroQueSiPaso = requestId)
+                        // 🔴 Codex android r1 #3: si es de OTRA venta («Ver» del aviso, «Revisar ese cobro»), nada de A cierra el
+                        // cobro de B ni le borra su división: B vuelve a su selector y el «SÍ pasó» de A sale en su aviso.
+                        if (encabezado == PREVIOUS_CHARGE_PREFIX) volverDeLaRevision(total)
+                        else resolverCobroAnterior("El cobro anterior sí se había realizado", cobroQueSiPaso = requestId)
                     } else {
                         applyCardCharged(outcome.copy(requestId = outcome.requestId ?: requestId), total)
                     }
@@ -5014,7 +5044,8 @@ class PaymentFlowViewModel @Inject constructor(
                     // Consta que NO se cobró: aquí sí es seguro ofrecer cobrar de nuevo.
                     undeterminedRequestId = null
                     if (fromPreviousSale) {
-                        resolverCobroAnterior("El cobro anterior no se realizó")
+                        if (encabezado == PREVIOUS_CHARGE_PREFIX) volverDeLaRevision(total) // Codex android r1 #3
+                        else resolverCobroAnterior("El cobro anterior no se realizó")
                     } else {
                         ofrecerTerminales(total)
                     }
@@ -5097,6 +5128,30 @@ class PaymentFlowViewModel @Inject constructor(
      * `null` = no se pudo saber y la pantalla sigue con «Importe por confirmar». Nunca el del carrito.
      */
     suspend fun importeDelCobro(requestId: String, venueId: String?): Int? = terminalPaymentService.importeDelCobro(requestId, venueId)
+
+    /**
+     * Codex android r1 #11: el importe de una fila antigua, preguntado cada [cada] ms hasta que Avoqado lo diga (la primera consulta
+     * pudo salir sin red y la red volver sin salir de la pantalla). Vive mientras la pantalla lo espere (su `LaunchedEffect`).
+     */
+    suspend fun esperarImporteDelCobro(requestId: String, venueId: String?, cada: Long = 5_000): Int {
+        while (true) {
+            terminalPaymentService.importeDelCobro(requestId, venueId)?.let { return it }
+            kotlinx.coroutines.delay(cada)
+        }
+    }
+
+    /**
+     * Codex android r1 #10: el cobro de la «Cancelación pendiente» que se ve, CONGELADO de la intención que observa esta pantalla —su
+     * solicitud, su sucursal y el importe de SU contexto (si no, el de la intención)—, nunca del carrito. `null` = sólo de la orden.
+     */
+    fun objetivoDeLaCancelacion(): ObjetivoDeLaDeclaracion? {
+        val id = cancelacionObservada ?: return null
+        val intencion = cancelacionDeCobro.pendientes.value.firstOrNull { it.id == id } ?: return null
+        val requestId = intencion.requestId?.takeIf { it.isNotBlank() } ?: return null
+        val contexto = terminalPaymentService.contextoDe(requestId)
+        val monto = contexto?.amountCents?.let { it + (contexto.tipCents ?: 0) } ?: intencion.montoCents
+        return ObjetivoDeLaDeclaracion(requestId = requestId, venueId = intencion.venueId.takeIf { it.isNotBlank() }, montoCentavos = monto)
+    }
 
 
     // MARK: - Cancelar la venta (§C.4): el cobro primero, la orden sólo cuando conste
@@ -5211,6 +5266,8 @@ class PaymentFlowViewModel @Inject constructor(
      * y si había una cancelación registrada, el coordinador la sigue reproduciendo solo.
      */
     fun salirDejandoPendiente() {
+        // Codex android r1 #2: si la orden que creó este flujo se queda con su tarjeta en duda, el carrito conserva ese folio.
+        ordenEnDudaAlSalir = createdOrderId?.takeIf { ordenCreadaPorEsteFlujo && terminalPaymentService.pendienteDeLaVenta(it) != null }
         dejarDeObservarLaCancelacion()
         // Un desenlace que llegue tarde ya no gobierna esta pantalla, pero SÍ la llave durable.
         paymentGeneration++
@@ -5218,14 +5275,6 @@ class PaymentFlowViewModel @Inject constructor(
         salirDelFlujo()
     }
 
-    /** «Volver a consultar» desde «Cancelación pendiente»: sólo pregunta, nunca cobra ni borra. */
-    fun volverAConsultarCancelacion() {
-        val id = cancelacionObservada ?: return
-        (_state.value as? PaymentFlowState.CancelacionPendiente)?.let {
-            _state.value = it.copy(checking = true)
-        }
-        cancelacionDeCobro.procesarAhora(id)
-    }
 
     /** El cobro que esta pantalla puede pedir cancelar, con el contexto para poder hacerlo. */
     private data class CobroACancelar(

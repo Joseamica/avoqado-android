@@ -739,6 +739,24 @@ class CartViewModel @Inject constructor(
     private val _pendingSplitOrder = MutableStateFlow<PendingSplitOrder?>(null)
 
     /**
+     * 🔴 Codex android r1 #2 (F1): la orden de esta MISMA compra cuya tarjeta quedó en duda al salir con [Seguir]. Como el abono
+     * parcial, el siguiente «Cobrar» de este carrito va contra ESE folio: el servidor y la lista durable frenan otra tarjeta mientras
+     * siga en duda (el efectivo sigue). Sin esto, el carrito intacto se volvía a mandar con un folio NUEVO y la cerca, que es por folio,
+     * lo dejaba pasar. Sólo vale con el carrito EXACTO: si el cajero lo vacía o lo cambia, el vínculo se va (es otra compra).
+     */
+    private val _ordenEnDuda = MutableStateFlow<PendingSplitOrder?>(null)
+
+    fun recordarOrdenEnDuda(orderId: String) {
+        val cart = _cartState.value
+        if (cart.isEmpty) return
+        _ordenEnDuda.value = PendingSplitOrder(
+            orderId = orderId, itemIds = cart.items.map { it.id }.toSet(), totalCents = cart.totalCents,
+            renglones = cart.items, descuentoDeCuenta = cart.orderDiscount, exacta = true,
+        )
+        Log.d("🛒", "Tarjeta en duda: este carrito sigue contra la orden $orderId")
+    }
+
+    /**
      * 🔴 DINERO. La orden contra la que corre el cobro que está ABIERTO ahora
      * mismo. Se congela al abrir el cobro ([resolvePendingSplitOrderForCharge])
      * y se suelta al cerrarlo ([releaseChargingOrder]).
@@ -1129,6 +1147,14 @@ class CartViewModel @Inject constructor(
      * aquí con el carrito cambiado, el cobro no continúa ninguna orden y el vínculo sigue para cuando se quite lo agregado.
      */
     fun resolvePendingSplitOrderForCharge(): String? {
+        // Codex android r1 #2: el mismo carrito cuya tarjeta quedó en duda vuelve contra SU folio; si cambió, es otra compra.
+        if (_pendingSplitOrder.value == null) _ordenEnDuda.value?.let { duda ->
+            if (!carritoCambioDesde(duda, _cartState.value)) {
+                chargingAgainstOrderId = duda.orderId
+                return duda.orderId
+            }
+            _ordenEnDuda.value = null
+        }
         val pending = _pendingSplitOrder.value
         // D1: mientras su parte sin red no sube (o el saldo no cuadró), no hay orden que continuar (Codex r2 #2).
         if (pending == null || pending.parteEnCola != null) {
@@ -2148,6 +2174,7 @@ class CartViewModel @Inject constructor(
         //
         // El split lo vuelve a marcar DESPUÉS de dejar el saldo en el carrito.
         _pendingSplitOrder.value = null
+        _ordenEnDuda.value = null // Codex android r1 #2: vaciar el carrito suelta el folio de la tarjeta en duda
         Log.d("🛒", "Cart cleared")
     }
 

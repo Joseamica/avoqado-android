@@ -374,7 +374,9 @@ class AvisoDuraderoDeOtrasVentasTest {
         advanceUntilIdle() // llega el negativo viejo
 
         assertTrue("el servicio devuelve el positivo vigente: $directo", directo is TerminalPaymentResult.Success)
-        assertEquals("El cobro anterior sí se había realizado", vm.previousChargeResolved.value)
+        // Codex android r1 #3: la revisión vuelve al selector de esta venta; el positivo se ve en el aviso («SÍ pasó»), no un «no se realizó».
+        assertNull(vm.previousChargeResolved.value)
+        assertTrue("el aviso dice que SÍ pasó: ${vm.avisoDeOtroCobro.value}", vm.avisoDeOtroCobro.value?.yaCobrado == true)
         assertEquals("una sola consulta: los tres se unieron", listOf("r31-a"), consultados)
         assertEquals("sigue marcado en disco", listOf(true), marcas())
     }
@@ -529,7 +531,9 @@ class AvisoDuraderoDeOtrasVentasTest {
         advanceUntilIdle()
 
         assertEquals("montaje: se preguntó por ESE cobro", listOf("r-ajeno"), consultados)
-        assertEquals("El cobro anterior sí se había realizado", vm.previousChargeResolved.value)
+        // Codex android r1 #3: el cobro ajeno resuelto no cierra esta venta: vuelve a su selector.
+        assertNull(vm.previousChargeResolved.value)
+        assertTrue(vm.state.value is PaymentFlowState.SelectingTerminal)
         assertFalse("confirmarlo NO paga esta venta: ${vm.state.value}", vm.state.value is PaymentFlowState.Success)
         assertTrue("ni «SÍ pasó» en el disco de esta tablet: ${ids()}", ids().isEmpty())
         sinAvisoEnLaVentaSiguiente(vm) // sin tocar «Entendido»: si estuviera en disco, saldría aquí

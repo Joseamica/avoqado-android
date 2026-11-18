@@ -25,7 +25,6 @@ import com.avoqado.pos.designsystem.components.AtajosDeTeclado
 import com.avoqado.pos.designsystem.components.LocalEsEscritorio
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.payment.domain.CancelacionDeCobro
-import com.avoqado.pos.payment.presentation.CancelacionPendienteView
 import com.avoqado.pos.payment.presentation.TarjetaPorConfirmarView
 import java.nio.file.Files
 import kotlin.test.AfterTest
@@ -105,26 +104,6 @@ class TarjetaPorConfirmarEnLaEscenaTest {
         waitForIdle()
         assertEquals(1, seguir, "Esc sale una sola vez y Enter no hace nada")
         sinDecisionesDePiso()
-    }
-
-    @Test fun `cancelacion pendiente - el cajero no declara, Seguir sale aunque se este consultando`() = runComposeUiTest {
-        var seguir = 0
-        var consultas = 0
-        escena {
-            CancelacionPendienteView(
-                sinRed = false, isChecking = true, terminalLibre = true,
-                onVolverAConsultar = { consultas++ }, onSalir = { seguir++ },
-            )
-        }
-
-        onNodeWithText(CancelacionDeCobro.CUERPO_TERMINAL_LIBRE_PISO).assertExists()
-        sinDecisionesDePiso()
-        val tocar = onNodeWithText(CancelacionDeCobro.BOTON_SEGUIR).fetchSemanticsNode().config[SemanticsActions.OnClick].action!!
-        runOnUiThread { tocar(); tocar() }
-        runOnIdle { AtajosDeTeclado.atender(Key.Escape) }
-        waitForIdle()
-        assertEquals(1, seguir)
-        assertEquals(0, consultas)
     }
 
     /** F1 (un paso, Codex código r1 #10): el teclado del gerente ya dice qué firma, su botón es [Firmar] y un 403 se dice ahí mismo. */
