@@ -144,6 +144,7 @@ fun PaymentFlowScreen(
     val customerDisplayActive by viewModel.customerDisplayActive.collectAsState()
     // D68 #12: el gris «No hay terminales conectadas» sólo con red; sin red la fila lleva al aviso «Sin conexión».
     val terminalesNoConectadas by viewModel.terminalesNoConectadas.collectAsState()
+    val sinRedEnElCobro by viewModel.sinRedEnElCobro.collectAsState()
     val terminals by viewModel.onlineTerminals.collectAsState()
     val avisoDeOtroCobro by viewModel.avisoDeOtroCobro.collectAsState()
     val segundoAviso by viewModel.segundoAviso.collectAsState()
@@ -333,6 +334,7 @@ fun PaymentFlowScreen(
                         saldoSinActualizar = !origen.permiteTarjeta || viewModel.ventaRapidaEnCero() || viewModel.cobroDeMesaSinRed(),
                         textoSoloEfectivo = textoSoloEfectivoDe(origen, viewModel.ventaRapidaEnCero(), viewModel.cobroDeMesaSinRed()),
                         soloEfectivoSinRed = viewModel.cobroDeMesaSinRed(),
+                        sinRed = sinRedEnElCobro,
                         // Toque explícito del cajero: si el server dice que no, tiene que verse.
                         onRetryTerminals = { viewModel.probeTerminalAvailability(background = false) },
                     )
@@ -361,6 +363,7 @@ fun PaymentFlowScreen(
                         saldoSinActualizar = !origen.permiteTarjeta || viewModel.ventaRapidaEnCero() || viewModel.cobroDeMesaSinRed(),
                         textoSoloEfectivo = textoSoloEfectivoDe(origen, viewModel.ventaRapidaEnCero(), viewModel.cobroDeMesaSinRed()),
                         soloEfectivoSinRed = viewModel.cobroDeMesaSinRed(),
+                        sinRed = sinRedEnElCobro,
                     // Toque explícito del cajero: si el server dice que no, tiene que verse.
                     onRetryTerminals = { viewModel.probeTerminalAvailability(background = false) },
                     // D15: con $0 no hay nada que dividir.

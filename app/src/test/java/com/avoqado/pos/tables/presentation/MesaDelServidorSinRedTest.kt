@@ -1036,4 +1036,127 @@ class MesaDelServidorSinRedTest {
         assertFalse(dirFotos.exists())
         subject.viewModelScope.cancel()
     }
+
+    // MARK: - nac50984 (encargo 0199df): la ronda tardía que el SERVIDOR puso en una cuenta aparte
+
+    /** El ACK de `ADD_ITEMS` de `aplicarRondaTardia` (SERVIDOR #471): `orderId` = la cuenta pedida (ya cobrada) + `cuentaAparte`. */
+    private fun ackCuentaAparte(llave: String, conDatos: Boolean = true) = SyncAck(
+        llave, "ACKED",
+        result = kotlinx.serialization.json.buildJsonObject {
+            put("orderId", kotlinx.serialization.json.JsonPrimitive("order-F"))
+            put("version", kotlinx.serialization.json.JsonPrimitive(5))
+            put("total", kotlinx.serialization.json.JsonPrimitive(25.0))
+            put("cuentaAparte", kotlinx.serialization.json.buildJsonObject {
+                put("orderId", kotlinx.serialization.json.JsonPrimitive("order-G"))
+                if (conDatos) {
+                    put("orderNumber", kotlinx.serialization.json.JsonPrimitive("G-7"))
+                    put("version", kotlinx.serialization.json.JsonPrimitive(2))
+                    put("total", kotlinx.serialization.json.JsonPrimitive(20.0))
+                }
+            })
+        },
+        contextoDeSesion = session.contextoActual(),
+    )
+
+    @Test fun `P1 nac50984 la ronda que cayo en cuenta aparte deja de decir por sincronizar sin salir de la mesa`() = runTest {
+        val subject = mesaConFoto()
+        conInternet = false
+        ronda(subject, 2000)
+        val llave = cola.single { it.tipo == "ADD_ITEMS" }.id
+        assertEquals("«Comanda registrada — por sincronizar»", 1, subject.queued.value.size)
+
+        // Otra caja cobra la cuenta F con internet; vuelve la red y el SERVIDOR pone la ronda en la cuenta aparte G.
+        cuenta = cuenta.copy(status = "COMPLETED")
+        conInternet = true
+        estado(llave, "ACKED")
+        acks.emit(ackCuentaAparte(llave))
+        advanceUntilIdle()
+
+        assertTrue("el SERVIDOR la confirmó en la cuenta aparte: ya no está «por sincronizar»", subject.queued.value.isEmpty())
+        assertTrue("y tampoco se queda en el borrador de la cuenta cobrada", drafts.load(venue, "order-F").rounds.isEmpty())
+        assertEquals("dice dónde quedó", TableOrderViewModel.textoDeCuentaAparte("G-7"), subject.actionMessage.value)
+        assertEquals("no cambia de cuenta sola (Codex r2 #1 y #2)", "order-F", session.current()?.orderId)
+        subject.viewModelScope.cancel()
+    }
+
+    @Test fun `P1 nac50984 Codex r1 1a la cola saca la ronda del borrador de la cuenta cobrada aunque nadie mire la mesa`() = runTest {
+        val subject = mesaConFoto()
+        conInternet = false
+        ronda(subject, 2000)
+        val llave = cola.single { it.tipo == "ADD_ITEMS" }.id
+        subject.viewModelScope.cancel() // el mesero se fue al plano: nadie tiene la mesa en pantalla
+        assertEquals(1, drafts.load(venue, "order-F").rounds.size)
+
+        val dao = mockk<SyncIntentDao>(relaxed = true)
+        val fila = SyncIntentEntity(llave, venue, "staff", 2, "ADD_ITEMS", """{"orderId":"order-F","items":[{"externalId":"sync:$llave:0"}]}""")
+        colaReal(dao).conservarAck(ackCuentaAparte(llave), fila, venue, "d1", "d1")
+
+        coVerify(exactly = 1) { dao.resolve(llave, "ACKED", any(), any(), any()) }
+        assertTrue("la ronda ya está en la cuenta aparte: sale del borrador de la cobrada", drafts.load(venue, "order-F").rounds.isEmpty())
+        // Y un guardado desde memoria de la pantalla vieja no la revive (D29: descartada).
+        assertTrue(drafts.load(venue, "order-F").descartadas.contains(llave))
+    }
+
+    @Test fun `P1 nac50984 Codex r2 1 con dos rondas sin red, la segunda sigue por sincronizar en la misma cuenta`() = runTest {
+        val subject = mesaConFoto()
+        conInternet = false
+        ronda(subject, 2000)
+        ronda(subject, 1500)
+        val (primera, segunda) = cola.filter { it.tipo == "ADD_ITEMS" }.map { it.id }
+        cuenta = cuenta.copy(status = "COMPLETED")
+        conInternet = true
+        estado(primera, "ACKED")
+        acks.emit(ackCuentaAparte(primera))
+        advanceUntilIdle()
+
+        assertEquals("sólo la que el SERVIDOR confirmó sale", 1, subject.queued.value.map { it.externalId?.substringBeforeLast(':') }.distinct().size)
+        assertTrue(subject.queued.value.all { it.externalId?.startsWith("sync:$segunda:") == true })
+        assertEquals("la pantalla se queda en su cuenta mientras la otra ronda viaja", "order-F", session.current()?.orderId)
+        subject.viewModelScope.cancel()
+    }
+
+    @Test fun `nac50984 Codex r3 2 el ACK que llega mientras Enviar termina no deja la ronda pintada por sincronizar`() = runTest {
+        val subject = mesaConFoto()
+        conInternet = false
+        cuenta = cuenta.copy(status = "COMPLETED")
+        // La cola la encola y, en ese mismo momento, vuelve la red y el SERVIDOR ya la puso en la cuenta aparte.
+        coEvery { outbox.enqueue(any(), any(), any(), any(), any(), any()) } answers {
+            val id = arg<String>(3)
+            if (cola.none { it.id == id }) cola += FilaDeLaOrden(id, arg(1), "ACKED", null, ++seq)
+            check(acks.tryEmit(ackCuentaAparte(id)))
+            id
+        }
+        ronda(subject, 2000)
+        assertTrue("confirmada en la cuenta aparte: nada «por sincronizar»", subject.queued.value.isEmpty())
+        // Codex r4 #2: lo último que se ve dice dónde quedó la ronda, no «se sincronizará sola» (en cualquier orden de ACK y «Enviar»).
+        assertEquals(TableOrderViewModel.textoDeCuentaAparte("G-7"), subject.actionMessage.value)
+        subject.viewModelScope.cancel()
+    }
+
+    @Test fun `nac50984 una cuenta aparte igual a la cuenta en pantalla no avisa nada ni cambia de cuenta`() = runTest {
+        val subject = mesaConFoto()
+        subject.consumeActionMessage()
+        acks.emit(SyncAck("ronda-x", "ACKED", result = kotlinx.serialization.json.buildJsonObject {
+            put("orderId", kotlinx.serialization.json.JsonPrimitive("order-F"))
+            put("cuentaAparte", kotlinx.serialization.json.buildJsonObject { put("orderId", kotlinx.serialization.json.JsonPrimitive("order-F")) })
+        }, contextoDeSesion = session.contextoActual()))
+        advanceUntilIdle()
+        assertNull(subject.actionMessage.value)
+        assertEquals("order-F", session.current()?.orderId)
+        subject.viewModelScope.cancel()
+    }
+
+    @Test fun `nac50984 un ACK de ronda sin cuenta aparte se queda como hoy hasta leer sus renglones`() = runTest {
+        val subject = mesaConFoto()
+        conInternet = false
+        ronda(subject, 2000)
+        val llave = cola.single { it.tipo == "ADD_ITEMS" }.id
+        // Sin internet todavía para la lectura: el ACK solo no retira la ronda (sólo sus renglones en la cuenta la retiran).
+        acks.emit(SyncAck(llave, "ACKED", result = kotlinx.serialization.json.buildJsonObject {
+            put("orderId", kotlinx.serialization.json.JsonPrimitive("order-F")); put("version", kotlinx.serialization.json.JsonPrimitive(4))
+        }, contextoDeSesion = session.contextoActual()))
+        advanceUntilIdle()
+        assertEquals(1, subject.queued.value.size)
+        subject.viewModelScope.cancel()
+    }
 }

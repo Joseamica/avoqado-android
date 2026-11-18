@@ -93,6 +93,8 @@ fun PaymentMethodSelectionScreen(
     textoSoloEfectivo: String = com.avoqado.pos.onlineorders.presentation.TextosPedidosEnLinea.SOLO_EFECTIVO_SIN_SALDO,
     /** D5 · B2b (B3): la mesa del servidor cobrada sin internet: sólo efectivo, y el subtítulo lo dice (no «envía a una terminal»). */
     soloEfectivoSinRed: Boolean = false,
+    /** na8a23ce (0199df): el aparato está sin red; el subtítulo lo dice en vez de mandar a una terminal. */
+    sinRed: Boolean = false,
     onRetryTerminals: () -> Unit = {},
     /** Link "Dividir importe" arriba (Mesas y tienda, como Square) — null lo oculta. */
     onSplitImporte: (() -> Unit)? = null,
@@ -190,7 +192,7 @@ fun PaymentMethodSelectionScreen(
         Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
 
         Text(
-            text = subtituloDelCobro(terminalsUnavailable, metodosHabilitados, soloEfectivoSinRed),
+            text = subtituloDelCobro(terminalsUnavailable, metodosHabilitados, soloEfectivoSinRed, sinRed),
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -1145,8 +1147,23 @@ private fun formatCompactAmount(cents: Int): String {
  * El subtítulo bajo el importe. Sin terminal, «envía el cobro a una terminal» mandaba a algo que no se puede (iPad, 31-oct; igual en
  * iOS). D5 · B2b (B3): una mesa cobrada sin internet es sólo efectivo.
  */
-internal fun subtituloDelCobro(terminalsUnavailable: Boolean, metodosHabilitados: Boolean, soloEfectivoSinRed: Boolean): String = when {
+internal fun subtituloDelCobro(
+    terminalsUnavailable: Boolean,
+    metodosHabilitados: Boolean,
+    soloEfectivoSinRed: Boolean,
+    /** na8a23ce (0199df): el aparato sin red ([PaymentFlowViewModel.sinRedEnElCobro]): la terminal necesita internet. */
+    sinRed: Boolean = false,
+): String = when {
     soloEfectivoSinRed && metodosHabilitados -> "Cobra en efectivo"
+    // Codex r3 #3: también con los métodos apagados (cuenta de tarjetas de regalo sin red): nunca «Envía el cobro a una terminal».
+    sinRed -> SUBTITULO_SIN_RED
     terminalsUnavailable && metodosHabilitados -> "Cobra en efectivo o conecta una terminal"
     else -> "Envía el cobro a una terminal para procesar el pago"
 }
+
+/**
+ * na8a23ce (0199df): sin red, «Envía el cobro a una terminal» mandaba a algo que no se puede. Offline es un estado normal: se dice. No
+ * promete efectivo (Codex r1 #3 y r2 #6): un cupón, un descuento con aprobación o una cortesía sin permiso no se cobran sin red, y el
+ * efectivo ya dice su motivo al tocarlo.
+ */
+internal const val SUBTITULO_SIN_RED = "Sin conexión: el cobro con terminal necesita internet"
