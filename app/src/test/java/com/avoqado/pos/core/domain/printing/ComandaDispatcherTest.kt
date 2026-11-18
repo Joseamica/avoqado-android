@@ -1397,7 +1397,12 @@ class ComandaDispatcherTest {
             transporteLan, tabla,
             mockk<ClienteDeComandas> { coEvery { entregar(pantallaBarra, any(), any()) } answers { pantallaContesta } },
         )
-        val despachador = despachadorConWifi(wifi)
+        /** La ronda insiste lo de siempre (`despacharEnFondo` no acota los intentos), pero sin esperas reales. */
+        val despachador = ComandaDispatcher(
+            printConfigRepository,
+            ReintentoDeComanda(comandaPrinter, esperar = {}, reporteDeComandas = mockk<ReporteDeComandas>(relaxed = true)),
+            printerService, cola, wifi,
+        )
         private val replay = ReplayDeEntregasKds(
             tabla, wifi, despachador, cola,
             mockk<ComandasPendientesStore>(relaxed = true) {
@@ -1433,6 +1438,19 @@ class ComandaDispatcherTest {
             ) as EstadoDeComanda.NoSalio
             libreta.value = listOf(estado)
             return estado
+        }
+
+        /**
+         * Una ronda de Mesas, el camino del ensayo: los tiempos en fondo, uno tras otro. Como `avisarComandaDeRonda`, el `NoSalio`
+         * con trabajo va a la libreta ANTES de que el despacho regrese.
+         */
+        fun despacharRonda(pedidos: List<ComandaDispatcher.Pedido>) = runBlocking {
+            withTimeout(5_000) {
+                despachador.despacharEnFondo(
+                    venueId = "venue-1", orderNumber = "1234", pedidos = pedidos, servidorLaTiene = true, origenDelFolio = "round:rk",
+                    alCambiarEstado = { e -> if (e is EstadoDeComanda.NoSalio && e.trabajo != null) libreta.value = libreta.value + e },
+                ).join()
+            }
         }
 
         /** El reloj de la libreta (`ReplayDeComandasPendientes`): reimprime con `reintentar` y, si salió, la suelta. */
@@ -1473,6 +1491,40 @@ class ComandaDispatcherTest {
 
         assertEquals(listOf("st_barra" to false), cocina.hojas)
         assertTrue("la tarjeta llegó a la pantalla: la fila se borra", cocina.tabla.filas.isEmpty())
+    }
+
+    /**
+     * El ensayo fue con rondas de Mesas (`despacharEnFondo`). Dos tiempos a la misma estación: «Inmediato» sale en papel y
+     * «Principales» (retenido) sólo va a la pantalla. El segundo regresa antes de `cerrarLasDecididas` (no hay papel que decidir)
+     * y su fila sólo se suelta con el `soltar(guardadasAntes)` del final: no lleva papel, así que tampoco sale.
+     */
+    @Test
+    fun `P1 D28 una ronda de Mesas de dos tiempos con impresora y pantalla saca UNA sola hoja y la pantalla recibe los dos`() = runBlocking {
+        val cocina = CocinaDelEnsayo(barraConImpresoraYPantalla)
+        val tacoPrincipal = taco.copy(
+            serviceCourse = com.avoqado.pos.pos.data.model.ServiceCourseSnapshot("mains", "Principales", "STANDARD", preparationVersion = 1),
+        )
+        cocina.despacharRonda(
+            listOf(
+                ComandaDispatcher.Pedido(listOf(cafePorProducto), "Mesa 5", etiquetaPantalla = "Mesa 5", omitirSinComanda = true),
+                ComandaDispatcher.Pedido(listOf(tacoPrincipal), "Mesa 5 · Principales", curso = "Principales", etiquetaPantalla = "Mesa 5", omitirSinComanda = true),
+            ),
+        )
+        assertEquals("sólo el tiempo con papel va a la libreta", 1, cocina.libreta.value.size)
+        assertTrue("las dos filas quedan soltadas para el replay", cocina.tabla.filas.values.all { it.soltadaEnMillis != null })
+        cocina.tic() // la libreta la tiene
+
+        cocina.impresoraPrendida = true
+        cocina.laLibretaReimprime(cocina.libreta.value.single())
+        cocina.tic()
+        cocina.tic()
+        assertEquals("una sola hoja de Barra, la de la libreta, sin encabezado de respaldo", listOf("st_barra" to false), cocina.hojas)
+        assertEquals(setOf("round:rk:st_barra|oi_1", "round:rk:st_barra|oi_2"), cocina.tabla.filas.keys.toSet())
+
+        cocina.pantallaContesta = true
+        cocina.tic()
+        assertEquals(listOf("st_barra" to false), cocina.hojas)
+        assertTrue("las dos tarjetas llegaron a la pantalla", cocina.tabla.filas.isEmpty())
     }
 
     /** D28 no toca «sólo pantalla»: su papel de respaldo vive en la fila, y el replay lo saca si la libreta no lo tiene. */
