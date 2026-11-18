@@ -404,12 +404,9 @@ class CashPaymentRepository @Inject constructor(
     fun observarSinConfirmar(): Flow<List<PendingPaymentEntity>> =
         combine(pendingPaymentDao.observarEnVuelo(), reservasDeEsteProceso.cambios) { filas, _ ->
             val venueId = secureStorage.venueId
-            // Codex 0199df r1 #4a: el efectivo puro que el barrido da por cobrado ([seDaPorCobrada]) no espera a una persona. Ahora que la
-            // lista se recalcula al soltar la reserva, salía en la hoja antes del barrido y «Conservar para revisión» lo retenía.
-            filas.filter {
-                venueId != null && it.venueId == venueId && it.id !in reservasDeEsteProceso && RevisionCanceladoCero.mostrarFallido(it) &&
-                    !seDaPorCobrada(it, venueId)
-            }
+            // Codex 0199df r1 #4a NO se tomó: esconder aquí el efectivo que el barrido da por cobrado cambiaba la regla de D2 v7 (la
+            // decisión «No se cobró» de un gerente gana al barrido; SalidaDelApartadoRoomTest). Antes ya salía en cuanto cambiaba la tabla.
+            filas.filter { it.venueId == venueId && it.id !in reservasDeEsteProceso && RevisionCanceladoCero.mostrarFallido(it) }
         }
 
     /** Manager confirmation cannot reconstruct a lost amount or release a price hold. */
@@ -458,8 +455,6 @@ class CashPaymentRepository @Inject constructor(
         val venue=secureStorage.venueId ?: return false
         val row=pendingPaymentDao.findForVenue(venue,id) ?: return false
         if(row.syncStatus!="EN_VUELO") return false
-        // Codex 0199df r1 #4a: el apartado sin dueño que el barrido da por cobrado no se retiene (su venta sí entró); lo sube el barrido.
-        if(id !in reservasDeEsteProceso && seDaPorCobrada(row,venue)) return false
         val reason=if(ConciliacionDelCobro.leerCaptura(row.q15CaptureJson,venue,id)==null)
             ConciliacionDelCobro.CAPTURA_SIN_EVIDENCIA else ConciliacionDelCobro.RESULTADO_NO_COMPROBADO
         pendingPaymentDao.retenerPagoQ15(venue,id,reason,System.currentTimeMillis())

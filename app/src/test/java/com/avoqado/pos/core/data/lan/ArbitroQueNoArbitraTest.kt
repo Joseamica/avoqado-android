@@ -116,7 +116,7 @@ class ArbitroQueNoArbitraTest {
     }
 
     @Test
-    fun `cable - sólo la caja que no arbitra manda arbitra false; la que arbitra no cambia ni un byte y lo viejo se lee igual`() = runTest {
+    fun `cable - sólo la caja que no arbitra manda arbitra false, la que arbitra no cambia ni un byte y lo viejo se lee igual`() = runTest {
         fun pedido() = LeaseProtocol.encode(LeaseRequest(op = LeaseProtocol.OP_ESTADO, deviceId = "A", staffName = "Ana", gen = 1, seq = 1,
             aperturas = listOf(WireApertura("a1", "M2"))))
         val noArbitra = queNoArbitra("X").respondTo(pedido())

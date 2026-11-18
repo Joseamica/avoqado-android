@@ -6,7 +6,6 @@ import com.avoqado.pos.core.data.local.database.PendingPaymentEntity
 import com.avoqado.pos.payment.data.CashPaymentRepository
 import com.avoqado.pos.payment.data.model.CreateOrderRequest
 import com.avoqado.pos.payment.domain.TenderTypeOption
-import io.mockk.coVerify
 import io.mockk.coEvery
 import io.mockk.every
 import io.mockk.mockk
@@ -17,7 +16,6 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
 import org.junit.Test
 
 /**
@@ -70,17 +68,6 @@ class CobroSoltadoSeVeEnLaHojaTest {
         repo.olvidarReservaEnMemoria("llave-1")
         reservar("llave-2")
         assertEquals(listOf("llave-1"), hoja.value.map { it.id })
-    }
-
-    @Test
-    fun `P1 Codex r1 4a el efectivo puro sin dueño no se ofrece en la hoja ni se retiene - lo sube el barrido`() = runTest(UnconfinedTestDispatcher()) {
-        val hoja = repo.observarSinConfirmar().stateIn(backgroundScope, SharingStarted.Eagerly, emptyList())
-        reservar("efectivo", tipo = null)
-        repo.olvidarReservaEnMemoria("efectivo") // la pantalla del cobro se destruyó sin que la cajera decidiera
-
-        assertEquals("el barrido lo da por cobrado: no espera a una persona", emptyList<String>(), hoja.value.map { it.id })
-        assertFalse(repo.descartarPorqueNoSeCobro("efectivo"))
-        coVerify(exactly = 0) { dao.retenerPagoQ15(any(), "efectivo", any(), any()) }
     }
 
     private companion object { const val VENUE = "venue-1" }
