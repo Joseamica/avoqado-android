@@ -36,7 +36,8 @@ import org.junit.Test
  */
 class ReplayDeEntregasKdsTest {
 
-    private val dao = mockk<EntregasKdsPendientesDao>(relaxed = true)
+    /** nab17320: el replay pregunta si la fila sigue antes de imprimir; por omisión sigue (las pruebas no la borran por fuera). */
+    private val dao = mockk<EntregasKdsPendientesDao>(relaxed = true) { coEvery { existe(any()) } returns true }
     private val entregaPorWifi = mockk<EntregaPorWifi>()
     /**
      * Estricto: el replay refresca la config POR SU CUENTA (`refrescarConfig`, para revalidar la sucursal antes y después)
@@ -421,5 +422,99 @@ class ReplayDeEntregasKdsTest {
         coVerify(exactly = 1) { despachador.reintentar(any(), any(), any()) }
         coVerify(exactly = 1) { cola.enqueue("venue-1", "KDS_TICKET_MARK", any(), any(), false) }
         coVerify(exactly = 3) { dao.borrar("sale:vieja:st_barra|") }
+    }
+
+    // MARK: - nab17320: «Ya la canté» a media pasada
+
+    /**
+     * nab17320 (tarjeta de la nube, 17-nov): la pasada lee sus filas AL EMPEZAR. Mientras empuja la fila B (hasta 3 s), la
+     * cajera toca «Ya la canté» sobre la comanda A: la libreta la suelta y `cerrarPorPapel` borra su fila. La pasada sigue
+     * con su copia vieja de A: `laLibretaLoTiene(A)` ya da falso y la manda a `reintentar` — sale el papel de una comanda
+     * que la cocina ya tiene cantada. Una fila que ya no está en la tabla no se imprime.
+     */
+    @Test
+    fun `P1 una comanda cantada con Ya la cante mientras la pasada procesa otra fila no se imprime`() = runTest {
+        val plan = TicketPlan("st_barra", false, listOf(ConsolidatedLine("Café", 1, emptyList(), null, listOf("oi_a"))))
+        val trabajoA = trabajo.copy(orderNumber = "A-1", planes = listOf(plan))
+        val enLibreta = MutableStateFlow(listOf(EstadoDeComanda.NoSalio(listOf("Barra"), "offline", "A-1", trabajoA)))
+        every { pendientes.pendiente } returns MutableStateFlow(enLibreta.value.first())
+        every { pendientes.pendientes } returns enLibreta
+        val filaA = fila("sale:a:st_barra", 0).copy(
+            entregaId = "sale:a:st_barra|oi_a",
+            trabajoJson = Json.encodeToString(TrabajoPendiente.serializer(), trabajoA),
+        )
+        val filaB = fila("sale:b:st_barra", 0)
+        val enTabla = mutableListOf(filaB, filaA)
+        coEvery { dao.delVenue("venue-1") } coAnswers { enTabla.toList() }
+        coEvery { dao.borrar(any()) } coAnswers { if (enTabla.removeAll { it.entregaId == firstArg<String>() }) 1 else 0 }
+        coEvery { dao.existe(any()) } coAnswers { enTabla.any { it.entregaId == firstArg<String>() } }
+        // La fila B es reciente: se empuja a la pantalla. En esos segundos la cajera canta A: la libreta la suelta y su
+        // fila se borra (lo que hacen `yaLaCante` y `cerrarPorPapel`).
+        coEvery { entregaPorWifi.empujar(match { it.sourceKey == "sale:b:st_barra" }, any()) } coAnswers {
+            enLibreta.value = emptyList()
+            enTabla.removeAll { it.entregaId == filaA.entregaId }
+            true
+        }
+        coEvery { entregaPorWifi.empujar(match { it.sourceKey == "sale:a:st_barra" }, any()) } returns false
+        coEvery { despachador.reintentar(any(), any(), false) } returns EstadoDeComanda.Salio
+
+        replay.reproducirAlAbrir("venue-1", ahora = 60_000)
+
+        coVerify(exactly = 0) { despachador.reintentar(match { it.orderNumber == "A-1" }, any(), any()) }
+    }
+
+    /**
+     * nab17320, el hueco: «Ya la canté» suelta la libreta al instante, pero el borrado de la fila corre en otro hilo. Si la pasada
+     * llega en ese hueco, la libreta ya no la tiene y la fila todavía existe: tampoco se imprime mientras su cierre siga en curso.
+     */
+    @Test
+    fun `P1 una comanda cuyo Ya la cante sigue borrando su fila no se imprime`() = runTest {
+        val plan = TicketPlan("st_barra", false, listOf(ConsolidatedLine("Café", 1, emptyList(), null, listOf("oi_a"))))
+        val trabajoA = trabajo.copy(orderNumber = "A-1", planes = listOf(plan))
+        every { pendientes.seEstaCerrando(match { it.orderNumber == "A-1" }) } returns true
+        coEvery { dao.delVenue("venue-1") } returns listOf(
+            fila("sale:a:st_barra", 0).copy(trabajoJson = Json.encodeToString(TrabajoPendiente.serializer(), trabajoA)),
+        )
+        coEvery { entregaPorWifi.empujar(any(), any()) } returns false
+        coEvery { despachador.reintentar(any(), any(), false) } returns EstadoDeComanda.Salio
+
+        replay.reproducirAlAbrir("venue-1", ahora = 60_000)
+
+        coVerify(exactly = 0) { despachador.reintentar(any(), any(), any()) }
+        coVerify(exactly = 0) { dao.borrar(any()) } // la borra el cierre de «Ya la canté», no el replay
+    }
+
+    /** Codex r2 (R1): la consulta nueva a la tabla es una espera; si en ella cambia la sucursal, no se imprime con la config de la otra. */
+    @Test
+    fun `P1 si la sucursal cambia mientras se revisa la tabla no se reimprime`() = runTest {
+        coEvery { dao.delVenue("venue-1") } returns listOf(fila("sale:vieja:st_barra", 0))
+        coEvery { dao.existe(any()) } coAnswers { sucursalVigente = "venue-2"; true }
+        coEvery { despachador.reintentar(any(), any(), false) } returns EstadoDeComanda.Salio
+
+        replay.reproducirAlAbrir("venue-1", ahora = 20 * 60_000)
+
+        coVerify(exactly = 0) { despachador.reintentar(any(), any(), any()) }
+        coVerify(exactly = 0) { dao.borrar(any()) }
+    }
+
+    /**
+     * Codex r4: revisar e imprimir se hace con el TURNO que también toma el borrado de «Ya la canté» ([CandadoDeCierres]): mientras
+     * el replay imprime, el cierre no puede borrar la fila ni quitar su marca en medio.
+     */
+    @Test
+    fun `P1 el replay revisa e imprime con el turno que comparte con Ya la cante`() = runTest {
+        val candado = CandadoDeCierres()
+        val conTurno = ReplayDeEntregasKds(dao, entregaPorWifi, despachador, cola, pendientes, secureStorage, transporte, candado)
+        coEvery { dao.delVenue("venue-1") } returns listOf(fila("sale:vieja:st_barra", 0))
+        var turnoTomadoAlImprimir: Boolean? = null
+        coEvery { despachador.reintentar(any(), any(), false) } coAnswers {
+            turnoTomadoAlImprimir = candado.turno.isLocked
+            EstadoDeComanda.Salio
+        }
+
+        conTurno.reproducirAlAbrir("venue-1", ahora = 20 * 60_000)
+
+        assertEquals(true, turnoTomadoAlImprimir)
+        assertEquals(false, candado.turno.isLocked)
     }
 }

@@ -1557,35 +1557,9 @@ class TableOrderViewModel @Inject constructor(
         roundKey: String,
     ) {
         if (refreshFloor) viewModelScope.launch { repository.refresh(vId) }
-        // Comandas route catalog products only — custom amounts ride to the check but never to kitchen.
-        val kitchenLines = com.avoqado.pos.tables.data.stampTableRoundLines(lines, roundKey)
-            .filter { it.item.type is CartItemType.ProductItem }
-        // One comanda batch per course so each ticket reads "Mesa 8 · Aperitivos" like the single-course flow.
-        val pedidos = kitchenLines.groupBy { com.avoqado.pos.tables.data.kitchenCourseLabel(it.item.serviceCourse, it.course) }.map { (course, courseLines) ->
-            com.avoqado.pos.core.domain.printing.ComandaDispatcher.Pedido(
-                lines = courseLines.map { line ->
-                    RoutableItem(
-                        orderItemId = line.item.id,
-                        productId = (line.item.type as? CartItemType.ProductItem)?.productId,
-                        categoryId = line.item.categoryId,
-                        productName = line.item.name,
-                        quantity = line.item.quantity,
-                        modifiers = line.item.selectedModifiers.map { it.modifierName },
-                        notes = line.item.itemNote,
-                        comboName = line.item.promotionName,
-                        serviceCourse = line.item.serviceCourse,
-                        externalId = line.externalId,
-                        orderPromotionId = line.item.promotionInstanceId,
-                    )
-                },
-                orderType = "Mesa ${session.tableNumber}" + (course?.let { " · $it" } ?: ""),
-                // KDS 3.6: la pantalla junta los cursos en una tarjeta — «Mesa 8» arriba y el tiempo en cada platillo.
-                curso = course,
-                etiquetaPantalla = "Mesa ${session.tableNumber}",
-                configCongelada = draftRouting[roundKey],
-                omitirSinComanda = true, // «No lleva comanda»: la ronda es una venta del POS.
-            )
-        }
+        // Comandas route catalog products only — custom amounts ride to the check but never to kitchen. One batch per course so
+        // each ticket reads "Mesa 8 · Aperitivos" (el mismo armado que «Volver a imprimir»).
+        val pedidos = com.avoqado.pos.tables.data.pedidosDeLaRonda(lines, roundKey, session.tableNumber, draftRouting[roundKey])
         if (pedidos.isEmpty()) return
         comandaDispatcher.despacharEnFondo(
             venueId = vId,
@@ -2249,6 +2223,15 @@ class TableOrderViewModel @Inject constructor(
         else -> "Revisa que la impresora esté encendida y en la misma red."
     }
 
+    /** na13e014: la llave de la ronda de un renglón enviado sin red (`sync:<ronda>:<i>`), o `null` si no es de la cola. */
+    private fun rondaDe(externalId: String?): String? =
+        externalId?.takeIf { it.startsWith("sync:") }?.split(':')?.getOrNull(1)
+
+    /** na13e014: ¿el SERVIDOR ya rechazó esa ronda? Si no se puede leer, no se da por rechazada (se reimprime, como lo pidió). */
+    private suspend fun rondaRechazada(llave: String): Boolean =
+        runCatching { syncOutbox.observarEstado(llave).first() }.getOrNull() ==
+            com.avoqado.pos.core.data.local.database.SyncIntentEntity.STATUS_REJECTED
+
     /** La reimpresión tarda (timeout de impresora ~10 s): la pantalla lo dice. */
     private val _isReprinting = MutableStateFlow(false)
     val isReprinting: StateFlow<Boolean> = _isReprinting.asStateFlow()
@@ -2258,13 +2241,30 @@ class TableOrderViewModel @Inject constructor(
         val session = tableSession.current() ?: return
         val vId = venueId ?: return
         val sentItems = _check.value?.items?.filter { it.productId != null } ?: emptyList()
-        if (sentItems.isEmpty()) {
+        // na13e014 (nube, 17-nov): sin red, la ronda que sigue en la cola no está en la cuenta del servidor (y en una mesa abierta
+        // sin red no hay cuenta): «Volver a imprimir» se la saltaba. Se agregan las rondas en cola de ESTA mesa que la cuenta aún
+        // no trae (por su llave `sync:<ronda>:<i>`), ruteadas como su primera impresión.
+        val enLaCuenta = _check.value?.items?.mapNotNull { it.externalId }?.toSet().orEmpty()
+        val candidatasEnCola = _queued.value.filter { line ->
+            line.item.type is CartItemType.ProductItem && line.externalId !in enLaCuenta &&
+                // Como el papel de su primer envío: un tiempo moderno retenido (STANDARD) no sale en papel hasta marcharlo.
+                !(line.item.serviceCourse?.preparationVersion == 1 && line.item.serviceCourse?.kind == "STANDARD")
+        }
+        if (sentItems.isEmpty() && candidatasEnCola.isEmpty()) {
             showMessage("No hay artículos enviados para reimprimir")
             return
         }
         viewModelScope.launch {
             _isReprinting.value = true
             printConfigRepository.refresh(vId)
+            // Codex r1 (R3), r2 y r3: una ronda que el SERVIDOR ya rechazó no se vuelve a mandar a cocina (el gerente la revisa en
+            // la cola). Se pregunta después del refresco de impresoras y otra vez justo antes de cada hoja (abajo).
+            val enCola = candidatasEnCola.filter { line -> rondaDe(line.externalId)?.let { !rondaRechazada(it) } ?: true }
+            if (sentItems.isEmpty() && enCola.isEmpty()) {
+                _isReprinting.value = false
+                showMessage("No hay artículos enviados para reimprimir")
+                return@launch
+            }
             val config = printConfigRepository.getCurrentConfig()
             // Sin estaciones NO se aborta: el motor de ruteo es fail-open (los
             // items caen en un ticket "SIN ESTACIÓN") y ComandaPrinter usa la
@@ -2287,9 +2287,10 @@ class TableOrderViewModel @Inject constructor(
             var sinImpresora = 0
             var ultimoError: String? = null
             var sinComanda = 0
+            var rechazadas = 0 // na13e014 (Codex r4): renglones de una ronda que el SERVIDOR rechazó mientras se reimprimía
             try {
-                sentItems.groupBy { it.course }.forEach { (course, courseItems) ->
-                    val routable = courseItems.map { item ->
+                val deLaCuenta = sentItems.groupBy { it.course }.map { (course, courseItems) ->
+                    course to courseItems.map { item ->
                         RoutableItem(
                             orderItemId = item.id,
                             productId = item.productId,
@@ -2302,25 +2303,44 @@ class TableOrderViewModel @Inject constructor(
                             notes = item.notes,
                         )
                     }
-                    val ruteo = PrintRoutingMapper.rutear(routable, config, omitirSinComanda = true)
+                }
+                // Por RONDA y tiempo, como salió su primer papel (Codex r5): dos rondas con el mismo platillo no se juntan en un renglón,
+                // así el rechazo de una nunca se lleva el renglón válido de la otra.
+                val deLaCola = enCola.groupBy { rondaDe(it.externalId) to com.avoqado.pos.tables.data.kitchenCourseLabel(it.item.serviceCourse, it.course) }
+                    .map { (llave, lines) -> llave.second to lines.map { com.avoqado.pos.tables.data.renglonDeCocinaDeRonda(it) } }
+                (deLaCuenta + deLaCola).forEach { (course, delGrupo) ->
+                    val deLaColaEnGrupo = delGrupo.any { rondaDe(it.externalId) != null }
+                    val ruteo = PrintRoutingMapper.rutear(delGrupo, config, omitirSinComanda = true)
                     sinComanda += ruteo.omitidasSinComanda
-                    if (ruteo.plans.isEmpty()) return@forEach
-                    val r = comandaPrinter.printComandas(
-                        plans = ruteo.plans,
-                        config = config,
-                        orderNumber = session.orderNumber,
-                        orderType = "Mesa ${session.tableNumber}" + (course?.let { " · $it" } ?: "") + " · REIMPRESIÓN",
-                    )
-                    intentadas += r.attempted
-                    impresas += r.printed
-                    sinImpresora += r.skippedNoPrinter
-                    r.lastError?.let { ultimoError = it }
+                    // Lo de la cuenta sale como siempre (todas sus hojas juntas). Lo de una ronda en cola, hoja por hoja (Codex r3 R2 y
+                    // r4 #2): el rechazo de su ronda se pregunta justo antes de CADA hoja; la anterior pudo tardar.
+                    val tandas = if (deLaColaEnGrupo) ruteo.plans.map { listOf(it) } else listOf(ruteo.plans)
+                    // El grupo de la cola es de UNA ronda: antes de cada hoja se pregunta si el SERVIDOR ya la rechazó.
+                    val rondaDelGrupo = if (deLaColaEnGrupo) delGrupo.firstNotNullOfOrNull { rondaDe(it.externalId) } else null
+                    for (tanda in tandas) {
+                        if (rondaDelGrupo != null && rondaRechazada(rondaDelGrupo)) { rechazadas++; continue }
+                        val planes = tanda
+                        if (planes.isEmpty()) continue
+                        val r = comandaPrinter.printComandas(
+                            plans = planes,
+                            config = config,
+                            orderNumber = session.orderNumber,
+                            orderType = "Mesa ${session.tableNumber}" + (course?.let { " · $it" } ?: "") + " · REIMPRESIÓN",
+                        )
+                        intentadas += r.attempted
+                        impresas += r.printed
+                        sinImpresora += r.skippedNoPrinter
+                        r.lastError?.let { ultimoError = it }
+                    }
                 }
             } finally {
                 _isReprinting.value = false
             }
 
             when {
+                // Codex r4: todo lo que quedaba era de una ronda que el SERVIDOR rechazó a media reimpresión. No es la impresora.
+                intentadas == 0 && sinImpresora == 0 && rechazadas > 0 ->
+                    showMessage("No hay artículos enviados para reimprimir")
                 // «No lleva comanda»: todo lo enviado es de estaciones sin comanda. No es un error.
                 intentadas == 0 && sinImpresora == 0 && sinComanda > 0 ->
                     showMessage(com.avoqado.pos.printing.data.EstadoDeComanda.SinComanda.MENSAJE)

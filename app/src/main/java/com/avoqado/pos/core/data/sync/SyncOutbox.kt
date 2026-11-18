@@ -160,6 +160,47 @@ class SyncOutbox @Inject constructor(
     private var connectivityJob: Job? = null
     private var timerJob: Job? = null
 
+    /**
+     * na31f0d7 (nube, 17-nov; ensayo B1 del 16-nov): el reintento CORTO tras un `RETRY` del servidor. Antes, un «reintenta»
+     * dejaba la fila esperando «el próximo disparador»; al volver la red ya no hay otro (la reconexión ya pasó y no se encola
+     * nada nuevo), así que el siguiente era [SAFETY_TIMER_MS] (5 min). Caso real: la pantalla de cocina marca LISTO sin red y,
+     * al volver, el servidor contesta `PREPARATION_DEPENDENCY_PENDING` porque la comanda de la otra caja aún no sube: el LISTO
+     * llegó ~4 min tarde. Ahora: UN solo reintento programado a la vez (nunca se apilan), 15 s → 30 s → 60 s de tope, y
+     * vuelve a 15 s cuando una corrida termina sin `RETRY`. Sólo corre con red y en la misma sucursal (lo revisa [replayNow]).
+     * No cambia el orden, las barreras ni lo que se manda: es un disparador más, como el reloj.
+     */
+    private var reintentoCorto: Job? = null
+    @Volatile private var esperaCortaMs = REINTENTO_CORTO_MIN_MS
+    /** Codex r2/r3 R4: el único lugar del reintento corto, su sucursal y su vida se cambian bajo este candado (y en [stop]). */
+    private val cerrojoDelReintento = Any()
+    /** Sube en cada [stop]: un reintento de una vida anterior (otra sucursal o sesión) ni corre ni ocupa el lugar. */
+    private var vidaDelReintento = 0L
+
+    private fun programarReintentoCorto(venueId: String) {
+        synchronized(cerrojoDelReintento) {
+            // Una corrida de la sucursal anterior que termina después de `stop()` no ocupa el lugar de la nueva; y nunca dos.
+            if (activeVenueId != venueId || reintentoCorto?.isActive == true) return
+            // Codex r4: una sesión vencida no siempre pasa por `stop()`; sin sesión no se insiste (el reloj de 5 min sigue igual).
+            if (!secureStorage.isLoggedIn) return
+            val vida = vidaDelReintento
+            val espera = esperaCortaMs
+            esperaCortaMs = (espera * 2).coerceAtMost(REINTENTO_CORTO_MAX_MS)
+            reintentoCorto = scope.launch {
+                delay(espera)
+                val sigue = synchronized(cerrojoDelReintento) {
+                    (vidaDelReintento == vida && activeVenueId == venueId && secureStorage.isLoggedIn).also {
+                        // Se suelta el lugar ANTES de correr: si esta corrida vuelve a recibir RETRY, programa el siguiente.
+                        if (it && reintentoCorto === coroutineContext[Job]) reintentoCorto = null
+                    }
+                }
+                if (sigue) {
+                    Log.d(TAG, "🔁 Reintento corto del outbox tras un RETRY (${espera / 1000} s)")
+                    replayNow(venueId)
+                }
+            }
+        }
+    }
+
     /** Identidad estable del dispositivo para el server (y la partición de folios). */
     val deviceId: String by lazy {
         prefs.getString(KEY_DEVICE_ID, null) ?: UUID.randomUUID().toString().also {
@@ -259,6 +300,12 @@ class SyncOutbox @Inject constructor(
         activeVenueId = null
         connectivityJob?.cancel()
         timerJob?.cancel()
+        synchronized(cerrojoDelReintento) {
+            vidaDelReintento++
+            reintentoCorto?.cancel()
+            reintentoCorto = null
+            esperaCortaMs = REINTENTO_CORTO_MIN_MS
+        }
     }
 
     // MARK: - Enqueue (write-ahead)
@@ -496,6 +543,7 @@ class SyncOutbox @Inject constructor(
     /** @return cuántos intents resolvió el servidor en esta corrida (lo usan las vueltas de `PaymentSyncService.syncNow`). */
     suspend fun replayNow(venueId: String): Int {
         var resueltos = 0
+        var huboReintenta = false // na31f0d7: alguna corrida del carril cortó por un RETRY (o un tropiezo local)
         if (
             activeVenueId != venueId ||
             !connectivityMonitor.isConnected.value ||
@@ -571,6 +619,7 @@ class SyncOutbox @Inject constructor(
                     val batch = if(firstUnknown >= 0) antesDeCaja.take(firstUnknown) else antesDeCaja
                     if (batch.isEmpty()) {
                         Log.w(TAG, "⏸️ El outbox se detiene en el primer PAY_CASH: la caja aún no llega al servidor")
+                        huboReintenta = true // na31f0d7 (Codex r2 #5): cuando la caja llegue, lo de atrás no espera 5 min
                         break
                     }
 
@@ -598,6 +647,7 @@ class SyncOutbox @Inject constructor(
                         // Error de red/5xx: los intents quedan PENDING y el próximo
                         // trigger reintenta (idempotente). Jamás se pierden.
                         Log.w(TAG, "⚠️ Replay interrumpido (${batch.size} pendientes): ${e.message}")
+                        huboReintenta = true // na31f0d7 (Codex r1 #7): con la red «arriba» no hay otra reconexión que lo dispare
                         break
                     }
 
@@ -659,17 +709,20 @@ class SyncOutbox @Inject constructor(
                     }
                     refreshCounts(venueId)
                     if (!sawRetry) Log.d(TAG, "✅ Replay de ${batch.size} intents aplicado")
-                    if (sawRetry) break // no hot-loop sobre el mismo PENDING
+                    if (sawRetry) { huboReintenta = true; break } // no hot-loop sobre el mismo PENDING
                     if (response.data.size != batch.size) break // partial response must not spin
                     if (batch.size < leidos.size) {
                         // El lote venía recortado por la barrera del cajón o por una ronda en vuelo. Volver al
                         // `while` lo re-leería en caliente.
                         Log.w(TAG, "⏸️ Quedan ${leidos.size - batch.size} intents esperando (caja o ronda en vuelo)")
+                        huboReintenta = true // na31f0d7 (Codex r2 #5): lo que quedó detrás de la barrera no espera al reloj de 5 min
                         break
                     }
                 }
             }
         }
+        // na31f0d7: un RETRY no espera al reloj de 5 min. Una corrida que terminó sin RETRY regresa la espera a la mínima.
+        if (huboReintenta) programarReintentoCorto(venueId) else if (activeVenueId == venueId) esperaCortaMs = REINTENTO_CORTO_MIN_MS
         return resueltos
     }
 
@@ -921,6 +974,9 @@ class SyncOutbox @Inject constructor(
         private const val KEY_DEVICE_ID = "sync_device_id"
         private const val BATCH_SIZE = 50
         private const val SAFETY_TIMER_MS = 5L * 60 * 1000
+        /** na31f0d7: el reintento corto tras un RETRY empieza en 15 s y se duplica hasta 60 s. */
+        internal const val REINTENTO_CORTO_MIN_MS = 15_000L
+        internal const val REINTENTO_CORTO_MAX_MS = 60_000L
         private const val ACKED_TTL_MS = 7L * 24 * 60 * 60 * 1000
     }
 }

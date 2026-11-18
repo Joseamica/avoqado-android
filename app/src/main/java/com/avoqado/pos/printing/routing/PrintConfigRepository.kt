@@ -76,8 +76,22 @@ class PrintConfigRepository @Inject constructor(
      * cache. Sólo se queda vacío si este dispositivo jamás vio la config.
      * Mismo patrón cache-first del Corte A (mesas/productos/menús).
      */
-    suspend fun refresh(venueId: String) {
-        synchronized(candado) { ultimoVenuePedido = venueId }
+    suspend fun refresh(venueId: String) = descargar(venueId, reclamar = true)
+
+    /**
+     * @param reclamar `true` = quien llama pide ESTA sucursal ahora (se vuelve la última pedida). `false` = la descarga de fondo
+     *   de [refreshConTope]: sólo sigue si su sucursal SIGUE siendo la última pedida, y nunca se vuelve a poner como tal
+     *   (na27865a, Codex r2 #1: en A → B → A, la descarga tardía de B se ponía como «la última» y, sin red, hidrataba B encima de A).
+     */
+    private suspend fun descargar(venueId: String, reclamar: Boolean) {
+        val vigente = synchronized(candado) {
+            if (reclamar) ultimoVenuePedido = venueId
+            ultimoVenuePedido == venueId
+        }
+        if (!vigente) {
+            Log.i(TAG, "⏭️ Descarga de fondo de $venueId: ya se pidió otra sucursal — no se descarga")
+            return
+        }
         try {
             val response = apiService.getPrintConfig(venueId)
             // La copia en disco es POR SUCURSAL: se guarda aunque la respuesta llegue tarde.
@@ -128,7 +142,10 @@ class PrintConfigRepository @Inject constructor(
             venueDeLaConfig != venueId
         }
         if (_config.value.stations.isEmpty() || deOtra) hydrateFromCache(venueId)
-        val enCurso = fondo.launch { refresh(venueId) }
+        // na27865a (Codex r1 #3): si mientras se leía el disco ya se pidió otra sucursal, éste ya no es el último pedido: no se
+        // descarga. `refresh` volvería a ponerse como el último pedido y, sin red, hidrataría la anterior encima de la vigente.
+        if (synchronized(candado) { ultimoVenuePedido != venueId }) return
+        val enCurso = fondo.launch { descargar(venueId, reclamar = false) }
         withTimeoutOrNull(topeMs) { enCurso.join() }
     }
 
@@ -142,7 +159,11 @@ class PrintConfigRepository @Inject constructor(
                 .onFailure { e -> Log.e(TAG, "❌ Cache de print config corrupto: ${e.message}") }
                 .getOrNull()
         }
-        synchronized(candado) {
+        val publicada = synchronized(candado) {
+            // na27865a (nube, 17-nov): la lectura del disco suspende (Room en IO). Si mientras tanto se pidió OTRA sucursal
+            // (A → B → A rápido), la copia de la anterior ya no se publica: pisaría la config de la vigente y sus comandas
+            // saldrían por las estaciones e impresoras de la otra. Mismo CAS que la respuesta tardía de [refresh].
+            if (ultimoVenuePedido != venueId) return@synchronized false
             if (blob != null) {
                 _config.value = blob
                 venueDeLaConfig = venueId
@@ -152,6 +173,11 @@ class PrintConfigRepository @Inject constructor(
                 _config.value = PrintConfig()
                 venueDeLaConfig = venueId
             }
+            true
+        }
+        if (!publicada) {
+            Log.i(TAG, "⏭️ Copia en disco de $venueId llegó tarde: ya se pidió la de otra sucursal — no se aplica")
+            return
         }
         if (blob != null) {
             Log.d(TAG, "🗂️ Print config hidratada del cache: ${blob.stations.size} estación(es) (hace ${cached?.ageMinutes} min)")

@@ -589,6 +589,8 @@ fun TableOrderScreen(
                             PanelTab.ACCIONES -> TableActionsPanel(
                                 hasPending = pendingLines.isNotEmpty(),
                                 hasSent = !check?.items.isNullOrEmpty(),
+                                // na13e014: sin red, la ronda que sigue en la cola también se puede volver a imprimir.
+                                puedeReimprimir = !check?.items.isNullOrEmpty() || queuedLines.isNotEmpty(),
                                 printBlockedReason = preCuentaBlockedReason,
                                 // Separar SÍ funciona sin red: las líneas enviadas
                                 // offline se referencian por su externalId. Sin esto
@@ -782,6 +784,8 @@ fun TableOrderScreen(
                             PanelTab.ACCIONES -> TableActionsPanel(
                                 hasPending = pendingLines.isNotEmpty(),
                                 hasSent = !check?.items.isNullOrEmpty(),
+                                // na13e014: sin red, la ronda que sigue en la cola también se puede volver a imprimir.
+                                puedeReimprimir = !check?.items.isNullOrEmpty() || queuedLines.isNotEmpty(),
                                 printBlockedReason = preCuentaBlockedReason,
                                 // Separar SÍ funciona sin red: las líneas enviadas
                                 // offline se referencian por su externalId. Sin esto
@@ -2518,6 +2522,8 @@ internal fun PanelTabsRow(selected: PanelTab, onSelect: (PanelTab) -> Unit) {
 internal fun TableActionsPanel(
     hasPending: Boolean,
     hasSent: Boolean,
+    /** «Volver a imprimir pedido»: lo de la cuenta O una ronda que sigue en la cola sin red (na13e014). */
+    puedeReimprimir: Boolean = hasSent,
     /** Hay algo que separar: líneas del server O enviadas sin red (externalId). */
     canSeparar: Boolean = hasSent,
     /** Por qué no se puede separar: distingue "nada enviado" de "un solo artículo". */
@@ -2682,7 +2688,7 @@ internal fun TableActionsPanel(
                 )
                 ActionPill(
                     label = if (isReprinting) "Reimprimiendo…" else "Volver a imprimir pedido",
-                    enabled = hasSent && !isReprinting,
+                    enabled = puedeReimprimir && !isReprinting,
                     blockedReason = if (isReprinting) null else if (cuentaSinLeer) CUENTA_SIN_LEER_ESPERA
                         else "Aún no se ha enviado ningún pedido a cocina.",
                     onBlocked = onBlocked,
