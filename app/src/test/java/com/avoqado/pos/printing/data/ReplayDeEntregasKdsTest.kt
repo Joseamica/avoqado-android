@@ -36,7 +36,8 @@ import org.junit.Test
  */
 class ReplayDeEntregasKdsTest {
 
-    private val dao = mockk<EntregasKdsPendientesDao>(relaxed = true)
+    /** nab17320: el replay pregunta si la fila sigue antes de imprimir; por omisión sigue (las pruebas no la borran por fuera). */
+    private val dao = mockk<EntregasKdsPendientesDao>(relaxed = true) { coEvery { existe(any()) } returns true }
     private val entregaPorWifi = mockk<EntregaPorWifi>()
     /**
      * Estricto: el replay refresca la config POR SU CUENTA (`refrescarConfig`, para revalidar la sucursal antes y después)
@@ -446,6 +447,7 @@ class ReplayDeEntregasKdsTest {
         val enTabla = mutableListOf(filaB, filaA)
         coEvery { dao.delVenue("venue-1") } coAnswers { enTabla.toList() }
         coEvery { dao.borrar(any()) } coAnswers { if (enTabla.removeAll { it.entregaId == firstArg<String>() }) 1 else 0 }
+        coEvery { dao.existe(any()) } coAnswers { enTabla.any { it.entregaId == firstArg<String>() } }
         // La fila B es reciente: se empuja a la pantalla. En esos segundos la cajera canta A: la libreta la suelta y su
         // fila se borra (lo que hacen `yaLaCante` y `cerrarPorPapel`).
         coEvery { entregaPorWifi.empujar(match { it.sourceKey == "sale:b:st_barra" }, any()) } coAnswers {
@@ -459,5 +461,26 @@ class ReplayDeEntregasKdsTest {
         replay.reproducirAlAbrir("venue-1", ahora = 60_000)
 
         coVerify(exactly = 0) { despachador.reintentar(match { it.orderNumber == "A-1" }, any(), any()) }
+    }
+
+    /**
+     * nab17320, el hueco: «Ya la canté» suelta la libreta al instante, pero el borrado de la fila corre en otro hilo. Si la pasada
+     * llega en ese hueco, la libreta ya no la tiene y la fila todavía existe: tampoco se imprime mientras su cierre siga en curso.
+     */
+    @Test
+    fun `P1 una comanda cuyo Ya la cante sigue borrando su fila no se imprime`() = runTest {
+        val plan = TicketPlan("st_barra", false, listOf(ConsolidatedLine("Café", 1, emptyList(), null, listOf("oi_a"))))
+        val trabajoA = trabajo.copy(orderNumber = "A-1", planes = listOf(plan))
+        every { pendientes.seEstaCerrando(match { it.orderNumber == "A-1" }) } returns true
+        coEvery { dao.delVenue("venue-1") } returns listOf(
+            fila("sale:a:st_barra", 0).copy(trabajoJson = Json.encodeToString(TrabajoPendiente.serializer(), trabajoA)),
+        )
+        coEvery { entregaPorWifi.empujar(any(), any()) } returns false
+        coEvery { despachador.reintentar(any(), any(), false) } returns EstadoDeComanda.Salio
+
+        replay.reproducirAlAbrir("venue-1", ahora = 60_000)
+
+        coVerify(exactly = 0) { despachador.reintentar(any(), any(), any()) }
+        coVerify(exactly = 0) { dao.borrar(any()) } // la borra el cierre de «Ya la canté», no el replay
     }
 }

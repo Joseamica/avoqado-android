@@ -190,6 +190,8 @@ class TableOrderViewModel @Inject constructor(
     private val cobrosLocales: com.avoqado.pos.giftcards.data.CobrosLocalesDeLaCuenta? = null,
     /** D45: el efectivo de la cuenta en la cola de COBROS de este aparato, con la regla de la bandeja (`efectivoDelPedido`). */
     private val efectivoEnColaDeCobros: com.avoqado.pos.payment.data.CashPaymentRepository? = null,
+    /** na13e014: la comanda de cada ronda queda en disco ANTES de la red, hasta que su despacho la decide. */
+    private val diarioDeComandas: com.avoqado.pos.tables.data.ComandasDeRondaPorDecidir? = null,
 ) : ViewModel() {
 
     /** D61: el cobro de la mesa vive aquí y no en la pantalla: sobrevive a girar el aparato (ver [CobroDeLaMesa]). */
@@ -740,7 +742,7 @@ class TableOrderViewModel @Inject constructor(
     private suspend fun alCancelarLaRonda(vId: String, session: TableSession.Active, lines: List<PendingLine>, key: String) =
         withContext(NonCancellable) {
             if (rondaVaASubir(key)) printRoundComandas(vId, session, lines, refreshFloor = false, servidorLaTiene = false, roundKey = key)
-            else finishDraftRound(key, keepPending = true)
+            else { olvidarComanda(key); finishDraftRound(key, keepPending = true) }
         }
     private fun restoreDraft(vId: String, session: TableSession.Active, force: Boolean = false) {
         var scope = vId to session.orderId
@@ -1161,8 +1163,11 @@ class TableOrderViewModel @Inject constructor(
     /** El cuerpo de [sendRound] desde que la ronda se guarda en el borrador; [rondaEnVuelo] es suya mientras corre. */
     private suspend fun enviarRondaGuardada(vId: String, session: TableSession.Active, lines: List<PendingLine>,
         requests: List<AddOrderItemRequest>, roundKey: String, onDone: (Boolean, String) -> Unit) {
+        // na13e014 (Codex r1 #4): el diario va ANTES que el borrador. Si la app muere entre los dos, al abrir sale su comanda y el
+        // mesero ve la ronda «por enviar» (si la reenvía, sale otra: duplicado). Al revés, el hueco era una ronda sin papel.
+        apuntarComanda(vId, session, lines, roundKey)
         try { stageDraftRound(vId, session.orderId, roundKey, lines) }
-        catch (_: Exception) { _isSending.value = false; onDone(false, "No se pudo guardar la ronda — intenta de nuevo"); return }
+        catch (_: Exception) { olvidarComanda(roundKey); _isSending.value = false; onDone(false, "No se pudo guardar la ronda — intenta de nuevo"); return }
         // Offline-first Corte B: una sesión PROVISIONAL (mesa abierta sin
         // red) nunca toca el server directo — su orden aún no existe allá.
         if (session.isProvisional) {
@@ -1177,6 +1182,7 @@ class TableOrderViewModel @Inject constructor(
                 if (!rondaVaASubir(roundKey)) {
                     // D5 · B2a (Codex b2a-r1 #2): el saldo en memoria ya no se asegura; el siguiente «Pagar» lo rearma de disco.
                     tableSession.marcarSaldoDesconocido(vId, session.idsDeLaOrden, contextoDeSesion)
+                    olvidarComanda(roundKey)
                     val deshecha = finishDraftRound(roundKey, keepPending = true); _isSending.value = false
                     onDone(false, if (deshecha) "No se pudo guardar la ronda sin conexión — intenta de nuevo" else RONDA_SE_RECUPERA_AL_REABRIR)
                     return
@@ -1237,6 +1243,7 @@ class TableOrderViewModel @Inject constructor(
                 marcarRondaEncolada(vId, session, lines, roundKey, onDone, motivo)
             }
             is RondaConLlave.Desenlace.Rechazada -> {
+                olvidarComanda(roundKey)
                 finishDraftRound(roundKey, keepPending = true)
                 _isSending.value = false
                 repository.refresh(vId)
@@ -1249,6 +1256,7 @@ class TableOrderViewModel @Inject constructor(
                 if (rondaVaASubir(roundKey)) {
                     marcarRondaEncolada(vId, session, lines, roundKey, onDone, MENSAJE_RONDA_INCIERTA)
                 } else {
+                    olvidarComanda(roundKey)
                     val deshecha = finishDraftRound(roundKey, keepPending = true)
                     _isSending.value = false
                     onDone(false, if (deshecha) "No se pudo guardar la ronda — intenta de nuevo" else RONDA_SE_RECUPERA_AL_REABRIR)
@@ -1494,6 +1502,7 @@ class TableOrderViewModel @Inject constructor(
         // Otra sesión de la app (otro usuario o sucursal): ni dinero ni pantalla ni papel; el borrador la conserva.
         if (tableSession.contextoActual() != contextoDeSesion || venueId != vId) {
             tableSession.marcarSaldoDesconocido(vId, session.idsDeLaOrden, contextoDeSesion)
+            olvidarComanda(intentId) // como antes: en otra sesión no sale papel (ni ahora ni al reabrir la app)
             _isSending.value = false
             onDone(false, RONDA_GUARDADA_MESA_CAMBIO)
             return
@@ -1557,36 +1566,11 @@ class TableOrderViewModel @Inject constructor(
         roundKey: String,
     ) {
         if (refreshFloor) viewModelScope.launch { repository.refresh(vId) }
-        // Comandas route catalog products only — custom amounts ride to the check but never to kitchen.
-        val kitchenLines = com.avoqado.pos.tables.data.stampTableRoundLines(lines, roundKey)
-            .filter { it.item.type is CartItemType.ProductItem }
-        // One comanda batch per course so each ticket reads "Mesa 8 · Aperitivos" like the single-course flow.
-        val pedidos = kitchenLines.groupBy { com.avoqado.pos.tables.data.kitchenCourseLabel(it.item.serviceCourse, it.course) }.map { (course, courseLines) ->
-            com.avoqado.pos.core.domain.printing.ComandaDispatcher.Pedido(
-                lines = courseLines.map { line ->
-                    RoutableItem(
-                        orderItemId = line.item.id,
-                        productId = (line.item.type as? CartItemType.ProductItem)?.productId,
-                        categoryId = line.item.categoryId,
-                        productName = line.item.name,
-                        quantity = line.item.quantity,
-                        modifiers = line.item.selectedModifiers.map { it.modifierName },
-                        notes = line.item.itemNote,
-                        comboName = line.item.promotionName,
-                        serviceCourse = line.item.serviceCourse,
-                        externalId = line.externalId,
-                        orderPromotionId = line.item.promotionInstanceId,
-                    )
-                },
-                orderType = "Mesa ${session.tableNumber}" + (course?.let { " · $it" } ?: ""),
-                // KDS 3.6: la pantalla junta los cursos en una tarjeta — «Mesa 8» arriba y el tiempo en cada platillo.
-                curso = course,
-                etiquetaPantalla = "Mesa ${session.tableNumber}",
-                configCongelada = draftRouting[roundKey],
-                omitirSinComanda = true, // «No lleva comanda»: la ronda es una venta del POS.
-            )
-        }
-        if (pedidos.isEmpty()) return
+        // Comandas route catalog products only — custom amounts ride to the check but never to kitchen. One batch per course so
+        // each ticket reads "Mesa 8 · Aperitivos" (el mismo armado que recupera el diario al abrir la app).
+        val pedidos = com.avoqado.pos.tables.data.pedidosDeLaRonda(lines, roundKey, session.tableNumber, draftRouting[roundKey])
+        if (pedidos.isEmpty()) { olvidarComanda(roundKey); return }
+        var libretaFallo = false // se escribe desde el hilo del despacho y se lee al terminar el mismo despacho
         comandaDispatcher.despacharEnFondo(
             venueId = vId,
             orderNumber = session.orderNumber,
@@ -1595,8 +1579,34 @@ class TableOrderViewModel @Inject constructor(
             orderId = session.orderId.takeUnless { session.isProvisional },
             servidorLaTiene = servidorLaTiene,
             origenDelFolio = "round:$roundKey",
-            alCambiarEstado = { avisarComandaDeRonda(it) },
-        )
+            alCambiarEstado = { if (!avisarComandaDeRonda(it)) libretaFallo = true },
+        ).invokeOnCompletion { error ->
+            // Decidida (salió, quedó en la libreta o en las entregas de la pantalla): sale del diario. Si la libreta no la pudo
+            // guardar (Codex r1 #5), se queda: al abrir la app la vuelve a intentar.
+            if (error == null && !libretaFallo) olvidarComanda(roundKey)
+        }
+    }
+
+    /**
+     * na13e014 (nube, 17-nov): la comanda de la ronda queda en disco ANTES de la cola o la red. Si la app muere antes de que su
+     * despacho la decida, `ReplayDeRondasSinPapel` la saca al volver a abrir. Si no se puede escribir, la ronda sigue como antes.
+     */
+    private fun apuntarComanda(vId: String, session: TableSession.Active, lines: List<PendingLine>, roundKey: String) {
+        val diario = diarioDeComandas ?: return
+        try {
+            diario.apuntar(com.avoqado.pos.tables.data.ComandasDeRondaPorDecidir.Ronda(
+                roundKey = roundKey, venueId = vId, orderNumber = session.orderNumber,
+                orderId = session.orderId.takeUnless { session.isProvisional }, tableNumber = session.tableNumber,
+                lines = lines, creadaEnMillis = System.currentTimeMillis(), // la config: la vigente al recuperarla
+            ))
+        } catch (e: Exception) {
+            android.util.Log.w("🍽️ TableOrder", "No se pudo apuntar la comanda de la ronda $roundKey: ${e.message}")
+        }
+    }
+
+    /** na13e014: la comanda ya se decidió, o la ronda no va a subir: sale del diario. */
+    private fun olvidarComanda(roundKey: String) {
+        runCatching { diarioDeComandas?.quitar(roundKey) }
     }
 
     /**
@@ -1604,13 +1614,14 @@ class TableOrderViewModel @Inject constructor(
      * almacén de comandas pendientes: el reloj de `ReplayDeComandasPendientes` la vuelve a mandar en cuanto la
      * impresora conteste y Cobrar muestra el aviso con «Volver a imprimir». Mismo trato que la venta de mostrador.
      */
-    private fun avisarComandaDeRonda(estado: com.avoqado.pos.printing.data.EstadoDeComanda) {
-        if (estado !is com.avoqado.pos.printing.data.EstadoDeComanda.NoSalio) return
+    /** @return `false` si la comanda no salió y la libreta NO la pudo guardar en disco (na13e014: el diario la conserva). */
+    private fun avisarComandaDeRonda(estado: com.avoqado.pos.printing.data.EstadoDeComanda): Boolean {
+        if (estado !is com.avoqado.pos.printing.data.EstadoDeComanda.NoSalio) return true
         // m-2 (Task 9 review, ronda 1): `despacharEnFondo` vive en el ámbito de la app y puede seguir insistiendo
         // minutos después de que el mesero cambie de sucursal. 🔴 D1 (Codex r3 #3): la libreta ya separa por sucursal
         // (un trabajo de la sucursal VIEJA queda suspendido: no se enseña ni se imprime en la nueva, y vuelve al
         // regresar). Antes no se guardaba para no saltarse ese filtro, y la comanda se perdía.
-        if (estado.trabajo != null) comandasPendientesStore.guardar(estado)
+        val guardada = estado.trabajo == null || comandasPendientesStore.guardar(estado)
         // m-1 (Task 9 review, ronda 1): `showError` escribe tres StateFlow por separado y no es atómico;
         // `despacharEnFondo` llama esto desde `Dispatchers.Default`, así que sin saltar a Main un
         // showMessage/showError concurrente del hilo principal podía mezclarse a medias (el texto de esta
@@ -1638,6 +1649,7 @@ class TableOrderViewModel @Inject constructor(
                 )
             }
         }
+        return guardada
     }
 
     // MARK: - Sent-item actions
@@ -2258,11 +2270,29 @@ class TableOrderViewModel @Inject constructor(
         val session = tableSession.current() ?: return
         val vId = venueId ?: return
         val sentItems = _check.value?.items?.filter { it.productId != null } ?: emptyList()
-        if (sentItems.isEmpty()) {
+        // na13e014 (nube, 17-nov): sin red, la ronda que sigue en la cola no está en la cuenta del servidor (y en una mesa abierta
+        // sin red no hay cuenta): «Volver a imprimir» se la saltaba. Se agregan las rondas en cola de ESTA mesa que la cuenta aún
+        // no trae (por su llave `sync:<ronda>:<i>`), ruteadas como su primera impresión.
+        val enLaCuenta = _check.value?.items?.mapNotNull { it.externalId }?.toSet().orEmpty()
+        val candidatasEnCola = _queued.value.filter { line ->
+            line.item.type is CartItemType.ProductItem && line.externalId !in enLaCuenta &&
+                // Como el papel de su primer envío: un tiempo moderno retenido (STANDARD) no sale en papel hasta marcharlo.
+                !(line.item.serviceCourse?.preparationVersion == 1 && line.item.serviceCourse?.kind == "STANDARD")
+        }
+        if (sentItems.isEmpty() && candidatasEnCola.isEmpty()) {
             showMessage("No hay artículos enviados para reimprimir")
             return
         }
         viewModelScope.launch {
+            // Codex r1 (R3): una ronda que el SERVIDOR ya rechazó no se vuelve a mandar a cocina (el gerente la revisa en la cola).
+            val enCola = candidatasEnCola.groupBy { it.externalId?.split(':')?.getOrNull(1) }.filter { (llave, _) ->
+                llave == null || runCatching { syncOutbox.observarEstado(llave).first() }.getOrNull() !=
+                    com.avoqado.pos.core.data.local.database.SyncIntentEntity.STATUS_REJECTED
+            }.values.flatten()
+            if (sentItems.isEmpty() && enCola.isEmpty()) {
+                showMessage("No hay artículos enviados para reimprimir")
+                return@launch
+            }
             _isReprinting.value = true
             printConfigRepository.refresh(vId)
             val config = printConfigRepository.getCurrentConfig()
@@ -2288,8 +2318,8 @@ class TableOrderViewModel @Inject constructor(
             var ultimoError: String? = null
             var sinComanda = 0
             try {
-                sentItems.groupBy { it.course }.forEach { (course, courseItems) ->
-                    val routable = courseItems.map { item ->
+                val deLaCuenta = sentItems.groupBy { it.course }.map { (course, courseItems) ->
+                    course to courseItems.map { item ->
                         RoutableItem(
                             orderItemId = item.id,
                             productId = item.productId,
@@ -2302,6 +2332,10 @@ class TableOrderViewModel @Inject constructor(
                             notes = item.notes,
                         )
                     }
+                }
+                val deLaCola = enCola.groupBy { com.avoqado.pos.tables.data.kitchenCourseLabel(it.item.serviceCourse, it.course) }
+                    .map { (course, lines) -> course to lines.map { com.avoqado.pos.tables.data.renglonDeCocinaDeRonda(it) } }
+                (deLaCuenta + deLaCola).forEach { (course, routable) ->
                     val ruteo = PrintRoutingMapper.rutear(routable, config, omitirSinComanda = true)
                     sinComanda += ruteo.omitidasSinComanda
                     if (ruteo.plans.isEmpty()) return@forEach

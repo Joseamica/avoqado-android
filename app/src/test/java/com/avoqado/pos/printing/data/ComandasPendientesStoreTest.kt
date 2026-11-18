@@ -12,6 +12,7 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.mockk
 import kotlinx.coroutines.runBlocking
@@ -272,6 +273,34 @@ class ComandasPendientesStoreTest {
         assertNull(store.pendiente.value)
         // Sólo el plan de la estación de RESPALDO: las demás nunca tuvieron fila.
         coVerify(exactly = 1) { entrega.cerrarPorPapel("venue-1", "ORD-42", listOf(plan)) }
+    }
+
+    /**
+     * nab17320 (nube, 17-nov): mientras el cierre de «Ya la canté» borra sus filas (otro hilo), la comanda ya no está en la
+     * libreta pero su fila sí: [ComandasPendientesStore.seEstaCerrando] lo dice para que el replay no la imprima. Al terminar
+     * el borrado deja de decirlo; un plan que no se cantó (otra estación) nunca lo dice.
+     */
+    @Test
+    fun `P1 ya la cante dice que se esta cerrando hasta que el borrado de sus filas termina`() = runBlocking {
+        val entrega = mockk<EntregaPorWifi>(relaxed = true)
+        val compuerta = kotlinx.coroutines.CompletableDeferred<Unit>()
+        coEvery { entrega.cerrarPorPapel(any(), any(), any()) } coAnswers { compuerta.await(); true }
+        val conRespaldo = fallo.copy(
+            trabajo = fallo.trabajo!!.copy(config = KitchenDeliveryPolicy.conRespaldo(config, listOf("st_barra"))),
+        )
+        val store = ComandasPendientesStore(AlmacenFalso(), entrega)
+        store.cargar("venue-1", ahora)
+        assertTrue(store.guardar(conRespaldo, ahora))
+        val delReplay = conRespaldo.trabajo!!.copy(planes = listOf(plan))
+        val otraEstacion = delReplay.copy(planes = listOf(TicketPlan("st_cocina", false, listOf(ConsolidatedLine("Taco", 1, emptyList(), null, listOf("oi_9"))))))
+
+        val cierre = store.yaLaCante()!!
+
+        assertNull(store.pendiente.value)
+        assertTrue(store.seEstaCerrando(delReplay))
+        assertFalse(store.seEstaCerrando(otraEstacion))
+        compuerta.complete(Unit); cierre.join()
+        assertFalse(store.seEstaCerrando(delReplay))
     }
 
     /**

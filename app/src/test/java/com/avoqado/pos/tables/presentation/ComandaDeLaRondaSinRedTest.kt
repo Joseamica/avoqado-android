@@ -65,6 +65,14 @@ class ComandaDeLaRondaSinRedTest {
     private val impresora = mockk<ComandaPrinter>(relaxed = true)
     private val printerService = mockk<PrinterService>(relaxed = true)
     private val vivos = mutableListOf<TableOrderViewModel>()
+    /** El disco del diario: sobrevive a «matar la app» como el borrador. */
+    private val discoDelDiario = object : com.avoqado.pos.printing.data.AlmacenDeTexto {
+        var texto: String? = null
+        override fun leer() = texto
+        override fun escribir(texto: String): Boolean { this.texto = texto; return true }
+        override fun borrar() { texto = null }
+    }
+    private val diario = com.avoqado.pos.tables.data.ComandasDeRondaPorDecidir(discoDelDiario)
 
     @After fun limpiar() {
         vivos.forEach { it.viewModelScope.cancel() }
@@ -96,7 +104,8 @@ class ComandaDeLaRondaSinRedTest {
         if (!keepSession) session.start(TableSession.Active("t1", "5", "Patio", "local-1", "LOCAL", 1, 0, TableSession.Mode.ORDERING,
             isProvisional = true, localOrderId = "local-1"))
         return TableOrderViewModel(repository, session, config, impresora, printerService, storage,
-            outbox, productos, connectivity, mockk(relaxed = true), despachador, mockk(relaxed = true), draftStore = drafts)
+            outbox, productos, connectivity, mockk(relaxed = true), despachador, mockk(relaxed = true), draftStore = drafts,
+            diarioDeComandas = diario)
             .also { vivos += it }
     }
 
@@ -115,10 +124,22 @@ class ComandaDeLaRondaSinRedTest {
         assertTrue("la reimpresión lleva el Café de la ronda en cola: $planes", planes.flatten().toString().contains("Café"))
     }
 
+    /** Codex r1 (R3): una ronda que el SERVIDOR ya rechazó no se vuelve a mandar a cocina desde «Volver a imprimir». */
+    @Test fun `una ronda rechazada por el servidor no se reimprime`() = runTest {
+        val mesa = vm()
+        mesa.agregarCafe(); mesa.sendRound(); advanceUntilIdle()
+        val i = cola.indexOfFirst { it.tipo == "ADD_ITEMS" }
+        cola[i] = cola[i].copy(estado = "REJECTED")
+
+        mesa.reprintComandas(); advanceUntilIdle()
+
+        io.mockk.coVerify(exactly = 0) { impresora.printComandas(any(), any(), any(), any(), any(), any(), any(), any()) }
+    }
+
     /**
      * La app muere justo después de dejar la ronda en la cola y antes de su papel (la impresora tardaba, o Android la cerró). Se
-     * simula con un `enqueue` que guarda la fila y nunca regresa: nada de ese proceso vuelve a correr. Se reabre la mesa en un
-     * proceso nuevo: la comanda de la ronda tiene que salir.
+     * simula con un `enqueue` que guarda la fila y nunca regresa: nada de ese proceso vuelve a correr. En el proceso nuevo, al abrir
+     * la app (`AppState` → `ReplayDeRondasSinPapel`) y al reabrir la mesa, la comanda de la ronda tiene que salir UNA vez.
      */
     @Test fun `P1 la app muere tras guardar la ronda y antes de su papel - al volver la comanda sale`() = runTest {
         val antes = vm()
@@ -134,9 +155,13 @@ class ComandaDeLaRondaSinRedTest {
         session.clear()
         session.abrirDesdePiso("v-1", TableSession.Active("t1", "5", null, "local-1", "LOCAL", 1, 0, TableSession.Mode.ORDERING,
             isProvisional = true))
+        com.avoqado.pos.tables.data.ReplayDeRondasSinPapel(diario, despachador, mockk(relaxed = true), storage)
+            .reproducirAlAbrir("v-1", arranqueDelProceso = System.currentTimeMillis() + 1)
         val despues = vm(keepSession = true)
         despues.loadCheck(); advanceUntilIdle()
 
-        verify(atLeast = 1) { despachador.despacharEnFondo(any(), any(), any(), any(), any(), any(), any()) }
+        val pedidos = mutableListOf<List<ComandaDispatcher.Pedido>>()
+        verify(exactly = 1) { despachador.despacharEnFondo("v-1", any(), capture(pedidos), any(), false, any(), any()) }
+        assertTrue("la comanda recuperada es la del Café: $pedidos", pedidos.single().flatMap { it.lines }.any { it.productName == "Café" })
     }
 }

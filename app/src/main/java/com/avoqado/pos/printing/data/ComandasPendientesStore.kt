@@ -421,20 +421,47 @@ class ComandasPendientesStore @Inject constructor(
      * @return el cierre en curso (las pruebas lo esperan), o `null` si no había nada que cerrar.
      */
     fun yaLaCante(aviso: EstadoDeComanda.NoSalio? = null): Job? {
-        val trabajo = synchronized(cerrojo) {
+        val cierre = synchronized(cerrojo) {
             val vista = (if (aviso != null) entradas.lastOrNull { visible(it) && it.es(aviso) } else entradas.lastOrNull(::visible))
                 ?: return null
+            // nab17320 (nube, 17-nov): lo que se va a cerrar se anota ANTES de soltar la libreta. El borrado de sus filas corre
+            // en otro hilo: en ese hueco el replay de entregas ya no la ve en la libreta, pero su fila sigue viva, y la
+            // imprimía (el papel de una comanda que la cocina ya cantó). [seEstaCerrando] lo cubre hasta que el borrado termina.
+            val cierre = vista.estado.trabajo?.let(::cierreDeRespaldo)?.also { cerrandose += it }
             entradas = entradas.filter { it !== vista }
             persistir()
             publicar()
-            vista.estado.trabajo
+            cierre
+        } ?: return null
+        val entregas = entregaPorWifi ?: run { cerrandose.remove(cierre); return null }
+        return fondo.launch {
+            var cerrado = false
+            try {
+                cerrado = entregas.cerrarPorPapel(cierre.venueId!!, cierre.orderNumber, cierre.planes)
+            } finally {
+                // Codex r1 #2: si la base no dejó borrar, la fila sobrevive; seguir anotada en memoria evita que el replay la
+                // imprima en este proceso (al reabrir la app saldría UNA vez: duplicado, nunca pérdida).
+                if (cerrado) cerrandose.remove(cierre)
+            }
         }
-        val entregas = entregaPorWifi ?: return null
-        val venueId = trabajo?.venueId ?: return null
+    }
+
+    /** Lo que «Ya la canté» cierra de un trabajo: sólo los planes de sus estaciones con papel de RESPALDO (como antes). */
+    private fun cierreDeRespaldo(trabajo: TrabajoPendiente): TrabajoPendiente? {
+        if (entregaPorWifi == null || trabajo.venueId == null) return null
         val respaldo = trabajo.config.stations.filter { it.respaldoLocal }.map { it.id }.toSet()
-        val planes = trabajo.planes.filter { it.stationId in respaldo }
-        if (planes.isEmpty()) return null
-        return fondo.launch { entregas.cerrarPorPapel(venueId, trabajo.orderNumber, planes) }
+        return trabajo.copy(planes = trabajo.planes.filter { it.stationId in respaldo }).takeIf { it.planes.isNotEmpty() }
+    }
+
+    /** nab17320: los cierres de «Ya la canté» que todavía están borrando sus filas de entregas. */
+    private val cerrandose = java.util.concurrent.CopyOnWriteArrayList<TrabajoPendiente>()
+
+    /**
+     * nab17320: ¿una persona ya cantó este papel y su cierre sigue en curso? Mismo criterio que `cerrarPorPapel` (venue +
+     * orden + todos sus planes dentro de lo cantado). El replay de entregas lo trata como «ya resuelto»: no lo imprime.
+     */
+    fun seEstaCerrando(trabajo: TrabajoPendiente): Boolean = trabajo.planes.isNotEmpty() && cerrandose.any { c ->
+        c.venueId == trabajo.venueId && c.orderNumber == trabajo.orderNumber && trabajo.planes.all { it in c.planes }
     }
 
     /** Vacía la libreta entera, en memoria y en disco (todas las sucursales). Lo normal es soltar UNA: [soltarSi]. */

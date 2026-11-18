@@ -1101,6 +1101,7 @@ class ComandaDispatcherTest {
             currentCoroutineContext().ensureActive()
             return if (filas.remove(entregaId) != null) 1 else 0
         }
+        override suspend fun existe(entregaId: String) = filas.containsKey(entregaId)
         override suspend fun soltar(entregaId: String, ahora: Long): Int {
             currentCoroutineContext().ensureActive()
             val fila = filas[entregaId] ?: return 0

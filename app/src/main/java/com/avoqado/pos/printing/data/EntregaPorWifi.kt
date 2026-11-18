@@ -142,8 +142,10 @@ class EntregaPorWifi @Inject constructor(
      * replay) cierra SU fila. El trabajo no lleva el folio, así que se reconoce por venue + orden + plan EXACTO: dos rondas
      * de la misma mesa comparten orden y estación pero no renglones, y no se confunden.
      */
-    suspend fun cerrarPorPapel(venueId: String, orderNumber: String, planes: List<TicketPlan>) {
-        if (planes.isEmpty()) return
+    /** @return `false` si la base no dejó leer o borrar (nab17320: «Ya la canté» sigue cubriendo esas filas en memoria). */
+    suspend fun cerrarPorPapel(venueId: String, orderNumber: String, planes: List<TicketPlan>): Boolean {
+        if (planes.isEmpty()) return true
+        var cerrado = false
         sinTumbar("No se pudieron cerrar las entregas del papel de $orderNumber") {
             for (fila in dao.delVenue(venueId)) {
                 val trabajo = runCatching { json.decodeFromString(TrabajoPendiente.serializer(), fila.trabajoJson) }.getOrNull() ?: continue
@@ -151,7 +153,9 @@ class EntregaPorWifi @Inject constructor(
                     dao.borrar(fila.entregaId)
                 }
             }
+            cerrado = true
         }
+        return cerrado
     }
 
     /** M6 de la revisión: `runCatching` se tragaba la cancelación de las llamadas suspendidas a la base. */

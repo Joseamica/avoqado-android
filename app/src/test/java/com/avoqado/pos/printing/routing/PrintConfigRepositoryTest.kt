@@ -319,10 +319,7 @@ class PrintConfigRepositoryTest {
             defaultStationId = "st_b",
             version = "vb",
         )
-        coEvery { apiService.getPrintConfig(any()) } coAnswers {
-            CompletableDeferred<Unit>().await() // sin internet: la API no contesta
-            PrintConfigResponse(success = true, data = PrintConfig())
-        }
+        coEvery { apiService.getPrintConfig(any()) } throws java.io.IOException("sin internet")
         val discoDeB = CompletableDeferred<Unit>()
         coEvery { payloadCache.load(PayloadCache.TYPE_PRINT_CONFIG, "venue-b") } coAnswers {
             discoDeB.await() // la lectura de B tarda
@@ -337,6 +334,10 @@ class PrintConfigRepositoryTest {
         discoDeB.complete(Unit)
         haciaB.join()
 
+        assertEquals(listOf("st_cocina"), repository.getCurrentConfig().stations.map { it.id })
+        // Codex r1 #3: tampoco después. La descarga de B (en otro hilo) se volvía a poner como «la última pedida» y, al fallar
+        // sin red, hidrataba B encima de A. Se le da tiempo real a esa descarga de fondo antes de volver a mirar.
+        withContext(Dispatchers.Default) { delay(500) }
         assertEquals(listOf("st_cocina"), repository.getCurrentConfig().stations.map { it.id })
     }
 }

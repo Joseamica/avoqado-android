@@ -195,6 +195,11 @@ class ReplayDeEntregasKds @Inject constructor(
         if (!sigueVigente(venueId)) return
         comandaDispatcher.refrescarConfig(venueId)
         if (!sigueVigente(venueId)) return
+        // nab17320 (nube, 17-nov): las filas se leyeron AL EMPEZAR la pasada, y empujar otra fila o refrescar la config tarda
+        // segundos. Si en ese rato alguien la resolvió —«Ya la canté» suelta la libreta y borra su fila; o su papel salió por
+        // otro camino—, esta copia ya es vieja: imprimirla sacaba una comanda que la cocina ya tiene. Se vuelve a mirar justo
+        // antes del papel (el último punto antes de imprimir; después ya no hay espera de este lado).
+        if (comandasPendientesStore.seEstaCerrando(trabajo) || laLibretaLoTiene(trabajo) || !sigueEnLaTabla(fila)) return
         when (val estado = comandaDispatcher.reintentar(trabajo, refrescar = false)) {
             is EstadoDeComanda.Salio -> {
                 // Codex 3.6 (#1): una fila de RONDA no sabe si su folio tenía otros tiempos (uno ya en la pantalla, sin
@@ -222,6 +227,16 @@ class ReplayDeEntregasKds @Inject constructor(
             }
             else -> Unit
         }
+    }
+
+    /** nab17320: si no se puede leer, se imprime como antes (duplicado, nunca pérdida). */
+    private suspend fun sigueEnLaTabla(fila: EntregaKdsPendienteEntity): Boolean = try {
+        dao.existe(fila.entregaId).also { if (!it) Log.i(TAG, "✋ ${fila.entregaId} ya se resolvió por otro camino: no se imprime") }
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        Log.w(TAG, "No se pudo revisar si ${fila.entregaId} sigue pendiente: ${e.message}")
+        true
     }
 
     /** I1: si la sucursal ya no es la vigente, se deja todo (nada se borra) y la pasada termina. */
