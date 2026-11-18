@@ -437,11 +437,13 @@ class ComandasPendientesStore @Inject constructor(
         return fondo.launch {
             var cerrado = false
             try {
-                // Codex r2 #4: un tropiezo de la base no se queda así: se reintenta el borrado (nunca el papel).
-                for (espera in listOf(0L) + REINTENTOS_DEL_CIERRE_MS) {
-                    if (espera > 0) kotlinx.coroutines.delay(espera)
+                // Codex r2 #4 y r3: un tropiezo de la base no se queda así: se reintenta el borrado (nunca el papel) a 1 s, 5 s,
+                // 30 s y luego cada minuto mientras la app viva. Si la app se cierra antes, al abrir saldría UNA vez (duplicado).
+                var intento = 0
+                while (true) {
                     cerrado = !entregas.cerrarPorPapel(cierre.venueId!!, cierre.orderNumber, cierre.planes) // `true` = tropezó
                     if (cerrado) break
+                    kotlinx.coroutines.delay(REINTENTOS_DEL_CIERRE_MS.getOrElse(intento++) { REINTENTOS_DEL_CIERRE_MS.last() * 2 })
                 }
             } finally {
                 // Codex r1 #2: si la base nunca dejó borrar, la fila sobrevive; seguir anotada en memoria evita que el replay la

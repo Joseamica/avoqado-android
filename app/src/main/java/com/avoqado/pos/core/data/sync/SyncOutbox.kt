@@ -170,29 +170,31 @@ class SyncOutbox @Inject constructor(
      * No cambia el orden, las barreras ni lo que se manda: es un disparador más, como el reloj.
      */
     private var reintentoCorto: Job? = null
-    private val reintentoCortoPendiente = java.util.concurrent.atomic.AtomicBoolean(false)
     @Volatile private var esperaCortaMs = REINTENTO_CORTO_MIN_MS
-
-    /** Codex r2 R4: sube en cada [stop]; un reintento de una vida anterior (otra sucursal o sesión) ni corre ni libera el lugar. */
-    @Volatile private var vidaDelReintento = 0L
+    /** Codex r2/r3 R4: el único lugar del reintento corto, su sucursal y su vida se cambian bajo este candado (y en [stop]). */
+    private val cerrojoDelReintento = Any()
+    /** Sube en cada [stop]: un reintento de una vida anterior (otra sucursal o sesión) ni corre ni ocupa el lugar. */
+    private var vidaDelReintento = 0L
 
     private fun programarReintentoCorto(venueId: String) {
-        // Una corrida de la sucursal anterior que termina después de `stop()` no ocupa el único lugar de la nueva.
-        if (activeVenueId != venueId) return
-        if (!reintentoCortoPendiente.compareAndSet(false, true)) return
-        val vida = vidaDelReintento
-        val espera = esperaCortaMs
-        esperaCortaMs = (espera * 2).coerceAtMost(REINTENTO_CORTO_MAX_MS)
-        reintentoCorto = scope.launch {
-            try {
+        synchronized(cerrojoDelReintento) {
+            // Una corrida de la sucursal anterior que termina después de `stop()` no ocupa el lugar de la nueva; y nunca dos.
+            if (activeVenueId != venueId || reintentoCorto?.isActive == true) return
+            val vida = vidaDelReintento
+            val espera = esperaCortaMs
+            esperaCortaMs = (espera * 2).coerceAtMost(REINTENTO_CORTO_MAX_MS)
+            reintentoCorto = scope.launch {
                 delay(espera)
-            } finally {
-                // Ya puede programarse el siguiente (desde la corrida de abajo). Si `stop()` ya pasó, el lugar es de la vida nueva.
-                if (vidaDelReintento == vida) reintentoCortoPendiente.set(false)
-            }
-            if (vidaDelReintento == vida && activeVenueId == venueId) {
-                Log.d(TAG, "🔁 Reintento corto del outbox tras un RETRY (${espera / 1000} s)")
-                replayNow(venueId)
+                val sigue = synchronized(cerrojoDelReintento) {
+                    (vidaDelReintento == vida && activeVenueId == venueId).also {
+                        // Se suelta el lugar ANTES de correr: si esta corrida vuelve a recibir RETRY, programa el siguiente.
+                        if (it && reintentoCorto === coroutineContext[Job]) reintentoCorto = null
+                    }
+                }
+                if (sigue) {
+                    Log.d(TAG, "🔁 Reintento corto del outbox tras un RETRY (${espera / 1000} s)")
+                    replayNow(venueId)
+                }
             }
         }
     }
@@ -296,11 +298,12 @@ class SyncOutbox @Inject constructor(
         activeVenueId = null
         connectivityJob?.cancel()
         timerJob?.cancel()
-        vidaDelReintento++
-        reintentoCorto?.cancel()
-        reintentoCorto = null
-        reintentoCortoPendiente.set(false)
-        esperaCortaMs = REINTENTO_CORTO_MIN_MS
+        synchronized(cerrojoDelReintento) {
+            vidaDelReintento++
+            reintentoCorto?.cancel()
+            reintentoCorto = null
+            esperaCortaMs = REINTENTO_CORTO_MIN_MS
+        }
     }
 
     // MARK: - Enqueue (write-ahead)

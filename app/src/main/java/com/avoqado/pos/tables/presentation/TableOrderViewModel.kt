@@ -2223,6 +2223,15 @@ class TableOrderViewModel @Inject constructor(
         else -> "Revisa que la impresora esté encendida y en la misma red."
     }
 
+    /** na13e014: la llave de la ronda de un renglón enviado sin red (`sync:<ronda>:<i>`), o `null` si no es de la cola. */
+    private fun rondaDe(externalId: String?): String? =
+        externalId?.takeIf { it.startsWith("sync:") }?.split(':')?.getOrNull(1)
+
+    /** na13e014: ¿el SERVIDOR ya rechazó esa ronda? Si no se puede leer, no se da por rechazada (se reimprime, como lo pidió). */
+    private suspend fun rondaRechazada(llave: String): Boolean =
+        runCatching { syncOutbox.observarEstado(llave).first() }.getOrNull() ==
+            com.avoqado.pos.core.data.local.database.SyncIntentEntity.STATUS_REJECTED
+
     /** La reimpresión tarda (timeout de impresora ~10 s): la pantalla lo dice. */
     private val _isReprinting = MutableStateFlow(false)
     val isReprinting: StateFlow<Boolean> = _isReprinting.asStateFlow()
@@ -2248,12 +2257,9 @@ class TableOrderViewModel @Inject constructor(
         viewModelScope.launch {
             _isReprinting.value = true
             printConfigRepository.refresh(vId)
-            // Codex r1 (R3) y r2 (R3): una ronda que el SERVIDOR ya rechazó no se vuelve a mandar a cocina (el gerente la revisa en
-            // la cola). Se pregunta DESPUÉS del refresco de impresoras (la espera de red), justo antes de imprimir.
-            val enCola = candidatasEnCola.groupBy { it.externalId?.split(':')?.getOrNull(1) }.filter { (llave, _) ->
-                llave == null || runCatching { syncOutbox.observarEstado(llave).first() }.getOrNull() !=
-                    com.avoqado.pos.core.data.local.database.SyncIntentEntity.STATUS_REJECTED
-            }.values.flatten()
+            // Codex r1 (R3), r2 y r3: una ronda que el SERVIDOR ya rechazó no se vuelve a mandar a cocina (el gerente la revisa en
+            // la cola). Se pregunta después del refresco de impresoras y otra vez justo antes de cada hoja (abajo).
+            val enCola = candidatasEnCola.filter { line -> rondaDe(line.externalId)?.let { !rondaRechazada(it) } ?: true }
             if (sentItems.isEmpty() && enCola.isEmpty()) {
                 _isReprinting.value = false
                 showMessage("No hay artículos enviados para reimprimir")
@@ -2299,7 +2305,11 @@ class TableOrderViewModel @Inject constructor(
                 }
                 val deLaCola = enCola.groupBy { com.avoqado.pos.tables.data.kitchenCourseLabel(it.item.serviceCourse, it.course) }
                     .map { (course, lines) -> course to lines.map { com.avoqado.pos.tables.data.renglonDeCocinaDeRonda(it) } }
-                (deLaCuenta + deLaCola).forEach { (course, routable) ->
+                (deLaCuenta + deLaCola).forEach { (course, delGrupo) ->
+                    // Codex r3 (R2): el papel de un grupo anterior puede tardar; el rechazo de una ronda en cola se vuelve a
+                    // preguntar justo antes de SU hoja.
+                    val routable = delGrupo.filter { item -> rondaDe(item.externalId)?.let { !rondaRechazada(it) } ?: true }
+                    if (routable.isEmpty()) return@forEach
                     val ruteo = PrintRoutingMapper.rutear(routable, config, omitirSinComanda = true)
                     sinComanda += ruteo.omitidasSinComanda
                     if (ruteo.plans.isEmpty()) return@forEach
