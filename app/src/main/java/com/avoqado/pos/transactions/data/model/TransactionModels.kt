@@ -178,6 +178,12 @@ data class Transaction(
     /** Comprobante completo (servidor, aditivo, plan 7a). Null = servidor anterior (o comprobante raro, A7-R8): se cae a importe y propina del pago. */
     @Serializable(with = TicketTotalsTolerante::class)
     val ticketTotals: TicketTotalsDto? = null,
+    /**
+     * D41 «C» (SERVIDOR aditivo, 17-nov): la cortesía que Mesas guardó en $0 y que el comprobante suma a subtotal y descuento, como
+     * Mostrador. [ticketTotals] sigue SIN ella (así lo leen las apps publicadas, que pintan esa cortesía en $0); la reimpresión nueva la
+     * suma y pinta cada renglón con [TransactionItem.totalEnElTicket]. Null = SERVIDOR viejo, recibo de antes o sin cortesía.
+     */
+    val cortesiaDelTicket: Double? = null,
     /** D1: la copia del papel de esta parte, APARTE de [ticketTotals]. Null = sin copia (app vieja, tarjeta, cobro de antes). */
     @Serializable(with = LineasDelTicketTolerante::class)
     val lineasDelTicket: LineasDelTicketDto? = null,
@@ -281,6 +287,12 @@ data class TransactionItem(
      * anteriores y cuando no puede repartir los descuentos ⇒ se usa `amount`, el bruto.
      */
     val chargedTotal: Double? = null,
+    /**
+     * D41 «C» (SERVIDOR aditivo, 17-nov): lo que pinta este renglón en la reimpresión cuando se suma [Transaction.cortesiaDelTicket].
+     * Difiere de [amount] sólo en la cortesía que Mesas guardó en $0: ahí es su bruto, como en Mostrador. Sólo es para el papel: las
+     * devoluciones siguen con [chargedTotal]/[amount]. Ausente (SERVIDOR viejo) ⇒ [amount], como hoy.
+     */
+    val totalEnElTicket: Double? = null,
     val productImageUrl: String? = null,
     val trackInventory: Boolean = false,
     /** Quantity already refunded across prior REFUND payments on this payment. */
