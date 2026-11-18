@@ -332,8 +332,9 @@ fun CheckoutScreen(
     if (seedConflictDialog) {
         AvoqadoDialog(
             title = "El carrito ya tiene una reserva",
-            description = "Este carrito está ligado a otra reserva. Cóbralo o vacíalo " +
-                "antes de inscribir otra clase.",
+            // D13: la clase nueva ya no se pierde (su lugar ya está apartado): espera y entra sola al siguiente carrito vacío.
+            description = "Este carrito está ligado a otra reserva. La clase nueva entra sola " +
+                "cuando termines esta venta.",
             onDismiss = { seedConflictDialog = false },
             actionButton = {
                 PrimaryButton(text = "Entendido", onClick = { seedConflictDialog = false })
@@ -635,6 +636,9 @@ fun CheckoutScreen(
         weightProduct = null
         // D9: «¿Algo más?» no se queda montado encima del cobro (lo abrió «Dividir» con la tira minimizada, Codex D8 r3 #3): se
         // cierra como un «No, gracias», que el spec manda registrar.
+        // D13: una tira que quedó viva de OTRA venta (restauraron B encima de A y la cobran con Tab + Enter) se cierra sin
+        // registrarse; sólo la de esta venta se cierra como «No, gracias».
+        upsellViewModel.soltarMomentoSiEsOtraVenta(cart.identidadDeVenta)
         if (upsellViewModel.moment.value != null) upsellViewModel.finish(emptyList(), 0)
         // D9 (pasada de la familia «a qué venta se le cuenta la sugerencia», Codex r6–r7): se decide AQUÍ, al fotografiar, por
         // donde pasan todos los caminos al cobro (botón, F12, «Dividir», la vuelta del motivo). La sugerencia pendiente de otra
@@ -1633,7 +1637,16 @@ fun CheckoutScreen(
     // D9 (Codex r5 #2): desde que el cliente sólo contesta, la sugerencia puede quedar pendiente sin cobro. Si el carrito queda
     // vacío sin cobrar (quitó todo, «Vaciar»), la venta que sigue es otra: ni se le cuenta ni se le deja de ofrecer.
     LaunchedEffect(cartState.isEmpty, showPaymentFlow) {
-        if (cartState.isEmpty && !showPaymentFlow) upsellViewModel.cancelPendingConversion()
+        if (cartState.isEmpty && !showPaymentFlow) {
+            upsellViewModel.cancelPendingConversion()
+            // D13: la clase que esperaba a que terminara la venta entra al carrito vacío (también si la cajera lo vació a mano).
+            cartViewModel.consumePendingClassSeed()
+        }
+    }
+    // D13: al cambiar de venta (restaurar un carrito guardado encima) la tira de «¿Algo más?» de la anterior se cierra sin
+    // registrarse: aceptarla metía el extra de A en la venta de B, y su registro podía caer en el folio de B.
+    LaunchedEffect(cartState.identidadDeVenta) {
+        upsellViewModel.soltarMomentoSiEsOtraVenta(cartState.identidadDeVenta)
     }
 
     // Barcode scanner overlay

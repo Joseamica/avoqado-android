@@ -26,29 +26,33 @@ class ClassCheckoutSeed @Inject constructor() {
         /** Links the resulting sale back to the reservation. Consumed by the
          *  payment flow once the reservation↔sale linkage lands. */
         val reservationId: String? = null,
+        /**
+         * D13 (18-nov): ya tuvo su oportunidad y no pudo entrar (el cobro abierto, una venta a medio cobrar, otra reserva en
+         * el carrito). Desde entonces sólo entra a un carrito VACÍO: la venta que la detuvo ya terminó y nunca se mete en la de
+         * otra persona.
+         */
+        val enEspera: Boolean = false,
     )
 
-    @Volatile
-    private var pending: Seed? = null
+    /** D13: una fila, no una casilla. Una segunda inscripción antes de volver a Mostrador ya no borra a la primera. */
+    private val pendientes = ArrayDeque<Seed>()
 
-    fun put(seed: Seed) {
-        pending = seed
-    }
+    fun put(seed: Seed) = synchronized(this) { pendientes.addLast(seed) }
 
-    /** Returns the pending seed exactly once, then clears it (one-shot). */
-    fun consume(): Seed? {
-        val current = pending
-        pending = null
-        return current
-    }
+    /** La siguiente clase pendiente, una sola vez. */
+    fun consume(): Seed? = synchronized(this) { pendientes.removeFirstOrNull() }
 
-    fun hasPending(): Boolean = pending != null
+    fun hasPending(): Boolean = synchronized(this) { pendientes.isNotEmpty() }
 
-    /**
-     * D9: la que se sacó y no pudo entrar (el cobro se abrió mientras cargaba el catálogo) regresa, salvo que ya haya otra
-     * más nueva: una sola casilla, como siempre.
-     */
-    fun devolver(seed: Seed) {
-        if (pending == null) pending = seed
+    /** La siguiente sin sacarla, para saber si espera un carrito vacío. */
+    fun siguiente(): Seed? = synchronized(this) { pendientes.firstOrNull() }
+
+    /** La que se sacó y no pudo entrar regresa al frente, en espera (D9, D13). */
+    fun devolver(seed: Seed) = synchronized(this) { pendientes.addFirst(seed.copy(enEspera = true)) }
+
+    /** La siguiente no pudo entrar sin sacarla (cobro abierto, venta a medio cobrar): queda en espera. */
+    fun esperar() = synchronized(this) {
+        pendientes.firstOrNull()?.let { pendientes[0] = it.copy(enEspera = true) }
+        Unit
     }
 }

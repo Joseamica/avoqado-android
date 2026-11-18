@@ -1573,14 +1573,16 @@ class CartViewModel @Inject constructor(
     fun consumePendingClassSeed() {
         // D9: con el cobro abierto, o con una venta a medio cobrar (su «Saldo pendiente» frenaría el siguiente «Cobrar», Codex r6
         // #1), la clase no entra y la semilla NO se consume: la pantalla la vuelve a pedir al cerrarse el cobro.
-        if (cobroLoImpide(avisar = false) || hayVentaAMedias()) return
+        if (cobroLoImpide(avisar = false) || hayVentaAMedias()) { classCheckoutSeed.esperar(); return }
+        // D13: la que ya esperó sólo entra a un carrito vacío: nunca a la venta de otra persona que la cajera recuperó.
+        if (classCheckoutSeed.siguiente()?.enEspera == true && !_cartState.value.isEmpty) return
         val seed = classCheckoutSeed.consume() ?: return
         viewModelScope.launch {
             if (productsRepository.products.value.isEmpty()) {
                 productsRepository.fetchProducts()
             }
             // D9 (Codex r1 #3): el cobro se abrió mientras cargaba el catálogo: la semilla regresa y entra al cerrarlo.
-            if (cobroLoImpide(avisar = false) || hayVentaAMedias()) {
+            if (cobroLoImpide(avisar = false) || hayVentaAMedias() || (seed.enEspera && !_cartState.value.isEmpty)) {
                 classCheckoutSeed.devolver(seed)
                 return@launch
             }
@@ -1594,7 +1596,9 @@ class CartViewModel @Inject constructor(
             // reservationId would leave the sale linked to only one of them.
             val existingResId = _cartState.value.reservationId
             if (existingResId != null && seed.reservationId != null && existingResId != seed.reservationId) {
-                Log.w("🛒", "Cart already linked to reservation $existingResId — skipping seed for ${seed.reservationId}")
+                // D13: antes se perdía (con su lugar ya apartado en el servidor); ahora espera y entra al siguiente carrito vacío.
+                Log.w("🛒", "Cart already linked to reservation $existingResId — seed ${seed.reservationId} waits for an empty cart")
+                classCheckoutSeed.devolver(seed)
                 _seedConflict.value = true
                 return@launch
             }

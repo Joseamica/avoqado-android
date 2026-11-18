@@ -123,6 +123,8 @@ class UpsellViewModel @Inject constructor(
      * del reporte sería sólo el total de lo aceptado, que siempre se ve bien.
      */
     fun offer(cart: CartState, context: UpsellContext): Moment? = runCatching {
+        // D13: una tira viva de otra venta se suelta antes de decidir nada de ésta (el grupo de control de B la pisaba).
+        soltarMomentoSiEsOtraVenta(cart.identidadDeVenta)
         if (cart.items.isEmpty()) return null
         if (!isSurfaceEnabled(context)) return null
         if (cart.identidadDeVenta == ventaYaOfrecida) return null
@@ -247,6 +249,21 @@ class UpsellViewModel @Inject constructor(
      */
     fun soltarSiEsOtraVenta(venta: String) {
         if (pendingConversionId != null && ventaDelMomento != null && venta != ventaDelMomento) cancelPendingConversion()
+    }
+
+    /**
+     * D13 (18-nov): la tira (o el momento) es de UNA venta. Si la venta en pantalla ya es otra (restauraron un carrito guardado
+     * encima), se cierra SIN registrarse: aceptarla metía el extra de A en B, y su «No, gracias» podía caer en el folio de B.
+     * La venta nueva puede recibir su propia sugerencia.
+     */
+    fun soltarMomentoSiEsOtraVenta(venta: String) {
+        if (_moment.value == null || ventaDelMomento == null || venta == ventaDelMomento) return
+        _moment.value = null
+        ventaDelMomento = null
+        ventaYaOfrecida = null
+        customerDisplay.onUpsellToggled = null
+        customerDisplay.onUpsellConfirmed = null
+        customerDisplay.onUpsellDismissed = null
     }
 
     private fun isSurfaceEnabled(context: UpsellContext) = when (context) {
