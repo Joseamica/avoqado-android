@@ -114,4 +114,70 @@ class ArbitroQueNoArbitraTest {
         assertEquals(LeaseOutcome.Granted, mesas.esperar(a) { true })
         assertTrue("concedida al terminar el calentamiento, no en isla a los 3 s", testScheduler.currentTime - toque >= 11_000)
     }
+
+    @Test
+    fun `cable - sólo la caja que no arbitra manda arbitra false; la que arbitra no cambia ni un byte y lo viejo se lee igual`() = runTest {
+        fun pedido() = LeaseProtocol.encode(LeaseRequest(op = LeaseProtocol.OP_ESTADO, deviceId = "A", staffName = "Ana", gen = 1, seq = 1,
+            aperturas = listOf(WireApertura("a1", "M2"))))
+        val noArbitra = queNoArbitra("X").respondTo(pedido())
+        assertEquals(false, noArbitra.arbitra)
+        assertTrue(LeaseProtocol.encode(noArbitra).contains("\"arbitra\":false"))
+
+        val arbitra = LeaseServer(deviceId = "Y", monoMillis = { testScheduler.currentTime }).also { it.asumirArbitraje(emptySet()) }.respondTo(pedido())
+        assertEquals(null, arbitra.arbitra)
+        assertTrue("la respuesta del árbitro sale como antes", !LeaseProtocol.encode(arbitra).contains("arbitra\":"))
+
+        // Una caja de antes (o iOS) no lo manda: se lee como null y la caja nueva espera como siempre.
+        val vieja = LeaseProtocol.decodeResponse("""{"v":1,"status":"ok","arbitro":"X","aperturas":[{"id":"a1","resultado":"esperar","esperarMs":1000}]}""")
+        assertEquals(null, vieja?.arbitra)
+    }
+
+    @Test
+    fun `P1 Codex r1 2 - la caja que no arbitra pero tiene el permiso vivo de una caja vieja contesta ocupada`() = runTest {
+        val x = queNoArbitra("X")
+        // C, una app vieja (sin presencia), le pidió la M2 a X cuando la eligió como árbitro.
+        x.respondTo(LeaseProtocol.encode(LeaseRequest(op = LeaseProtocol.OP_ACQUIRE, tableId = "M2", deviceId = "C", staffId = "sC", staffName = "Caro")))
+        val red = red(x)
+        val mesas = caja()
+        coordinador(red, mesas).start()
+        runCurrent()
+        advanceTimeBy(4_000)
+
+        val a = mesas.abrirApertura("M2", "s1", "Ana", v)
+        assertEquals(LeaseOutcome.Taken("Caro"), mesas.esperar(a) { true })
+    }
+
+    @Test
+    fun `P1 Codex r1 2 - con una caja de app vieja en la red se conserva la espera de hoy`() = runTest {
+        val peerC = LanPeer("C", "10.0.0.7", 9000, presencia = false, venueExplicito = true)
+        discovery.publicar(listOf(yo, peerX, peerC))
+        val red = red(queNoArbitra("X"))
+        val mesas = caja()
+        coordinador(red, mesas).start()
+        runCurrent()
+        advanceTimeBy(4_000)
+
+        val toque = testScheduler.currentTime
+        val a = mesas.abrirApertura("M2", "s1", "Ana", v)
+        assertEquals(LeaseOutcome.NoHub, mesas.esperar(a) { true })
+        assertTrue("la caja vieja sólo la sabe un árbitro: no se corta a los 3 s", testScheduler.currentTime - toque >= 14_000)
+    }
+
+    @Test
+    fun `P1 Codex r2 3 - negativas, aparece una caja vieja y se pierde un mensaje - no adelanta la isla`() = runTest {
+        val x = queNoArbitra("X")
+        val red = red(x)
+        val mesas = caja()
+        coordinador(red, mesas).start()
+        runCurrent()
+        advanceTimeBy(5_000) // X lleva 5 s diciendo «no arbitro» (latidos)
+
+        discovery.publicar(listOf(yo, peerX, LanPeer("C", "10.0.0.7", 9000, presencia = false, venueExplicito = true)))
+        red.latenciaMs = LeaseClient.PLAZO_HUB_MS
+        red.fija = { red.latenciaMs = 0; red.fija = null; null } // se pierde UN mensaje
+        val toque = testScheduler.currentTime
+        val a = mesas.abrirApertura("M2", "s1", "Ana", v)
+        assertEquals(LeaseOutcome.NoHub, mesas.esperar(a) { true })
+        assertTrue("con la caja vieja, la espera de hoy (no la isla tras una pérdida)", testScheduler.currentTime - toque >= 14_000)
+    }
 }

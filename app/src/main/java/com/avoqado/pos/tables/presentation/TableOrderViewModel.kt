@@ -531,6 +531,7 @@ class TableOrderViewModel @Inject constructor(
                     }
                     if (!ack.isAcked) return@collect
                     rondasConfirmadas += ack.id
+                    cuentaAparteDelAcuse(ack.id, result, session)
                     if (localRef != null && ackOrder != null) {
                         tableSession.promoteProvisional(vId, localRef, ackOrder,
                             (result["orderNumber"] as? kotlinx.serialization.json.JsonPrimitive)?.content,
@@ -661,6 +662,11 @@ class TableOrderViewModel @Inject constructor(
 
         /** Leer la versión fresca de la cuenta tras un 409. */
         const val PRESUPUESTO_VERSION_MS = 5_000L
+
+        /** nac50984 (0199df): la ronda sin red cayó en una cuenta aparte porque otra caja ya cobró esta. */
+        fun textoDeCuentaAparte(folio: String?): String =
+            "La ronda quedó en la cuenta aparte" + (folio?.takeIf { it.isNotBlank() }?.let { " #$it" } ?: "") +
+                ": esta cuenta ya estaba cobrada. Ábrela desde el plano."
 
         fun mensajeComandaNoSalio(estaciones: List<String>): String = "No salió la comanda de: ${estaciones.joinToString(", ")}"
 
@@ -2023,6 +2029,27 @@ class TableOrderViewModel @Inject constructor(
                 },
             )
         }
+    }
+
+    // MARK: - nac50984 (encargo 0199df): la ronda tardía que el SERVIDOR puso en una cuenta aparte
+
+    /**
+     * El ACK de `ADD_ITEMS` de `aplicarRondaTardia` (SERVIDOR #471) trae `orderId` = la cuenta pedida (ya cobrada) y `cuentaAparte` = donde
+     * SÍ quedó la ronda. Antes la pantalla releía la cuenta cobrada, nunca encontraba esos renglones y la ronda se quedaba «por
+     * sincronizar» hasta salir y volver a entrar. Ahora la ronda sale de «por sincronizar» (el SERVIDOR la confirmó; la cola ya la sacó
+     * del borrador en disco) y se dice dónde quedó. La pantalla NO cambia de cuenta sola (Codex r1 #1b y r2 #1-#2: con otra ronda todavía
+     * en la cola, o con la cuenta movida a otra mesa, el cambio automático dejaba cobrar una cuenta incompleta o abrirla bajo otra mesa):
+     * la cuenta aparte se abre desde el plano, como hoy al volver a entrar.
+     */
+    private fun cuentaAparteDelAcuse(llave: String, result: kotlinx.serialization.json.JsonObject, session: TableSession.Active) {
+        val aparte = result["cuentaAparte"] as? kotlinx.serialization.json.JsonObject ?: return
+        val id = (aparte["orderId"] as? kotlinx.serialization.json.JsonPrimitive)?.takeIf { it.isString }?.content?.takeIf { it.isNotBlank() } ?: return
+        if (id in session.idsDeLaOrden) return
+        val deEstaPantalla = llave in draftRounds || _queued.value.any { it.externalId?.startsWith("sync:$llave:") == true }
+        if (!deEstaPantalla) return
+        if (llave in draftRounds) finishDraftRound(llave)
+        _queued.value = _queued.value.filterNot { it.externalId?.startsWith("sync:$llave:") == true }
+        showMessage(textoDeCuentaAparte((aparte["orderNumber"] as? kotlinx.serialization.json.JsonPrimitive)?.takeIf { it.isString }?.content))
     }
 
     /**

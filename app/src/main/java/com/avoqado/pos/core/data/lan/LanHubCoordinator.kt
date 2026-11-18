@@ -316,6 +316,9 @@ class LanHubCoordinator(
     }
     private var silencio: Callado? = null
 
+    /** na5a8c9b (0199df): desde cuándo el mismo árbitro (época y elección) contesta «no arbitro» sin parar. Sólo el reconciliador. */
+    private var negativas: Callado? = null
+
     /** Pasos 6 a 11 de [reconciliarUnaVez], dentro del candado de la época: nada de red ni de suspensión aquí. */
     private fun aplicarRespuesta(resp: LeaseResponse?, arbitro: LanPeer, envio: Callado, declaracion: MesasDeEstaCaja.Declaracion): Long {
         // 6. Sin respuesta. D14: el árbitro que se quedó sin WiFi seguía en la lista y cada apertura esperaba los 15 s enteros. Un silencio
@@ -323,17 +326,37 @@ class LanHubCoordinator(
         //    nada de lo que se le mandó, las aperturas que viajaron en ESTA declaración van a isla, que es lo que les daba el plazo. Por
         //    tiempo y no por número de faltas (Codex D14 r1 #1): dos rechazos al instante no son seis segundos de silencio. La pregunta
         //    directa sigue: `esperar` la espera antes de abrir, y una «ocupada» directa gana.
+        //    na5a8c9b (0199df): la caja elegida que contesta «no arbitro» (`arbitra == false`: eligió a otra, p. ej. bandas del WiFi) tampoco
+        //    resuelve nada: su respuesta sigue la MISMA racha, con [NO_ARBITRA_PARA_ISLA_MS] (contesta al instante, no tarda el plazo de un
+        //    mensaje). Antes cada «esperar 1 s» suyo borraba el silencio y la apertura esperaba los 15 s enteros. Sus «ocupada» sí cuentan.
+        /** Isla para las aperturas que viajaron y que la respuesta no decidió (una «ocupada» de un permiso viejo no va a isla). */
+        fun aIsla(racha: Callado, umbralMs: Long, por: String, decididas: Set<String> = emptySet()) {
+            val callaMs = relojMs() - racha.desdeMs
+            val pendientes = declaracion.aperturas.filter { it.id !in decididas }
+            if (callaMs >= umbralMs && pendientes.isNotEmpty()) {
+                Log.w(TAG, "🏝️ El árbitro ${arbitro.deviceId.take(6)} lleva ${callaMs / 1000} s $por — aperturas en isla")
+                pendientes.forEach { mesas.resolver(it.id, LeaseOutcome.NoHub) }
+            }
+        }
         if (resp == null) {
             val racha = silencio?.takeIf { it.mismo(envio) } ?: envio
             silencio = racha
-            val callaMs = relojMs() - racha.desdeMs
-            if (callaMs >= SILENCIO_PARA_ISLA_MS && declaracion.aperturas.isNotEmpty()) {
-                Log.w(TAG, "🏝️ El árbitro ${arbitro.deviceId.take(6)} lleva ${callaMs / 1000} s sin contestar — aperturas en isla")
-                declaracion.aperturas.forEach { mesas.resolver(it.id, LeaseOutcome.NoHub) }
-            }
+            aIsla(racha, SILENCIO_PARA_ISLA_MS, "sin contestar")
             return if (mesas.hayPendientes(venueId)) REINTENTO_MS else LATIDO_MS
         }
         silencio = null
+
+        // na5a8c9b (0199df): un reloj APARTE del silencio (Codex r1 #2 y r2 #3): sólo las negativas explícitas seguidas del mismo árbitro,
+        // y nunca con una caja de app vieja en la red (la pregunta directa no la alcanza; su mesa sólo la sabe un árbitro): ahí, la espera
+        // de hoy. Cualquier otra respuesta lo borra; una respuesta perdida no lo alarga ni lo corta.
+        if (resp.status == LeaseProtocol.STATUS_OK && resp.arbitro == arbitro.deviceId && resp.arbitra == false && !hayCajaVieja()) {
+            val racha = negativas?.takeIf { it.mismo(envio) } ?: envio
+            negativas = racha
+            aIsla(racha, NO_ARBITRA_PARA_ISLA_MS, "contesta que no arbitra",
+                decididas = resp.aperturas.orEmpty().filter { it.resultado != APERTURA_ESPERAR }.mapTo(HashSet()) { it.id })
+        } else {
+            negativas = null
+        }
 
         // 8. `ok` de otro árbitro: lo conocido no cambia. Nunca 0: un rechazo instantáneo no hace un bucle sin pausa.
         if (resp.status == LeaseProtocol.STATUS_OK && resp.arbitro != arbitro.deviceId) {
@@ -366,6 +389,9 @@ class LanHubCoordinator(
         val esperar = resultados.filter { it.resultado == APERTURA_ESPERAR }.mapNotNull { it.esperarMs }.minOrNull()
         return minOf(LATIDO_MS, esperar ?: LATIDO_MS).coerceAtLeast(1)
     }
+
+    /** Codex 0199df r1 #2: otra caja de esta red que contesta permisos pero no declara presencia (app vieja): `en_mesa` no la alcanza. */
+    private fun hayCajaVieja() = discovery.peers.value.any { it.deviceId != deviceId && it.sirveLeases && !it.presencia }
 
     /**
      * Revisar y aplicar como UNA operación frente a los dos que pueden invalidarla (Codex código r1 #3 y r3): la época nueva
@@ -478,6 +504,12 @@ class LanHubCoordinator(
          * un mensaje: al menos dos intentos enteros sin una sola respuesta, en la red del local, donde un aparato vivo contesta en ms.
          */
         const val SILENCIO_PARA_ISLA_MS = 2 * LeaseClient.PLAZO_HUB_MS
+
+        /**
+         * na5a8c9b (0199df): la caja elegida que contesta «no arbitro». Contesta al instante, así que no hace falta esperar dos plazos de un
+         * mensaje; deja ~3 s para que una caja recién elegida asuma el arbitraje (antes su espera eran los 15 s de [MesasDeEstaCaja]).
+         */
+        const val NO_ARBITRA_PARA_ISLA_MS = LeaseClient.PLAZO_HUB_MS
 
         /** El mismo tope de un id que `Presencias` (MAX_ID). */
         const val MAX_MESA = 64

@@ -711,7 +711,19 @@ class SyncOutbox @Inject constructor(
             dao.resolverCobroQ15(row.id,venueId,row.seq,if(ack.isAcked) SyncIntentEntity.STATUS_ACKED else SyncIntentEntity.STATUS_REJECTED,
                 ack.errorCode,ack.message,resultJson,evaluation?.motivo ?: if(!ack.isAcked) com.avoqado.pos.payment.data.ConciliacionDelCobro.RESULTADO_NO_COMPROBADO else null,
                 evaluation?.resultadoJson,System.currentTimeMillis())
-        } else dao.resolve(ack.id,if(ack.isAcked) SyncIntentEntity.STATUS_ACKED else SyncIntentEntity.STATUS_REJECTED,ack.errorCode,ack.message,resultJson)
+        } else {
+            // nac50984 (0199df, Codex r1 #1a): la ronda que el SERVIDOR puso en una cuenta aparte (la pedida ya estaba cobrada) sale del
+            // borrador de la cuenta pedida ANTES de guardar el ACK, aunque nadie tenga la mesa en pantalla: sus renglones nunca van a
+            // aparecer en esa cuenta y se quedaba «por sincronizar» para siempre. Descartada (D29), ningún guardado posterior la revive.
+            // Si el disco no deja, el ACK se guarda igual (sólo queda el borrador viejo, como hoy).
+            if (ack.isAcked && row.type == SyncIntentTypes.ADD_ITEMS) cuentaAparteDelAcuse(ack.result)?.let { aparte ->
+                cuentaDeLaRonda(row.payloadJson)?.takeIf { it != aparte }?.let { cuenta ->
+                    runCatching { withContext(Dispatchers.IO) { tableDrafts.descartarRonda(venueId, cuenta, ack.id) } }
+                        .onFailure { Log.w(TAG, "No se pudo sacar del borrador la ronda ${ack.id} (cuenta aparte): ${it.message}") }
+                }
+            }
+            dao.resolve(ack.id,if(ack.isAcked) SyncIntentEntity.STATUS_ACKED else SyncIntentEntity.STATUS_REJECTED,ack.errorCode,ack.message,resultJson)
+        }
         // D22: cualquier operación de la cola que el servidor confirmó (no sólo el cobro: artículos y descuentos cambian el
         // informe). Avisar de más cuesta una recarga agrupada; de menos, cifras viejas.
         if (ack.isAcked) avisosDeVentas.subio(row.venueId)
@@ -757,6 +769,10 @@ class SyncOutbox @Inject constructor(
             .filter { it.id != id && it.esMesaConSaldo() && it.payloadJson == fila.payloadJson }.forEach { dao.dismiss(it.id) }
         refreshCounts(venueId)
     }
+
+    /** nac50984 (0199df): `result.cuentaAparte.orderId` del ACK de `ADD_ITEMS` (SERVIDOR #471), o null. */
+    private fun cuentaAparteDelAcuse(result: JsonObject?): String? =
+        ((result?.get("cuentaAparte") as? JsonObject)?.get("orderId") as? JsonPrimitive)?.takeIf { it.isString }?.content?.takeIf { it.isNotBlank() }
 
     /** La cuenta de una ronda encolada: `orderId` (mesa del servidor) o `localOrderId` (abierta sin red; el borrador sigue su alias). */
     private fun cuentaDeLaRonda(payloadJson: String): String? = runCatching {

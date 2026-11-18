@@ -202,4 +202,9 @@ data class LeaseResponse(
     /** Hub D3 (sólo `estado`): quién arbitra y el veredicto de cada apertura pedida. Fuera del cable de las ops viejas. */
     @EncodeDefault(EncodeDefault.Mode.NEVER) val arbitro: String? = null,
     @EncodeDefault(EncodeDefault.Mode.NEVER) val aperturas: List<WireResultadoApertura>? = null,
+    /**
+     * Tarjeta de la nube na5a8c9b (encargo 0199df): `false` = esta caja NO arbitra (eligió a otra) y sus «esperar» no son de un árbitro.
+     * Sólo en `estado`; se omite si arbitra. Opcional en el protocolo v1: una app vieja lo ignora y una caja vieja no lo manda.
+     */
+    @EncodeDefault(EncodeDefault.Mode.NEVER) val arbitra: Boolean? = null,
 )

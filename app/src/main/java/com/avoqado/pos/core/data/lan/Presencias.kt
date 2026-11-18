@@ -112,14 +112,19 @@ internal class Presencias {
             concedidas = aperturas.filterIndexed { i, _ -> resultados[i].resultado == APERTURA_CONCEDIDA }.toSet(),
             vistoEn = ahora,
         )
-        return LeaseResponse(status = LeaseProtocol.STATUS_OK, arbitro = arbitro, aperturas = resultados)
+        // na5a8c9b (0199df): sin arbitraje asumido, sus «esperar» no los resuelve nadie; la caja que pregunta lo sabe y no espera 15 s.
+        return LeaseResponse(status = LeaseProtocol.STATUS_OK, arbitro = arbitro, aperturas = resultados, arbitra = if (asumido) null else false)
     }
 
     private fun decidir(a: WireApertura, caja: String, ahora: Long, viejos: List<TableLease>): WireResultadoApertura {
         val falta = CALENTAMIENTO_MS - (ahora - desde)
         if (asumido && pendientes.isNotEmpty() && falta > 0) return WireResultadoApertura(a.id, APERTURA_ESPERAR, esperarMs = falta)
-        if (!asumido) return WireResultadoApertura(a.id, APERTURA_ESPERAR, esperarMs = NO_ASUMIDO_MS)
-        val quien = viejos.firstOrNull { it.tableId == a.tableId && it.holderDeviceId != caja }?.holderName
+        val viejo = viejos.firstOrNull { it.tableId == a.tableId && it.holderDeviceId != caja }?.holderName
+        // Codex 0199df r1 #2: aunque no arbitre, un permiso viejo VIVO de otra caja (app vieja) es un hecho: la mesa está ocupada. Antes
+        // contestaba «esperar» y, a los 15 s, la otra caja abría igual en isla; con la isla a los 3 s (na5a8c9b) ya no hay que esperar.
+        if (!asumido) return if (viejo != null) WireResultadoApertura(a.id, APERTURA_OCUPADA, quien = viejo)
+            else WireResultadoApertura(a.id, APERTURA_ESPERAR, esperarMs = NO_ASUMIDO_MS)
+        val quien = viejo
             ?: quienDeclara(a.tableId, caja, ahora)?.value?.staffName
         return if (quien != null) {
             WireResultadoApertura(a.id, APERTURA_OCUPADA, quien = quien)

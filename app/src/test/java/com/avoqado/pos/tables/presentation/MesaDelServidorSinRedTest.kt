@@ -1074,6 +1074,53 @@ class MesaDelServidorSinRedTest {
 
         assertTrue("el SERVIDOR la confirmó en la cuenta aparte: ya no está «por sincronizar»", subject.queued.value.isEmpty())
         assertTrue("y tampoco se queda en el borrador de la cuenta cobrada", drafts.load(venue, "order-F").rounds.isEmpty())
+        assertEquals("dice dónde quedó", TableOrderViewModel.textoDeCuentaAparte("G-7"), subject.actionMessage.value)
+        assertEquals("no cambia de cuenta sola (Codex r2 #1 y #2)", "order-F", session.current()?.orderId)
+        subject.viewModelScope.cancel()
+    }
+
+    @Test fun `P1 nac50984 Codex r1 1a la cola saca la ronda del borrador de la cuenta cobrada aunque nadie mire la mesa`() = runTest {
+        val subject = mesaConFoto()
+        conInternet = false
+        ronda(subject, 2000)
+        val llave = cola.single { it.tipo == "ADD_ITEMS" }.id
+        subject.viewModelScope.cancel() // el mesero se fue al plano: nadie tiene la mesa en pantalla
+        assertEquals(1, drafts.load(venue, "order-F").rounds.size)
+
+        val dao = mockk<SyncIntentDao>(relaxed = true)
+        val fila = SyncIntentEntity(llave, venue, "staff", 2, "ADD_ITEMS", """{"orderId":"order-F","items":[{"externalId":"sync:$llave:0"}]}""")
+        colaReal(dao).conservarAck(ackCuentaAparte(llave), fila, venue, "d1", "d1")
+
+        coVerify(exactly = 1) { dao.resolve(llave, "ACKED", any(), any(), any()) }
+        assertTrue("la ronda ya está en la cuenta aparte: sale del borrador de la cobrada", drafts.load(venue, "order-F").rounds.isEmpty())
+        // Y un guardado desde memoria de la pantalla vieja no la revive (D29: descartada).
+        assertTrue(drafts.load(venue, "order-F").descartadas.contains(llave))
+    }
+
+    @Test fun `P1 nac50984 Codex r2 1 con dos rondas sin red, la segunda sigue por sincronizar en la misma cuenta`() = runTest {
+        val subject = mesaConFoto()
+        conInternet = false
+        ronda(subject, 2000)
+        ronda(subject, 1500)
+        val (primera, segunda) = cola.filter { it.tipo == "ADD_ITEMS" }.map { it.id }
+        cuenta = cuenta.copy(status = "COMPLETED")
+        conInternet = true
+        estado(primera, "ACKED")
+        acks.emit(ackCuentaAparte(primera))
+        advanceUntilIdle()
+
+        assertEquals("sólo la que el SERVIDOR confirmó sale", 1, subject.queued.value.map { it.externalId?.substringBeforeLast(':') }.distinct().size)
+        assertTrue(subject.queued.value.all { it.externalId?.startsWith("sync:$segunda:") == true })
+        assertEquals("la pantalla se queda en su cuenta mientras la otra ronda viaja", "order-F", session.current()?.orderId)
+        subject.viewModelScope.cancel()
+    }
+
+    @Test fun `nac50984 la ronda de otra pantalla o una cuenta aparte igual a la actual no mueven nada`() = runTest {
+        val subject = mesaConFoto()
+        acks.emit(ackCuentaAparte("ronda-de-otra-caja"))
+        advanceUntilIdle()
+        assertEquals(1, subject.queued.value.size)
+        assertEquals("order-F", session.current()?.orderId)
         subject.viewModelScope.cancel()
     }
 

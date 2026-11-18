@@ -8,7 +8,10 @@ import com.avoqado.pos.core.data.local.database.PaymentSyncStatus
 import com.avoqado.pos.core.data.local.database.RevisionCanceladoCero
 import com.avoqado.pos.payment.data.model.CreateOrderRequest
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.update
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonObject
@@ -150,7 +153,24 @@ class CashPaymentRepository @Inject constructor(
      * aquí la dejó un flujo que ya no existe (la app murió, la pantalla se cerró, empezó otra venta): nadie la resolvió, y desde
      * D2 v7 se da por COBRADA ([darPorCobradasLasAbandonadas]).
      */
-    private val reservasDeEsteProceso: MutableSet<String> = ConcurrentHashMap.newKeySet()
+    private val reservasDeEsteProceso = ReservasEnMemoria()
+
+    /**
+     * Tarjeta de la nube na300d63 (encargo 0199df): soltar una reserva sólo en memoria (`olvidarReservaEnMemoria`, el «Ya pagó de otra
+     * forma» rechazado) no toca la tabla, y [observarSinConfirmar] sólo se recalculaba con la tabla: el cobro no salía en «Cobros
+     * interrumpidos» mientras el freno de «Cerrar sesión» ([enVueloPorRevisar], calculado al momento) sí lo contaba. Cada alta o baja de la
+     * reserva sube [cambios] y la lista se vuelve a calcular.
+     */
+    private class ReservasEnMemoria(private val ids: MutableSet<String> = ConcurrentHashMap.newKeySet()) : MutableSet<String> by ids {
+        val cambios = MutableStateFlow(0L)
+        private fun <T> avisar(cambio: Boolean, valor: T): T { if (cambio) cambios.update { it + 1 }; return valor }
+        override fun add(element: String) = ids.add(element).let { avisar(it, it) }
+        override fun addAll(elements: Collection<String>) = ids.addAll(elements).let { avisar(it, it) }
+        override fun remove(element: String) = ids.remove(element).let { avisar(it, it) }
+        override fun removeAll(elements: Collection<String>) = ids.removeAll(elements.toSet()).let { avisar(it, it) }
+        override fun retainAll(elements: Collection<String>) = ids.retainAll(elements.toSet()).let { avisar(it, it) }
+        override fun clear() { val habia = ids.isNotEmpty(); ids.clear(); avisar(habia, Unit) }
+    }
 
     /** Read-only presentation scope; never releases a live reservation. */
     fun salesNoticeReservedIds(): Set<String> = reservasDeEsteProceso.toSet()
@@ -382,9 +402,14 @@ class CashPaymentRepository @Inject constructor(
 
     /** Lo mismo, en vivo, para el aviso y la cuarentena. */
     fun observarSinConfirmar(): Flow<List<PendingPaymentEntity>> =
-        pendingPaymentDao.observarEnVuelo().map { filas ->
+        combine(pendingPaymentDao.observarEnVuelo(), reservasDeEsteProceso.cambios) { filas, _ ->
             val venueId = secureStorage.venueId
-            filas.filter { it.venueId == venueId && it.id !in reservasDeEsteProceso && RevisionCanceladoCero.mostrarFallido(it) }
+            // Codex 0199df r1 #4a: el efectivo puro que el barrido da por cobrado ([seDaPorCobrada]) no espera a una persona. Ahora que la
+            // lista se recalcula al soltar la reserva, salía en la hoja antes del barrido y «Conservar para revisión» lo retenía.
+            filas.filter {
+                venueId != null && it.venueId == venueId && it.id !in reservasDeEsteProceso && RevisionCanceladoCero.mostrarFallido(it) &&
+                    !seDaPorCobrada(it, venueId)
+            }
         }
 
     /** Manager confirmation cannot reconstruct a lost amount or release a price hold. */
@@ -433,6 +458,8 @@ class CashPaymentRepository @Inject constructor(
         val venue=secureStorage.venueId ?: return false
         val row=pendingPaymentDao.findForVenue(venue,id) ?: return false
         if(row.syncStatus!="EN_VUELO") return false
+        // Codex 0199df r1 #4a: el apartado sin dueño que el barrido da por cobrado no se retiene (su venta sí entró); lo sube el barrido.
+        if(id !in reservasDeEsteProceso && seDaPorCobrada(row,venue)) return false
         val reason=if(ConciliacionDelCobro.leerCaptura(row.q15CaptureJson,venue,id)==null)
             ConciliacionDelCobro.CAPTURA_SIN_EVIDENCIA else ConciliacionDelCobro.RESULTADO_NO_COMPROBADO
         pendingPaymentDao.retenerPagoQ15(venue,id,reason,System.currentTimeMillis())

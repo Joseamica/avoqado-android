@@ -5,6 +5,8 @@ import com.avoqado.pos.core.data.local.database.PendingPaymentDao
 import com.avoqado.pos.core.data.local.database.PendingPaymentEntity
 import com.avoqado.pos.payment.data.CashPaymentRepository
 import com.avoqado.pos.payment.data.model.CreateOrderRequest
+import com.avoqado.pos.payment.domain.TenderTypeOption
+import io.mockk.coVerify
 import io.mockk.coEvery
 import io.mockk.every
 import io.mockk.mockk
@@ -15,6 +17,7 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Test
 
 /**
@@ -30,6 +33,7 @@ class CobroSoltadoSeVeEnLaHojaTest {
     private val dao = mockk<PendingPaymentDao>(relaxed = true).also { d ->
         every { d.observarEnVuelo() } returns tabla
         coEvery { d.findForVenue(any(), any()) } answers { tabla.value.firstOrNull { it.id == secondArg<String>() } }
+        coEvery { d.enVueloDelVenue(any()) } answers { tabla.value.filter { it.venueId == firstArg<String>() } }
         coEvery { d.insert(any(), any()) } answers {
             val fila = firstArg<PendingPaymentEntity>()
             tabla.value = tabla.value.filterNot { it.id == fila.id } + fila
@@ -38,9 +42,12 @@ class CobroSoltadoSeVeEnLaHojaTest {
     private val storage = mockk<SecureStorage>(relaxed = true).also { every { it.venueId } returns VENUE }
     private val repo = CashPaymentRepository(storage, dao)
 
-    private suspend fun reservar(llave: String) = repo.reservarCobro(
+    /** «Ya pagó de otra forma › Transferencia» (tipo del negocio), como en la prueba de D63 del 17-nov. */
+    private val transferencia = TenderTypeOption("tender-transferencia", 1, "Transferencia", false, "OTHER", false, "PRIMARY", 1, false)
+
+    private suspend fun reservar(llave: String, tipo: TenderTypeOption? = transferencia) = repo.reservarCobro(
         CreateOrderRequest(emptyList(), subtotal = 3_000, total = 3_000, paymentMethod = "CASH"),
-        "staff-1", 3_000, 0, null, idempotencyKey = llave, venueId = VENUE,
+        "staff-1", 3_000, 0, null, idempotencyKey = llave, tenderType = tipo, venueId = VENUE,
     )
 
     @Test
@@ -53,6 +60,7 @@ class CobroSoltadoSeVeEnLaHojaTest {
 
         assertEquals("soltado: la hoja lo muestra ya, como lo cuenta el freno de Cerrar sesión", listOf("llave-1"), hoja.value.map { it.id })
         assertEquals("y lo que calcula al momento coincide", listOf("llave-1"), repo.cobrosSinConfirmar().map { it.id })
+        assertEquals("el freno de Cerrar sesión lo cuenta por revisar, igual que la hoja", 1, repo.enVueloPorRevisar())
     }
 
     @Test
@@ -62,6 +70,17 @@ class CobroSoltadoSeVeEnLaHojaTest {
         repo.olvidarReservaEnMemoria("llave-1")
         reservar("llave-2")
         assertEquals(listOf("llave-1"), hoja.value.map { it.id })
+    }
+
+    @Test
+    fun `P1 Codex r1 4a el efectivo puro sin dueño no se ofrece en la hoja ni se retiene - lo sube el barrido`() = runTest(UnconfinedTestDispatcher()) {
+        val hoja = repo.observarSinConfirmar().stateIn(backgroundScope, SharingStarted.Eagerly, emptyList())
+        reservar("efectivo", tipo = null)
+        repo.olvidarReservaEnMemoria("efectivo") // la pantalla del cobro se destruyó sin que la cajera decidiera
+
+        assertEquals("el barrido lo da por cobrado: no espera a una persona", emptyList<String>(), hoja.value.map { it.id })
+        assertFalse(repo.descartarPorqueNoSeCobro("efectivo"))
+        coVerify(exactly = 0) { dao.retenerPagoQ15(any(), "efectivo", any(), any()) }
     }
 
     private companion object { const val VENUE = "venue-1" }
