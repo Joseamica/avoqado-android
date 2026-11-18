@@ -1863,7 +1863,9 @@ class CustomerDisplaySyncTest {
      * Una unidad de la fila que no toca nada (una sucursal sin terminal): al volver, ya corrió todo lo que estaba formado
      * antes. Funciona porque `onCapabilitiesReported` pasa por la fila y el `Mutex` de corrutinas es justo (FIFO).
      */
-    private suspend fun vaciarLaFila(sync: CustomerDisplaySync) = sync.onCapabilitiesReported("ninguna")
+    private suspend fun vaciarLaFila(sync: CustomerDisplaySync) =
+        // Con tope (Codex r2, encargo 5053f3): si una unidad se queda con la fila, la prueba FALLA en 10 s en vez de colgarse.
+        withTimeout(10_000) { sync.onCapabilitiesReported("ninguna") }
 
     /**
      * Deja la fila tomada por una unidad que no toca nada (el reporte de capacidades de una sucursal sin terminal),
