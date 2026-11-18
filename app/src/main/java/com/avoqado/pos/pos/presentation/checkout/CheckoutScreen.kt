@@ -1617,13 +1617,17 @@ fun CheckoutScreen(
     // El carrito sigue a esta pantalla: un cobro restaurado (girar la tablet, volver a la pestaña) sigue abierto para él, y
     // una pantalla que vuelve SIN cobro suelta una marca vieja, para que la pistola nunca se quede ignorada para siempre.
     LaunchedEffect(showPaymentFlow, aperturaDeTarjetas) {
-        if (showPaymentFlow || aperturaDeTarjetas != null) cartViewModel.abrirCobro() else cartViewModel.cerrarCobro()
+        if (showPaymentFlow || aperturaDeTarjetas != null) cartViewModel.abrirCobro()
+        else {
+            cartViewModel.cerrarCobro()
+            // D9: «Inscribir y cobrar» que llegó con el cobro abierto se quedó guardado; entra ahora, como habría entrado al llegar.
+            cartViewModel.consumePendingClassSeed()
+        }
     }
-    // D9 (Codex r4 #2): las clases de «Inscribir y cobrar» que esperan (cobro abierto, venta a medio cobrar, otra clase en la
-    // venta) entran a la venta SIGUIENTE: cuando el carrito queda vacío y no hay cobro (terminar, «Vaciar»), nunca encima de
-    // los artículos de otra venta al cancelar un cobro.
-    LaunchedEffect(cartState.isEmpty, showPaymentFlow, aperturaDeTarjetas) {
-        if (cartState.isEmpty && !showPaymentFlow && aperturaDeTarjetas == null) cartViewModel.consumePendingClassSeed()
+    // D9 (Codex r5 #2): desde que el cliente sólo contesta, la sugerencia puede quedar pendiente sin cobro. Si el carrito queda
+    // vacío sin cobrar (quitó todo, «Vaciar»), la venta que sigue es otra: ni se le cuenta ni se le deja de ofrecer.
+    LaunchedEffect(cartState.isEmpty, showPaymentFlow) {
+        if (cartState.isEmpty && !showPaymentFlow) upsellViewModel.cancelPendingConversion()
     }
 
     // Barcode scanner overlay
@@ -2220,8 +2224,7 @@ fun CheckoutScreen(
                     // Upsell: el momento terminó en venta PAGADA. Sólo aquí, en el
                     // éxito real — una impresión sin esto aporta $0 al reporte, y
                     // marcarla antes contaría como venta algo que se canceló.
-                    // D9: con la venta que trae el pago, para que la sugerencia de otra venta no se le cuente a ésta.
-                    completion.orderId?.let { upsellViewModel.onOrderPaid(it, venta = completion.identidadDeVenta) }
+                    completion.orderId?.let { upsellViewModel.onOrderPaid(it) }
                 },
                 onDone = {
                     cuentaConSaldoVisible = cuentaConSaldoPendiente; cuentaConSaldoPendiente = null; tarjetaPreseleccionada = null
@@ -2344,6 +2347,8 @@ fun CheckoutScreen(
                 showSplitPayment = false
                 // D9: si otro abrió el cobro con la hoja abierta (el «No, gracias» del cliente), su división no cambia: se avisa.
                 if (!cartViewModel.avisarSiElCobroEstaAbierto()) {
+                    // Como «Dividir importe» desde el cobro: un upsell cobrado en partes no cuenta como convertido (Codex r5 #4).
+                    upsellViewModel.cancelPendingConversion()
                     pendingSplitConfig = splitConfig
                     proceedToPayment()
                 }

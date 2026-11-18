@@ -28,24 +28,27 @@ class ClassCheckoutSeed @Inject constructor() {
         val reservationId: String? = null,
     )
 
-    /**
-     * D9 (Codex r3 #5): una FILA, no una casilla. Mientras el cobro está abierto o la venta debe un saldo, la clase espera; dos
-     * «Inscribir y cobrar» seguidos dejaban sólo el último (los dos lugares ya estaban apartados en el servidor). Cada una entra
-     * a su propia venta, en orden.
-     */
-    private val pending = java.util.concurrent.ConcurrentLinkedDeque<Seed>()
+    @Volatile
+    private var pending: Seed? = null
 
     fun put(seed: Seed) {
-        pending.addLast(seed)
+        pending = seed
     }
 
-    /** La que se sacó y no pudo entrar regresa al FRENTE: sigue siendo la siguiente. */
+    /** Returns the pending seed exactly once, then clears it (one-shot). */
+    fun consume(): Seed? {
+        val current = pending
+        pending = null
+        return current
+    }
+
+    fun hasPending(): Boolean = pending != null
+
+    /**
+     * D9: la que se sacó y no pudo entrar (el cobro se abrió mientras cargaba el catálogo) regresa, salvo que ya haya otra
+     * más nueva: una sola casilla, como siempre.
+     */
     fun devolver(seed: Seed) {
-        pending.addFirst(seed)
+        if (pending == null) pending = seed
     }
-
-    fun consume(): Seed? = pending.pollFirst()
-
-    fun hasPending(): Boolean = pending.isNotEmpty()
-
 }

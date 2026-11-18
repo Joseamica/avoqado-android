@@ -283,22 +283,6 @@ class UpsellViewModelTest {
     }
 
     @Test
-    fun `D9 la impresion se convierte con el pago de SU venta, aunque se haya cancelado un cobro antes, y no con el de otra`() {
-        val vm = viewModel()
-        val a = cart("cafe")
-        vm.offer(a, UpsellContext.COUNTER)
-        vm.finish(emptyList(), 0)
-
-        vm.onOrderPaid("orden-B", venta = cart("cafe").identidadDeVenta)   // vaciaron A y cobraron otra venta
-        dispatcher.scheduler.advanceUntilIdle()
-        io.mockk.coVerify(exactly = 0) { repo.convertImpression(any(), any()) }
-
-        vm.onOrderPaid("orden-A", venta = a.identidadDeVenta)             // la misma A, cobrada tras cancelar un cobro
-        dispatcher.scheduler.advanceUntilIdle()
-        io.mockk.coVerify(exactly = 1) { repo.convertImpression(any(), "orden-A") }
-    }
-
-    @Test
     fun `D9 al cancelar el cobro la venta se puede volver a ofrecer y la impresion vieja ya no convierte`() {
         val vm = viewModel()
         val a = cart("cafe")
@@ -308,7 +292,7 @@ class UpsellViewModelTest {
         vm.cancelPendingConversion()   // la cajera canceló el cobro (o salió a «Dividir importe»)
 
         assertNotNull(vm.offer(a, UpsellContext.COUNTER))
-        vm.onOrderPaid("orden-A", venta = a.identidadDeVenta)   // el momento nuevo sigue abierto: nada que convertir
+        vm.onOrderPaid("orden-A")   // el momento nuevo sigue abierto: nada que convertir
         dispatcher.scheduler.advanceUntilIdle()
         io.mockk.coVerify(exactly = 0) { repo.convertImpression(any(), any()) }
     }

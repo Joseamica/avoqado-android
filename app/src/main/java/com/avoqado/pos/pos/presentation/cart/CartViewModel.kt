@@ -714,10 +714,13 @@ class CartViewModel @Inject constructor(
     fun consumeAvisoDelCobroAbierto() { _avisoDelCobroAbierto.value = null }
 
     fun cerrarCobro() {
+        val estabaAbierto = cobroAbierto
         cobroAbierto = false
         _avisoDelCobroAbierto.value = null   // decía «cancela el cobro»: ya no aplica (Codex r2 #11)
         vendedoresPorAplicar?.let { vendedoresPorAplicar = null; aplicarVendedores(it, alCerrarElCobro = true) }
         if (cocinaPorAplicar) { cocinaPorAplicar = false; freezePreparationForPendingProducts() }
+        // Mientras estuvo abierto, el carrito vivo no se pintaba en la pantalla del cliente (Codex r5 #7: la venta de tarjetas).
+        if (estabaAbierto) refreshCustomerDisplay()
         // D4: lo que la venta intentó cobrar ya no está en pantalla: desde ahora lo decide su evidencia (también su duda).
         pendingGrantQueue?.soltarVenta()
     }
@@ -1563,19 +1566,16 @@ class CartViewModel @Inject constructor(
     }
 
     fun consumePendingClassSeed() {
-        // D9: con el cobro abierto o una venta a medio cobrar, la clase no entra y la semilla NO se consume: entra a la venta
-        // siguiente (la pantalla la vuelve a pedir al cerrarse el cobro). Con abono, agregarla trababa el «Cobrar» (Codex r2 #1).
-        if (cobroLoImpide(avisar = false) || hayVentaAMedias() || sembrandoClase) return
+        // D9: con el cobro abierto la clase no entra a la venta que se cobra y la semilla NO se consume: la pantalla la vuelve a
+        // pedir al cerrarse el cobro.
+        if (cobroLoImpide(avisar = false)) return
         val seed = classCheckoutSeed.consume() ?: return
-        // Una a la vez: la pantalla la pide al llegar y al quedar vacío el carrito; con dos en la fila no entran juntas.
-        sembrandoClase = true
         viewModelScope.launch {
-          try {
             if (productsRepository.products.value.isEmpty()) {
                 productsRepository.fetchProducts()
             }
             // D9 (Codex r1 #3): el cobro se abrió mientras cargaba el catálogo: la semilla regresa y entra al cerrarlo.
-            if (cobroLoImpide(avisar = false) || hayVentaAMedias()) {
+            if (cobroLoImpide(avisar = false)) {
                 classCheckoutSeed.devolver(seed)
                 return@launch
             }
@@ -1590,7 +1590,6 @@ class CartViewModel @Inject constructor(
             val existingResId = _cartState.value.reservationId
             if (existingResId != null && seed.reservationId != null && existingResId != seed.reservationId) {
                 Log.w("🛒", "Cart already linked to reservation $existingResId — skipping seed for ${seed.reservationId}")
-                classCheckoutSeed.devolver(seed)   // D9: con la fila, la otra clase espera su propia venta en vez de perderse
                 _seedConflict.value = true
                 return@launch
             }
@@ -1599,12 +1598,8 @@ class CartViewModel @Inject constructor(
                 _cartState.update { it.copy(reservationId = resId) }
             }
             Log.d("🛒", "Seeded class ${product.name} x${seed.quantity} from walk-in flow")
-          } finally {
-            sembrandoClase = false
-          }
         }
     }
-    private var sembrandoClase = false
 
     // MARK: - Cart Operations
 

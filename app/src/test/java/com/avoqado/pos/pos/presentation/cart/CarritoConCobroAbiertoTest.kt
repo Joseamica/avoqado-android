@@ -363,19 +363,6 @@ class CarritoConCobroAbiertoTest {
     }
 
     @Test
-    fun `la clase no entra a una venta a medio cobrar, espera a la siguiente`() {
-        val semilla = ClassCheckoutSeed().apply { put(ClassCheckoutSeed.Seed(productId = "cafe", quantity = 1, reservationId = "res-1")) }
-        val vm = carrito(semilla)
-        vm.addCustomAmount("Saldo pendiente", 2_000)
-        vm.markPendingSplitOrder("orden-1")
-
-        vm.consumePendingClassSeed()
-
-        assertEquals(listOf("Saldo pendiente"), vm.cartState.value.items.map { it.name })
-        assertTrue(semilla.hasPending())
-    }
-
-    @Test
     fun `al cerrar el cobro la cajera vuelve a poder cambiar la venta`() {
         val vm = cafeConElCobroAbierto()
         vm.addProduct(pan)
@@ -386,28 +373,6 @@ class CarritoConCobroAbiertoTest {
 
         assertEquals(listOf("Café", "Pan"), vm.cartState.value.items.map { it.name })
         assertNull(vm.avisoDelCobroAbierto.value)
-    }
-
-    @Test
-    fun `dos inscripciones seguidas no se pisan, cada clase entra a su propia venta`() {
-        val semilla = ClassCheckoutSeed().apply {
-            put(ClassCheckoutSeed.Seed(productId = "cafe", quantity = 1, reservationId = "res-1"))
-            put(ClassCheckoutSeed.Seed(productId = "pan", quantity = 1, reservationId = "res-2"))
-        }
-        val vm = carrito(semilla)
-
-        vm.consumePendingClassSeed()
-        assertEquals("res-1", vm.cartState.value.reservationId)
-
-        // Mientras la venta trae la primera clase, la segunda espera (antes se perdía con el aviso de reserva distinta).
-        vm.consumePendingClassSeed()
-        assertEquals(listOf("Café"), vm.cartState.value.items.map { it.name })
-        assertTrue(semilla.hasPending())
-
-        vm.clearCart()
-        vm.consumePendingClassSeed()
-        assertEquals("res-2", vm.cartState.value.reservationId)
-        assertEquals(listOf("Pan"), vm.cartState.value.items.map { it.name })
     }
 
     @Test
@@ -427,27 +392,5 @@ class CarritoConCobroAbiertoTest {
         assertEquals("el saldo de regalo compara el carrito vivo con la foto: no cambia durante el cobro", antes, vm.cartState.value)
         vm.cerrarCobro()
         assertEquals("immediate", vm.cartState.value.items.single().serviceCourse?.id)
-    }
-
-    @Test
-    fun `dos pedidos seguidos de la fila de clases no meten dos clases en la misma venta`() {
-        val catalogo = MutableStateFlow<List<Product>>(emptyList())
-        every { productsRepository.products } returns catalogo
-        val carga = kotlinx.coroutines.CompletableDeferred<Unit>()
-        var esperar = false
-        coEvery { productsRepository.fetchProducts(any(), any()) } coAnswers { if (esperar) { carga.await(); catalogo.value = listOf(cafe, pan) } }
-        val semilla = ClassCheckoutSeed().apply {
-            put(ClassCheckoutSeed.Seed(productId = "cafe", quantity = 1, reservationId = "res-1"))
-            put(ClassCheckoutSeed.Seed(productId = "pan", quantity = 1, reservationId = "res-2"))
-        }
-        val vm = carrito(semilla)
-        esperar = true
-
-        vm.consumePendingClassSeed()   // al llegar
-        vm.consumePendingClassSeed()   // el carrito vacío lo vuelve a pedir mientras la primera carga el catálogo
-        carga.complete(Unit)
-
-        assertEquals(listOf("Café"), vm.cartState.value.items.map { it.name })
-        assertTrue("la segunda sigue en la fila", semilla.hasPending())
     }
 }
