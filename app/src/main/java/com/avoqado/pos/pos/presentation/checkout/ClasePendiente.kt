@@ -33,10 +33,11 @@ internal fun yaNoSeCobraAqui(status: ReservationStatus, persona: String?): Strin
     return when (status) {
         // Codex r3 #1: «llegó» no prueba que ya se cobró (el QR del kiosco la marca sin abrir cuenta). Se cobra aquí; si recepción
         // ya abrió su cuenta, el servidor rechaza una segunda y la cajera lo ve al cobrar.
-        ReservationStatus.PENDING, ReservationStatus.CONFIRMED, ReservationStatus.CHECKED_IN -> null
+        // Codex r6 #1: «completada» tampoco prueba que se pagó (recepción la completa sin cobro), y «no se presentó» con la persona
+        // en la caja es un error de recepción: se cobran aquí. Sólo una reserva cancelada sale de pendientes.
+        ReservationStatus.PENDING, ReservationStatus.CONFIRMED, ReservationStatus.CHECKED_IN,
+        ReservationStatus.COMPLETED, ReservationStatus.NO_SHOW -> null
         ReservationStatus.CANCELLED -> "La reserva$de se canceló: ya no se cobra aquí."
-        ReservationStatus.NO_SHOW -> "La reserva$de quedó como «No se presentó»: ya no se cobra aquí."
-        ReservationStatus.COMPLETED -> "La clase$de ya quedó completada: ya no se cobra aquí."
     }
 }
 
@@ -48,17 +49,17 @@ class ClasePendienteViewModel @Inject constructor(
     sealed interface Revision {
         data object SeCobra : Revision
         data class YaNo(val motivo: String) : Revision
-        /** Sin red (o el servidor no contestó a tiempo): se deja agregar y se dice que no se pudo revisar. */
-        data object SinRevisar : Revision
+        /** Sin red, sin permiso de agenda o sin respuesta a tiempo: se deja agregar y se dice que no se pudo revisar. */
+        data class SinRevisar(val sinRed: Boolean) : Revision
     }
 
     suspend fun revisar(seed: ClassCheckoutSeed.Seed): Revision {
         val id = seed.reservationId ?: return Revision.SeCobra
-        if (!connectivity.isFullyConnected) return Revision.SinRevisar
+        if (!connectivity.isFullyConnected) return Revision.SinRevisar(sinRed = true)
         // Codex r3 #2: la llamada bloquea su hilo y no se deja cancelar; se espera a su resultado sólo 5 s y, si no llega, se
         // sigue sin ella (la llamada termina sola en segundo plano).
         val consulta = viewModelScope.async(Dispatchers.IO) { reservations.fetchOne(id, seed.venueId).getOrNull() }
-        val reserva = withTimeoutOrNull(5_000) { consulta.await() } ?: return Revision.SinRevisar
+        val reserva = withTimeoutOrNull(5_000) { consulta.await() } ?: return Revision.SinRevisar(sinRed = false)
         return yaNoSeCobraAqui(reserva.status, seed.persona)?.let(Revision::YaNo) ?: Revision.SeCobra
     }
 }
@@ -80,6 +81,10 @@ fun ClasePendiente(cart: CartViewModel, vm: ClasePendienteViewModel = hiltViewMo
     // Codex r2 #6: vuelve a avisar en cuanto la caja queda libre (también al quitar al cliente con el carrito ya vacío).
     LaunchedEffect(libre) { if (libre) vistas = emptySet() }
     var aviso by remember { mutableStateOf<String?>(null) }
+    // Codex r6 #2: tras quitar una, la siguiente sale con el botón en el mismo lugar; un doble toque no la quita también.
+    var ignorarHasta by remember { mutableStateOf(0L) }
+    fun libreParaTocar() = System.currentTimeMillis() >= ignorarHasta
+    fun marcarToque() { ignorarHasta = System.currentTimeMillis() + 700 }
     aviso?.let { texto ->
         AvoqadoDialog(title = "Clase pendiente", description = texto, onDismiss = { aviso = null },
             actionButton = { PrimaryButton(text = "Entendido", onClick = { aviso = null }, fullWidth = true) }) {}
@@ -96,7 +101,9 @@ fun ClasePendiente(cart: CartViewModel, vm: ClasePendienteViewModel = hiltViewMo
         Text(listOfNotNull(clase, pendiente.persona).joinToString(" · ") + lugares)
         if (!libre) Text("Va en su propia venta: termina o guarda la venta actual (y quita al cliente) para agregarla.")
         mensaje?.let { Text(it) }
-        PrimaryButton(text = "Agregar al carrito", enabled = libre && !revisando, isLoading = revisando, onClick = {
+        PrimaryButton(text = "Agregar al carrito", enabled = libre && !revisando, isLoading = revisando, onClick = agregar@{
+            if (!libreParaTocar()) return@agregar
+            marcarToque()
             revisando = true
             scope.launch {
                 val r = vm.revisar(pendiente)
@@ -108,14 +115,20 @@ fun ClasePendiente(cart: CartViewModel, vm: ClasePendienteViewModel = hiltViewMo
                         // Se vuelve a revisar en el carrito: mientras se consultaba pudo empezar otra venta.
                         mensaje = cart.agregarClasePendiente(pendiente)
                         if (mensaje == null && r is ClasePendienteViewModel.Revision.SinRevisar) {
-                            aviso = "Sin conexión: no se pudo revisar con recepción si ya la registró. Revisa antes de cobrar."
+                            // Codex r6 #3: sin permiso de agenda la consulta también falla, con internet: no se dice «Sin conexión».
+                            aviso = (if (r.sinRed) "Sin conexión: no" else "No") +
+                                " se pudo revisar con recepción si ya la canceló. Revisa antes de cobrar."
                         }
                     }
                 }
                 revisando = false
             }
         })
-        TextButton(enabled = !revisando, onClick = { vistas = vistas + pendiente }) { Text("La agrego después") }
-        TextButton(enabled = !revisando, onClick = { cart.quitarClasePendiente(pendiente) }) { Text("Ya no la cobro aquí") }
+        TextButton(enabled = !revisando, onClick = { if (libreParaTocar()) { marcarToque(); vistas = vistas + pendiente } }) {
+            Text("La agrego después")
+        }
+        TextButton(enabled = !revisando, onClick = { if (libreParaTocar()) { marcarToque(); cart.quitarClasePendiente(pendiente) } }) {
+            Text("Ya no la cobro aquí")
+        }
     }
 }

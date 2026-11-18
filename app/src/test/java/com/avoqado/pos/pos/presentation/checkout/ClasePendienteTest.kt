@@ -2,7 +2,6 @@ package com.avoqado.pos.pos.presentation.checkout
 
 import com.avoqado.pos.reservations.data.model.ReservationStatus
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Test
 
@@ -15,9 +14,10 @@ class ClasePendienteTest {
         assertNull(yaNoSeCobraAqui(ReservationStatus.CHECKED_IN, "Bea"))
     }
 
-    @Test fun `la que se cancelo, no se presento o se completo ya no se cobra aqui`() {
+    @Test fun `solo la cancelada ya no se cobra aqui`() {
         assertEquals("La reserva de Bea se canceló: ya no se cobra aquí.", yaNoSeCobraAqui(ReservationStatus.CANCELLED, "Bea"))
-        assertNotNull(yaNoSeCobraAqui(ReservationStatus.NO_SHOW, null))
-        assertNotNull(yaNoSeCobraAqui(ReservationStatus.COMPLETED, ""))
+        // Codex r6 #1: recepción la completa sin cobro; «no se presentó» con la persona en caja es un error de recepción.
+        assertNull(yaNoSeCobraAqui(ReservationStatus.COMPLETED, "Bea"))
+        assertNull(yaNoSeCobraAqui(ReservationStatus.NO_SHOW, null))
     }
 }
