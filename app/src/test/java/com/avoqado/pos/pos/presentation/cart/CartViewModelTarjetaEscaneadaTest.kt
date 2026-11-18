@@ -377,4 +377,14 @@ class CartViewModelTarjetaEscaneadaTest {
             vm.resolveScannedBarcode("CAFE'VERDE'00000399", lecturaUs = "CAFE-VERDE-00000399"),
         )
     }
+
+    @Test fun `D14 si la lectura del aparato empato entre productos no se elige uno de la otra lectura`() = runTest {
+        // Codex r8 #2: pistola en español que de verdad leyó «PIZZAS'003»; dos productos empatan sin mayúsculas.
+        val a = Product(id = "a", name = "A", priceValue = 10.0, barcode = "pizzas'003")
+        val b = Product(id = "b", name = "B", priceValue = 20.0, barcode = "Pizzas'003")
+        val c = Product(id = "c", name = "C", priceValue = 30.0, sku = "PIZZAS-003")
+        every { productsRepository.products } returns MutableStateFlow(listOf(a, b, c))
+        val vm = createViewModel()
+        assertEquals(ScannedBarcodeResult.Unknown("PIZZAS'003"), vm.resolveScannedBarcode("PIZZAS'003", lecturaUs = "PIZZAS-003"))
+    }
 }

@@ -2573,6 +2573,9 @@ class CartViewModel @Inject constructor(
                 // Codex r7 #1: la tarjeta de regalo NO se adivina con la segunda lectura (un SKU de proveedor podía abrir la hoja
                 // de saldo): con el teclado en español se lee en la hoja de tarjetas, que tiene su propio lector, como hoy.
                 is ScannedBarcodeResult.Unknown -> when {
+                    // Codex r8 #2: la del aparato no encontró nada porque empataron dos productos (sin mayúsculas): se avisa
+                    // «Producto no encontrado» como en develop, no se elige uno de la otra lectura.
+                    products.value.coincidenciasDeLaLectura(rawCode).isNotEmpty() -> resultado
                     enIngles.size > 1 -> doble
                     enIngles.size == 1 -> ScannedBarcodeResult.ProductFound(enIngles.single())
                     else -> resultado

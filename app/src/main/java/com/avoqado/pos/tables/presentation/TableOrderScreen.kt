@@ -1004,8 +1004,11 @@ fun TableOrderScreen(
                 // Las dos son las MISMAS teclas: si cada una es un producto distinto, no se adivina.
                 val delAparato = buscar(barcode)
                 val enIngles = lecturaUs?.let { catalogViewModel.products.value.coincidenciasDeLaLectura(it) }.orEmpty()
-                val matched = delAparato ?: enIngles.singleOrNull()
-                val doble = if (delAparato != null) enIngles.any { it.id != delAparato.id } else enIngles.size > 1
+                // Codex r8 #2: si la del aparato empató entre productos, no se elige uno de la otra lectura (como en develop).
+                val empateDelAparato = delAparato == null && lecturaUs != null &&
+                    catalogViewModel.products.value.coincidenciasDeLaLectura(barcode).isNotEmpty()
+                val matched = delAparato ?: enIngles.singleOrNull()?.takeUnless { empateDelAparato }
+                val doble = if (delAparato != null) enIngles.any { it.id != delAparato.id } else !empateDelAparato && enIngles.size > 1
                 if (lecturaUs != null && doble) {
                     codigoDoble = com.avoqado.pos.pos.presentation.cart.avisoDeCodigoDoble(barcode.trim(), lecturaUs.trim())
                 } else if (matched != null) {

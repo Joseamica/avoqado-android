@@ -222,4 +222,21 @@ class LectorHidTest {
 
         assertEquals(TeclaHid.Codigo("AB'12", textoUs = "AB-12"), fin)
     }
+
+    @Test
+    fun `D14 una tecla de acento que parte la rafaga deja sin lectura en ingles al resto`() {
+        // Codex r8 #1: «KIT[CAFE-001» con el teclado en español: «[» es un acento, parte la ráfaga y queda «CAFE'001».
+        // Su lectura en inglés («CAFE-001») también está cortada: podía ser el código de OTRO artículo.
+        val lector = LectorHid()
+        var t = 1_000L
+        "KIT".forEach { c -> lector.procesar(caracter = c, esTerminador = false, esFisico = true, deviceId = 7, ahoraMs = t); t += 10 }
+        lector.procesar(caracter = null, esTerminador = false, esFisico = true, deviceId = 7, ahoraMs = t); t += 10
+        "CAFE'001".forEach { c ->
+            lector.procesar(caracter = c, esTerminador = false, esFisico = true, deviceId = 7, ahoraMs = t, caracterUs = if (c == '\'') '-' else c)
+            t += 10
+        }
+        val fin = lector.procesar(caracter = null, esTerminador = true, esFisico = true, deviceId = 7, ahoraMs = t)
+
+        assertEquals(TeclaHid.Codigo("CAFE'001", textoUs = "CAFE'001"), fin)
+    }
 }

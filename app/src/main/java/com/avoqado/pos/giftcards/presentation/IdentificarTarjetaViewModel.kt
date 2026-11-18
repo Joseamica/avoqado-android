@@ -139,7 +139,15 @@ class IdentificarTarjetaViewModel @Inject constructor(
         val crudo = leido.texto
         if (ReconocedorDeTarjeta.reconocer(crudo) != null) return crudo
         val us = leido.lecturaUs ?: return crudo
-        return if (ReconocedorDeTarjeta.reconocer(us) != null) us else crudo
+        // D14 (Codex r8 #3): la segunda lectura sólo vale si es de Avoqado: un código que el servidor pudo emitir o una liga
+        // de un dominio de Avoqado. Un QR ajeno con «/tarjeta/» ya no consulta al servidor (gastaba un intento).
+        return if (ReconocedorDeTarjeta.esDelServidor(us) && esDeAvoqado(us)) us else crudo
+    }
+
+    private fun esDeAvoqado(texto: String): Boolean {
+        if (ReconocedorDeTarjeta.reconocer(texto) !is PruebaDeTarjeta.PageToken) return true
+        val host = runCatching { java.net.URI(texto.trim()).host }.getOrNull()?.lowercase() ?: return false
+        return host == "avoqado.io" || host.endsWith(".avoqado.io")
     }
 
     suspend fun porEscaneo(crudo: String) {

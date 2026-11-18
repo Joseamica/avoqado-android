@@ -62,6 +62,14 @@ class LectorHid(
     private var teclasEnRafaga: Int = 0
     private var aparatoDeLaRafaga: Int = SIN_APARATO
 
+    /**
+     * D14 (Codex r8 #1): una tecla que no escribe (un acento del teclado en español, «[») partió una ráfaga. La que sigue pegada,
+     * del mismo aparato, es el resto de ese código: su lectura en inglés también está cortada y no se ofrece.
+     */
+    private var partidaMs: Long = Long.MIN_VALUE
+    private var partidaAparato: Int = SIN_APARATO
+    private var sinLecturaUs = false
+
     /** Aparatos que ya completaron una ráfaga: de ésos sí se consume desde la primera tecla. */
     private val lectoresConocidos = mutableSetOf<Int>()
 
@@ -99,9 +107,11 @@ class LectorHid(
                 deviceId == aparatoDeLaRafaga &&
                 (ahoraMs - ultimaTeclaMs) <= maxIntervaloMs
             limpiar()
+            val cortada = sinLecturaUs
+            sinLecturaUs = false
             return if (huboRafaga && codigo.length >= largoMinimo) {
                 lectoresConocidos += deviceId
-                TeclaHid.Codigo(codigo, codigoUs)
+                TeclaHid.Codigo(codigo, if (cortada) codigo else codigoUs)
             } else {
                 TeclaHid.DejarPasar
             }
@@ -110,6 +120,7 @@ class LectorHid(
         // Una tecla que no escribe nada parte la ráfaga: arrastrarla entregaría un
         // código cortado a la mitad, que no existe en ningún catálogo.
         if (caracter == null) {
+            if (teclasEnRafaga > 0) { partidaMs = ahoraMs; partidaAparato = deviceId }
             limpiar()
             return TeclaHid.DejarPasar
         }
@@ -122,6 +133,7 @@ class LectorHid(
             bufferUs.setLength(0)
             teclasEnRafaga = 0
             aparatoDeLaRafaga = deviceId
+            sinLecturaUs = deviceId == partidaAparato && ahoraMs - partidaMs <= maxIntervaloMs
         }
         buffer.append(caracter)
         bufferUs.append(caracterUs ?: caracter)
