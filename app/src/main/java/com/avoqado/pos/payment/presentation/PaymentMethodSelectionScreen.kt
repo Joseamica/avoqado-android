@@ -1155,7 +1155,8 @@ internal fun subtituloDelCobro(
     sinRed: Boolean = false,
 ): String = when {
     soloEfectivoSinRed && metodosHabilitados -> "Cobra en efectivo"
-    sinRed && metodosHabilitados -> SUBTITULO_SIN_RED
+    // Codex r3 #3: también con los métodos apagados (cuenta de tarjetas de regalo sin red): nunca «Envía el cobro a una terminal».
+    sinRed -> SUBTITULO_SIN_RED
     terminalsUnavailable && metodosHabilitados -> "Cobra en efectivo o conecta una terminal"
     else -> "Envía el cobro a una terminal para procesar el pago"
 }

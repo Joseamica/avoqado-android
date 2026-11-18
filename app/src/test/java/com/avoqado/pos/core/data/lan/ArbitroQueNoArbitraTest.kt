@@ -180,4 +180,20 @@ class ArbitroQueNoArbitraTest {
         assertEquals(LeaseOutcome.NoHub, mesas.esperar(a) { true })
         assertTrue("con la caja vieja, la espera de hoy (no la isla tras una pérdida)", testScheduler.currentTime - toque >= 14_000)
     }
+
+    @Test
+    fun `P1 Codex r3 1 - con negativas viejas, la apertura nueva todavía espera 3 s y una ocupada en ese lapso gana`() = runTest {
+        val x = queNoArbitra("X")
+        val red = red(x)
+        val mesas = caja()
+        coordinador(red, mesas).start()
+        runCurrent()
+        advanceTimeBy(5_000) // X lleva 5 s diciendo «no arbitro»
+
+        val a = mesas.abrirApertura("M2", "s1", "Ana", v)
+        advanceTimeBy(1_500)
+        x.asumirArbitraje(emptySet()) // a los 1.5 s del toque X asume y B le declara la M2
+        x.respondTo(LeaseProtocol.encode(LeaseRequest(op = LeaseProtocol.OP_ESTADO, deviceId = "B", staffName = "Beto", gen = 1, seq = 1, mesas = listOf("M2"))))
+        assertEquals(LeaseOutcome.Taken("Beto"), mesas.esperar(a) { true })
+    }
 }

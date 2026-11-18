@@ -1519,7 +1519,7 @@ class TableOrderViewModel @Inject constructor(
         if (mesaCambio) tableSession.marcarSaldoDesconocido(vId, session.idsDeLaOrden, contextoDeSesion)
         // Espejo EXACTO de la llave de cada renglón: es lo que deja separar el cheque antes de que sincronice. Sólo en ESTA cuenta
         // y sin repetir lo que una recarga del borrador ya pintó.
-        if (tableSession.current()?.idsDeLaOrden?.any { it in session.idsDeLaOrden } == true) {
+        if (tableSession.current()?.idsDeLaOrden?.any { it in session.idsDeLaOrden } == true && intentId !in rondasEnCuentaAparte) {
             val yaPintados = _queued.value.mapNotNull { it.externalId }.toSet()
             _queued.value = _queued.value + com.avoqado.pos.tables.data.stampTableRoundLines(lines, intentId).filterNot { it.externalId in yaPintados }
         }
@@ -2041,12 +2041,16 @@ class TableOrderViewModel @Inject constructor(
      * en la cola, o con la cuenta movida a otra mesa, el cambio automático dejaba cobrar una cuenta incompleta o abrirla bajo otra mesa):
      * la cuenta aparte se abre desde el plano, como hoy al volver a entrar.
      */
+    /** Codex r3 #2: rondas que el SERVIDOR ya confirmó en una cuenta aparte; si «Enviar» termina después, no se vuelven a pintar. */
+    private val rondasEnCuentaAparte = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+
     private fun cuentaAparteDelAcuse(llave: String, result: kotlinx.serialization.json.JsonObject, session: TableSession.Active) {
         val aparte = result["cuentaAparte"] as? kotlinx.serialization.json.JsonObject ?: return
         val id = (aparte["orderId"] as? kotlinx.serialization.json.JsonPrimitive)?.takeIf { it.isString }?.content?.takeIf { it.isNotBlank() } ?: return
         if (id in session.idsDeLaOrden) return
         val deEstaPantalla = llave in draftRounds || _queued.value.any { it.externalId?.startsWith("sync:$llave:") == true }
         if (!deEstaPantalla) return
+        rondasEnCuentaAparte += llave
         if (llave in draftRounds) finishDraftRound(llave)
         _queued.value = _queued.value.filterNot { it.externalId?.startsWith("sync:$llave:") == true }
         showMessage(textoDeCuentaAparte((aparte["orderNumber"] as? kotlinx.serialization.json.JsonPrimitive)?.takeIf { it.isString }?.content))

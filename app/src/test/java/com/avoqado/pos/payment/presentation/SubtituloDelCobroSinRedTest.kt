@@ -36,7 +36,8 @@ class SubtituloDelCobroSinRedTest {
     }
 
     @Test fun `con los metodos apagados el subtitulo no promete efectivo`() {
-        assertFalse(subtituloDelCobro(false, metodosHabilitados = false, soloEfectivoSinRed = false, sinRed = true).contains("efectivo"))
+        // Codex r3 #3: la cuenta de tarjetas de regalo sin red apaga los métodos; el subtítulo tampoco manda a la terminal.
+        assertEquals(SUBTITULO_SIN_RED, subtituloDelCobro(false, metodosHabilitados = false, soloEfectivoSinRed = false, sinRed = true))
         assertFalse(SUBTITULO_SIN_RED.contains("efectivo"))
     }
 }

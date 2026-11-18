@@ -1115,6 +1115,22 @@ class MesaDelServidorSinRedTest {
         subject.viewModelScope.cancel()
     }
 
+    @Test fun `nac50984 Codex r3 2 el ACK que llega mientras Enviar termina no deja la ronda pintada por sincronizar`() = runTest {
+        val subject = mesaConFoto()
+        conInternet = false
+        cuenta = cuenta.copy(status = "COMPLETED")
+        // La cola la encola y, en ese mismo momento, vuelve la red y el SERVIDOR ya la puso en la cuenta aparte.
+        coEvery { outbox.enqueue(any(), any(), any(), any(), any(), any()) } answers {
+            val id = arg<String>(3)
+            if (cola.none { it.id == id }) cola += FilaDeLaOrden(id, arg(1), "ACKED", null, ++seq)
+            check(acks.tryEmit(ackCuentaAparte(id)))
+            id
+        }
+        ronda(subject, 2000)
+        assertTrue("confirmada en la cuenta aparte: nada «por sincronizar»", subject.queued.value.isEmpty())
+        subject.viewModelScope.cancel()
+    }
+
     @Test fun `nac50984 la ronda de otra pantalla o una cuenta aparte igual a la actual no mueven nada`() = runTest {
         val subject = mesaConFoto()
         acks.emit(ackCuentaAparte("ronda-de-otra-caja"))

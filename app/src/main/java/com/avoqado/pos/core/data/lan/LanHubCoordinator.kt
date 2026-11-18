@@ -330,9 +330,12 @@ class LanHubCoordinator(
         //    resuelve nada: su respuesta sigue la MISMA racha, con [NO_ARBITRA_PARA_ISLA_MS] (contesta al instante, no tarda el plazo de un
         //    mensaje). Antes cada «esperar 1 s» suyo borraba el silencio y la apertura esperaba los 15 s enteros. Sus «ocupada» sí cuentan.
         /** Isla para las aperturas que viajaron y que la respuesta no decidió (una «ocupada» de un permiso viejo no va a isla). */
-        fun aIsla(racha: Callado, umbralMs: Long, por: String, decididas: Set<String> = emptySet()) {
-            val callaMs = relojMs() - racha.desdeMs
-            val pendientes = declaracion.aperturas.filter { it.id !in decididas }
+        fun aIsla(racha: Callado, umbralMs: Long, por: String, decididas: Set<String> = emptySet(), desdeElToque: Boolean = false) {
+            val ahora = relojMs()
+            val callaMs = ahora - racha.desdeMs
+            // Codex r3 #1: con las negativas, cada apertura espera también [umbralMs] desde SU toque: una «ocupada» del árbitro (que asumió
+            // en ese lapso) o la directa todavía gana; antes una racha vieja de latidos la mandaba a isla en la primera respuesta.
+            val pendientes = declaracion.aperturas.filter { it.id !in decididas && (!desdeElToque || ahora - it.creadaEnMs >= umbralMs) }
             if (callaMs >= umbralMs && pendientes.isNotEmpty()) {
                 Log.w(TAG, "🏝️ El árbitro ${arbitro.deviceId.take(6)} lleva ${callaMs / 1000} s $por — aperturas en isla")
                 pendientes.forEach { mesas.resolver(it.id, LeaseOutcome.NoHub) }
@@ -353,7 +356,7 @@ class LanHubCoordinator(
             val racha = negativas?.takeIf { it.mismo(envio) } ?: envio
             negativas = racha
             aIsla(racha, NO_ARBITRA_PARA_ISLA_MS, "contesta que no arbitra",
-                decididas = resp.aperturas.orEmpty().filter { it.resultado != APERTURA_ESPERAR }.mapTo(HashSet()) { it.id })
+                decididas = resp.aperturas.orEmpty().filter { it.resultado != APERTURA_ESPERAR }.mapTo(HashSet()) { it.id }, desdeElToque = true)
         } else {
             negativas = null
         }
