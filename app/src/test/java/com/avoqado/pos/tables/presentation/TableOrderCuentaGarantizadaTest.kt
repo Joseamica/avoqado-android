@@ -1061,6 +1061,67 @@ class TableOrderCuentaGarantizadaTest {
         } finally { subject.viewModelScope.cancel() }
     }
 
+    // D6 (18-nov-2026): la cortesía en $0 de la cuenta (`cortesiaEnCero` del SERVIDOR) va al papel del cobro con la MISMA garantía que su
+    // cargo: la cuenta leída aquí, al día, con red y sin abonos.
+    @Test fun `D6 Pagar lleva la cortesia en cero del cheque garantizado sin abonos`() = runTest {
+        val subject = vm()
+        coEvery { repository.getOrderDetail(any(), any()) } returns Result.success(detail(49.5).copy(cortesiaEnCero = 20.0))
+        try {
+            subject.loadCheck(); advanceUntilIdle(); assertTrue(subject.chequeAlDia.value)
+            assertTrue(subject.preparePagar())
+            assertEquals(4950, session.current()!!.totalCents)
+            assertEquals(2000, session.current()!!.cortesiaCents)
+        } finally { subject.viewModelScope.cancel() }
+    }
+
+    @Test fun `D6 tras un abono la cortesia no se lleva (el digital tampoco la desglosa)`() = runTest {
+        val subject = vm()
+        coEvery { repository.getOrderDetail(any(), any()) } returns Result.success(detail(49.5).copy(
+            cortesiaEnCero = 20.0, payments = listOf(OrderDetailPayment("p1", 10.0, 0.0, "COMPLETED")),
+        ))
+        try {
+            subject.loadCheck(); advanceUntilIdle(); assertTrue(subject.chequeAlDia.value)
+            assertTrue(subject.preparePagar())
+            assertEquals(0, session.current()!!.cortesiaCents)
+        } finally { subject.viewModelScope.cancel() }
+    }
+
+    @Test fun `D6 el fallback del plano sin cheque no acredita una cortesia vieja`() = runTest {
+        val subject = vm()
+        session.start(session.current()!!.copy(totalCents = 4950, cortesiaCents = 2000))
+        try {
+            assertNull(subject.check.value); assertFalse(subject.chequeAlDia.value)
+            assertTrue(subject.preparePagar())
+            assertEquals(0, session.current()!!.cortesiaCents)
+        } finally { subject.viewModelScope.cancel() }
+    }
+
+    @Test fun `D6 el GET retenido descarta la cortesia anterior antes de leer y el error no la resucita`() = runTest {
+        val subject = vm()
+        val response = CompletableDeferred<Result<OrderDetail>>()
+        coEvery { repository.getOrderDetail(any(), any()) } coAnswers { response.await() }
+        session.start(session.current()!!.copy(cortesiaCents = 2000))
+        try {
+            subject.loadCheck(); runCurrent()
+            assertEquals(0, session.current()!!.cortesiaCents)
+            response.complete(Result.failure(IOException("sin red"))); advanceUntilIdle()
+            assertEquals(0, session.current()!!.cortesiaCents)
+        } finally { response.complete(Result.failure(IOException("cleanup"))); subject.viewModelScope.cancel() }
+    }
+
+    @Test fun `D6 la regla de la cortesia del papel - sin el campo, provisional, sin red o un valor que no es dinero da 0`() {
+        val cheque = detail(49.5).copy(cortesiaEnCero = 20.0)
+        assertEquals(2000, cortesiaDeLaCuentaParaElPapel(cheque, provisional = false, alDia = true, conRed = true))
+        assertEquals("SERVIDOR anterior", 0, cortesiaDeLaCuentaParaElPapel(detail(49.5), provisional = false, alDia = true, conRed = true))
+        assertEquals(0, cortesiaDeLaCuentaParaElPapel(null, provisional = false, alDia = true, conRed = true))
+        assertEquals(0, cortesiaDeLaCuentaParaElPapel(cheque, provisional = true, alDia = true, conRed = true))
+        assertEquals(0, cortesiaDeLaCuentaParaElPapel(cheque, provisional = false, alDia = false, conRed = true))
+        assertEquals("sin red (saldo de disco o del piloto)", 0, cortesiaDeLaCuentaParaElPapel(cheque, provisional = false, alDia = true, conRed = false))
+        for (raro in listOf(Double.NaN, Double.POSITIVE_INFINITY, -20.0, 0.0, 3e7)) {
+            assertEquals("$raro", 0, cortesiaDeLaCuentaParaElPapel(detail().copy(cortesiaEnCero = raro), provisional = false, alDia = true, conRed = true))
+        }
+    }
+
     /** D4 (mesas40): quién ESCRIBE el «Atendió» del ticket — «Pagar» lo copia del cheque que acaba de leer, también tras un abono. */
     @Test fun `D4 Pagar lleva el mesero del cheque leido, tambien tras un abono`() = runTest {
         val subject = vm()

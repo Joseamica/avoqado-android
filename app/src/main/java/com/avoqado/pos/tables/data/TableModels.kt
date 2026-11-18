@@ -361,6 +361,12 @@ data class OrderDetail(
     val addedTaxAmount: Double = 0.0,
     /** Saldo autoritativo opcional; importes en centavos, propina ausente conserva cero. */
     val preBillBalance: PreBillBalance? = null,
+    /**
+     * D6 (18-nov-2026, SERVIDOR aditivo): lo regalado en los renglones de cortesía guardados en $0, en pesos, con la regla del recibo
+     * digital (sin piezas de combo). El papel del cobro de la mesa lo suma al subtotal y al descuento, como el digital. Null = SERVIDOR
+     * anterior o sin cortesía: el papel queda como hoy.
+     */
+    val cortesiaEnCero: Double? = null,
 )
 
 @Serializable

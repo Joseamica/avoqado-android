@@ -55,6 +55,12 @@ class TableSession @Inject constructor() {
         val requiereLecturaServidor: Boolean = false,
         /** Cargo de la cuenta garantizada sin abonos; un cambio de saldo o contexto lo invalida. */
         val serviceChargeCents: Int = 0,
+        /**
+         * D6 (18-nov): la cortesía guardada en $0 de la cuenta garantizada sin abonos (`OrderDetail.cortesiaEnCero`), en centavos. El
+         * papel del cobro la suma al subtotal y al descuento, como el recibo digital. Mismo ciclo de vida que [serviceChargeCents]: lo que
+         * invalida el cargo la invalida a ella.
+         */
+        val cortesiaCents: Int = 0,
         /** D4 (mesas40): «Atendió» del ticket = el mesero dueño de la cuenta, aunque cobre otra persona. Null ⇒ la sesión. */
         val meseroNombre: String? = null,
         /**
@@ -143,7 +149,7 @@ class TableSession @Inject constructor() {
         true
     }
     fun updateVersion(version: Int) = synchronized(lock) { revision++; _active.update { it?.copy(version = version) } }
-    fun updateRemaining(remainingCents: Int) = synchronized(lock) { revision++; _active.update { it?.copy(totalCents = remainingCents, serviceChargeCents = 0) } }
+    fun updateRemaining(remainingCents: Int) = synchronized(lock) { revision++; _active.update { it?.copy(totalCents = remainingCents, serviceChargeCents = 0, cortesiaCents = 0) } }
 
     /** Reset de identidad/logout, no navegación. No borra el outbox ni el draft durable. */
     fun clear() = synchronized(lock) {
@@ -156,7 +162,7 @@ class TableSession @Inject constructor() {
     fun estacionar(venueId: String, expected: Active): Boolean = synchronized(lock) {
         if (!acepta(venueId) || (activeVenue != null && activeVenue != venueId) || _active.value != expected) return@synchronized false
         revision++
-        val saved = expected.copy(mode = Mode.ORDERING, serviceChargeCents = 0, cobroSinRed = false,
+        val saved = expected.copy(mode = Mode.ORDERING, serviceChargeCents = 0, cortesiaCents = 0, cobroSinRed = false,
             requiereLecturaServidor = expected.requiereLecturaServidor || !expected.isProvisional)
         estacionadas.entries.removeAll { it.key.first == venueId && misma(it.value, saved.idsDeLaOrden) }
         estacionadas[venueId to saved.orderId] = saved
@@ -172,7 +178,7 @@ class TableSession @Inject constructor() {
         val entry = estacionadas.entries.firstOrNull { it.key.first == venueId && it.value.tableId == resumen.tableId && misma(it.value, resumen.idsDeLaOrden) }
         val wasFinalized = resumen.idsDeLaOrden.any { (venueId to it) in finalizadas }
         val restored = (live ?: entry?.value ?: resumen.copy(saldoSinRedConocido = !resumen.isProvisional,
-            requiereLecturaServidor = resumen.requiereLecturaServidor || wasFinalized)).copy(mode = Mode.ORDERING, serviceChargeCents = 0, cobroSinRed = false)
+            requiereLecturaServidor = resumen.requiereLecturaServidor || wasFinalized)).copy(mode = Mode.ORDERING, serviceChargeCents = 0, cortesiaCents = 0, cobroSinRed = false)
         if (entry != null) estacionadas.remove(entry.key)
         _active.value = restored; activeVenue = venueId
         restored
@@ -204,8 +210,8 @@ class TableSession @Inject constructor() {
     fun marcarSaldoDesconocido(venueId: String, ids: Set<String>, expectedEpoch: Long) = synchronized(lock) {
         if (!acepta(venueId) || epoch != expectedEpoch) return@synchronized
         revision++
-        estacionadas.replaceAll { key, value -> if (key.first == venueId && misma(value, ids)) value.copy(saldoSinRedConocido = false, requiereLecturaServidor = true, serviceChargeCents = 0) else value }
-        _active.update { if ((activeVenue == null || activeVenue == venueId) && it != null && misma(it, ids)) it.copy(saldoSinRedConocido = false, requiereLecturaServidor = true, serviceChargeCents = 0) else it }
+        estacionadas.replaceAll { key, value -> if (key.first == venueId && misma(value, ids)) value.copy(saldoSinRedConocido = false, requiereLecturaServidor = true, serviceChargeCents = 0, cortesiaCents = 0) else value }
+        _active.update { if ((activeVenue == null || activeVenue == venueId) && it != null && misma(it, ids)) it.copy(saldoSinRedConocido = false, requiereLecturaServidor = true, serviceChargeCents = 0, cortesiaCents = 0) else it }
     }
 
     /** Compatibilidad del contrato anterior: sólo la Active actual. */
@@ -217,7 +223,7 @@ class TableSession @Inject constructor() {
         if (current?.isProvisional != true || current.orderId != local) current
         else current.copy(orderId = real, orderNumber = number ?: current.orderNumber, version = version,
             isProvisional = false, localOrderId = current.localOrderId ?: local, valorRondasSinRedCents = 0,
-            requiereLecturaServidor = true, serviceChargeCents = 0)
+            requiereLecturaServidor = true, serviceChargeCents = 0, cortesiaCents = 0)
 
     fun promoteProvisional(venueId: String, localOrderId: String, orderId: String, orderNumber: String?, version: Int,
         expectedEpoch: Long) = synchronized(lock) {
@@ -237,7 +243,7 @@ class TableSession @Inject constructor() {
         revision++
         fun changed(s: Active) = s.copy(version = version ?: s.version,
             totalCents = remainingCents?.takeIf { it >= 0 } ?: s.totalCents,
-            saldoSinRedConocido = s.saldoSinRedConocido && !(s.isProvisional && remainingCents != null), requiereLecturaServidor = true, serviceChargeCents = 0)
+            saldoSinRedConocido = s.saldoSinRedConocido && !(s.isProvisional && remainingCents != null), requiereLecturaServidor = true, serviceChargeCents = 0, cortesiaCents = 0)
         estacionadas.replaceAll { key, value -> if (key.first == venueId && misma(value, ids)) changed(value) else value }
         _active.update { if ((activeVenue == null || activeVenue == venueId) && it != null && misma(it, ids)) changed(it) else it }
     }

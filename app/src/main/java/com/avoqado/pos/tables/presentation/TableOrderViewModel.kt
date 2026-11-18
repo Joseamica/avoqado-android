@@ -83,6 +83,17 @@ internal fun renglonesDePreCuenta(items: List<OrderDetailItem>): List<ReceiptIte
     )
 }
 
+/**
+ * D6 (18-nov-2026): la cortesía guardada en $0 que el papel del cobro de ESTA cuenta suma al subtotal y al descuento, como el recibo
+ * digital ($75 · −$25.50 con la Agua a $20). La misma garantía que el cargo por servicio: sólo la cuenta del SERVIDOR leída aquí, al
+ * día, con red y sin abonos (un abono, también el que espera en la cola, deja el papel como hoy: el digital tampoco la desglosa). Sin
+ * el campo (SERVIDOR anterior), o con un valor que no es dinero, 0: el papel sale como hoy. PURA.
+ */
+internal fun cortesiaDeLaCuentaParaElPapel(cheque: OrderDetail?, provisional: Boolean, alDia: Boolean, conRed: Boolean): Int =
+    cheque?.takeIf { !provisional && alDia && conRed && it.payments.none { p -> p.status == "COMPLETED" } }
+        ?.cortesiaEnCero?.let { round(it * 100) }
+        ?.takeIf { it.isFinite() && it > 0 && it <= Int.MAX_VALUE.toDouble() }?.toInt() ?: 0
+
 /** Cuenta de esta orden, sin escrituras en vuelo ni trabajo local por resolver. */
 internal fun motivoParaNoImprimirPreCuenta(hayImpresora: Boolean, cheque: OrderDetail?, orderId: String,
     chequeAlDia: Boolean, enVuelo: Boolean, trabajo: TrabajoSinResolver?): String? = when {
@@ -806,7 +817,7 @@ class TableOrderViewModel @Inject constructor(
         // descarta; al llegar la cuenta al día se lee el suyo (Codex android r7 #3 y #6).
         olvidarLealtad()
         // Un GET nuevo todavía no acredita el cargo anterior, incluso si falla la lectura o el disco.
-        tableSession.start(session.copy(serviceChargeCents = 0))
+        tableSession.start(session.copy(serviceChargeCents = 0, cortesiaCents = 0))
         venueId?.let { restoreDraft(it, session) }
         if (draftRecoveryFailed) { _chequeAlDia.value = false; _isLoadingCheck.value = false; return }
         session = tableSession.current() ?: return
@@ -2753,6 +2764,10 @@ class TableOrderViewModel @Inject constructor(
             ?.takeIf { !session.isProvisional && cuentaAlDiaAqui && it.payments.none { p -> p.status == "COMPLETED" } }
             ?.let { round(it.serviceChargeAmount * 100) }
             ?.takeIf { it.isFinite() && it >= 0 && it <= totalCents.toDouble() }?.toInt() ?: 0
+        // D6 (18-nov): la cortesía en $0 de esta cuenta va al papel del cobro con la MISMA garantía que su cargo, y sólo con red (sin el
+        // saldo de disco ni el del piloto sin red).
+        val cortesiaDeLaCuenta = cortesiaDeLaCuentaParaElPapel(checkDeLaSesion, session.isProvisional, cuentaAlDiaAqui,
+            conRed = deDisco == null && sinRed == null)
         // D4 (mesas40): «Atendió» del ticket = el mesero dueño de la cuenta. Ronda 2 de Codex: si hay detalle de ESTA cuenta,
         // manda él, también cuando dice que no tiene mesero (asignación quitada); el nombre guardado sólo si falta el detalle.
         val meseroDeLaCuenta = if (checkDeLaSesion != null) checkDeLaSesion.waiter?.name?.takeIf { it.isNotBlank() } else session.meseroNombre
@@ -2777,7 +2792,7 @@ class TableOrderViewModel @Inject constructor(
                     // cobra, y cobrar $0 es justo lo que la cierra. Anularla no
                     // es equivalente: el producto salió del almacén y la
                     // cortesía tiene que quedar registrada como venta en $0.
-                    tableSession.start(session.copy(mode = TableSession.Mode.PAYING, totalCents = 0, serviceChargeCents = 0,
+                    tableSession.start(session.copy(mode = TableSession.Mode.PAYING, totalCents = 0, serviceChargeCents = 0, cortesiaCents = 0,
                         meseroNombre = meseroDeLaCuenta, cobroSinRed = sinRed != null))
                     return true
                 }
@@ -2787,6 +2802,7 @@ class TableOrderViewModel @Inject constructor(
 
         // D5 · B1/B2b: `cobroSinRed` se prende AQUÍ, antes de abrir el cobro: su efectivo va por la cola de mesas con `orderId`.
         tableSession.start(session.copy(mode = TableSession.Mode.PAYING, totalCents = totalCents, serviceChargeCents = cargoDeLaCuenta,
+            cortesiaCents = cortesiaDeLaCuenta,
             meseroNombre = meseroDeLaCuenta, cobroSinRed = sinRed != null))
         return true
     }

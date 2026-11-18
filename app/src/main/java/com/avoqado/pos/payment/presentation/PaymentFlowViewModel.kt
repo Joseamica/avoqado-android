@@ -1614,6 +1614,12 @@ class PaymentFlowViewModel @Inject constructor(
      */
     private var continuaVentaPartida = false
 
+    /**
+     * D6 (18-nov): este cobro es una venta NUEVA de la caja de siempre (sin mesa, sin orden previa: ni la que ya tiene un abono, ni un
+     * pedido en línea, ni «Cuentas abiertas»). Sólo ahí el papel suma al subtotal las cortesías del carrito, como el recibo digital.
+     */
+    private var ventaNuevaDelCobro = false
+
     /** D7: tras una parte con tarjeta no se pudo confirmar el saldo con el SERVIDOR (el éxito lo dice). */
     private var saldoSinConfirmar = false
     private var splitNumberOfParts: Int? = null
@@ -2777,6 +2783,7 @@ class PaymentFlowViewModel @Inject constructor(
         // every retail/quick flow is byte-identical.
         mesaDelCobro?.let { createdOrderId = it.orderId }
         continuaVentaPartida = mesaDelCobro == null && !resumeOrderId.isNullOrBlank()
+        ventaNuevaDelCobro = mesaDelCobro == null && resumeOrderId.isNullOrBlank() && origen == com.avoqado.pos.payment.domain.OrigenDelCobro.NORMAL
         // 🔴 D13: la foto de la puerta del efectivo, con el saldo que esta pantalla cree que falta (sólo si la trae quien fijó el saldo).
         val ordenAlArrancar = createdOrderId
         saldoAlArrancar = ordenAlArrancar?.let { it to cart.totalCents.toLong() }
@@ -6213,10 +6220,25 @@ class PaymentFlowViewModel @Inject constructor(
      */
     private fun papelDelCobro(baseAmount: Int, cobrado: Int): PapelDelCobro {
         val cart = cartState
+        // D6 (18-nov-2026): la cortesía vuelve al subtotal y al descuento del papel, como en el recibo digital y la reimpresión (D41
+        // «C», founder 16-nov: $75 · −$25.50 con la Agua a $20). Sólo en un cobro COMPLETO de una venta de un solo cobro: el caso en que
+        // el SERVIDOR también la desglosa. Lo cobrado y el carrito no cambian; sólo lo impreso. Las piezas de combo quedan fuera, como en
+        // el digital. Mostrador: las cortesías del carrito de una venta nueva. Mesa: la de su cuenta (`cortesiaCents`, más abajo).
+        fun com.avoqado.pos.pos.data.model.CartItem.esCortesiaDelPapel() = isCortesia && promotionInstanceId == null
+        val cortesiaPosibleDelCarrito = if (cart != null && _splitType.value == "FULLPAYMENT" && mesaDelCobro == null && ventaNuevaDelCobro &&
+            !desdeCuentasDeSaldo && !esCobroDeVales(cart)) {
+            cart.items.filter { it.esCortesiaDelPapel() }.sumOf { it.lineBeforeDiscountCents.coerceAtLeast(0).toLong() }
+        } else 0L
+        // Si el subtotal con la cortesía no cabe en el papel (centavos en Int, ~$21 millones), no se suma: queda como antes, cuadrado
+        // (la misma salida que la reimpresión, Codex r5 #2 de naec8c3f).
+        val sumaCortesiaDelCarrito = cortesiaPosibleDelCarrito > 0 && (cart?.subtotalCents ?: 0).toLong() + cortesiaPosibleDelCarrito <= Int.MAX_VALUE
+        fun com.avoqado.pos.pos.data.model.CartItem.cortesiaAlPapel(): Int =
+            if (sumaCortesiaDelCarrito && esCortesiaDelPapel()) lineBeforeDiscountCents.coerceAtLeast(0) else 0
 
         fun com.avoqado.pos.pos.data.model.CartItem.toReceiptItem(): ReceiptItem {
             val modifierUnitTotal = selectedModifiers.sumOf { it.priceInCents }
             val effectiveUnitWithModifiers = effectiveUnitPrice + modifierUnitTotal
+            val alPapel = cortesiaAlPapel()
             return ReceiptItem(
                 name = name,
                 quantity = quantity,
@@ -6225,10 +6247,11 @@ class PaymentFlowViewModel @Inject constructor(
                 // UNA vez, en su propio renglón junto al subtotal: si además se
                 // rebajara aquí, las líneas sumarían menos que el subtotal y el
                 // ticket que se lleva el cliente no cuadraría consigo mismo.
-                totalPrice = grossPrice,
+                // D6: la cortesía que suma al subtotal sale a su precio (su regalo va en el «Descuento»), como en el digital.
+                totalPrice = if (alPapel > 0) alPapel else grossPrice,
                 modifiers = selectedModifiers.map { it.modifierName }.ifEmpty { null },
                 note = itemNote,
-                isCortesia = isCortesia,
+                isCortesia = isCortesia && alPapel == 0,
                 weightSummary = weightSummary,
                 areaSourceLabel = subtitle.takeIf { locked },
             )
@@ -6294,16 +6317,26 @@ class PaymentFlowViewModel @Inject constructor(
                 cart.items.singleOrNull()?.let { item -> item.type == com.avoqado.pos.pos.data.model.CartItemType.CustomAmount && item.quantity == 1 } == true &&
                 cart.taxCents == 0 && cart.subtotalCents == it.totalCents }
             ?.serviceChargeCents?.takeIf { it > 0 && it <= (cart?.subtotalCents ?: 0) && it <= cobrado } ?: 0
+        // D6: la cortesía en $0 de la cuenta de la mesa (`cortesiaCents`, sólo de una cuenta al día sin abonos): el cobro COMPLETO de su
+        // saldo (lo cobrado es TODO lo que la cuenta debía), con el renglón único «Cuenta Mesa N». Va al renglón y al subtotal.
+        val cortesiaDeLaMesa = mesaDelCobro
+            ?.takeIf { !it.isProvisional && it.orderId == createdOrderId && isFullPayment && splitBaseAmountOverride == null && cart != null &&
+                cart.items.singleOrNull()?.let { item -> item.type == com.avoqado.pos.pos.data.model.CartItemType.CustomAmount && item.quantity == 1 } == true &&
+                cart.taxCents == 0 && cobrado == it.totalCents }
+            ?.cortesiaCents?.takeIf { it > 0 } ?: 0
+        val brutoSinCortesia = when {
+            cart != null && isFullPayment -> cart.subtotalCents
+            // D8 (27-oct): lo elegido a precio de lista; el papel imprime su descuento (bruto − cobrado) y cuadra.
+            cart != null && splitTypeValue == "BYPRODUCT" -> maxOf(brutoDeLaSeleccion(cart), baseAmount)
+            else -> baseAmount
+        } - cargoDeLaMesa
+        val cortesiaDelCarrito = if (sumaCortesiaDelCarrito) cortesiaPosibleDelCarrito.toInt() else 0
+        val cortesiaDeLaMesaQueCabe = cortesiaDeLaMesa.takeIf { brutoSinCortesia.toLong() + it <= Int.MAX_VALUE } ?: 0
         return PapelDelCobro(
-            renglones = if (cargoDeLaMesa > 0) receiptItems.map {
-                it.copy(unitPrice = it.unitPrice - cargoDeLaMesa, totalPrice = it.totalPrice - cargoDeLaMesa)
-            } else receiptItems,
-            subtotalBruto = when {
-                cart != null && isFullPayment -> cart.subtotalCents
-                // D8 (27-oct): lo elegido a precio de lista; el papel imprime su descuento (bruto − cobrado) y cuadra.
-                cart != null && splitTypeValue == "BYPRODUCT" -> maxOf(brutoDeLaSeleccion(cart), baseAmount)
-                else -> baseAmount
-            } - cargoDeLaMesa,
+            renglones = receiptItems
+                .map { if (cargoDeLaMesa > 0) it.copy(unitPrice = it.unitPrice - cargoDeLaMesa, totalPrice = it.totalPrice - cargoDeLaMesa) else it }
+                .map { if (cortesiaDeLaMesaQueCabe > 0) it.copy(unitPrice = it.unitPrice + cortesiaDeLaMesaQueCabe, totalPrice = it.totalPrice + cortesiaDeLaMesaQueCabe) else it },
+            subtotalBruto = brutoSinCortesia + cortesiaDelCarrito + cortesiaDeLaMesaQueCabe,
             cargo = cargoDeLaMesa,
             impuestoAgregado = if (cart != null && isFullPayment) cart.taxCents else 0,
         )
