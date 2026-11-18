@@ -69,6 +69,8 @@ fun WeightCapturePanel(
     product: Product,
     isTablet: Boolean,
     scaleState: ScaleConnectionState = ScaleConnectionState.NotConfigured,
+    /** D7: se está leyendo una etiqueta de báscula con esta captura abierta: «Agregar» y F12 esperan a que se resuelva. */
+    leyendoEtiqueta: () -> Boolean = { false },
     onRetryScale: () -> Unit = {},
     onAdd: (weightKg: Double) -> Unit,
     onDismiss: () -> Unit,
@@ -96,6 +98,7 @@ fun WeightCapturePanel(
                 WeightCaptureContent(
                     product = product,
                     scaleState = scaleState,
+                    leyendoEtiqueta = leyendoEtiqueta,
                     onRetryScale = onRetryScale,
                     onAdd = onAdd,
                     onDismiss = onDismiss,
@@ -117,6 +120,7 @@ fun WeightCapturePanel(
             WeightCaptureContent(
                 product = product,
                 scaleState = scaleState,
+                leyendoEtiqueta = leyendoEtiqueta,
                 onRetryScale = onRetryScale,
                 onAdd = onAdd,
                 onDismiss = onDismiss,
@@ -129,6 +133,7 @@ fun WeightCapturePanel(
 private fun WeightCaptureContent(
     product: Product,
     scaleState: ScaleConnectionState,
+    leyendoEtiqueta: () -> Boolean,
     onRetryScale: () -> Unit,
     onAdd: (weightKg: Double) -> Unit,
     onDismiss: () -> Unit,
@@ -151,8 +156,10 @@ private fun WeightCaptureContent(
 
     // Un solo «Agregar» por hoja: dos F12 (o dos clics) antes de que la hoja se cierre no agregan dos líneas.
     var agregado by remember(product.id) { mutableStateOf(false) }
+    val esperaEtiqueta = leyendoEtiqueta()
     fun submit() {
-        if (agregado) return
+        // D7: se vuelve a preguntar al tocar: la etiqueta pudo empezar a leerse después del último cuadro.
+        if (agregado || leyendoEtiqueta()) return
         // Se vuelve a preguntar AL TOCAR (Codex r1): F12 justo cuando el peso caduca, antes del siguiente cuadro, no agrega.
         val texto = if (manualMode) weightText else scaleState.pesoEstableVigente(alAbrir)?.netKg.orEmpty()
         val kg = parseWeightKg(texto) ?: return
@@ -163,7 +170,7 @@ private fun WeightCaptureContent(
 
     // POS de Windows (founder, 4-nov): F12 = «Agregar», sólo con un peso válido. La hoja es barrera: mientras está
     // abierta F12 no cobra el carrito de abajo, y con el botón apagado no hace nada.
-    HojaConAtajo(Key.F12, activo = weightKg != null) { submit() }
+    HojaConAtajo(Key.F12, activo = weightKg != null && !esperaEtiqueta) { submit() }
 
     Column(modifier = Modifier.fillMaxSize()) {
         // Header: precio por kg + nombre + cerrar (espejo del header de ProductDetailPanel).
@@ -313,9 +320,13 @@ private fun WeightCaptureContent(
 
         HorizontalDivider()
         PrimaryButton(
-            text = if (totalCents != null) "Agregar • ${money(totalCents)}" else "Agregar",
+            text = when {
+                esperaEtiqueta -> "Leyendo la etiqueta…"
+                totalCents != null -> "Agregar • ${money(totalCents)}"
+                else -> "Agregar"
+            },
             onClick = { submit() },
-            enabled = weightKg != null,
+            enabled = weightKg != null && !esperaEtiqueta,
             fullWidth = true,
             tecla = "F12",
             modifier = Modifier.padding(AvoqadoTheme.spacing.xl),

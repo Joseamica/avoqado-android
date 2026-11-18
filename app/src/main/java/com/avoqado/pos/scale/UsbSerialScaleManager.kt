@@ -90,14 +90,22 @@ class UsbSerialScaleManager @Inject constructor(
     private val frameAssembler = ScaleFrameAssembler()
     private var stabilityTracker = ScaleStabilityTracker()
 
+    /** D7: el turno de la conexión en curso (ver [TurnoDeConexion]). Se toma su candado para confirmar o soltar. */
+    private val turnos = TurnoDeConexion()
+
     suspend fun connect(
         profile: ScaleProfile,
         usageContext: ScaleUsageContext = ScaleUsageContext.AREA_TICKET_LINE,
     ) = withContext(Dispatchers.IO) {
         disconnect(updateState = false)
+        val turno = turnos.abrir()
         currentProfile = profile
         currentContext = usageContext
         _state.value = ScaleConnectionState.Connecting(profile.name)
+        // Un error de una conexión que ya no es la vigente no se publica (pisaría a la captura siguiente).
+        fun fail(profile: ScaleProfile, message: String) = synchronized(turnos) {
+            if (turnos.vigente(turno)) this@UsbSerialScaleManager.fail(profile, message)
+        }
 
         if (!profile.active ||
             profile.transport != "ANDROID_USB_SERIAL" ||
@@ -162,14 +170,25 @@ class UsbSerialScaleManager @Inject constructor(
                 profile.stopBits.toUsbStopBits(),
                 profile.parity.toUsbParity(),
             )
-            serialPort = port
-            stabilityTracker = stabilityTrackerFor(protocol)
-            synchronized(frameAssembler) { frameAssembler.clear() }
-            inputOutputManager = SerialInputOutputManager(port, this@UsbSerialScaleManager).also {
-                it.start()
+            // D7 (Codex D7 r1 #4): la captura se cerró mientras se abría el puerto: éste ya no es de nadie.
+            val vigente = synchronized(turnos) {
+                turnos.vigente(turno).also { sigue ->
+                    if (!sigue) return@also
+                    serialPort = port
+                    stabilityTracker = stabilityTrackerFor(protocol)
+                    synchronized(frameAssembler) { frameAssembler.clear() }
+                    inputOutputManager = SerialInputOutputManager(port, this@UsbSerialScaleManager).also {
+                        it.start()
+                    }
+                    _state.value = ScaleConnectionState.Ready(profile.name)
+                    startPolling(protocol)
+                }
             }
-            _state.value = ScaleConnectionState.Ready(profile.name)
-            startPolling(protocol)
+            if (!vigente) {
+                runCatching { port.close() }
+                Log.i(TAG, "${profile.name}: la captura se cerró mientras se abría el puerto; se suelta")
+                return@withContext
+            }
             Log.i(
                 TAG,
                 "Connected ${profile.name} with ${protocol.profileType} for ${usageContext.wireValue}",
@@ -180,7 +199,8 @@ class UsbSerialScaleManager @Inject constructor(
         }
     }
 
-    fun disconnect(updateState: Boolean = true) {
+    fun disconnect(updateState: Boolean = true) = synchronized(turnos) {
+        turnos.cerrar()
         pollingJob?.cancel()
         pollingJob = null
         inputOutputManager?.stop()
