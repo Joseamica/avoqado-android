@@ -623,6 +623,11 @@ fun CheckoutScreen(
         // no en un `remember` de esta pantalla: así sobrevive a que se recree la
         // Activity —girar la tablet— que antes borraba el vínculo y revivía el bug.
         if (isTablePaying) cartViewModel.releaseChargingOrder() else cartViewModel.resolvePendingSplitOrderForCharge()
+        // Las hojas (la ficha cuando es hoja, la de tallas) son otra ventana y quedarían ENCIMA del cobro con su «Agregar»
+        // vivo: cambiarían el carrito ya fotografiado. Pasa cuando el cobro lo abre otro, p. ej. el «No, gracias» del cliente
+        // en su pantalla (pizarrón D8).
+        cartViewModel.cerrarHojas()
+        if (!isTablet) selectedProduct = null
         cartViewModel.abrirCobro()
         showPaymentFlow = true
     }
@@ -1133,6 +1138,12 @@ fun CheckoutScreen(
             discounts = discounts,
             motivos = cartViewModel.motivosDeDescuento,
             onAddToCart = { quantity, modifiers, note, isCortesia, cortesiaReason, priceAdj, discountId, motivo ->
+                // D8 (Codex r1): si el cobro ya se abrió (el «No, gracias» del cliente ganó por un instante a este toque), lo
+                // de la ficha no entra al carrito ya fotografiado para cobrar: la ficha se cierra y se agrega al terminar.
+                if (cartViewModel.cobroAbierto) {
+                    selectedProduct = null
+                    return@ProductDetailPanel
+                }
                 cartViewModel.addProductWithModifiers(
                     product = product,
                     quantity = quantity,
