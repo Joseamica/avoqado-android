@@ -180,13 +180,15 @@ class SyncOutbox @Inject constructor(
         synchronized(cerrojoDelReintento) {
             // Una corrida de la sucursal anterior que termina después de `stop()` no ocupa el lugar de la nueva; y nunca dos.
             if (activeVenueId != venueId || reintentoCorto?.isActive == true) return
+            // Codex r4: una sesión vencida no siempre pasa por `stop()`; sin sesión no se insiste (el reloj de 5 min sigue igual).
+            if (!secureStorage.isLoggedIn) return
             val vida = vidaDelReintento
             val espera = esperaCortaMs
             esperaCortaMs = (espera * 2).coerceAtMost(REINTENTO_CORTO_MAX_MS)
             reintentoCorto = scope.launch {
                 delay(espera)
                 val sigue = synchronized(cerrojoDelReintento) {
-                    (vidaDelReintento == vida && activeVenueId == venueId).also {
+                    (vidaDelReintento == vida && activeVenueId == venueId && secureStorage.isLoggedIn).also {
                         // Se suelta el lugar ANTES de correr: si esta corrida vuelve a recibir RETRY, programa el siguiente.
                         if (it && reintentoCorto === coroutineContext[Job]) reintentoCorto = null
                     }

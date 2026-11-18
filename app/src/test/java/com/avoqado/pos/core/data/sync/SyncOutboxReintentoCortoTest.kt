@@ -49,6 +49,7 @@ class SyncOutboxReintentoCortoTest {
         every { context.getSharedPreferences(any(), any()) } returns prefs
         val storage = mockk<SecureStorage>(relaxed = true)
         every { storage.venueId } returns "v1"
+        every { storage.isLoggedIn } returns true
         val cached = mockk<CachedPayloadDao>()
         coEvery { cached.get("preparation_capabilities:v1") } returns
             CachedPayloadEntity("preparation_capabilities:v1", "v1", """{"version":1,"enabled":true,"replayLaneVersion":1}""", 1)

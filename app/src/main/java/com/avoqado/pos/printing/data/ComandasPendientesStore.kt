@@ -7,6 +7,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -49,6 +50,8 @@ class ComandasPendientesStore @Inject constructor(
      * el almacén con un solo argumento; sin ella «Ya la canté» sólo suelta la libreta, como antes.
      */
     private val entregaPorWifi: EntregaPorWifi? = null,
+    /** nab17320 (Codex r4): el borrado de «Ya la canté» se turna con el replay de entregas. Hilt da el único del proceso. */
+    private val candadoDeCierres: CandadoDeCierres = CandadoDeCierres(),
 ) {
     /** Donde corre el cierre de [yaLaCante]: el toque es de la pantalla, el borrado es de la base. */
     private val fondo = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -441,7 +444,9 @@ class ComandasPendientesStore @Inject constructor(
                 // 30 s y luego cada minuto mientras la app viva. Si la app se cierra antes, al abrir saldría UNA vez (duplicado).
                 var intento = 0
                 while (true) {
-                    cerrado = !entregas.cerrarPorPapel(cierre.venueId!!, cierre.orderNumber, cierre.planes) // `true` = tropezó
+                    cerrado = candadoDeCierres.turno.withLock {
+                        !entregas.cerrarPorPapel(cierre.venueId!!, cierre.orderNumber, cierre.planes) // `true` = tropezó
+                    }
                     if (cerrado) break
                     kotlinx.coroutines.delay(REINTENTOS_DEL_CIERRE_MS.getOrElse(intento++) { REINTENTOS_DEL_CIERRE_MS.last() * 2 })
                 }

@@ -307,7 +307,10 @@ class ComandasPendientesStoreTest {
     @Test
     fun `P1 si el borrado de ya la cante tropieza se reintenta y la marca sigue hasta que cierra`() = runBlocking {
         val entrega = mockk<EntregaPorWifi>(relaxed = true)
-        coEvery { entrega.cerrarPorPapel(any(), any(), any()) } returnsMany listOf(true, false) // tropieza, luego cierra
+        val segundo = kotlinx.coroutines.CompletableDeferred<Unit>()
+        var llamadas = 0
+        // Tropieza; el segundo intento espera a la prueba (Codex r4: sin compuerta, la aserción intermedia dependía del reloj real).
+        coEvery { entrega.cerrarPorPapel(any(), any(), any()) } coAnswers { if (++llamadas == 1) true else { segundo.await(); false } }
         val conRespaldo = fallo.copy(
             trabajo = fallo.trabajo!!.copy(config = KitchenDeliveryPolicy.conRespaldo(config, listOf("st_barra"))),
         )
@@ -318,7 +321,7 @@ class ComandasPendientesStoreTest {
 
         val cierre = store.yaLaCante()!!
         assertTrue(store.seEstaCerrando(delReplay))
-        cierre.join()
+        segundo.complete(Unit); cierre.join()
 
         coVerify(exactly = 2) { entrega.cerrarPorPapel("venue-1", "ORD-42", listOf(plan)) }
         assertFalse(store.seEstaCerrando(delReplay))

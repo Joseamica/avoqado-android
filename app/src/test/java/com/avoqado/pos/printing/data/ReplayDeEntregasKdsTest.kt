@@ -496,4 +496,25 @@ class ReplayDeEntregasKdsTest {
         coVerify(exactly = 0) { despachador.reintentar(any(), any(), any()) }
         coVerify(exactly = 0) { dao.borrar(any()) }
     }
+
+    /**
+     * Codex r4: revisar e imprimir se hace con el TURNO que también toma el borrado de «Ya la canté» ([CandadoDeCierres]): mientras
+     * el replay imprime, el cierre no puede borrar la fila ni quitar su marca en medio.
+     */
+    @Test
+    fun `P1 el replay revisa e imprime con el turno que comparte con Ya la cante`() = runTest {
+        val candado = CandadoDeCierres()
+        val conTurno = ReplayDeEntregasKds(dao, entregaPorWifi, despachador, cola, pendientes, secureStorage, transporte, candado)
+        coEvery { dao.delVenue("venue-1") } returns listOf(fila("sale:vieja:st_barra", 0))
+        var turnoTomadoAlImprimir: Boolean? = null
+        coEvery { despachador.reintentar(any(), any(), false) } coAnswers {
+            turnoTomadoAlImprimir = candado.turno.isLocked
+            EstadoDeComanda.Salio
+        }
+
+        conTurno.reproducirAlAbrir("venue-1", ahora = 20 * 60_000)
+
+        assertEquals(true, turnoTomadoAlImprimir)
+        assertEquals(false, candado.turno.isLocked)
+    }
 }
