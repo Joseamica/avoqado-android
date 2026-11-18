@@ -1539,6 +1539,8 @@ private fun SavedCartsSubView(
                                 Restauracion.BloqueadaPorAbono -> restauracionBloqueada = com.avoqado.pos.payment.presentation.VALES_CON_ABONO
                                 Restauracion.YaDejadaParaDespues ->
                                     restauracionBloqueada = com.avoqado.pos.pos.presentation.cart.YA_SE_DEJO_PARA_PAGAR_DESPUES
+                                // D9: el cobro se abrió; el carrito ya avisó encima del cobro.
+                                Restauracion.CobroAbierto -> Unit
                             }
                         },
                         onDelete = { confirmarEliminacion = cart },
@@ -1592,6 +1594,7 @@ private fun SavedCartsSubView(
                             confirmarRestauracion = null
                             restauracionBloqueada = com.avoqado.pos.pos.presentation.cart.YA_SE_DEJO_PARA_PAGAR_DESPUES
                         }
+                        Restauracion.CobroAbierto -> confirmarRestauracion = null
                         else -> Unit
                     }
                 })

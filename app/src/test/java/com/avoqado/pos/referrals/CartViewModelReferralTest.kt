@@ -668,4 +668,51 @@ class CartViewModelReferralTest {
 
         coVerify(exactly = 0) { captureReferralUseCase(any(), any(), any(), any(), any()) }
     }
+
+    @Test
+    fun `D9 el referido que termina de validarse con el cobro abierto no cambia la venta que se cobra`() = runTest {
+        val respuesta = kotlinx.coroutines.CompletableDeferred<Result<ValidationResult>>()
+        coEvery { validateReferralUseCase(any(), any(), any()) } coAnswers { respuesta.await() }
+        val viewModel = createViewModel()
+        selectCustomer(viewModel)
+        viewModel.onReferralCodeChange("ANA-2026")
+        viewModel.validateReferralCode()
+        viewModel.abrirCobro()
+        val antes = viewModel.cartState.value
+
+        respuesta.complete(
+            Result.success(ValidationResult.Valid(referrerName = "Ana López", discountPercent = 10, referrerCustomerId = "cust-ana")),
+        )
+        advanceUntilIdle()
+
+        assertEquals(antes, viewModel.cartState.value)
+        assertEquals(ReferralCaptureUiState.Idle, viewModel.referralValidation.value)
+        assertEquals(com.avoqado.pos.pos.presentation.cart.AVISO_COBRO_ABIERTO, viewModel.avisoDelCobroAbierto.value)
+    }
+
+    @Test
+    fun `D9 el rechazo tardio de la captura de la venta anterior no toca el referido de la siguiente`() = runTest {
+        coEvery { validateReferralUseCase(any(), any(), any()) } returns Result.success(
+            ValidationResult.Valid(referrerName = "Ana López", discountPercent = 10, referrerCustomerId = "cust-ana"),
+        )
+        coEvery { captureReferralUseCase(any(), any(), any(), any(), any()) } returns Result.failure(
+            ReferralValidationException(ValidationResult.Reason.EXISTING_CUSTOMER),
+        )
+        val viewModel = createViewModel()
+        // La venta siguiente ya trae otro cliente con su propio referido válido.
+        selectCustomer(viewModel, id = "cust-8")
+        viewModel.onReferralCodeChange("BETO-2026")
+        viewModel.validateReferralCode()
+        advanceUntilIdle()
+        val antes = viewModel.cartState.value
+
+        val ok = viewModel.captureReferralOnPayment(
+            orderId = "order-A",
+            pendiente = CartViewModel.ReferralPendiente(code = "ANA-2026", customerId = "cust-7", staffId = "staff-1"),
+        )
+
+        assertFalse(ok)
+        assertTrue(viewModel.referralValidation.value is ReferralCaptureUiState.Valid)
+        assertEquals(antes, viewModel.cartState.value)
+    }
 }
