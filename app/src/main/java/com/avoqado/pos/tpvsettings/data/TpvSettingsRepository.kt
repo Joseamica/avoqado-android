@@ -764,7 +764,10 @@ class TpvSettingsRepository internal constructor(
                 if (completoGen != generacion || completosEnCurso > 0 || secureStorage.venueId != venueId || loadedVenueId != venueId) {
                     null
                 } else {
-                    fila.pin?.let { _managerPinOverrideEnabled.value = it; secureStorage.managerPinOverrideEnabled = it }
+                    // Sólo lo que se VE (Codex r4 #2): `clearCache` y este bloque comparten `ticketLock`, así que en memoria el PIN
+                    // de otra sucursal no sobrevive al cambio; lo GUARDADO (una llave para todo el aparato) lo sigue escribiendo
+                    // sólo el refresco completo, para que un proceso que muere a media mudanza no arranque B con el PIN de A.
+                    fila.pin?.let { _managerPinOverrideEnabled.value = it }
                     terminal?.let {
                         _terminalNavigation.value.copy(
                             visibleCategoryIds = it.visibleCategoryIds,
