@@ -85,8 +85,9 @@ class UpsellViewModel @Inject constructor(
     private var ventaYaOfrecida: String? = null
 
     /**
-     * D9 (Codex r3 #3, #4): la impresión pendiente es de UNA venta. Se convierte sólo con el pago de esa venta: cancelar el
-     * cobro y volver a cobrar la misma la conserva, y vaciarla para armar otra ya no se la cuenta a la nueva.
+     * D9 (Codex r3 #4, r4 #3): la impresión pendiente es de UNA venta. Antes nacía siempre con un cobro abierto; desde que el
+     * cliente sólo contesta, puede quedar sin cobro: si vacían la venta y cobran otra, no se le cuenta a la otra. Se compara
+     * con la venta que trae el resultado del pago (no con la foto de la pantalla, que se pierde al restaurarla).
      */
     private var ventaDeLaConversion: String? = null
 
@@ -235,10 +236,20 @@ class UpsellViewModel @Inject constructor(
      */
     fun onOrderPaid(orderId: String, venta: String? = null) {
         val impressionId = pendingConversionId ?: return
-        // Pagó OTRA venta: ésta se quedó sin cobrar (se vació o se guardó). No se le cuenta a la que sí se pagó.
-        if (venta != null && ventaDeLaConversion != null && venta != ventaDeLaConversion) return
+        // Pagó OTRA venta (o no se sabe cuál): ésta se quedó sin cobrar. No se le cuenta a la que sí se pagó.
+        if (ventaDeLaConversion != null && venta != ventaDeLaConversion) return
         pendingConversionId = null
         viewModelScope.launch { repository.convertImpression(impressionId, orderId) }
+    }
+
+    /**
+     * El cobro se canceló o salió a dividir: se suelta sin convertir, como siempre (aporta $0; un upsell cobrado en partes no
+     * cuenta como convertido), y la venta puede volver a ofrecerse en el siguiente «Cobrar» (Codex r4 #3, #5).
+     */
+    fun cancelPendingConversion() {
+        pendingConversionId = null
+        ventaDeLaConversion = null
+        ventaYaOfrecida = null
     }
 
     private fun isSurfaceEnabled(context: UpsellContext) = when (context) {

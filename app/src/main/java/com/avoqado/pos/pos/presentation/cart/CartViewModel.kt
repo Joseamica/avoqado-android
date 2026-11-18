@@ -717,6 +717,7 @@ class CartViewModel @Inject constructor(
         cobroAbierto = false
         _avisoDelCobroAbierto.value = null   // decía «cancela el cobro»: ya no aplica (Codex r2 #11)
         vendedoresPorAplicar?.let { vendedoresPorAplicar = null; aplicarVendedores(it, alCerrarElCobro = true) }
+        if (cocinaPorAplicar) { cocinaPorAplicar = false; freezePreparationForPendingProducts() }
         // D4: lo que la venta intentó cobrar ya no está en pantalla: desde ahora lo decide su evidencia (también su duda).
         pendingGrantQueue?.soltarVenta()
     }
@@ -1473,6 +1474,8 @@ class CartViewModel @Inject constructor(
             selectStaff(selected.id, selected.fullName)
         } else if (selectedId.isNotBlank() && selected == null) {
             secureStorage.clearSelectedStaffForCurrentVenue()
+            // Al cerrar un cobro la venta sigue (puede traer el «Saldo pendiente» de un abono): sólo deja de llevar al vendedor
+            // dado de baja. Fuera del cobro se vacía como siempre (CartSplitContinuidadTest; lo de un abono, en deuda: Codex r4 #1).
             if (alCerrarElCobro) {
                 val sinVendedor = defaultCartState()
                 _cartState.update { it.copy(selectedStaffId = sinVendedor.selectedStaffId, selectedStaffName = sinVendedor.selectedStaffName) }
@@ -1496,6 +1499,7 @@ class CartViewModel @Inject constructor(
     }
 
     private var vendedoresPorAplicar: List<StaffMember>? = null
+    private var cocinaPorAplicar = false
 
     fun selectStaff(staffId: String, staffName: String) {
         if (cobroLoImpide()) return
@@ -1561,9 +1565,12 @@ class CartViewModel @Inject constructor(
     fun consumePendingClassSeed() {
         // D9: con el cobro abierto o una venta a medio cobrar, la clase no entra y la semilla NO se consume: entra a la venta
         // siguiente (la pantalla la vuelve a pedir al cerrarse el cobro). Con abono, agregarla trababa el «Cobrar» (Codex r2 #1).
-        if (cobroLoImpide(avisar = false) || hayVentaAMedias()) return
+        if (cobroLoImpide(avisar = false) || hayVentaAMedias() || sembrandoClase) return
         val seed = classCheckoutSeed.consume() ?: return
+        // Una a la vez: la pantalla la pide al llegar y al quedar vacío el carrito; con dos en la fila no entran juntas.
+        sembrandoClase = true
         viewModelScope.launch {
+          try {
             if (productsRepository.products.value.isEmpty()) {
                 productsRepository.fetchProducts()
             }
@@ -1592,8 +1599,12 @@ class CartViewModel @Inject constructor(
                 _cartState.update { it.copy(reservationId = resId) }
             }
             Log.d("🛒", "Seeded class ${product.name} x${seed.quantity} from walk-in flow")
+          } finally {
+            sembrandoClase = false
+          }
         }
     }
+    private var sembrandoClase = false
 
     // MARK: - Cart Operations
 
@@ -1602,6 +1613,7 @@ class CartViewModel @Inject constructor(
     }
 
     private fun freezePreparationForPendingProducts() {
+        if (cobroAbierto) { cocinaPorAplicar = true; return }   // D9: se aplica en `cerrarCobro()`
         if (_pendingSplitOrder.value != null) return
         val immediate = immediateServiceCourse() ?: return
         val courses = serviceCoursesRepository?.courses?.value.orEmpty()

@@ -1617,12 +1617,13 @@ fun CheckoutScreen(
     // El carrito sigue a esta pantalla: un cobro restaurado (girar la tablet, volver a la pestaña) sigue abierto para él, y
     // una pantalla que vuelve SIN cobro suelta una marca vieja, para que la pistola nunca se quede ignorada para siempre.
     LaunchedEffect(showPaymentFlow, aperturaDeTarjetas) {
-        if (showPaymentFlow || aperturaDeTarjetas != null) cartViewModel.abrirCobro()
-        else {
-            cartViewModel.cerrarCobro()
-            // D9: «Inscribir y cobrar» que llegó con el cobro abierto se quedó guardado; entra ahora, a la venta que sigue.
-            cartViewModel.consumePendingClassSeed()
-        }
+        if (showPaymentFlow || aperturaDeTarjetas != null) cartViewModel.abrirCobro() else cartViewModel.cerrarCobro()
+    }
+    // D9 (Codex r4 #2): las clases de «Inscribir y cobrar» que esperan (cobro abierto, venta a medio cobrar, otra clase en la
+    // venta) entran a la venta SIGUIENTE: cuando el carrito queda vacío y no hay cobro (terminar, «Vaciar»), nunca encima de
+    // los artículos de otra venta al cancelar un cobro.
+    LaunchedEffect(cartState.isEmpty, showPaymentFlow, aperturaDeTarjetas) {
+        if (cartState.isEmpty && !showPaymentFlow && aperturaDeTarjetas == null) cartViewModel.consumePendingClassSeed()
     }
 
     // Barcode scanner overlay
@@ -2219,8 +2220,8 @@ fun CheckoutScreen(
                     // Upsell: el momento terminó en venta PAGADA. Sólo aquí, en el
                     // éxito real — una impresión sin esto aporta $0 al reporte, y
                     // marcarla antes contaría como venta algo que se canceló.
-                    // D9: con la venta de la foto, para que la sugerencia de otra venta no se le cuente a ésta.
-                    completion.orderId?.let { upsellViewModel.onOrderPaid(it, venta = paymentCartSnapshot?.identidadDeVenta) }
+                    // D9: con la venta que trae el pago, para que la sugerencia de otra venta no se le cuente a ésta.
+                    completion.orderId?.let { upsellViewModel.onOrderPaid(it, venta = completion.identidadDeVenta) }
                 },
                 onDone = {
                     cuentaConSaldoVisible = cuentaConSaldoPendiente; cuentaConSaldoPendiente = null; tarjetaPreseleccionada = null
@@ -2249,6 +2250,7 @@ fun CheckoutScreen(
                     // El cobro se canceló: la impresión se queda SIN convertir (aporta
                     // $0 y no cuenta para el promedio). Lo aceptado sigue en el carrito,
                     // que es lo correcto — el cliente lo pidió; lo que no ocurrió es la venta.
+                    upsellViewModel.cancelPendingConversion()
                     cartViewModel.refreshCustomerDisplay()
                 },
                 // «Dividir importe» también en tienda (founder, 26-oct: IQ cobró dos tarjetas como dos
@@ -2266,6 +2268,7 @@ fun CheckoutScreen(
                     paymentCartSnapshot = null
                     cartViewModel.releaseChargingOrder()
                     pendingSplitConfig = SplitConfig()
+                    upsellViewModel.cancelPendingConversion()
                     cartViewModel.refreshCustomerDisplay()
                     if (cartViewModel.hasCreditPack) showPackNoSplitAlert = true
                     else showSplitPayment = true
@@ -2283,6 +2286,7 @@ fun CheckoutScreen(
                     // nunca contra el de la venta que acaba de cerrarse.
                     cartViewModel.releaseChargingOrder()
                     pendingSplitConfig = SplitConfig()
+                    upsellViewModel.cancelPendingConversion()
                     cartViewModel.refreshCustomerDisplay()
                     previousChargeNotice = message
                 },

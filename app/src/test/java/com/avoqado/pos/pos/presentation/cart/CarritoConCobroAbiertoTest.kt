@@ -90,7 +90,10 @@ class CarritoConCobroAbiertoTest {
         )
     }
 
-    private fun carrito(semilla: ClassCheckoutSeed = classCheckoutSeed): CartViewModel = CartViewModel(
+    private fun carrito(
+        semilla: ClassCheckoutSeed = classCheckoutSeed,
+        tiempos: com.avoqado.pos.tables.data.ServiceCoursesRepository? = null,
+    ): CartViewModel = CartViewModel(
         productsRepository = productsRepository,
         discountsRepository = discountsRepository,
         savedCartsRepository = savedCartsRepository,
@@ -107,6 +110,7 @@ class CarritoConCobroAbiertoTest {
         customerDisplay = pantallaDelCliente,
         areaTicketRepository = areaTicketRepository,
         walletScanRepository = mockk(relaxed = true),
+        serviceCoursesRepository = tiempos,
     )
 
     /** Un café en el carrito y el cobro abierto (ya tomó su foto). */
@@ -404,5 +408,46 @@ class CarritoConCobroAbiertoTest {
         vm.consumePendingClassSeed()
         assertEquals("res-2", vm.cartState.value.reservationId)
         assertEquals(listOf("Pan"), vm.cartState.value.items.map { it.name })
+    }
+
+    @Test
+    fun `los tiempos de cocina que llegan con el cobro abierto se aplican al cerrarlo`() {
+        val cursos = MutableStateFlow<List<com.avoqado.pos.pos.data.model.ServiceCourseSnapshot>>(emptyList())
+        val tiempos = mockk<com.avoqado.pos.tables.data.ServiceCoursesRepository>(relaxed = true)
+        every { tiempos.courses } returns cursos
+        every { tiempos.immediateSnapshot() } answers { cursos.value.firstOrNull { it.kind == "IMMEDIATE" } }
+        every { secureStorage.venueType } returns "RESTAURANT"
+        val vm = carrito(tiempos = tiempos)
+        vm.addProduct(cafe)
+        vm.abrirCobro()
+        val antes = vm.cartState.value
+
+        cursos.value = listOf(com.avoqado.pos.pos.data.model.ServiceCourseSnapshot("immediate", "Inmediato", "IMMEDIATE", preparationVersion = 1))
+
+        assertEquals("el saldo de regalo compara el carrito vivo con la foto: no cambia durante el cobro", antes, vm.cartState.value)
+        vm.cerrarCobro()
+        assertEquals("immediate", vm.cartState.value.items.single().serviceCourse?.id)
+    }
+
+    @Test
+    fun `dos pedidos seguidos de la fila de clases no meten dos clases en la misma venta`() {
+        val catalogo = MutableStateFlow<List<Product>>(emptyList())
+        every { productsRepository.products } returns catalogo
+        val carga = kotlinx.coroutines.CompletableDeferred<Unit>()
+        var esperar = false
+        coEvery { productsRepository.fetchProducts(any(), any()) } coAnswers { if (esperar) { carga.await(); catalogo.value = listOf(cafe, pan) } }
+        val semilla = ClassCheckoutSeed().apply {
+            put(ClassCheckoutSeed.Seed(productId = "cafe", quantity = 1, reservationId = "res-1"))
+            put(ClassCheckoutSeed.Seed(productId = "pan", quantity = 1, reservationId = "res-2"))
+        }
+        val vm = carrito(semilla)
+        esperar = true
+
+        vm.consumePendingClassSeed()   // al llegar
+        vm.consumePendingClassSeed()   // el carrito vacío lo vuelve a pedir mientras la primera carga el catálogo
+        carga.complete(Unit)
+
+        assertEquals(listOf("Café"), vm.cartState.value.items.map { it.name })
+        assertTrue("la segunda sigue en la fila", semilla.hasPending())
     }
 }
