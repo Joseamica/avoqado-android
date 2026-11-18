@@ -430,7 +430,7 @@ class ComandasPendientesStore @Inject constructor(
             // nab17320 (nube, 17-nov): lo que se va a cerrar se anota ANTES de soltar la libreta. El borrado de sus filas corre
             // en otro hilo: en ese hueco el replay de entregas ya no la ve en la libreta, pero su fila sigue viva, y la
             // imprimía (el papel de una comanda que la cocina ya cantó). [seEstaCerrando] lo cubre hasta que el borrado termina.
-            val cierre = vista.estado.trabajo?.let(::cierreDeRespaldo)?.also { cerrandose += it }
+            val cierre = vista.estado.trabajo?.let(::cierreDeLaCantada)?.also { cerrandose += it }
             entradas = entradas.filter { it !== vista }
             persistir()
             publicar()
@@ -445,7 +445,12 @@ class ComandasPendientesStore @Inject constructor(
                 var intento = 0
                 while (true) {
                     cerrado = candadoDeCierres.turno.withLock {
-                        !entregas.cerrarPorPapel(cierre.venueId!!, cierre.orderNumber, cierre.planes) // `true` = tropezó
+                        // `true` = tropezó. D28: las de estación con impresora propia no se borran (la pantalla aún las
+                        // espera): se quedan sin papel.
+                        val v = cierre.venueId!!
+                        val respaldo = cierre.config.stations.filter { it.respaldoLocal }.map { it.id }.toSet()
+                        val (deRespaldo, propias) = cierre.planes.partition { it.stationId in respaldo }
+                        !entregas.cerrarPorPapel(v, cierre.orderNumber, deRespaldo) && !entregas.quitarPapel(v, cierre.orderNumber, propias)
                     }
                     if (cerrado) break
                     kotlinx.coroutines.delay(REINTENTOS_DEL_CIERRE_MS.getOrElse(intento++) { REINTENTOS_DEL_CIERRE_MS.last() * 2 })
@@ -458,11 +463,13 @@ class ComandasPendientesStore @Inject constructor(
         }
     }
 
-    /** Lo que «Ya la canté» cierra de un trabajo: sólo los planes de sus estaciones con papel de RESPALDO (como antes). */
-    private fun cierreDeRespaldo(trabajo: TrabajoPendiente): TrabajoPendiente? {
+    /**
+     * Lo que «Ya la canté» cierra de un trabajo: sus planes de RESPALDO (sus filas se borran, como antes) y, D28, los de estación
+     * con impresora propia (sus filas se quedan sin papel). Todos cuentan para [seEstaCerrando] mientras el cierre corre.
+     */
+    private fun cierreDeLaCantada(trabajo: TrabajoPendiente): TrabajoPendiente? {
         if (entregaPorWifi == null || trabajo.venueId == null) return null
-        val respaldo = trabajo.config.stations.filter { it.respaldoLocal }.map { it.id }.toSet()
-        return trabajo.copy(planes = trabajo.planes.filter { it.stationId in respaldo }).takeIf { it.planes.isNotEmpty() }
+        return trabajo.takeIf { it.planes.isNotEmpty() }
     }
 
     /** nab17320: los cierres de «Ya la canté» que todavía están borrando sus filas de entregas. */

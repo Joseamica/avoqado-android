@@ -1,6 +1,7 @@
 package com.avoqado.pos.printing.data
 
 import com.avoqado.pos.core.data.lan.KdsComanda
+import com.avoqado.pos.core.data.lan.KdsComandaItem
 import com.avoqado.pos.core.data.lan.KdsLanProtocol
 import com.avoqado.pos.core.data.lan.RachaSinAcuse
 import com.avoqado.pos.core.data.lan.TransporteLan
@@ -36,9 +37,15 @@ import org.junit.Test
  */
 class ReplayDeEntregasKdsTest {
 
-    /** nab17320: el replay pregunta si la fila sigue antes de imprimir; por omisión sigue (las pruebas no la borran por fuera). */
-    private val dao = mockk<EntregasKdsPendientesDao>(relaxed = true) { coEvery { existe(any()) } returns true }
-    private val entregaPorWifi = mockk<EntregaPorWifi>()
+    /**
+     * nab17320 y D28: antes de imprimir, el replay RELEE la fila (`porId`). Por omisión está igual que al empezar la pasada: la
+     * misma que devuelve `delVenue` (las pruebas no la cambian por fuera).
+     */
+    private val dao = mockk<EntregasKdsPendientesDao>(relaxed = true) {
+        coEvery { porId(any()) } coAnswers { val id = firstArg<String>(); delVenue("venue-1").firstOrNull { it.entregaId == id } }
+    }
+    /** D28: por omisión ninguna hoja salió por la libreta en este proceso (`papelYaSalio`); las pruebas que lo necesitan lo re-stubbean. */
+    private val entregaPorWifi = mockk<EntregaPorWifi> { every { papelYaSalio(any()) } returns false }
     /**
      * Estricto: el replay refresca la config POR SU CUENTA (`refrescarConfig`, para revalidar la sucursal antes y después)
      * y le pide a `reintentar` que NO refresque otra vez (`refrescar = false`): una llamada con `true` no tiene respuesta.
@@ -58,12 +65,14 @@ class ReplayDeEntregasKdsTest {
     private val transporte = mockk<TransporteLan> { every { racha } returns rachaDeLaCaja }
     private val replay = ReplayDeEntregasKds(dao, entregaPorWifi, despachador, cola, pendientes, secureStorage, transporte)
 
+    /** Una fila normal trae su plan de papel (D28: una fila SIN planes ya no se imprime: su hoja salió por otro lado). */
     private val trabajo = TrabajoPendiente(
-        planes = emptyList(), config = PrintConfig(), orderNumber = "1234", orderType = "En tienda",
+        planes = listOf(TicketPlan("st_barra", false, listOf(ConsolidatedLine("Café", 1, emptyList(), null, listOf("oi_9"))))),
+        config = PrintConfig(), orderNumber = "1234", orderType = "En tienda",
         serverName = null, comboNames = emptyMap(), venueId = "venue-1", orderId = null,
     )
 
-    /** El fixture trae planes vacíos, así que su `entregaId` es `"<folio>|"`. */
+    /** Su `entregaId` es `"<folio>|"`, fijo (las pruebas lo nombran así). */
     private fun fila(folio: String, creada: Long, soltada: Long? = null) = EntregaKdsPendienteEntity(
         entregaId = "$folio|", sourceKey = folio, venueId = "venue-1", stationId = "st_barra",
         mensajeJson = KdsLanProtocol.encode(
@@ -228,6 +237,11 @@ class ReplayDeEntregasKdsTest {
             listOf(fila("sale:rota:st_barra", 0), fila("sale:buena:st_barra", 0)),
             listOf(fila("sale:rota:st_barra", 0)),
         )
+        // La relectura no puede gastar las respuestas de `delVenue`: lee las dos filas tal cual.
+        coEvery { dao.porId(any()) } coAnswers {
+            val id = firstArg<String>()
+            listOf(fila("sale:rota:st_barra", 0), fila("sale:buena:st_barra", 0)).firstOrNull { it.entregaId == id }
+        }
         var llamadas = 0
         coEvery { despachador.reintentar(any(), any(), false) } coAnswers {
             llamadas++
@@ -330,6 +344,67 @@ class ReplayDeEntregasKdsTest {
         coVerify(exactly = 0) { dao.borrar(any()) }
     }
 
+    /**
+     * D28: la fila de una estación con impresora propia se suelta SIN papel (la libreta es la única dueña de su hoja). Aunque
+     * la libreta ya no la tenga (salió o se cantó) y la pantalla no conteste, el replay no la imprime: sólo espera a la pantalla.
+     */
+    @Test
+    fun `P1 D28 una fila de preparacion soltada sin papel no se imprime aunque la libreta ya no la tenga`() = runTest {
+        val folio = "sale:d28:st_barra"
+        val mensaje = KdsComanda(
+            venueId = "venue-1", deviceId = "tablet-1", sourceKey = folio, stationId = "st_barra", orderNumber = "1234",
+            orderType = "En tienda", createdAtMillis = 0, items = listOf(KdsComandaItem(id = "oi_2", productName = "Café", quantity = 1)),
+            preparationVersion = 1,
+        )
+        // Planes vacíos: así queda la fila cuando su hoja ya salió por la libreta.
+        coEvery { dao.delVenue("venue-1") } returns listOf(
+            fila(folio, 0, soltada = 5).copy(
+                mensajeJson = KdsLanProtocol.encode(mensaje),
+                trabajoJson = Json.encodeToString(TrabajoPendiente.serializer(), trabajo.copy(planes = emptyList())),
+            ),
+        )
+        coEvery { entregaPorWifi.empujar(any(), any()) } returns false
+
+        replay.reproducirAlAbrir("venue-1", ahora = 20 * 60_000)
+
+        coVerify(exactly = 1) { entregaPorWifi.empujar(any(), ReplayDeEntregasKds.ESPERA_PANTALLAS_MS) }
+        coVerify(exactly = 0) { despachador.reintentar(any(), any(), any()) }
+        coVerify(exactly = 0) { dao.borrar(any()) }
+    }
+
+    /**
+     * D28: la pasada leyó la fila con su papel al empezar; mientras procesaba otras, la libreta imprimió esa hoja (y la soltó).
+     * Justo antes de imprimir, el replay pregunta otra vez y ya no la saca.
+     */
+    @Test
+    fun `P1 D28 si la hoja salio por la libreta mientras la pasada avanzaba, el replay no la imprime`() = runTest {
+        val plan = TicketPlan("st_barra", false, listOf(ConsolidatedLine("Café", 1, emptyList(), null, listOf("oi_2"))))
+        val conPlan = trabajo.copy(planes = listOf(plan))
+        coEvery { dao.delVenue("venue-1") } returns listOf(
+            fila("sale:vieja:st_barra", 0).copy(trabajoJson = Json.encodeToString(TrabajoPendiente.serializer(), conPlan)),
+        )
+        coEvery { entregaPorWifi.empujar(any(), any()) } returns false
+        every { entregaPorWifi.papelYaSalio(any()) } returnsMany listOf(false, true)
+
+        replay.reproducirAlAbrir("venue-1", ahora = 20 * 60_000)
+
+        coVerify(exactly = 0) { despachador.reintentar(any(), any(), any()) }
+        coVerify(exactly = 0) { dao.borrar(any()) }
+    }
+
+    /** Codex r5 #1, con la relectura de D28: si la base no deja releer la fila, esta pasada no la imprime ni la borra. */
+    @Test
+    fun `P1 si la base no deja releer la fila, esta pasada no la imprime y el siguiente tic insiste`() = runTest {
+        coEvery { dao.delVenue("venue-1") } returns listOf(fila("sale:vieja:st_barra", 0))
+        coEvery { dao.porId(any()) } throws IllegalStateException("disco ocupado")
+        coEvery { despachador.reintentar(any(), any(), false) } returns EstadoDeComanda.Salio
+
+        replay.reproducirAlAbrir("venue-1", ahora = 20 * 60_000)
+
+        coVerify(exactly = 0) { despachador.reintentar(any(), any(), any()) }
+        coVerify(exactly = 0) { dao.borrar(any()) }
+    }
+
     // MARK: - Ronda 3 (I1 de la revisión de la Task 7): la sucursal se revalida en CADA fila
 
     /**
@@ -410,6 +485,7 @@ class ReplayDeEntregasKdsTest {
     fun `P1 un papel que salio pero cuya fila no se pudo borrar no se reimprime en el siguiente tic`() = runTest {
         val laFila = listOf(fila("sale:vieja:st_barra", 0))
         coEvery { dao.delVenue("venue-1") } returnsMany listOf(laFila, laFila, laFila, emptyList())
+        coEvery { dao.porId(any()) } returns laFila.single() // la relectura no gasta las respuestas de `delVenue`
         coEvery { despachador.reintentar(any(), any(), false) } returns EstadoDeComanda.Salio
         var borrados = 0
         coEvery { dao.borrar("sale:vieja:st_barra|") } coAnswers {
@@ -447,7 +523,7 @@ class ReplayDeEntregasKdsTest {
         val enTabla = mutableListOf(filaB, filaA)
         coEvery { dao.delVenue("venue-1") } coAnswers { enTabla.toList() }
         coEvery { dao.borrar(any()) } coAnswers { if (enTabla.removeAll { it.entregaId == firstArg<String>() }) 1 else 0 }
-        coEvery { dao.existe(any()) } coAnswers { enTabla.any { it.entregaId == firstArg<String>() } }
+        coEvery { dao.porId(any()) } coAnswers { enTabla.firstOrNull { it.entregaId == firstArg<String>() } }
         // La fila B es reciente: se empuja a la pantalla. En esos segundos la cajera canta A: la libreta la suelta y su
         // fila se borra (lo que hacen `yaLaCante` y `cerrarPorPapel`).
         coEvery { entregaPorWifi.empujar(match { it.sourceKey == "sale:b:st_barra" }, any()) } coAnswers {
@@ -487,8 +563,9 @@ class ReplayDeEntregasKdsTest {
     /** Codex r2 (R1): la consulta nueva a la tabla es una espera; si en ella cambia la sucursal, no se imprime con la config de la otra. */
     @Test
     fun `P1 si la sucursal cambia mientras se revisa la tabla no se reimprime`() = runTest {
-        coEvery { dao.delVenue("venue-1") } returns listOf(fila("sale:vieja:st_barra", 0))
-        coEvery { dao.existe(any()) } coAnswers { sucursalVigente = "venue-2"; true }
+        val vieja = fila("sale:vieja:st_barra", 0)
+        coEvery { dao.delVenue("venue-1") } returns listOf(vieja)
+        coEvery { dao.porId(any()) } coAnswers { sucursalVigente = "venue-2"; vieja }
         coEvery { despachador.reintentar(any(), any(), false) } returns EstadoDeComanda.Salio
 
         replay.reproducirAlAbrir("venue-1", ahora = 20 * 60_000)

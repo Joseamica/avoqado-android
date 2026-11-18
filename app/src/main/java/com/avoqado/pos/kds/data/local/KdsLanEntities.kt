@@ -84,11 +84,21 @@ internal object KdsLanSql {
 
     const val BORRAR_ENTREGA: String = "DELETE FROM entregas_kds_pendientes WHERE entregaId = :entregaId"
 
-    /** nab17320: ¿la entrega sigue pendiente? (otro camino —«Ya la canté», el papel que salió— la pudo cerrar). */
-    const val ENTREGA_EXISTE: String = "SELECT EXISTS(SELECT 1 FROM entregas_kds_pendientes WHERE entregaId = :entregaId)"
+    /**
+     * nab17320 y D28 (Codex código r3): la entrega tal como está AHORA. Otro camino la pudo cerrar («Ya la canté», el papel que
+     * salió) o dejar sin papel (la libreta la imprimió).
+     */
+    const val ENTREGA_POR_ID: String = "SELECT * FROM entregas_kds_pendientes WHERE entregaId = :entregaId"
 
     /** Ronda 2 (N2): el despacho vivo terminó sin papel para esta entrega; el reloj del replay ya la puede tomar. */
     const val SOLTAR_ENTREGA: String = "UPDATE entregas_kds_pendientes SET soltadaEnMillis = :ahora WHERE entregaId = :entregaId"
+
+    /**
+     * D28: la hoja ya salió por la libreta (o se cantó): la fila se suelta y cambia su trabajo por uno sin papel, en el mismo
+     * paso. `creadaEnMillis` no se toca.
+     */
+    const val SOLTAR_CON_TRABAJO: String =
+        "UPDATE entregas_kds_pendientes SET trabajoJson = :trabajoJson, soltadaEnMillis = :ahora WHERE entregaId = :entregaId"
 
     const val TICKET_POR_FOLIO: String = "SELECT * FROM kds_tickets_locales WHERE sourceKey = :sourceKey"
 
@@ -151,11 +161,14 @@ interface EntregasKdsPendientesDao {
     @Query(KdsLanSql.BORRAR_ENTREGA)
     suspend fun borrar(entregaId: String): Int
 
-    @Query(KdsLanSql.ENTREGA_EXISTE)
-    suspend fun existe(entregaId: String): Boolean
+    @Query(KdsLanSql.ENTREGA_POR_ID)
+    suspend fun porId(entregaId: String): EntregaKdsPendienteEntity?
 
     @Query(KdsLanSql.SOLTAR_ENTREGA)
     suspend fun soltar(entregaId: String, ahora: Long): Int
+
+    @Query(KdsLanSql.SOLTAR_CON_TRABAJO)
+    suspend fun soltarConTrabajo(entregaId: String, trabajoJson: String, ahora: Long): Int
 }
 
 @Dao

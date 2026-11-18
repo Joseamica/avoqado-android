@@ -161,6 +161,63 @@ class EntregaPorWifi @Inject constructor(
         return !cerrado
     }
 
+    /**
+     * D28: la hoja de una estación con impresora propia ya SALIÓ (la libreta, «Volver a imprimir») o una persona la cantó
+     * («Ya la canté»): sus filas pendientes se quedan SIN papel (`planes` vacíos; su hora de creación no cambia), sólo para
+     * entregarle la tarjeta a la pantalla. Hasta entonces la fila conserva su papel, que rescata la hoja si la libreta no llega a
+     * imprimirla. Una fila pierde su papel sólo si TODOS sus renglones están entre los que salieron en su estación.
+     *
+     * Se anota también en memoria ([papelYaSalio]) ANTES de escribir: cubre al replay que leyó la fila antes de este cambio y a
+     * una escritura que falla. Sólo las últimas [TOPE_DE_PAPELES] (sale la más vieja); si la app muere sin que la base se
+     * escribiera, al abrir sale UNA vez más (duplicado, nunca pérdida).
+     *
+     * @return `true` si la base tropezó, como [cerrarPorPapel].
+     */
+    suspend fun quitarPapel(venueId: String, orderNumber: String, salieron: List<TicketPlan>): Boolean {
+        val papel = PapelQueSalio(
+            venueId, orderNumber,
+            salieron.filter { it.stationId != null }.groupBy { it.stationId!! }
+                .mapValues { (_, planes) -> planes.flatMap { p -> p.lines.flatMap { it.orderItemIds } }.toSet() },
+        )
+        if (papel.porEstacion.isEmpty()) return false
+        var hecho = false
+        sinTumbar("No se pudo quitar el papel de las entregas de $orderNumber") {
+            for (fila in dao.delVenue(venueId)) {
+                val trabajo = runCatching { json.decodeFromString(TrabajoPendiente.serializer(), fila.trabajoJson) }.getOrNull() ?: continue
+                if (!papel.cubre(trabajo)) continue
+                anotar(papel)
+                val sinPapel = json.encodeToString(TrabajoPendiente.serializer(), trabajo.copy(planes = emptyList()))
+                dao.soltarConTrabajo(fila.entregaId, sinPapel, System.currentTimeMillis())
+            }
+            hecho = true
+        }
+        if (!hecho) anotar(papel) // la base no dejó leer: no se sabe qué filas, la memoria las cubre
+        return !hecho
+    }
+
+    /** D28: ¿la hoja de este trabajo ya salió (o se cantó) en este proceso? El replay lo trata como fila sin papel. */
+    fun papelYaSalio(trabajo: TrabajoPendiente): Boolean = synchronized(papelesQueSalieron) { papelesQueSalieron.any { it.cubre(trabajo) } }
+
+    /** En orden de llegada; con el tope lleno sale la más vieja (la fila de una comanda de hace horas ya se decidió). */
+    private val papelesQueSalieron = LinkedHashSet<PapelQueSalio>()
+
+    private fun anotar(papel: PapelQueSalio) {
+        synchronized(papelesQueSalieron) {
+            papelesQueSalieron.remove(papel)
+            papelesQueSalieron.add(papel)
+            while (papelesQueSalieron.size > TOPE_DE_PAPELES) papelesQueSalieron.remove(papelesQueSalieron.first())
+        }
+    }
+
+    /** Lo que salió de una orden, por estación (sus `orderItemIds`). */
+    private data class PapelQueSalio(val venueId: String, val orderNumber: String, val porEstacion: Map<String, Set<String>>) {
+        fun cubre(t: TrabajoPendiente): Boolean = t.venueId == venueId && t.orderNumber == orderNumber && t.planes.isNotEmpty() &&
+            t.planes.all { p ->
+                val ids = p.stationId?.let(porEstacion::get) ?: return@all false
+                p.lines.all { l -> l.orderItemIds.all { it in ids } }
+            }
+    }
+
     /** M6 de la revisión: `runCatching` se tragaba la cancelación de las llamadas suspendidas a la base. */
     private inline fun sinTumbar(que: String, bloque: () -> Unit) {
         try {
@@ -175,5 +232,8 @@ class EntregaPorWifi @Inject constructor(
     companion object {
         /** Lo más que la venta en vivo espera a que un re-resolve traiga la pantalla: deja ≥ 0.5 s para el envío (D5). */
         const val ESPERA_AL_REFRESCAR_MS = 1_000L
+
+        /** D28 (Codex código r2 #7): lo más que guarda la memoria de [papelYaSalio]. */
+        const val TOPE_DE_PAPELES = 500
     }
 }
