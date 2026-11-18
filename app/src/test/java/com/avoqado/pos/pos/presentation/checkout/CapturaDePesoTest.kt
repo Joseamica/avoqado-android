@@ -1,6 +1,5 @@
 package com.avoqado.pos.pos.presentation.checkout
 
-import com.avoqado.pos.areatickets.data.VariableWeightBarcodeSettings
 import com.avoqado.pos.pos.data.model.Product
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -31,16 +30,10 @@ class CapturaDePesoTest {
         assertFalse(etiquetaCierraLaCaptura(alLeer = CapturaDePeso(jamon, 3), ahora = null, productoDeLaEtiqueta = "jamon"))
     }
 
-    @Test fun `una etiqueta de bascula hace esperar a Agregar y un codigo de barras normal no`() {
-        val ajustes = VariableWeightBarcodeSettings(entitled = true, enabled = true, prefix = "20")
-        assertTrue(puedeSerEtiquetaDeBascula("2000123004358", ajustes))
-        assertFalse("EAN-13 de un producto, no de báscula", puedeSerEtiquetaDeBascula("7501000000012", ajustes))
-        assertFalse("báscula apagada", puedeSerEtiquetaDeBascula("2000123004358", ajustes.copy(enabled = false)))
-        assertFalse("SKU", puedeSerEtiquetaDeBascula("PIZZAS-003", ajustes))
-    }
-
-    @Test fun `sin ajustes guardados cualquier EAN-13 de tienda espera`() {
-        assertTrue(puedeSerEtiquetaDeBascula("2000123004358", null))
-        assertFalse(puedeSerEtiquetaDeBascula("7501000000012", null))
+    @Test fun `cualquier codigo de 13 numeros hace esperar a Agregar`() {
+        assertTrue(puedeSerEtiquetaDeBascula("2000123004358"))
+        assertTrue("con los ajustes viejos de la pantalla también (r2 #1)", puedeSerEtiquetaDeBascula("7501000000012"))
+        assertFalse("SKU", puedeSerEtiquetaDeBascula("PIZZAS-003"))
+        assertFalse("12 números", puedeSerEtiquetaDeBascula("750100000001"))
     }
 }

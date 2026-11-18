@@ -1,7 +1,5 @@
 package com.avoqado.pos.pos.presentation.checkout
 
-import com.avoqado.pos.areatickets.data.VariableWeightBarcodeSettings
-import com.avoqado.pos.pos.data.decodeVariableWeightBarcode
 import com.avoqado.pos.pos.data.model.Product
 
 /**
@@ -20,12 +18,8 @@ fun etiquetaCierraLaCaptura(alLeer: CapturaDePeso?, ahora: CapturaDePeso?, produ
     alLeer != null && ahora != null && ahora.apertura == alLeer.apertura && ahora.product.id == productoDeLaEtiqueta
 
 /**
- * ¿Este código puede ser una etiqueta de báscula? Mientras se resuelve una, «Agregar» de la captura abierta espera
- * (Codex D7 r1 #1: el peso entraba dos veces). Con los ajustes guardados se decide igual que el carrito; sin ajustes, cualquier
- * EAN-13 de tienda (prefijo 2x).
+ * ¿Este código puede ser una etiqueta de báscula? Mientras se resuelve uno, «Agregar» de la captura abierta espera (Codex D7 r1
+ * #1: el peso entraba dos veces). Cualquier código de 13 números, sin mirar los ajustes de la pantalla: pueden estar viejos
+ * (se acaba de prender la báscula o cambiar su prefijo) y el carrito decide con una consulta fresca (Codex D7 r2 #1).
  */
-fun puedeSerEtiquetaDeBascula(codigo: String, ajustes: VariableWeightBarcodeSettings?): Boolean {
-    val code = codigo.trim()
-    if (ajustes == null) return code.length == 13 && code.all(Char::isDigit) && code.startsWith("2")
-    return ajustes.enabled && ajustes.entitled && decodeVariableWeightBarcode(code, ajustes.prefix) != null
-}
+fun puedeSerEtiquetaDeBascula(codigo: String): Boolean = codigo.trim().let { it.length == 13 && it.all(Char::isDigit) }

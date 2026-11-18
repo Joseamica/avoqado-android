@@ -347,7 +347,10 @@ fun CheckoutScreen(
     // D7: cada apertura de la captura de peso lleva su número ([CapturaDePeso]).
     var capturaDePeso by remember { mutableStateOf<CapturaDePeso?>(null) }
     val aperturasDePeso = remember { java.util.concurrent.atomic.AtomicLong() }
-    val abrirCapturaDePeso: (Product) -> Unit = { capturaDePeso = CapturaDePeso(it, aperturasDePeso.incrementAndGet()) }
+    // Codex D7 r2 #3: volver a leer el producto que ya se está pesando no es otra apertura (no borra su peso tecleado).
+    val abrirCapturaDePeso: (Product) -> Unit = {
+        if (capturaDePeso?.product?.id != it.id) capturaDePeso = CapturaDePeso(it, aperturasDePeso.incrementAndGet())
+    }
     // D7 (Codex D7 r1 #1): etiquetas de báscula que se están leyendo con una apertura abierta: su «Agregar» espera.
     val etiquetasEnCamino = remember { androidx.compose.runtime.mutableStateMapOf<Long, Int>() }
     // Cómo se ve el mostrador en ESTE aparato: densidad de la cuadrícula y orden
@@ -1213,11 +1216,17 @@ fun CheckoutScreen(
             onAdd = { weightKg ->
                 // D8 (Codex r2): con el cobro abierto (su F12 en WINDOWS, o un toque que le ganó al «No, gracias») el peso no
                 // entra al carrito ya fotografiado; la captura se cierra como siempre y se pesa otra vez al terminar.
-                if (!cartViewModel.cobroAbierto) cartViewModel.addProductByWeight(product, weightKg)
+                // D7 (Codex D7 r2 #2): ni desde una captura que su etiqueta ya cerró (el panel viejo sigue un cuadro en pantalla).
+                if (!cartViewModel.cobroAbierto && capturaDePeso?.apertura == captura.apertura) {
+                    cartViewModel.addProductByWeight(product, weightKg)
+                }
             },
             onDismiss = {
-                scaleCaptureViewModel.stop()
-                capturaDePeso = null
+                // Sólo la captura que sigue abierta: la X de un panel viejo no cierra la siguiente.
+                if (capturaDePeso?.apertura == captura.apertura) {
+                    scaleCaptureViewModel.stop()
+                    capturaDePeso = null
+                }
             },
         )
     } }
@@ -1566,9 +1575,7 @@ fun CheckoutScreen(
             // D7: la captura de peso abierta AL LEER; sólo ella puede cerrarse con su etiqueta. Mientras una posible etiqueta se
             // resuelve, su «Agregar» espera (si no, la misma pesada entraba dos veces).
             val capturaAlLeer = capturaDePeso
-            val esperaLaCaptura = capturaAlLeer?.takeIf {
-                puedeSerEtiquetaDeBascula(barcode, areaOperationsState.settings?.variableWeightBarcode)
-            }?.apertura
+            val esperaLaCaptura = capturaAlLeer?.takeIf { puedeSerEtiquetaDeBascula(barcode) }?.apertura
             esperaLaCaptura?.let { etiquetasEnCamino[it] = (etiquetasEnCamino[it] ?: 0) + 1 }
             val result = try {
                 cartViewModel.resolveScannedBarcode(barcode)
@@ -1609,11 +1616,10 @@ fun CheckoutScreen(
                         abrirCapturaDePeso,
                     )
                 is ScannedBarcodeResult.WeightedProductFound -> {
-                    // D7: la etiqueta de ESTA pesada cierra su captura (si no, «Agregar» la metía otra vez).
-                    if (etiquetaCierraLaCaptura(capturaAlLeer, capturaDePeso, result.product.id)) {
-                        scaleCaptureViewModel.stop()
-                        capturaDePeso = null
-                    }
+                    // D7: la etiqueta de ESTA pesada cierra su captura (si no, «Agregar» la metía otra vez). La báscula SIGUE
+                    // conectada, como cuando el cobro esconde la captura: apagarla y prenderla seguido abría carreras con el USB y
+                    // el COM (Codex D7 r2 #4–#6). Se apaga con la X o «Agregar» de la siguiente captura.
+                    if (etiquetaCierraLaCaptura(capturaAlLeer, capturaDePeso, result.product.id)) capturaDePeso = null
                     cartViewModel.addProductByWeight(result.product, result.weightKg)
                 }
                 is ScannedBarcodeResult.AreaTicketsAdded ->
