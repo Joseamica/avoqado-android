@@ -33,6 +33,7 @@ import com.avoqado.pos.pos.data.model.Discount
 import com.avoqado.pos.pos.data.model.aplicarCambiosDePrecio
 import com.avoqado.pos.pos.data.model.avisoDeCambioDePrecio
 import com.avoqado.pos.pos.data.model.parecidoACodigo
+import com.avoqado.pos.pos.data.model.candidatosDeDosLecturas
 import com.avoqado.pos.pos.data.model.Product
 import com.avoqado.pos.pos.data.model.Promotion
 import com.avoqado.pos.pos.data.model.SavedCart
@@ -91,6 +92,8 @@ sealed interface ScannedBarcodeResult {
      * el momento de más prisa del mostrador.
      */
     data class CustomerCardFound(val card: com.avoqado.pos.loyalty.data.WalletScanResponse) : ScannedBarcodeResult
+    /** D14: la etiqueta puede ser dos productos del catálogo según cómo esté configurada la pistola: no se agrega ninguno. */
+    data class CodigoDoble(val aviso: String) : ScannedBarcodeResult
     data class Unknown(val code: String) : ScannedBarcodeResult
     data class Error(val message: String) : ScannedBarcodeResult
 }
@@ -2560,12 +2563,8 @@ class CartViewModel @Inject constructor(
             // D14 (Codex r3): las teclas de «AB-123» con la pistola en inglés y de «AB'123» con la pistola en español son LAS
             // MISMAS. Si el catálogo tiene los dos, no hay forma de saber cuál es la etiqueta: se avisa y no se agrega ninguno
             // (como el PLU de báscula repetido). Sólo se mira el catálogo del aparato: nada de vales ni servidor.
-            if (lecturaUs != null) {
-                val delAparato = productoConCodigo(rawCode)
-                val enIngles = productoConCodigo(lecturaUs)
-                if (delAparato != null && enIngles != null && delAparato.id != enIngles.id) {
-                    return ScannedBarcodeResult.Error(avisoDeCodigoDoble(rawCode.trim(), lecturaUs.trim()))
-                }
+            if (lecturaUs != null && products.value.candidatosDeDosLecturas(rawCode, lecturaUs).size > 1) {
+                return ScannedBarcodeResult.CodigoDoble(avisoDeCodigoDoble(rawCode.trim(), lecturaUs.trim()))
             }
             val resultado = resolverCodigo(rawCode)
             // D14: la pistola en inglés con el teclado del aparato en español («PIZZAS'003»). Sólo si la lectura del aparato no
@@ -2580,14 +2579,11 @@ class CartViewModel @Inject constructor(
         }
     }
 
-    private fun productoConCodigo(rawCode: String): Product? {
-        val code = rawCode.trim()
-        return products.value.firstOrNull { it.sku == code || it.barcode == code || it.gtin == code }
-    }
-
     private suspend fun resolverCodigo(rawCode: String): ScannedBarcodeResult {
         val code = rawCode.trim()
-        val localProduct = productoConCodigo(code)
+        val localProduct = products.value.firstOrNull {
+            it.sku == code || it.barcode == code || it.gtin == code
+        }
         if (!com.avoqado.pos.pos.data.isAreaTicketCode(code)) {
             localProduct?.let { return ScannedBarcodeResult.ProductFound(it) }
 

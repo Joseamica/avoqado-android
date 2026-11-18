@@ -456,6 +456,7 @@ fun CheckoutScreen(
     var createProductInitialGtin by remember { mutableStateOf("") }
     var unknownBarcode by remember { mutableStateOf<String?>(null) }
     var barcodeError by remember { mutableStateOf<String?>(null) }
+    var codigoDoble by remember { mutableStateOf<String?>(null) }
     var areaTicketAddedCount by remember { mutableStateOf<Int?>(null) }
     // La tarjeta digital que el cajero acaba de escanear, si escaneó una.
     var scannedCustomerCard by remember { mutableStateOf<com.avoqado.pos.loyalty.data.WalletScanResponse?>(null) }
@@ -1608,6 +1609,8 @@ fun CheckoutScreen(
                 }
                 is ScannedBarcodeResult.Unknown ->
                     unknownBarcode = result.code
+                is ScannedBarcodeResult.CodigoDoble ->
+                    codigoDoble = result.aviso
                 is ScannedBarcodeResult.Error ->
                     barcodeError = result.message
             }
@@ -1767,6 +1770,15 @@ fun CheckoutScreen(
                     fullWidth = true,
                 )
             },
+        ) {}
+    }
+
+    codigoDoble?.let { aviso ->
+        AvoqadoDialog(
+            title = "Dos productos con esta etiqueta",
+            description = aviso,
+            onDismiss = { codigoDoble = null },
+            actionButton = { PrimaryButton(text = "Entendido", onClick = { codigoDoble = null }, fullWidth = true) },
         ) {}
     }
 

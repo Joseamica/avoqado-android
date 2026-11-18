@@ -282,9 +282,40 @@ class CartViewModelTarjetaEscaneadaTest {
         every { productsRepository.products } returns MutableStateFlow(listOf(conApostrofo, conGuion))
         val vm = createViewModel()
         assertEquals(
-            ScannedBarcodeResult.Error(avisoDeCodigoDoble("PIZZAS'003", "PIZZAS-003")),
+            ScannedBarcodeResult.CodigoDoble(avisoDeCodigoDoble("PIZZAS'003", "PIZZAS-003")),
             vm.resolveScannedBarcode("PIZZAS'003", lecturaUs = "PIZZAS-003"),
         )
+    }
+
+    @Test fun `D14 un codigo que difiere solo en mayusculas tambien cuenta como el otro producto`() = runTest {
+        // Codex r4 #1: B tiene «pizzas'003» (búsqueda sin mayúsculas) y A «PIZZAS-003» exacto.
+        val conGuion = Product(id = "a", name = "Pizza", priceValue = 169.0, sku = "PIZZAS-003")
+        val minusculas = Product(id = "b", name = "Etiqueta rara", priceValue = 10.0, barcode = "pizzas'003")
+        every { productsRepository.products } returns MutableStateFlow(listOf(minusculas, conGuion))
+        val vm = createViewModel()
+        assertEquals(
+            ScannedBarcodeResult.CodigoDoble(avisoDeCodigoDoble("PIZZAS'003", "PIZZAS-003")),
+            vm.resolveScannedBarcode("PIZZAS'003", lecturaUs = "PIZZAS-003"),
+        )
+    }
+
+    @Test fun `D14 un producto con las dos lecturas no esconde al otro que tiene una`() = runTest {
+        // Codex r4 #2: A tiene SKU «AB-123» y GTIN «AB'123»; B tiene GTIN «AB-123».
+        val a = Product(id = "a", name = "A", priceValue = 10.0, sku = "AB-123", gtin = "AB'123")
+        val b = Product(id = "b", name = "B", priceValue = 20.0, gtin = "AB-123")
+        every { productsRepository.products } returns MutableStateFlow(listOf(a, b))
+        val vm = createViewModel()
+        assertEquals(
+            ScannedBarcodeResult.CodigoDoble(avisoDeCodigoDoble("AB'123", "AB-123")),
+            vm.resolveScannedBarcode("AB'123", lecturaUs = "AB-123"),
+        )
+    }
+
+    @Test fun `D14 un solo producto con las dos lecturas entra normal`() = runTest {
+        val a = Product(id = "a", name = "A", priceValue = 10.0, sku = "AB-123", gtin = "AB'123")
+        every { productsRepository.products } returns MutableStateFlow(listOf(a))
+        val vm = createViewModel()
+        assertEquals(ScannedBarcodeResult.ProductFound(a), vm.resolveScannedBarcode("AB'123", lecturaUs = "AB-123"))
     }
 
     @Test fun `D14 si ninguna de las dos lecturas existe se avisa con la del aparato`() = runTest {

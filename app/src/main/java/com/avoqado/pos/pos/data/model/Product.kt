@@ -146,6 +146,19 @@ fun List<Product>.parecidoACodigo(codigo: String): Product? {
     return filter { p -> listOfNotNull(p.sku, p.barcode, p.gtin).any { it.equals(codigo, ignoreCase = true) } }.singleOrNull()
 }
 
+/**
+ * D14 (pasada de la familia, Codex r3–r4): la pistola en inglés con el aparato en español manda las MISMAS teclas para
+ * «AB-123» y para «AB'123». Con dos lecturas, todos los productos que CUALQUIERA de las dos podría ser, por los mismos caminos
+ * que la búsqueda normal (exacto, o sin mayúsculas si no es tarjeta), en SKU, código de barras y GTIN. Dos o más ⇒ no se adivina.
+ */
+fun List<Product>.candidatosDeDosLecturas(delAparato: String, enIngles: String): List<Product> {
+    val lecturas = listOf(delAparato.trim(), enIngles.trim())
+    fun coincide(campo: String, lectura: String) = campo == lectura ||
+        (ReconocedorDeTarjeta.reconocer(lectura) == null && !pareceTarjetaDeCliente(lectura) && campo.equals(lectura, ignoreCase = true))
+    return filter { p -> listOfNotNull(p.sku, p.barcode, p.gtin).any { campo -> lecturas.any { coincide(campo, it) } } }
+        .distinctBy { it.id }
+}
+
 fun precioConUnidad(precio: Double, porPeso: Boolean): String = formatMoney(precio) + if (porPeso) "/kg" else ""
 
 @Serializable
