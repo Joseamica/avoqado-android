@@ -636,6 +636,11 @@ fun CheckoutScreen(
         // D9: «¿Algo más?» no se queda montado encima del cobro (lo abrió «Dividir» con la tira minimizada, Codex D8 r3 #3): se
         // cierra como un «No, gracias», que el spec manda registrar.
         if (upsellViewModel.moment.value != null) upsellViewModel.finish(emptyList(), 0)
+        // D9 (pasada de la familia «a qué venta se le cuenta la sugerencia», Codex r6–r7): se decide AQUÍ, al fotografiar, por
+        // donde pasan todos los caminos al cobro (botón, F12, «Dividir», la vuelta del motivo). La sugerencia pendiente de otra
+        // venta (restauraron B encima de A) se suelta, y un cobro dividido no la convierte (como «Dividir importe»).
+        upsellViewModel.soltarSiEsOtraVenta(cart.identidadDeVenta)
+        if (pendingSplitConfig.type != com.avoqado.pos.payment.presentation.SplitType.FULL_PAYMENT) upsellViewModel.cancelPendingConversion()
         cartViewModel.abrirCobro()
         showPaymentFlow = true
     }
@@ -1620,17 +1625,15 @@ fun CheckoutScreen(
         if (showPaymentFlow || aperturaDeTarjetas != null) cartViewModel.abrirCobro()
         else {
             cartViewModel.cerrarCobro()
-            // D9: «Inscribir y cobrar» que llegó con el cobro abierto se quedó guardado; entra ahora, como habría entrado al llegar.
-            cartViewModel.consumePendingClassSeed()
+            // D9: «Inscribir y cobrar» que llegó con el cobro abierto se quedó guardado; entra ahora sólo si el carrito quedó
+            // vacío (el cobro terminó). Si no —cancelaron un cobro ajeno—, entra al volver a Mostrador, como siempre (Codex r7).
+            if (cartViewModel.cartState.value.isEmpty) cartViewModel.consumePendingClassSeed()
         }
     }
     // D9 (Codex r5 #2): desde que el cliente sólo contesta, la sugerencia puede quedar pendiente sin cobro. Si el carrito queda
     // vacío sin cobrar (quitó todo, «Vaciar»), la venta que sigue es otra: ni se le cuenta ni se le deja de ofrecer.
     LaunchedEffect(cartState.isEmpty, showPaymentFlow) {
         if (cartState.isEmpty && !showPaymentFlow) upsellViewModel.cancelPendingConversion()
-    }
-    LaunchedEffect(cartState.identidadDeVenta) {
-        if (!showPaymentFlow) upsellViewModel.soltarSiEsOtraVenta(cartState.identidadDeVenta)
     }
 
     // Barcode scanner overlay
@@ -2351,10 +2354,7 @@ fun CheckoutScreen(
                 // D9: si otro abrió el cobro con la hoja abierta (el «No, gracias» del cliente), su división no cambia: se avisa.
                 if (!cartViewModel.avisarSiElCobroEstaAbierto()) {
                     pendingSplitConfig = splitConfig
-                    proceedToPayment()
-                    // Como «Dividir importe» desde el cobro: un upsell cobrado en partes no cuenta como convertido (Codex r5 #4).
-                    // DESPUÉS de abrir: abrir cierra una tira minimizada y la registra como «No, gracias» (Codex r6 #3).
-                    upsellViewModel.cancelPendingConversion()
+                    proceedToPayment()   // ahí se suelta la sugerencia de un cobro dividido
                 }
             },
         )

@@ -242,8 +242,8 @@ class UpsellViewModel @Inject constructor(
     }
 
     /**
-     * D9 (Codex r6 #2): sin cobro, la cajera pasó a OTRA venta (restauró un carrito guardado encima): la sugerencia pendiente
-     * era de la anterior y se suelta. Compara con la venta del momento, así que repintar la pantalla no la suelta.
+     * D9 (Codex r6 #2, r7 #2): al abrir un cobro de OTRA venta (restauraron un carrito guardado encima, F12 incluido) la
+     * sugerencia pendiente era de la anterior y se suelta. La llama `proceedToPayment` con la venta que va a fotografiar.
      */
     fun soltarSiEsOtraVenta(venta: String) {
         if (pendingConversionId != null && ventaDelMomento != null && venta != ventaDelMomento) cancelPendingConversion()
