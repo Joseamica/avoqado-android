@@ -205,9 +205,6 @@ fun HojaDeLaFamiliaAbierta(
             familia = f,
             onElegir = { v ->
                 onCerrar()
-                // D8 (Codex r1): con el cobro ya abierto (el «No, gracias» del cliente ganó por un instante), la talla no entra al
-                // carrito ya fotografiado para cobrar; la hoja se cierra y se elige al terminar. Sólo en el cobro (Mostrador).
-                if (teclasDeLaHoja != null && viewModel.cobroAbierto) return@HojaDeVariantes
                 viewModel.products.value.firstOrNull { it.id == v.id }?.let(onElegir)
             },
             onCerrar = onCerrar,

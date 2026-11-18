@@ -628,6 +628,7 @@ fun CheckoutScreen(
         // en su pantalla (pizarrón D8).
         cartViewModel.cerrarHojas()
         if (!isTablet) selectedProduct = null
+        promocionEnEleccion = null
         cartViewModel.abrirCobro()
         showPaymentFlow = true
     }
@@ -1181,7 +1182,9 @@ fun CheckoutScreen(
             scaleState = scaleState,
             onRetryScale = scaleCaptureViewModel::retry,
             onAdd = { weightKg ->
-                cartViewModel.addProductByWeight(product, weightKg)
+                // D8 (Codex r2): con el cobro abierto (su F12 en WINDOWS, o un toque que le ganó al «No, gracias») el peso no
+                // entra al carrito ya fotografiado; la captura se cierra como siempre y se pesa otra vez al terminar.
+                if (!cartViewModel.cobroAbierto) cartViewModel.addProductByWeight(product, weightKg)
             },
             onDismiss = {
                 scaleCaptureViewModel.stop()
@@ -1197,13 +1200,15 @@ fun CheckoutScreen(
             onDismiss = { promocionEnEleccion = null },
             gruposDeLaPieza = gruposDeLaPieza,
             onConfirm = { selecciones, extras ->
-                agregarPromocion(promo, selecciones, extras)
+                // D8: con el cobro abierto, el combo no entra al carrito ya fotografiado (la hoja es otra ventana, encima).
+                if (!cartViewModel.cobroAbierto) agregarPromocion(promo, selecciones, extras)
                 promocionEnEleccion = null
             },
             courses = if (promotionsViewModel.usesServiceCourses) comboCourses else emptyList(),
             courseNotice = if (promotionsViewModel.usesServiceCourses) comboCourseNotice else null,
             onConfirmWithCourses = if (promotionsViewModel.usesServiceCourses) { selections, times, extras ->
-                if (cartViewModel.aplicarPromocion(
+                if (cartViewModel.cobroAbierto) promocionEnEleccion = null
+                else if (cartViewModel.aplicarPromocion(
                         promo, selections, times,
                         extras = extras,
                         piezasConExtras = com.avoqado.pos.pos.presentation.promotions.piezasConExtras(promo, selections, gruposDeLaPieza),
@@ -2580,6 +2585,10 @@ private fun handleProductTap(
     onSelectForDetail: (Product) -> Unit,
     onSelectForWeight: (Product) -> Unit,
 ) {
+    // D8 (Codex r2): todos los toques de producto del cobro pasan por aquí (cuadrícula, Buscar y su Enter de WINDOWS, la hoja de
+    // tallas, un código leído, un producto recién creado). Con el cobro abierto, nada entra al carrito ya fotografiado ni abre
+    // una ficha o una captura de peso encima: un toque o un Enter que le ganó al «No, gracias» del cliente no hace nada.
+    if (cartViewModel.cobroAbierto) return
     when {
         // Venta por peso MANDA sobre los modificadores (MVP): el tap SIEMPRE abre la captura de
         // peso, nunca el panel de modificadores, aunque el producto tenga grupos.
