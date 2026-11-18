@@ -69,6 +69,9 @@ fun RescheduleConfirmSheet(
     isSubmitting: Boolean,
     onConfirm: (RescheduleNotificationChannel?, String?) -> Unit,
     onDismiss: () -> Unit,
+    /** Lo que salió mal al enviar, a la vista sobre los botones. Sin red va neutro (no es una falla); un rechazo, en rojo. */
+    aviso: String? = null,
+    avisoSinRed: Boolean = false,
 ) {
     // nafc2b18: «push» ya avisa por WhatsApp o correo; sin teléfono ni correo viene marcado «Sin notificación».
     var selected by remember { mutableStateOf(CanalDeAviso.porOmision(reservation)) }
@@ -94,25 +97,37 @@ fun RescheduleConfirmSheet(
                 },
                 bottomBar = {
                     Surface(tonalElevation = 4.dp) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(AvoqadoTheme.spacing.lg),
-                            horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.md),
-                        ) {
-                            OutlinedButton(
-                                onClick = onDismiss,
-                                modifier = Modifier.weight(1f).height(AvoqadoTheme.dimensions.buttonLarge),
-                                shape = RoundedCornerShape(50),
-                                enabled = !isSubmitting,
-                            ) { Text("Cancelar", style = MaterialTheme.typography.titleMedium) }
-                            PrimaryButton(
-                                text = "Reprogramar cita",
-                                onClick = { onConfirm(selected, message.ifBlank { null }) },
-                                modifier = Modifier.weight(1f),
-                                isLoading = isSubmitting,
-                                fullWidth = true,
-                            )
+                        Column {
+                            aviso?.let {
+                                Text(
+                                    it,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = if (avisoSinRed) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(start = AvoqadoTheme.spacing.lg, end = AvoqadoTheme.spacing.lg, top = AvoqadoTheme.spacing.md),
+                                )
+                            }
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(AvoqadoTheme.spacing.lg),
+                                horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.md),
+                            ) {
+                                OutlinedButton(
+                                    onClick = onDismiss,
+                                    modifier = Modifier.weight(1f).height(AvoqadoTheme.dimensions.buttonLarge),
+                                    shape = RoundedCornerShape(50),
+                                    enabled = !isSubmitting,
+                                ) { Text("Cancelar", style = MaterialTheme.typography.titleMedium) }
+                                PrimaryButton(
+                                    text = "Reprogramar cita",
+                                    onClick = { onConfirm(selected, message.ifBlank { null }) },
+                                    modifier = Modifier.weight(1f),
+                                    isLoading = isSubmitting,
+                                    fullWidth = true,
+                                )
+                            }
                         }
                     }
                 },

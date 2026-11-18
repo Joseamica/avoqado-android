@@ -76,11 +76,6 @@ fun RescheduleSheet(
     LaunchedEffect(guardadoSinRed) {
         if (guardadoSinRed != null) pendingConfirm = null
     }
-    // Si el envío falla (también la red cortada a media petición: «No pudimos confirmar el cambio…»), la confirmación de
-    // pantalla completa se cierra para que el aviso se vea aquí y no quede tapado (Codex r2 #1).
-    LaunchedEffect(state.error) {
-        if (state.error != null) pendingConfirm = null
-    }
 
     if (showDatePicker) {
         val datePickerState = rememberDatePickerState(
@@ -133,6 +128,11 @@ fun RescheduleSheet(
                 newEnds = newEnds,
                 venueZone = venueTimezone,
                 isSubmitting = state.pendingAction == ReservationAction.RESCHEDULE,
+                // Si el envío falla (también la red cortada a media petición: «No pudimos confirmar el cambio…»), el aviso se
+                // pinta DENTRO de la confirmación de pantalla completa: si no, quedaba tapado y se volvía a tocar (Codex r2
+                // #1). No se cierra: se conservan el canal y el mensaje que se escribieron (Codex r3 #3).
+                aviso = state.error,
+                avisoSinRed = state.errorSinRed,
                 onConfirm = { channel, message ->
                     viewModel.runAction(
                         ReservationAction.RESCHEDULE,
