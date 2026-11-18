@@ -265,20 +265,21 @@ object CancelacionDeCobro {
     /** D6 en el piso: la terminal ya se soltó y la venta sigue en duda; ya no invita a declarar. */
     const val CUERPO_TERMINAL_LIBRE_PISO = "La terminal ya está libre, pero no consta si esta venta se cobró. Avisa al gerente."
 
-    // ── La revisión del gerente: elegir la fila → «Gerente: escribe tu PIN» → «Firma del gerente» → «Firmar».
+    // ── La revisión del gerente, en UN paso (Codex código r1 #10, igual que la TPV): elegir la fila → el teclado ya dice qué se firma →
+    //    [Firmar], que manda la declaración con su PIN. Si el SERVIDOR no lo acepta, el MISMO teclado lo dice sobre la MISMA fila.
     const val SECCION_COBROS_POR_CONFIRMAR = "Cobros por confirmar"
     fun bannerPorConfirmar(cuantos: Int): String = "Cobros por confirmar: $cuantos"
     const val BOTON_REVISAR = "Revisar"
-    const val PIN_DEL_GERENTE = "Gerente: escribe tu PIN"
-    const val PIN_NO_PUEDE_FIRMAR = "Ese PIN no puede firmar este cobro."
-    const val FIRMA_DEL_GERENTE = "Firma del gerente"
     const val BOTON_FIRMAR = "Firmar"
-    const val BOTON_CANCELAR_FIRMA = "Cancelar"
+    const val PIN_NO_ES_DE_GERENTE = "Ese PIN no es de un gerente con permiso"
 
-    /** Lo que firma el gerente: que revisó la terminal y el cobro no aparece. [renglon] = importe · hora · folio corto. */
-    fun textoDeLaFirma(renglon: String): String =
-        "$renglon. Firmas que revisaste la terminal y este cobro no aparece; queda en Avoqado con tu nombre y la hora. " +
-            "La firma necesita internet."
+    /** El título del teclado: qué se firma. [monto] y [hora] (HH:MM del negocio) del intento; sin ellos, «este cobro». */
+    fun pinParaFirmar(monto: String?, hora: String?): String =
+        "Gerente: escribe tu PIN para marcar ${monto ?: "este cobro"}${hora?.let { " de las $it" }.orEmpty()} como no cobrado"
+
+    /** Debajo del título: la referencia de la fila y lo que deja la firma. */
+    fun detalleDeLaFirma(folioCorto: String): String =
+        "Folio $folioCorto. Firmas que revisaste la terminal y este cobro no aparece; queda en Avoqado con tu nombre y la hora."
 
     /** La firma no salió por falta de red: la fila sigue pendiente, nada se encola. */
     const val FIRMA_SIN_RED = "Sin conexión: la firma necesita internet. El cobro sigue por confirmar."

@@ -13,6 +13,7 @@ import androidx.compose.ui.test.ComposeUiTest
 import androidx.compose.ui.test.hasClickAction
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.runComposeUiTest
 import androidx.compose.ui.unit.dp
 import com.avoqado.escritorio.ActividadDeEscritorio
@@ -124,5 +125,34 @@ class TarjetaPorConfirmarEnLaEscenaTest {
         waitForIdle()
         assertEquals(1, seguir)
         assertEquals(0, consultas)
+    }
+
+    /** F1 (un paso, Codex código r1 #10): el teclado del gerente ya dice qué firma, su botón es [Firmar] y un 403 se dice ahí mismo. */
+    @Test fun `el teclado del gerente dice que firma, Firmar manda una vez y un PIN sin permiso se dice en el mismo teclado`() = runComposeUiTest {
+        val enviados = mutableListOf<String>()
+        val respuesta = kotlinx.coroutines.CompletableDeferred<com.avoqado.pos.core.data.network.OverrideResult>()
+        val cobro = com.avoqado.pos.payment.presentation.CobroPorConfirmar(
+            requestId = "req-abcdef123", venueId = "venue-1", montoCents = 35_000, desdeMillis = 1_763_490_600_000,
+        )
+        escena {
+            com.avoqado.pos.sync.presentation.RevisionDelGerente(
+                paso = com.avoqado.pos.payment.presentation.PasoDelGerente.Firmar(cobro, id = 1),
+                onFirmar = { pin -> enviados += pin; respuesta.await() },
+                onCerrar = {},
+            )
+        }
+
+        onNodeWithText("Gerente: escribe tu PIN para marcar \$350.00 de las", substring = true).assertExists()
+        onNodeWithText("como no cobrado", substring = true).assertExists()
+        assertEquals(0, onAllNodesWithText("Autorizar").fetchSemanticsNodes().size, "el botón es Firmar")
+        listOf("4", "3", "2", "1").forEach { onNodeWithText(it).performClick() }
+        val firmar = onNodeWithText(CancelacionDeCobro.BOTON_FIRMAR).fetchSemanticsNode().config[SemanticsActions.OnClick].action!!
+        runOnUiThread { firmar(); firmar() }
+        waitForIdle()
+        assertEquals(listOf("4321"), enviados, "dos toques, una sola firma")
+
+        respuesta.complete(com.avoqado.pos.core.data.network.OverrideResult.Failed(CancelacionDeCobro.PIN_NO_ES_DE_GERENTE))
+        waitForIdle()
+        onNodeWithText(CancelacionDeCobro.PIN_NO_ES_DE_GERENTE).assertExists()
     }
 }

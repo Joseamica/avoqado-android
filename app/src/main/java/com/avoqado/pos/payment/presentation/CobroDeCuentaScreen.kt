@@ -11,6 +11,7 @@ import androidx.compose.ui.window.DialogProperties
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.ViewModel
 import com.avoqado.pos.core.data.local.SecureStorage
+import com.avoqado.pos.core.data.network.OverrideResult
 import com.avoqado.pos.core.domain.RoleManager
 import com.avoqado.pos.core.util.ConnectivityMonitor
 import com.avoqado.pos.designsystem.components.*
@@ -68,8 +69,8 @@ class CobroDeCuentaViewModel @Inject constructor(
     private val payLaterQueue: com.avoqado.pos.payment.data.PayLaterQueue? = null,
     /** D12 (final fix ronda 2, R2-1): la lista durable de cobros con tarjeta de esta caja (una tarjeta en duda o cobrada da gris). */
     private val terminalPaymentService: com.avoqado.pos.payment.data.TerminalPaymentService? = null,
-    /** F1 (tarea 6): el PIN del gerente antes de declarar «no se cobró» en la caja que abrió la cuenta. */
-    private val managerOverride: com.avoqado.pos.core.data.network.ManagerOverrideCoordinator? = null,
+    /** F1 (tarea 6): valida en el SERVIDOR el PIN del gerente que firma «no se cobró» en la caja que abrió la cuenta. */
+    private val permisos: com.avoqado.pos.core.data.network.PermissionOverrideRepository? = null,
 ) : ViewModel() {
     private val foto = MutableStateFlow<OrderDetail?>(null)
     val detalle = foto.asStateFlow()
@@ -299,7 +300,7 @@ class CobroDeCuentaViewModel @Inject constructor(
 
     /**
      * I2: con internet, en la caja que la abrió: el «<quién> empezó a cobrarla en <caja> y no confirmó…» de otra caja, a los 2 min. null =
-     * nada que decir. 🔴 F1 (tarea 6): su botón es «Revisar», que pide el PIN del gerente ([declararNoSeCobroConGerente]).
+     * nada que decir. 🔴 F1 (tarea 6): su botón es «Revisar», que abre el teclado del gerente ([firmarNoSeCobro]).
      */
     suspend fun noConfirmoEnLinea(orderId: String): String? {
         val venue = storage.venueId ?: return null
@@ -308,20 +309,32 @@ class CobroDeCuentaViewModel @Inject constructor(
         return if (d.puedeDeclararNoSeCobro(r)) TextosDeCuentaSinRed.noConfirmo(r.quien, r.caja) else null
     }
 
+    /** F1: el título del teclado del gerente: qué se firma («…lo que Ana empezó a cobrar en Caja 2»). null = ya no hay nada que firmar. */
+    suspend fun pinParaFirmarNoSeCobro(orderId: String): String? {
+        val venue = storage.venueId ?: return null
+        val r = duenoDeCuentas?.estadoDe(venue, orderId) ?: return null
+        return TextosDeCuentaSinRed.pinParaFirmar(r.quien, r.caja)
+    }
+
     /**
-     * 🔴 F1 (tarea 6): «no se cobró» en la caja que la abrió, firmado por un GERENTE: primero su PIN (lo valida el SERVIDOR, con
-     * `payments:reconcile-uncharged`), y sólo entonces se declara en el registro de esta caja. El cajero no decide. Sin red no hay PIN:
-     * false. false también = el gerente no autorizó, todavía no se puede, no es suya o el disco falló.
+     * 🔴 F1 (tarea 6; un paso, Codex código r1 #10): [Firmar] en el teclado del gerente. Su PIN lo valida el SERVIDOR (con
+     * `payments:reconcile-uncharged`) y sólo entonces se declara «no se cobró» en el registro de esta caja. El cajero no decide. Lo que
+     * devuelve lo pinta el MISMO teclado: un PIN que no es de un gerente con permiso, demasiados intentos o sin red (sin red no hay PIN:
+     * la cuenta espera). `Granted` = firmado.
      */
-    suspend fun declararNoSeCobroConGerente(orderId: String, contexto: String): Boolean {
-        val venue = storage.venueId ?: return false
-        val pin = managerOverride ?: return false
-        val permiso = CancelacionDeCobro.PERMISO_DECLARAR_NO_COBRADO
-        if (!pin.preauthorize(permiso, contexto = contexto)) return false
-        // El token de la autorización no viaja (el registro es local): se tira para que no lo use otra acción.
-        pin.descartarPreautorizado(permiso)
-        val quien = storage.selectedStaffNameForCurrentVenue ?: storage.userFirstName.orEmpty()
-        return duenoDeCuentas?.noSeCobro(venue, orderId, quien) == true
+    suspend fun firmarNoSeCobro(orderId: String, pin: String): OverrideResult {
+        val venue = storage.venueId ?: return OverrideResult.Failed("No hay una sucursal activa. Vuelve a entrar.")
+        val validador = permisos ?: return OverrideResult.Failed(CancelacionDeCobro.FIRMA_SIN_RED)
+        return when (val r = validador.requestToken(venue, pin, CancelacionDeCobro.PERMISO_DECLARAR_NO_COBRADO)) {
+            // El token no viaja a ningún lado (el registro es local): el PIN validado ES la firma, y el servidor la dejó en su bitácora.
+            is OverrideResult.Granted -> {
+                val quien = storage.selectedStaffNameForCurrentVenue ?: storage.userFirstName.orEmpty()
+                if (duenoDeCuentas?.noSeCobro(venue, orderId, quien) == true) r
+                else OverrideResult.Failed("No se pudo anotar en esta caja. Vuelve a intentarlo.")
+            }
+            OverrideResult.WrongPin, OverrideResult.Insufficient -> OverrideResult.Failed(CancelacionDeCobro.PIN_NO_ES_DE_GERENTE)
+            else -> r
+        }
     }
 
     /** La puerta del cobro dijo que no (Opción D): la cuenta se queda con ese gris al volver. */
@@ -545,7 +558,8 @@ private fun CobrarCuentaSinRed(orderId: String, copia: CuentaGuardada, viewModel
 @Composable
 private fun NoConfirmoEnLinea(orderId: String, viewModel: CobroDeCuentaViewModel, onDeclarado: () -> Unit) {
     var texto by remember(orderId) { mutableStateOf<String?>(null) }
-    var declarando by remember(orderId) { mutableStateOf(false) }
+    // El teclado del gerente: su título (qué se firma) y su llave (uno nuevo nace vacío). null = cerrado.
+    var teclado by remember(orderId) { mutableStateOf<Pair<Long, String>?>(null) }
     val scope = rememberCoroutineScope()
     LaunchedEffect(orderId) {
         while (true) {
@@ -555,14 +569,25 @@ private fun NoConfirmoEnLinea(orderId: String, viewModel: CobroDeCuentaViewModel
     }
     texto?.let { t ->
         Text(t)
-        PrimaryButton(text = CancelacionDeCobro.BOTON_REVISAR, enabled = !declarando, onClick = {
-            declarando = true
-            scope.launch {
-                try {
-                    if (viewModel.declararNoSeCobroConGerente(orderId, contexto = t)) { texto = null; onDeclarado() }
-                } finally { declarando = false }
-            }
+        PrimaryButton(text = CancelacionDeCobro.BOTON_REVISAR, enabled = teclado == null, onClick = {
+            scope.launch { viewModel.pinParaFirmarNoSeCobro(orderId)?.let { teclado = System.nanoTime() to it } }
         })
+    }
+    teclado?.let { (id, titulo) ->
+        com.avoqado.pos.designsystem.components.ManagerOverrideSheet(
+            prompt = com.avoqado.pos.core.data.network.ManagerOverrideCoordinator.Prompt(
+                id = id, permission = CancelacionDeCobro.PERMISO_DECLARAR_NO_COBRADO, actionLabel = CancelacionDeCobro.BOTON_FIRMAR,
+            ),
+            onSubmit = { pin ->
+                viewModel.firmarNoSeCobro(orderId, pin).also {
+                    if (it is OverrideResult.Granted) { teclado = null; texto = null; onDeclarado() }
+                }
+            },
+            onDismiss = { teclado = null },
+            title = titulo,
+            description = texto.orEmpty(),
+            actionText = CancelacionDeCobro.BOTON_FIRMAR,
+        )
     }
 }
 

@@ -8,11 +8,13 @@ import com.avoqado.pos.payment.data.IntencionDeCancelarCobro
 import com.avoqado.pos.payment.data.ResultadoDeDeclaracion
 import com.avoqado.pos.payment.data.TerminalPaymentService
 import com.avoqado.pos.payment.domain.CancelacionDeCobro
+import com.avoqado.pos.core.data.network.OverrideResult
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
@@ -31,17 +33,15 @@ data class CobroPorConfirmar(
     val cancelacionId: String? = null,
 )
 
-/** Los pasos de la revisión del gerente (los de la TPV, tarea 4): PIN primero, la decisión después. */
+/**
+ * La revisión del gerente, en UN paso (Codex código r1 #10, igual que la TPV): el teclado del PIN ya dice qué se firma y su botón es
+ * [Firmar]. Así nadie llega a una pantalla de decisión con un PIN que todavía no validó el SERVIDOR.
+ */
 sealed interface PasoDelGerente {
     data object Cerrado : PasoDelGerente
 
-    /** «Gerente: escribe tu PIN». [id] = llave del teclado: uno nuevo nace vacío. [pinRechazado] = el servidor no aceptó el anterior. */
-    data class PedirPin(val cobro: CobroPorConfirmar, val id: Long, val pinRechazado: Boolean = false) : PasoDelGerente
-
-    /** «Firma del gerente», ya identificado. 🔴 El PIN vive sólo aquí, en memoria, y nunca sale en el texto del paso. */
-    data class Firmar(val cobro: CobroPorConfirmar, val pin: String, val enviando: Boolean = false) : PasoDelGerente {
-        override fun toString(): String = "Firmar(cobro=$cobro, enviando=$enviando)"
-    }
+    /** El teclado de ESTA fila. [id] = llave del teclado: uno nuevo nace vacío. El PIN nunca vive aquí. */
+    data class Firmar(val cobro: CobroPorConfirmar, val id: Long) : PasoDelGerente
 }
 
 /**
@@ -49,13 +49,15 @@ sealed interface PasoDelGerente {
  * duda de este aparato. Sin esto, la duda sólo existía dentro de la pantalla de pago: el cajero salía y nadie volvía a enterarse.
  *
  * 🔴 F1 (founder, 17-nov: «el sistema solo»): el piso no declara nada. Lo raro lo firma un GERENTE con su PIN sobre la fila exacta
- * ([revisar] → [identificar] → [firmar]); el SERVIDOR exige ese PIN (403 `SUPERVISOR_AUTHORIZATION_REQUIRED` sin él) y decide quién
+ * ([revisar] → [firmar], en un paso); el SERVIDOR exige ese PIN (403 `SUPERVISOR_AUTHORIZATION_REQUIRED` sin él) y decide quién
  * puede. La firma es online-only y nunca se encola: sin red la fila sigue pendiente.
  */
 @HiltViewModel
 class CancelacionesPendientesViewModel @Inject constructor(
     private val cancelacionDeCobro: CancelacionDeCobroCoordinator,
     private val terminalPaymentService: TerminalPaymentService,
+    /** F1: la sucursal de la sesión. «Cobros por confirmar» sólo enseña los suyos. */
+    private val secureStorage: com.avoqado.pos.core.data.local.SecureStorage,
 ) : ViewModel() {
 
     val pendientes: StateFlow<List<IntencionDeCancelarCobro>> = cancelacionDeCobro.pendientes
@@ -79,8 +81,10 @@ class CancelacionesPendientesViewModel @Inject constructor(
     private val preguntandoImporte = mutableSetOf<String>()
 
     /**
-     * Relee la lista durable. Fuera: lo que ya consta que SÍ pasó, el cobro que sigue en vuelo (todavía no es una duda) y lo que ya
-     * es una cancelación pendiente. ponytail: una lectura del disco cada vez que se llama (la banda la pide cada 5 s); un flujo de
+     * Relee la lista durable. Fuera: lo que ya consta que SÍ pasó, el cobro que sigue en vuelo (todavía no es una duda), lo que ya
+     * es una cancelación pendiente y lo de OTRA sucursal (un gerente de A no ve ni firma los de B desde la sesión de A: se ven al
+     * entrar a B). Una fila antigua cuyo contexto no dice de qué sucursal es se queda: no se puede saber y no se esconde una duda;
+     * el SERVIDOR no deja firmarla fuera de su sucursal. ponytail: una lectura del disco cada vez que se llama (la banda la pide cada 5 s); un flujo de
      * cambios de la lista si alguna vez pesa.
      *
      * @param recuperarImportes la hoja está abierta: a una fila sin importe se le pregunta a Avoqado por su ID (una vez a la vez).
@@ -88,8 +92,10 @@ class CancelacionesPendientesViewModel @Inject constructor(
     fun refrescar(recuperarImportes: Boolean = false) {
         val cancelados = cancelacionDeCobro.pendientes.value.mapNotNullTo(HashSet()) { it.requestId }
         val enVuelo = terminalPaymentService.intentoEnVuelo()?.requestId
+        val sucursal = secureStorage.venueId
         val filas = terminalPaymentService.pendientesDeOtrasVentas(null)
             .filter { !it.cobrado && it.requestId != enVuelo && it.requestId !in cancelados }
+            .filter { it.venueId == null || it.venueId == sucursal }
             .map {
                 CobroPorConfirmar(
                     requestId = it.requestId,
@@ -127,65 +133,74 @@ class CancelacionesPendientesViewModel @Inject constructor(
         )
     }
 
-    // MARK: - La revisión del gerente (PIN primero)
+    // MARK: - La revisión del gerente (un paso: el teclado dice qué se firma y [Firmar] lo manda)
 
     private val _paso = MutableStateFlow<PasoDelGerente>(PasoDelGerente.Cerrado)
     val paso: StateFlow<PasoDelGerente> = _paso.asStateFlow()
     private var idDelTeclado = 0L
+    /** La firma en vuelo. Mientras exista, otro [Firmar] espera a ésta (nunca manda otra) y el teclado no se cierra. */
+    private var envio: kotlinx.coroutines.Deferred<OverrideResult>? = null
 
-    /** «Revisar» en una fila: lo primero es el PIN del gerente. Con una firma en vuelo no se abre otra. */
+    /** «Revisar» en una fila: el teclado de ESA fila. Con una firma en vuelo no se abre otra. */
     fun revisar(cobro: CobroPorConfirmar) {
-        if ((_paso.value as? PasoDelGerente.Firmar)?.enviando == true) return
+        if (envio?.isActive == true) return
         _avisos.update { it - cobro.requestId }
-        _paso.value = PasoDelGerente.PedirPin(cobro, ++idDelTeclado)
-    }
-
-    /** El gerente se identifica; sólo entonces ve la decisión. El PIN no se manda todavía ni se guarda en ningún lado. */
-    fun identificar(pin: String) {
-        val paso = _paso.value as? PasoDelGerente.PedirPin ?: return
-        if (pin.isBlank()) return
-        _paso.value = PasoDelGerente.Firmar(paso.cobro, pin)
+        _paso.value = PasoDelGerente.Firmar(cobro, ++idDelTeclado)
     }
 
     /**
-     * «Firmar»: la declaración de ESA fila con ESE PIN, por el mismo servicio de siempre (`/release`, online-only). Un segundo toque
-     * no manda otra. 🔴 Corre en `viewModelScope`: si la hoja se cierra con la firma viajando, la respuesta se aplica igual.
+     * [Firmar]: la declaración de ESA fila con ESE PIN, por el mismo servicio de siempre (`/release`, online-only, nunca encolada). El
+     * PIN no se guarda. Devuelve lo que pinta el teclado:
      * - liberada ⇒ se cierra; si era una cancelación, el coordinador vuelve a preguntar y cancela la orden (aquí no se borra nada);
-     * - el servidor no aceptó el PIN ⇒ vuelve al PIN de la MISMA fila, con «Ese PIN no puede firmar este cobro»;
-     * - cualquier otra respuesta ⇒ se cierra y la fila dice por qué (sin red: la fila sigue pendiente).
+     * - el SERVIDOR no aceptó el PIN (403 `SUPERVISOR_AUTHORIZATION_REQUIRED`) ⇒ el MISMO teclado, sobre la MISMA fila, dice «Ese PIN no
+     *   es de un gerente con permiso»;
+     * - sin red, o la sesión se renovó ⇒ el teclado lo dice y la fila sigue pendiente;
+     * - cualquier otro rechazo ⇒ se cierra y la fila dice por qué.
+     * 🔴 Corre en `viewModelScope`: si el teclado se va con la firma viajando, la respuesta se aplica igual.
      */
-    fun firmar() {
-        val paso = _paso.value as? PasoDelGerente.Firmar ?: return
-        if (paso.enviando) return
-        _paso.value = paso.copy(enviando = true)
+    suspend fun firmar(pin: String): OverrideResult {
+        val paso = _paso.value as? PasoDelGerente.Firmar ?: return TECLADO_CERRADO
+        envio?.takeIf { it.isActive }?.let { return it.await() }
         val cobro = paso.cobro
-        viewModelScope.launch {
-            val r = terminalPaymentService.declararNoCobrado(cobro.requestId, cobro.venueId, supervisorPin = paso.pin)
-            if (r is ResultadoDeDeclaracion.Rechazada && r.code == CancelacionDeCobro.CODIGO_PIDE_PIN_DE_GERENTE) {
-                _paso.value = PasoDelGerente.PedirPin(cobro, ++idDelTeclado, pinRechazado = true)
-                return@launch
-            }
-            _paso.value = PasoDelGerente.Cerrado
+        val nuevo = viewModelScope.async {
+            val r = terminalPaymentService.declararNoCobrado(cobro.requestId, cobro.venueId, supervisorPin = pin)
+            fun cerrarEsteTeclado() { if (_paso.value === paso) _paso.value = PasoDelGerente.Cerrado }
             when (r) {
                 ResultadoDeDeclaracion.Liberada -> {
+                    cerrarEsteTeclado()
                     cobro.cancelacionId?.let(cancelacionDeCobro::procesarTrasDeclarar)
                     refrescar()
+                    TECLADO_CERRADO
                 }
-                is ResultadoDeDeclaracion.Rechazada -> _avisos.update { it + (cobro.requestId to r.mensaje) }
-                ResultadoDeDeclaracion.SinConexion -> _avisos.update { it + (cobro.requestId to CancelacionDeCobro.FIRMA_SIN_RED) }
-                ResultadoDeDeclaracion.SesionRenovada ->
-                    _avisos.update { it + (cobro.requestId to CancelacionDeCobro.DECLARACION_SESION_RENOVADA) }
+                is ResultadoDeDeclaracion.Rechazada -> when (r.code) {
+                    CancelacionDeCobro.CODIGO_PIDE_PIN_DE_GERENTE -> OverrideResult.Failed(CancelacionDeCobro.PIN_NO_ES_DE_GERENTE)
+                    CancelacionDeCobro.CODIGO_DEMASIADOS_INTENTOS -> OverrideResult.TooManyAttempts
+                    else -> {
+                        cerrarEsteTeclado()
+                        _avisos.update { it + (cobro.requestId to r.mensaje) }
+                        TECLADO_CERRADO
+                    }
+                }
+                ResultadoDeDeclaracion.SinConexion -> OverrideResult.Failed(CancelacionDeCobro.FIRMA_SIN_RED)
+                ResultadoDeDeclaracion.SesionRenovada -> OverrideResult.Failed(CancelacionDeCobro.DECLARACION_SESION_RENOVADA)
             }
         }
+        envio = nuevo
+        return nuevo.await()
     }
 
-    /** Cancelar olvida el PIN (vivía sólo en el paso). Con una firma en vuelo no se cierra: decide la respuesta del servidor. */
+    /** Cerrar el teclado. Con una firma en vuelo no se cierra: decide la respuesta del servidor. */
     fun cerrar() {
-        if ((_paso.value as? PasoDelGerente.Firmar)?.enviando == true) return
+        if (envio?.isActive == true) return
         _paso.value = PasoDelGerente.Cerrado
     }
 
     /** El aviso de un cobro que la terminal SÍ hizo; el resto son cancelaciones sin confirmar. */
     fun esAvisoDeCobro(intencion: IntencionDeCancelarCobro): Boolean =
         intencion.faseActual == FaseDeCancelacion.SE_COBRO
+
+    private companion object {
+        /** Lo que cierra el teclado sin mensaje propio: `Granted` es lo que limpia el PIN tecleado (no hay token: el PIN fue en el cuerpo). */
+        val TECLADO_CERRADO = OverrideResult.Granted(token = "", authorizedByName = "")
+    }
 }

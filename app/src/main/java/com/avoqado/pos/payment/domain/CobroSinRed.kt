@@ -66,9 +66,13 @@ object TextosDeCuentaSinRed {
 
     /**
      * En la caja que la abrió, CON internet, 2 min después de que otra la comprometió sin avisar «cobrada». 🔴 F1 (tarea 6): el cajero no
-     * decide; «Revisar» pide el PIN del gerente. Sin red no hay PIN: la cuenta espera a esa caja o al internet ([laEstaCobrandoEn], K16).
+     * decide; «Revisar» abre el teclado del gerente, que firma en un paso ([pinParaFirmar]). Sin red no hay PIN: la cuenta espera a esa caja o al internet ([laEstaCobrandoEn], K16).
      */
     fun noConfirmo(quien: String, caja: String) = "${quien.ifBlank { "Alguien" }} empezó a cobrarla en $caja y no confirmó. Avisa al gerente."
+
+    /** F1 (un paso): el título del teclado del gerente, que ya dice qué firma. */
+    fun pinParaFirmar(quien: String, caja: String) =
+        "Gerente: escribe tu PIN para marcar como no cobrado lo que ${quien.ifBlank { "alguien" }} empezó a cobrar en $caja"
 
     /** «Avisándole a las otras cajas…» cuando todavía no se sabe cuál la abrió. */
     const val LAS_OTRAS_CAJAS = "las otras cajas"

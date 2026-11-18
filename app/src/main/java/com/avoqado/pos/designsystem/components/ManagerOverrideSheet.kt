@@ -46,6 +46,8 @@ fun ManagerOverrideSheet(
     /** El texto bajo el título. Por omisión, «Para <acción>…»; el retiro pasa el suyo («Retiro de $X · concepto…»). */
     description: String = prompt.contexto?.let { "$it. Pide a un encargado su código." }
         ?: "Para ${prompt.actionLabel}. Pide a un encargado su código.",
+    /** F1 (tarea 6): el texto del botón. «Autorizar» por omisión; la firma del gerente de un cobro en duda dice «Firmar». */
+    actionText: String = "Autorizar",
 ) {
     // 🔴 Keyed por el teclado, no por el slot de composición.
     //
@@ -69,7 +71,7 @@ fun ManagerOverrideSheet(
         dismissOnClickOutside = false,
         actionButton = {
             PrimaryButton(
-                text = "Autorizar",
+                text = actionText,
                 onClick = {
                     // 🔴 Se marca ANTES del `launch`: dos toques en el mismo cuadro (antes de que el botón se pinte deshabilitado)
                     // pedían dos autorizaciones con el mismo PIN.

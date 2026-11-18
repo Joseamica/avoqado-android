@@ -15,18 +15,19 @@ import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
+import com.avoqado.pos.core.data.network.OverrideResult
+import kotlinx.coroutines.async
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 
 /**
  * 🔴 F1 mínimo, tarea 6 (founder, 17-nov: «el sistema solo; lo raro lo resuelve el gerente con su PIN»). La revisión del gerente en
- * «Operaciones por revisar»: la fila EXACTA → «Gerente: escribe tu PIN» → «Firma del gerente» → «Firmar». Reescribe las pruebas D19
+ * «Operaciones por revisar», en UN paso: la fila EXACTA → el teclado que ya dice qué se firma → [Firmar] con el PIN. Reescribe las pruebas D19
  * del 4-nov, en las que el cajero declaraba sin PIN y el PIN sólo salía si el servidor contestaba 403.
  */
 class CancelacionesPendientesDeclararTest {
@@ -44,34 +45,30 @@ class CancelacionesPendientesDeclararTest {
     private val intencion = IntencionDeCancelarCobro(id = "req-1", requestId = "req-1", venueId = "venue-1", montoCents = 35_000, creadaEn = 1, terminalLibre = true)
     private val a = CobroPorConfirmar(requestId = "req-a", venueId = "venue-1", montoCents = 35_000, desdeMillis = 1)
 
-    private fun vm() = CancelacionesPendientesViewModel(coordinador, servicio)
+    private var sucursal: String? = "venue-1"
+    private val storage = mockk<com.avoqado.pos.core.data.local.SecureStorage>(relaxed = true).also {
+        every { it.venueId } answers { sucursal }
+    }
+
+    private fun vm() = CancelacionesPendientesViewModel(coordinador, servicio, storage)
 
     private fun pendiente(id: String, centavos: Int?, cobrado: Boolean = false, propina: Int? = 0) = ContextoDeCobro(
         requestId = id, venueId = "venue-1", terminalId = "t1", orderId = "orden-$id", amountCents = centavos, tipCents = propina,
         desdeMillis = 1, cobrado = cobrado,
     )
 
-    @Test
-    fun `F1 el PIN del gerente va ANTES de la decision y no se manda nada hasta Firmar`() = runTest {
-        val vm = vm()
-
-        vm.revisar(a)
-        assertTrue("lo primero es el PIN", vm.paso.value is PasoDelGerente.PedirPin)
-        vm.firmar() // sin identificarse, «Firmar» no existe
-        vm.identificar("4321")
-        val firma = vm.paso.value as PasoDelGerente.Firmar
-        assertEquals(a, firma.cobro)
-        assertFalse("el PIN no sale en el texto del paso", firma.toString().contains("4321"))
-
-        coVerify(exactly = 0) { servicio.declararNoCobrado(any(), any(), any()) }
-    }
+    private val firmado = OverrideResult.Granted(token = "", authorizedByName = "")
 
     @Test
-    fun `F1 Firmar declara ESA fila con ESE PIN y nunca sin PIN`() = runTest {
+    fun `F1 un solo paso - Revisar abre el teclado de ESA fila y Firmar manda ESA fila con ESE PIN`() = runTest {
         coEvery { servicio.declararNoCobrado("req-a", "venue-1", "4321") } returns ResultadoDeDeclaracion.Liberada
         val vm = vm()
 
-        vm.revisar(a); vm.identificar("4321"); vm.firmar()
+        vm.revisar(a)
+        assertEquals("el teclado es de la fila elegida", a, (vm.paso.value as PasoDelGerente.Firmar).cobro)
+        coVerify(exactly = 0) { servicio.declararNoCobrado(any(), any(), any()) }
+
+        assertEquals(firmado, vm.firmar("4321"))
 
         assertEquals(PasoDelGerente.Cerrado, vm.paso.value)
         coVerify(exactly = 1) { servicio.declararNoCobrado("req-a", "venue-1", "4321") }
@@ -79,11 +76,18 @@ class CancelacionesPendientesDeclararTest {
     }
 
     @Test
+    fun `F1 sin teclado abierto Firmar no manda nada`() = runTest {
+        vm().firmar("4321")
+        coVerify(exactly = 0) { servicio.declararNoCobrado(any(), any(), any()) }
+    }
+
+    @Test
     fun `F1 la cancelacion liberada solo vuelve a consultar - el coordinador cancela la orden, aqui no se borra nada`() = runTest {
         coEvery { servicio.declararNoCobrado("req-1", "venue-1", "4321") } returns ResultadoDeDeclaracion.Liberada
         val vm = vm()
 
-        vm.revisar(vm.filaDe(intencion)!!); vm.identificar("4321"); vm.firmar()
+        vm.revisar(vm.filaDe(intencion)!!)
+        vm.firmar("4321")
 
         verify(exactly = 1) { coordinador.procesarTrasDeclarar("req-1") }
         assertTrue(vm.avisos.value.isEmpty())
@@ -95,43 +99,44 @@ class CancelacionesPendientesDeclararTest {
     }
 
     @Test
-    fun `F1 un PIN que no puede firmar vuelve al PIN de la MISMA fila, sin aviso`() = runTest {
+    fun `F1 un 403 deja el MISMO teclado sobre la MISMA fila con Ese PIN no es de un gerente con permiso`() = runTest {
         coEvery { servicio.declararNoCobrado("req-a", any(), "0000") } returns
             ResultadoDeDeclaracion.Rechazada("Pide a un gerente que ingrese su PIN.", CancelacionDeCobro.CODIGO_PIDE_PIN_DE_GERENTE)
+        coEvery { servicio.declararNoCobrado("req-a", any(), "4321") } returns ResultadoDeDeclaracion.Liberada
         val vm = vm()
         vm.revisar(a)
-        val primerTeclado = (vm.paso.value as PasoDelGerente.PedirPin).id
+        val teclado = vm.paso.value
 
-        vm.identificar("0000"); vm.firmar()
-
-        val otraVez = vm.paso.value as PasoDelGerente.PedirPin
-        assertEquals(a, otraVez.cobro)
-        assertTrue(otraVez.pinRechazado)
-        assertTrue("teclado nuevo, vacío", otraVez.id != primerTeclado)
+        assertEquals(OverrideResult.Failed(CancelacionDeCobro.PIN_NO_ES_DE_GERENTE), vm.firmar("0000"))
+        assertEquals("el mismo teclado, la misma fila", teclado, vm.paso.value)
         assertTrue(vm.avisos.value.isEmpty())
         verify(exactly = 0) { coordinador.procesarTrasDeclarar(any()) }
+
+        assertEquals(firmado, vm.firmar("4321"))
+        assertEquals(PasoDelGerente.Cerrado, vm.paso.value)
     }
 
     @Test
-    fun `F1 sin red la fila sigue pendiente y lo dice, nada se encola`() = runTest {
+    fun `F1 sin red el teclado dice que la firma necesita internet y la fila sigue, nada se encola`() = runTest {
         coEvery { servicio.declararNoCobrado(any(), any(), any()) } returns ResultadoDeDeclaracion.SinConexion
         val vm = vm()
+        vm.revisar(a)
 
-        vm.revisar(a); vm.identificar("4321"); vm.firmar()
-
-        assertEquals(PasoDelGerente.Cerrado, vm.paso.value)
-        assertEquals(CancelacionDeCobro.FIRMA_SIN_RED, vm.avisos.value["req-a"])
+        assertEquals(OverrideResult.Failed(CancelacionDeCobro.FIRMA_SIN_RED), vm.firmar("4321"))
+        assertTrue("el teclado sigue sobre la fila", vm.paso.value is PasoDelGerente.Firmar)
         coVerify(exactly = 1) { servicio.declararNoCobrado(any(), any(), any()) }
     }
 
     @Test
-    fun `F1 un rechazo del servidor deja su motivo en la fila`() = runTest {
+    fun `F1 un rechazo del servidor cierra el teclado y deja su motivo en la fila`() = runTest {
         coEvery { servicio.declararNoCobrado(any(), any(), any()) } returns
             ResultadoDeDeclaracion.Rechazada("Este cobro sí tiene señales de haber pasado.", "POSITIVE_EVIDENCE_EXISTS")
         val vm = vm()
+        vm.revisar(a)
 
-        vm.revisar(a); vm.identificar("4321"); vm.firmar()
+        vm.firmar("4321")
 
+        assertEquals(PasoDelGerente.Cerrado, vm.paso.value)
         assertEquals("Este cobro sí tiene señales de haber pasado.", vm.avisos.value["req-a"])
     }
 
@@ -141,14 +146,18 @@ class CancelacionesPendientesDeclararTest {
         coEvery { servicio.declararNoCobrado(any(), any(), any()) } coAnswers { respuesta.await() }
         val vm = vm()
         val b = a.copy(requestId = "req-b")
+        vm.revisar(a)
 
-        vm.revisar(a); vm.identificar("4321")
-        vm.firmar(); vm.firmar()
+        val teclado = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.test.UnconfinedTestDispatcher(testScheduler) + kotlinx.coroutines.Job())
+        val primero = teclado.async { vm.firmar("4321") }
+        val segundo = teclado.async { vm.firmar("4321") }
         vm.cerrar()
         vm.revisar(b)
-        assertTrue("sigue firmando A", (vm.paso.value as PasoDelGerente.Firmar).let { it.enviando && it.cobro == a })
+        assertEquals("sigue firmando A", a, (vm.paso.value as PasoDelGerente.Firmar).cobro)
         respuesta.complete(ResultadoDeDeclaracion.Liberada)
 
+        assertEquals(firmado, primero.await())
+        assertEquals(firmado, segundo.await())
         coVerify(exactly = 1) { servicio.declararNoCobrado(any(), any(), any()) }
         coVerify(exactly = 0) { servicio.declararNoCobrado("req-b", any(), any()) }
         assertEquals(PasoDelGerente.Cerrado, vm.paso.value)
@@ -165,10 +174,28 @@ class CancelacionesPendientesDeclararTest {
         // Aparece B, del mismo importe, y queda primero.
         every { servicio.pendientesDeOtrasVentas(null) } returns listOf(pendiente("req-b", 35_000), pendiente("req-a", 35_000))
         vm.refrescar()
-        vm.identificar("4321"); vm.firmar()
+        vm.firmar("4321")
 
         coVerify(exactly = 1) { servicio.declararNoCobrado("req-a", "venue-1", "4321") }
         coVerify(exactly = 0) { servicio.declararNoCobrado("req-b", any(), any()) }
+    }
+
+    @Test
+    fun `F1 Cobros por confirmar solo de la sucursal de la sesion`() = runTest {
+        every { servicio.pendientesDeOtrasVentas(null) } returns listOf(
+            pendiente("req-a", 1_000),
+            pendiente("req-de-b", 2_000).copy(venueId = "venue-2"),
+            pendiente("req-sin-sucursal", 3_000).copy(venueId = null),
+        )
+        val vm = vm()
+
+        vm.refrescar()
+        assertEquals("la de otra sucursal no se ve; una antigua sin sucursal sí (el servidor no deja firmarla fuera de la suya)",
+            listOf("req-a", "req-sin-sucursal"), vm.cobrosPorConfirmar.value.map { it.requestId })
+
+        sucursal = "venue-2" // entra a B
+        vm.refrescar()
+        assertEquals(listOf("req-de-b", "req-sin-sucursal"), vm.cobrosPorConfirmar.value.map { it.requestId })
     }
 
     @Test

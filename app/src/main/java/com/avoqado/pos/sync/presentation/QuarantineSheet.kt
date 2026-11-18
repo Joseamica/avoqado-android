@@ -551,7 +551,6 @@ fun QuarantineSheet(
 
     RevisionDelGerente(
         paso = pasoDelGerente,
-        onIdentificar = cancelacionesViewModel::identificar,
         onFirmar = cancelacionesViewModel::firmar,
         onCerrar = cancelacionesViewModel::cerrar,
     )
@@ -589,59 +588,39 @@ private fun formatMoney(cents: Int): String =
 /** F1: el importe de una fila; sin importe guardado (fila antigua, se está preguntando), «Importe por confirmar». Nunca otro número. */
 private fun importeDeLaFila(cents: Int?): String = cents?.let(::formatMoney) ?: com.avoqado.pos.payment.domain.CancelacionDeCobro.IMPORTE_POR_CONFIRMAR
 
-/** F1: el renglón que identifica la fila exacta para el gerente: importe · hora del negocio · folio corto. */
-private fun renglonParaElGerente(c: com.avoqado.pos.payment.presentation.CobroPorConfirmar): String =
-    listOfNotNull(importeDeLaFila(c.montoCents), c.desdeMillis?.let { formatTime(it) }, "Folio ${c.requestId.take(8)}").joinToString(" · ")
+/** F1: la hora del NEGOCIO (HH:mm) de una fila, para el título del teclado del gerente. */
+private fun formatHora(epochMs: Long): String =
+    java.time.Instant.ofEpochMilli(epochMs)
+        .let { com.avoqado.pos.core.util.VenueTimeZone.at(it, null) }
+        .format(java.time.format.DateTimeFormatter.ofPattern("HH:mm", Locale("es", "MX")))
 
 /**
- * 🔴 F1 (tarea 6): la revisión del gerente, sobre la fila EXACTA. Primero «Gerente: escribe tu PIN» (el mismo teclado de siempre); sólo
- * con el gerente identificado sale la decisión, «Firma del gerente» → «Firmar». El PIN viaja en el cuerpo de la firma y nunca se guarda;
- * quién puede firmar lo decide el SERVIDOR. La lógica vive en [com.avoqado.pos.payment.presentation.CancelacionesPendientesViewModel].
+ * 🔴 F1 (tarea 6; un paso, Codex código r1 #10): la revisión del gerente sobre la fila EXACTA. El teclado de siempre ya dice qué se firma
+ * («Gerente: escribe tu PIN para marcar $X de las HH:MM como no cobrado») y su botón es [Firmar], que manda la declaración con el PIN
+ * en el cuerpo. Si el SERVIDOR no lo acepta, el MISMO teclado lo dice sobre la MISMA fila. El PIN nunca se guarda; quién puede firmar lo
+ * decide el SERVIDOR. La lógica vive en [com.avoqado.pos.payment.presentation.CancelacionesPendientesViewModel].
  */
 @Composable
-private fun RevisionDelGerente(
+internal fun RevisionDelGerente(
     paso: com.avoqado.pos.payment.presentation.PasoDelGerente,
-    onIdentificar: (String) -> Unit,
-    onFirmar: () -> Unit,
+    onFirmar: suspend (String) -> com.avoqado.pos.core.data.network.OverrideResult,
     onCerrar: () -> Unit,
 ) {
+    val firma = paso as? com.avoqado.pos.payment.presentation.PasoDelGerente.Firmar ?: return
     val textos = com.avoqado.pos.payment.domain.CancelacionDeCobro
-    when (paso) {
-        com.avoqado.pos.payment.presentation.PasoDelGerente.Cerrado -> Unit
-        is com.avoqado.pos.payment.presentation.PasoDelGerente.PedirPin -> {
-            val renglon = renglonParaElGerente(paso.cobro)
-            com.avoqado.pos.designsystem.components.ManagerOverrideSheet(
-                prompt = com.avoqado.pos.core.data.network.ManagerOverrideCoordinator.Prompt(
-                    id = paso.id,
-                    permission = textos.PERMISO_DECLARAR_NO_COBRADO,
-                    actionLabel = renglon,
-                ),
-                // Identificar no manda nada: el PIN se firma en el paso siguiente. `Granted` es lo que limpia el teclado.
-                onSubmit = { pin -> onIdentificar(pin); com.avoqado.pos.core.data.network.OverrideResult.Granted(token = "", authorizedByName = "") },
-                onDismiss = onCerrar,
-                title = textos.PIN_DEL_GERENTE,
-                description = if (paso.pinRechazado) "${textos.PIN_NO_PUEDE_FIRMAR} $renglon" else renglon,
-            )
-        }
-        is com.avoqado.pos.payment.presentation.PasoDelGerente.Firmar -> com.avoqado.pos.designsystem.components.AvoqadoDialog(
-            title = textos.FIRMA_DEL_GERENTE,
-            description = textos.textoDeLaFirma(renglonParaElGerente(paso.cobro)),
-            onDismiss = onCerrar,
-            dismissOnClickOutside = false,
-            actionButton = {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    com.avoqado.pos.designsystem.components.PrimaryButton(
-                        text = textos.BOTON_FIRMAR,
-                        onClick = onFirmar,
-                        enabled = !paso.enviando,
-                        isLoading = paso.enviando,
-                        fullWidth = true,
-                    )
-                    TextButton(onClick = onCerrar, enabled = !paso.enviando) { Text(textos.BOTON_CANCELAR_FIRMA) }
-                }
-            },
-        ) {}
-    }
+    val cobro = firma.cobro
+    com.avoqado.pos.designsystem.components.ManagerOverrideSheet(
+        prompt = com.avoqado.pos.core.data.network.ManagerOverrideCoordinator.Prompt(
+            id = firma.id,
+            permission = textos.PERMISO_DECLARAR_NO_COBRADO,
+            actionLabel = textos.BOTON_FIRMAR,
+        ),
+        onSubmit = onFirmar,
+        onDismiss = onCerrar,
+        title = textos.pinParaFirmar(cobro.montoCents?.let(::formatMoney), cobro.desdeMillis?.let(::formatHora)),
+        description = textos.detalleDeLaFirma(cobro.requestId.take(8)),
+        actionText = textos.BOTON_FIRMAR,
+    )
 }
 
 /**

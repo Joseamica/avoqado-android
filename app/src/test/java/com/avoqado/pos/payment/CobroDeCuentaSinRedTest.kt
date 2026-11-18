@@ -112,12 +112,12 @@ class CobroDeCuentaSinRedTest {
         repo, storage, mockk<ConnectivityMonitor>(), roles, mockk(relaxed = true), locales,
         copiaDeCuentas = copia, cuentasAbiertasAqui = marcas, cashPaymentRepository = efectivoReal,
         planManager = plan, cuentasEntreCajas = entre, duenoDeCuentas = dueno, payLaterQueue = pagarDespues,
-        managerOverride = gerente,
+        permisos = gerente,
     )
-    /** F1 (tarea 6): el PIN del gerente que pide «Revisar» en la caja que abrió la cuenta. */
-    private var gerenteAutoriza = false
-    private val gerente = mockk<com.avoqado.pos.core.data.network.ManagerOverrideCoordinator>(relaxed = true) {
-        coEvery { preauthorize(any(), any(), any()) } answers { gerenteAutoriza }
+    /** F1 (tarea 6): lo que el SERVIDOR contesta al PIN que teclea el gerente en la caja que abrió la cuenta. */
+    private var respuestaAlPin: com.avoqado.pos.core.data.network.OverrideResult = com.avoqado.pos.core.data.network.OverrideResult.Insufficient
+    private val gerente = mockk<com.avoqado.pos.core.data.network.PermissionOverrideRepository>(relaxed = true) {
+        coEvery { requestToken(any(), any(), any(), any()) } answers { respuestaAlPin }
     }
 
     private fun cuenta(id: String = "o1", saldo: Int? = 6000, pagos: Int = 0, pago: String = "PENDING") = OrderSummary(
@@ -600,16 +600,22 @@ class CobroDeCuentaSinRedTest {
         val texto = m.noConfirmoEnLinea("o1")
         assertEquals("Ana empezó a cobrarla en Caja 2 y no confirmó. Avisa al gerente.", texto)
 
-        // Sin el PIN del gerente (cerró el teclado, no tiene el permiso o no hay red) no se declara nada.
-        assertFalse(m.declararNoSeCobroConGerente("o1", texto!!))
+        // El teclado ya dice qué se firma (un paso, Codex código r1 #10).
+        assertEquals("Gerente: escribe tu PIN para marcar como no cobrado lo que Ana empezó a cobrar en Caja 2",
+            m.pinParaFirmarNoSeCobro("o1"))
+
+        // El PIN de alguien sin el permiso (o equivocado): el MISMO teclado lo dice y no se declara nada.
+        assertEquals(com.avoqado.pos.core.data.network.OverrideResult.Failed(com.avoqado.pos.payment.domain.CancelacionDeCobro.PIN_NO_ES_DE_GERENTE),
+            m.firmarNoSeCobro("o1", "0000"))
+        respuestaAlPin = com.avoqado.pos.core.data.network.OverrideResult.WrongPin
+        assertEquals(com.avoqado.pos.core.data.network.OverrideResult.Failed(com.avoqado.pos.payment.domain.CancelacionDeCobro.PIN_NO_ES_DE_GERENTE),
+            m.firmarNoSeCobro("o1", "1111"))
         coVerify(exactly = 0) { dueno.noSeCobro(any(), any(), any()) }
 
-        gerenteAutoriza = true
-        assertTrue(m.declararNoSeCobroConGerente("o1", texto))
-        // Las dos veces se pidió el PIN del gerente, con el permiso de la declaración y el renglón de la cuenta.
-        coVerify(exactly = 2) { gerente.preauthorize(com.avoqado.pos.payment.domain.CancelacionDeCobro.PERMISO_DECLARAR_NO_COBRADO, any(), texto) }
+        respuestaAlPin = com.avoqado.pos.core.data.network.OverrideResult.Granted(token = "t", authorizedByName = "Gerente")
+        assertTrue(m.firmarNoSeCobro("o1", "4321") is com.avoqado.pos.core.data.network.OverrideResult.Granted)
+        coVerify(exactly = 1) { gerente.requestToken("v1", "4321", com.avoqado.pos.payment.domain.CancelacionDeCobro.PERMISO_DECLARAR_NO_COBRADO, null) }
         coVerify(exactly = 1) { dueno.noSeCobro("v1", "o1", any()) }
-        io.mockk.verify { gerente.descartarPreautorizado(com.avoqado.pos.payment.domain.CancelacionDeCobro.PERMISO_DECLARAR_NO_COBRADO) }
         assertNull(m.noConfirmoEnLinea("o1"))
     }
 }
