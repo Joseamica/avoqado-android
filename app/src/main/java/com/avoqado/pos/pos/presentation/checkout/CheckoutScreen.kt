@@ -1583,8 +1583,14 @@ fun CheckoutScreen(
             val esperaLaCaptura = capturaAlLeer?.takeIf { puedeSerEtiquetaDeBascula(barcode) }?.apertura
             val lectura = lecturasDeEtiqueta.incrementAndGet()
             esperaLaCaptura?.let { apertura ->
+                // Codex D7 r4 #2: un solo tope de 3 s por captura, contado desde la primera lectura pendiente: dos lecturas
+                // seguidas no lo alargan.
+                val yaEspera = etiquetasEnCamino.containsValue(apertura)
                 etiquetasEnCamino[lectura] = apertura
-                checkoutScope.launch { kotlinx.coroutines.delay(3_000); etiquetasEnCamino.remove(lectura) }
+                if (!yaEspera) checkoutScope.launch {
+                    kotlinx.coroutines.delay(3_000)
+                    etiquetasEnCamino.entries.removeAll { it.value == apertura }
+                }
             }
             val result = try {
                 cartViewModel.resolveScannedBarcode(barcode)
