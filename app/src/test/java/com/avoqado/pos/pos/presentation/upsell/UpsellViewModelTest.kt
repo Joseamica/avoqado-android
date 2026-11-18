@@ -281,4 +281,21 @@ class UpsellViewModelTest {
         assertNull(vm.offer(venta, UpsellContext.COUNTER))
         assertNotNull(vm.offer(cart("cafe"), UpsellContext.COUNTER))
     }
+
+    @Test
+    fun `D9 la impresion se convierte con el pago de SU venta, aunque se haya cancelado un cobro antes, y no con el de otra`() {
+        val vm = viewModel()
+        val a = cart("cafe")
+        vm.offer(a, UpsellContext.COUNTER)
+        vm.finish(emptyList(), 0)
+
+        vm.onOrderPaid("orden-B", venta = cart("cafe").identidadDeVenta)   // vaciaron A y cobraron otra venta
+        dispatcher.scheduler.advanceUntilIdle()
+        io.mockk.coVerify(exactly = 0) { repo.convertImpression(any(), any()) }
+
+        vm.onOrderPaid("orden-A", venta = a.identidadDeVenta)             // la misma A, cobrada tras cancelar un cobro
+        dispatcher.scheduler.advanceUntilIdle()
+        io.mockk.coVerify(exactly = 1) { repo.convertImpression(any(), "orden-A") }
+    }
 }
+

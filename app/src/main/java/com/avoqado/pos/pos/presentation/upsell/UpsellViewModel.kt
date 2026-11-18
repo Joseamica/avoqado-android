@@ -85,6 +85,12 @@ class UpsellViewModel @Inject constructor(
     private var ventaYaOfrecida: String? = null
 
     /**
+     * D9 (Codex r3 #3, #4): la impresión pendiente es de UNA venta. Se convierte sólo con el pago de esa venta: cancelar el
+     * cobro y volver a cobrar la misma la conserva, y vaciarla para armar otra ya no se la cuenta a la nueva.
+     */
+    private var ventaDeLaConversion: String? = null
+
+    /**
      * Qué hacer cuando el CLIENTE resuelve desde SU pantalla. Lo registra la
      * pantalla de cobro con las mismas acciones que la tira del cajero: una sola
      * verdad, dos superficies de entrada — igual que propina y calificación.
@@ -146,6 +152,7 @@ class UpsellViewModel @Inject constructor(
             // Sin esto su ticket promedio sale de un conjunto vacío = 0, y el
             // "aumento real" del reporte se vuelve el ticket ENTERO del otro grupo.
             pendingConversionId = impressionId
+            ventaDeLaConversion = cart.identidadDeVenta
             ventaYaOfrecida = cart.identidadDeVenta
             return null
         }
@@ -216,6 +223,7 @@ class UpsellViewModel @Inject constructor(
         // aceptó dejaría el promedio "con tarjetas" hecho puro de compradores, que
         // por construcción gastan más: el reporte mediría su propio sesgo.
         pendingConversionId = moment.impressionId
+        ventaDeLaConversion = ventaDelMomento
     }
 
     /**
@@ -225,21 +233,12 @@ class UpsellViewModel @Inject constructor(
      * porque un momento del grupo de control nunca pasa por la vista y aun así tiene
      * que convertir.
      */
-    fun onOrderPaid(orderId: String) {
+    fun onOrderPaid(orderId: String, venta: String? = null) {
         val impressionId = pendingConversionId ?: return
+        // Pagó OTRA venta: ésta se quedó sin cobrar (se vació o se guardó). No se le cuenta a la que sí se pagó.
+        if (venta != null && ventaDeLaConversion != null && venta != ventaDeLaConversion) return
         pendingConversionId = null
         viewModelScope.launch { repository.convertImpression(impressionId, orderId) }
-    }
-
-    /**
-     * El cobro se canceló. Se suelta sin convertir: la impresión aporta $0 y no
-     * cuenta para el promedio, que es lo correcto — no hubo venta.
-     *
-     * Dejarla viva sería peor que perderla: la SIGUIENTE venta la convertiría contra
-     * una orden que no tuvo nada que ver.
-     */
-    fun cancelPendingConversion() {
-        pendingConversionId = null
     }
 
     private fun isSurfaceEnabled(context: UpsellContext) = when (context) {

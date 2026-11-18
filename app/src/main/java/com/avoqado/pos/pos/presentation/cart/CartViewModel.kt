@@ -716,6 +716,7 @@ class CartViewModel @Inject constructor(
     fun cerrarCobro() {
         cobroAbierto = false
         _avisoDelCobroAbierto.value = null   // decía «cancela el cobro»: ya no aplica (Codex r2 #11)
+        vendedoresPorAplicar?.let { vendedoresPorAplicar = null; aplicarVendedores(it, alCerrarElCobro = true) }
         // D4: lo que la venta intentó cobrar ya no está en pantalla: desde ahora lo decide su evidencia (también su duda).
         pendingGrantQueue?.soltarVenta()
     }
@@ -1329,6 +1330,7 @@ class CartViewModel @Inject constructor(
                 // `customerId` del local A — un id de OTRO tenant dentro de la orden.
                 Log.d("🛒", "Venue switched — clearing cart")
                 delCobro { finalizarVenta() }   // D9 (Codex r2 #9): el cambio de sucursal termina la venta aunque quedara la marca
+                refreshCustomerDisplay()        // D9 (Codex r3 #8): aunque la marca del cobro tape el espejo del carrito
                 fetchStaff()
             }
         }
@@ -1444,28 +1446,16 @@ class CartViewModel @Inject constructor(
                     // siguen usando la lista completa.
                     val staff = todos.soloVendedores()
                     _staffOptions.value = staff
-                    val selectedId = _cartState.value.selectedStaffId
-                    val selected = staff.firstOrNull { it.id == selectedId }
-                    // D9: la recarga es del sistema, no de la cajera: se aplica aunque haya cobro (la foto del cobro no cambia).
-                    if (selected != null && selected.fullName != _cartState.value.selectedStaffName) delCobro {
-                        selectStaff(selected.id, selected.fullName)
-                    } else if (selectedId.isNotBlank() && selected == null) delCobro {
-                        secureStorage.clearSelectedStaffForCurrentVenue()
-                        _cartState.value = defaultCartState()
-                        // El aviso era del carrito que se acaba de vaciar (igual que en `clearCart()`; A3 m1).
-                        _avisoDelCarrito.value = null
-                        // Segundo reemplazo directo de `_cartState` que no pasa por
-                        // `clearCart()`: el vínculo con la venta a medio cobrar se
-                        // limpia aquí por la misma razón que en `restoreSavedCart`.
-                        _pendingSplitOrder.value = null
-                        // 🔴 Y el cliente también: este camino YA se comportaba como
-                        // fin de venta (vacía el carrito y suelta el vínculo), sólo le
-                        // faltaba soltarlo. Pasa cuando dan de baja al mesero
-                        // seleccionado desde el dashboard: el carrito se vacía solo y
-                        // el cliente se quedaba en el encabezado, así que la venta
-                        // siguiente —de otra persona— nacía con su id.
-                        setSelectedCustomer(null)
+                    // D9 (Codex r3 #1, #2): con el cobro abierto la venta no cambia —vaciarla perdía el «Saldo pendiente» de un
+                    // abono y un nombre nuevo frenaba el saldo de regalo—; se aplica al cerrarlo. El disco sí se limpia ya, para
+                    // que la venta siguiente no herede al vendedor dado de baja.
+                    if (cobroAbierto) {
+                        vendedoresPorAplicar = staff
+                        val guardado = _cartState.value.selectedStaffId
+                        if (guardado.isNotBlank() && staff.none { it.id == guardado }) secureStorage.clearSelectedStaffForCurrentVenue()
+                        return@fold
                     }
+                    aplicarVendedores(staff)
                 },
                 onFailure = { error ->
                     _staffError.value = error.message ?: "No se pudo cargar staff"
@@ -1474,6 +1464,38 @@ class CartViewModel @Inject constructor(
             _isStaffLoading.value = false
         }
     }
+
+    /** Lo que la recarga de vendedores hace con la venta en pantalla. Al cerrar un cobro, la venta sigue (puede traer un abono). */
+    private fun aplicarVendedores(staff: List<StaffMember>, alCerrarElCobro: Boolean = false) {
+        val selectedId = _cartState.value.selectedStaffId
+        val selected = staff.firstOrNull { it.id == selectedId }
+        if (selected != null && selected.fullName != _cartState.value.selectedStaffName) {
+            selectStaff(selected.id, selected.fullName)
+        } else if (selectedId.isNotBlank() && selected == null) {
+            secureStorage.clearSelectedStaffForCurrentVenue()
+            if (alCerrarElCobro) {
+                val sinVendedor = defaultCartState()
+                _cartState.update { it.copy(selectedStaffId = sinVendedor.selectedStaffId, selectedStaffName = sinVendedor.selectedStaffName) }
+                return
+            }
+            _cartState.value = defaultCartState()
+            // El aviso era del carrito que se acaba de vaciar (igual que en `clearCart()`; A3 m1).
+            _avisoDelCarrito.value = null
+            // Segundo reemplazo directo de `_cartState` que no pasa por
+            // `clearCart()`: el vínculo con la venta a medio cobrar se
+            // limpia aquí por la misma razón que en `restoreSavedCart`.
+            _pendingSplitOrder.value = null
+            // 🔴 Y el cliente también: este camino YA se comportaba como
+            // fin de venta (vacía el carrito y suelta el vínculo), sólo le
+            // faltaba soltarlo. Pasa cuando dan de baja al mesero
+            // seleccionado desde el dashboard: el carrito se vacía solo y
+            // el cliente se quedaba en el encabezado, así que la venta
+            // siguiente —de otra persona— nacía con su id.
+            setSelectedCustomer(null)
+        }
+    }
+
+    private var vendedoresPorAplicar: List<StaffMember>? = null
 
     fun selectStaff(staffId: String, staffName: String) {
         if (cobroLoImpide()) return
@@ -1547,7 +1569,7 @@ class CartViewModel @Inject constructor(
             }
             // D9 (Codex r1 #3): el cobro se abrió mientras cargaba el catálogo: la semilla regresa y entra al cerrarlo.
             if (cobroLoImpide(avisar = false) || hayVentaAMedias()) {
-                if (!classCheckoutSeed.hasPending()) classCheckoutSeed.put(seed)
+                classCheckoutSeed.devolver(seed)
                 return@launch
             }
             val product = productsRepository.products.value.firstOrNull { it.id == seed.productId }
@@ -1561,6 +1583,7 @@ class CartViewModel @Inject constructor(
             val existingResId = _cartState.value.reservationId
             if (existingResId != null && seed.reservationId != null && existingResId != seed.reservationId) {
                 Log.w("🛒", "Cart already linked to reservation $existingResId — skipping seed for ${seed.reservationId}")
+                classCheckoutSeed.devolver(seed)   // D9: con la fila, la otra clase espera su propia venta en vez de perderse
                 _seedConflict.value = true
                 return@launch
             }
@@ -1888,10 +1911,16 @@ class CartViewModel @Inject constructor(
                 return
             }
             val venta = _cartState.value.identidadDeVenta
+            // D9 (Codex r3 #6): mientras el servidor quita el vale, el cobro no se abre (la misma espera que la pistola).
+            consultasDeCodigo.update { it + 1 }
             viewModelScope.launch {
-                runCatching { areaTicketRepository.removeTicket(areaTicketId) }
-                    .onSuccess { replaceAreaTicketLines(it, venta) }
-                    .onFailure { Log.e("🎟️", "No se pudo quitar el vale: ${it.message}") }
+                try {
+                    runCatching { areaTicketRepository.removeTicket(areaTicketId) }
+                        .onSuccess { replaceAreaTicketLines(it, venta) }
+                        .onFailure { Log.e("🎟️", "No se pudo quitar el vale: ${it.message}") }
+                } finally {
+                    consultasDeCodigo.update { it - 1 }
+                }
             }
             return
         }

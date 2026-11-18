@@ -205,16 +205,23 @@ class CarritoConCobroAbiertoTest {
     }
 
     @Test
-    fun `la recarga de vendedores es del sistema y suelta al vendedor dado de baja aunque haya cobro`() {
+    fun `P1 la recarga de vendedores espera al cierre del cobro y entonces no vacia la venta, solo le quita al vendedor`() {
         val vm = cafeConElCobroAbierto()
+        val antes = vm.cartState.value
         coEvery { staffRepository.getActiveStaff() } returns Result.success(listOf(StaffMember(id = "otro", firstName = "Ana", lastName = "Q")))
 
         vm.fetchStaff()
 
-        // Lo de siempre (la foto del cobro no cambia): disco y carrito sin el vendedor dado de baja, sin aviso de la cajera.
+        // Durante el cobro la venta no cambia (un abono puede estar confirmándose), pero el disco ya no guarda al vendedor.
+        assertEquals(antes, vm.cartState.value)
         verify(exactly = 1) { secureStorage.clearSelectedStaffForCurrentVenue() }
-        assertTrue(vm.cartState.value.isEmpty)
-        assertNull(vm.avisoDelCobroAbierto.value)
+
+        every { secureStorage.selectedStaffIdForCurrentVenue } returns null
+        every { secureStorage.selectedStaffNameForCurrentVenue } returns null
+        vm.cerrarCobro()
+
+        assertEquals("la venta sigue (puede traer su «Saldo pendiente»)", listOf("Café"), vm.cartState.value.items.map { it.name })
+        assertEquals("user-1", vm.cartState.value.selectedStaffId)
     }
 
     @Test
@@ -375,5 +382,27 @@ class CarritoConCobroAbiertoTest {
 
         assertEquals(listOf("Café", "Pan"), vm.cartState.value.items.map { it.name })
         assertNull(vm.avisoDelCobroAbierto.value)
+    }
+
+    @Test
+    fun `dos inscripciones seguidas no se pisan, cada clase entra a su propia venta`() {
+        val semilla = ClassCheckoutSeed().apply {
+            put(ClassCheckoutSeed.Seed(productId = "cafe", quantity = 1, reservationId = "res-1"))
+            put(ClassCheckoutSeed.Seed(productId = "pan", quantity = 1, reservationId = "res-2"))
+        }
+        val vm = carrito(semilla)
+
+        vm.consumePendingClassSeed()
+        assertEquals("res-1", vm.cartState.value.reservationId)
+
+        // Mientras la venta trae la primera clase, la segunda espera (antes se perdía con el aviso de reserva distinta).
+        vm.consumePendingClassSeed()
+        assertEquals(listOf("Café"), vm.cartState.value.items.map { it.name })
+        assertTrue(semilla.hasPending())
+
+        vm.clearCart()
+        vm.consumePendingClassSeed()
+        assertEquals("res-2", vm.cartState.value.reservationId)
+        assertEquals(listOf("Pan"), vm.cartState.value.items.map { it.name })
     }
 }

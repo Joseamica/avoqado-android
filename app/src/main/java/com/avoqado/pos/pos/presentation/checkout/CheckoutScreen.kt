@@ -1333,7 +1333,10 @@ fun CheckoutScreen(
                 onCerrar = { consultaDeTarjeta = null }, onCobrarConEsta = cobrarConEsta@{ tarjeta ->
                     // D9 (Codex r1 #10): si otro abrió el cobro con la consulta abierta, no se le cambia la tarjeta ni el saldo.
                     if (cartViewModel.avisarSiElCobroEstaAbierto()) { consultaDeTarjeta = null; return@cobrarConEsta }
-                    checkoutScope.launch { paymentFlowViewModel.abrirSaldoDesdeConsultar(tarjeta) {
+                    checkoutScope.launch { paymentFlowViewModel.abrirSaldoDesdeConsultar(tarjeta) respuesta@{
+                        // D9 (Codex r3 #7): si la cajera cerró la consulta y abrió otro cobro mientras respondía, la tarjeta no
+                        // se le pone encima a ése.
+                        if (cartViewModel.avisarSiElCobroEstaAbierto()) { consultaDeTarjeta = null; return@respuesta }
                         tarjetaPreseleccionada = it; consultaDeTarjeta = null; proceedToPayment()
                     } }
                 })
@@ -2216,7 +2219,8 @@ fun CheckoutScreen(
                     // Upsell: el momento terminó en venta PAGADA. Sólo aquí, en el
                     // éxito real — una impresión sin esto aporta $0 al reporte, y
                     // marcarla antes contaría como venta algo que se canceló.
-                    completion.orderId?.let { upsellViewModel.onOrderPaid(it) }
+                    // D9: con la venta de la foto, para que la sugerencia de otra venta no se le cuente a ésta.
+                    completion.orderId?.let { upsellViewModel.onOrderPaid(it, venta = paymentCartSnapshot?.identidadDeVenta) }
                 },
                 onDone = {
                     cuentaConSaldoVisible = cuentaConSaldoPendiente; cuentaConSaldoPendiente = null; tarjetaPreseleccionada = null
@@ -2245,7 +2249,6 @@ fun CheckoutScreen(
                     // El cobro se canceló: la impresión se queda SIN convertir (aporta
                     // $0 y no cuenta para el promedio). Lo aceptado sigue en el carrito,
                     // que es lo correcto — el cliente lo pidió; lo que no ocurrió es la venta.
-                    upsellViewModel.cancelPendingConversion()
                     cartViewModel.refreshCustomerDisplay()
                 },
                 // «Dividir importe» también en tienda (founder, 26-oct: IQ cobró dos tarjetas como dos
@@ -2263,7 +2266,6 @@ fun CheckoutScreen(
                     paymentCartSnapshot = null
                     cartViewModel.releaseChargingOrder()
                     pendingSplitConfig = SplitConfig()
-                    upsellViewModel.cancelPendingConversion()
                     cartViewModel.refreshCustomerDisplay()
                     if (cartViewModel.hasCreditPack) showPackNoSplitAlert = true
                     else showSplitPayment = true
@@ -2281,7 +2283,6 @@ fun CheckoutScreen(
                     // nunca contra el de la venta que acaba de cerrarse.
                     cartViewModel.releaseChargingOrder()
                     pendingSplitConfig = SplitConfig()
-                    upsellViewModel.cancelPendingConversion()
                     cartViewModel.refreshCustomerDisplay()
                     previousChargeNotice = message
                 },
@@ -2623,8 +2624,9 @@ private fun handleProductTap(
 ) {
     // D8 (Codex r2): todos los toques de producto del cobro pasan por aquí (cuadrícula, Buscar y su Enter de WINDOWS, la hoja de
     // tallas, un código leído, un producto recién creado). Con el cobro abierto, nada entra al carrito ya fotografiado ni abre
-    // una ficha o una captura de peso encima: un toque o un Enter que le ganó al «No, gracias» del cliente no hace nada.
-    if (cartViewModel.cobroAbierto) return
+    // una ficha o una captura de peso encima. D9 (Codex r3 #9): un clic que se soltó después de F12 lo dice («No entró a la
+    // venta») en vez de perderse callado.
+    if (cartViewModel.avisarSiElCobroEstaAbierto()) return
     when {
         // Venta por peso MANDA sobre los modificadores (MVP): el tap SIEMPRE abre la captura de
         // peso, nunca el panel de modificadores, aunque el producto tenga grupos.
