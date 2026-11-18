@@ -1126,8 +1126,12 @@ class MesaDelServidorSinRedTest {
             check(acks.tryEmit(ackCuentaAparte(id)))
             id
         }
-        ronda(subject, 2000)
+        var aviso: String? = null
+        subject.addCustomAmount("Ronda", 2000); subject.sendRound { _, texto -> aviso = texto }; advanceUntilIdle()
         assertTrue("confirmada en la cuenta aparte: nada «por sincronizar»", subject.queued.value.isEmpty())
+        // Codex r4 #2: el aviso de «Enviar» no tapa dónde quedó la ronda con «se sincronizará sola».
+        assertEquals(TableOrderViewModel.textoDeCuentaAparte("G-7"), aviso)
+        assertEquals(TableOrderViewModel.textoDeCuentaAparte("G-7"), subject.actionMessage.value)
         subject.viewModelScope.cancel()
     }
 

@@ -1519,12 +1519,13 @@ class TableOrderViewModel @Inject constructor(
         if (mesaCambio) tableSession.marcarSaldoDesconocido(vId, session.idsDeLaOrden, contextoDeSesion)
         // Espejo EXACTO de la llave de cada renglón: es lo que deja separar el cheque antes de que sincronice. Sólo en ESTA cuenta
         // y sin repetir lo que una recarga del borrador ya pintó.
-        if (tableSession.current()?.idsDeLaOrden?.any { it in session.idsDeLaOrden } == true && intentId !in rondasEnCuentaAparte) {
+        if (tableSession.current()?.idsDeLaOrden?.any { it in session.idsDeLaOrden } == true && !rondasEnCuentaAparte.containsKey(intentId)) {
             val yaPintados = _queued.value.mapNotNull { it.externalId }.toSet()
             _queued.value = _queued.value + com.avoqado.pos.tables.data.stampTableRoundLines(lines, intentId).filterNot { it.externalId in yaPintados }
         }
         _isSending.value = false
-        if (mesaCambio) onDone(false, RONDA_GUARDADA_MESA_CAMBIO) else onDone(true, mensaje)
+        if (mesaCambio) onDone(false, RONDA_GUARDADA_MESA_CAMBIO)
+        else onDone(true, rondasEnCuentaAparte[intentId]?.let { textoDeCuentaAparte(it) } ?: mensaje)
         // D5 · B2b: la ronda quedó en la cola; con el piloto, «Pagar $X» ya la cuenta (foto + esta ronda).
         if (!session.isProvisional) refrescarSaldoSinRed()
         // Corte E: la venta offline descuenta el stock local aproximado. Si falla, la ronda sigue guardada (D16).
@@ -2041,19 +2042,23 @@ class TableOrderViewModel @Inject constructor(
      * en la cola, o con la cuenta movida a otra mesa, el cambio automático dejaba cobrar una cuenta incompleta o abrirla bajo otra mesa):
      * la cuenta aparte se abre desde el plano, como hoy al volver a entrar.
      */
-    /** Codex r3 #2: rondas que el SERVIDOR ya confirmó en una cuenta aparte; si «Enviar» termina después, no se vuelven a pintar. */
-    private val rondasEnCuentaAparte = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    /**
+     * Codex r3 #2 y r4 #2: rondas (llave → folio, "" si no vino) que el SERVIDOR ya confirmó en una cuenta aparte. Si «Enviar» termina
+     * después, no se vuelven a pintar y su aviso es éste, no «se sincronizará sola».
+     */
+    private val rondasEnCuentaAparte = java.util.concurrent.ConcurrentHashMap<String, String>()
 
     private fun cuentaAparteDelAcuse(llave: String, result: kotlinx.serialization.json.JsonObject, session: TableSession.Active) {
         val aparte = result["cuentaAparte"] as? kotlinx.serialization.json.JsonObject ?: return
         val id = (aparte["orderId"] as? kotlinx.serialization.json.JsonPrimitive)?.takeIf { it.isString }?.content?.takeIf { it.isNotBlank() } ?: return
         if (id in session.idsDeLaOrden) return
-        val deEstaPantalla = llave in draftRounds || _queued.value.any { it.externalId?.startsWith("sync:$llave:") == true }
-        if (!deEstaPantalla) return
-        rondasEnCuentaAparte += llave
+        // Es una ronda de ESTE aparato (su cola) sobre ESTA cuenta (lo revisa quien llama). Codex r4 #2: no se exige verla en el borrador
+        // ni pintada: el ACK de apertura pudo releer el borrador ya sin ella, y «Enviar» puede no haberla pintado todavía.
+        val folio = (aparte["orderNumber"] as? kotlinx.serialization.json.JsonPrimitive)?.takeIf { it.isString }?.content.orEmpty()
+        rondasEnCuentaAparte[llave] = folio
         if (llave in draftRounds) finishDraftRound(llave)
         _queued.value = _queued.value.filterNot { it.externalId?.startsWith("sync:$llave:") == true }
-        showMessage(textoDeCuentaAparte((aparte["orderNumber"] as? kotlinx.serialization.json.JsonPrimitive)?.takeIf { it.isString }?.content))
+        showMessage(textoDeCuentaAparte(folio))
     }
 
     /**
