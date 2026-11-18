@@ -12,7 +12,6 @@ import com.avoqado.pos.payment.domain.DatosDelCobroSinRed
 import com.avoqado.pos.payment.domain.DecisionSinRed
 import com.avoqado.pos.payment.domain.DecisionSinRed.Cobrar
 import com.avoqado.pos.payment.domain.DecisionSinRed.Gris
-import com.avoqado.pos.payment.domain.DecisionSinRed.NoConfirmo
 import com.avoqado.pos.payment.domain.TextosDeCuentaSinRed
 import com.avoqado.pos.payment.domain.decidirCobroSinRed
 import com.avoqado.pos.payment.domain.llaveDeCuenta
@@ -34,11 +33,11 @@ class CobroSinRedTest {
     private fun datos(
         cuenta: CuentaGuardada? = fila(), puedeCobrar: Boolean = true, abiertaAqui: Boolean = true,
         cobroLocalPendiente: Boolean = false, huboEfectivoSubido: Boolean = false, premiumAcreditado: Boolean = true,
-        hayOtraCajaDelNegocio: Boolean = true, registro: CuentaEnElRegistro? = null, puedeDeclarar: Boolean = false,
+        hayOtraCajaDelNegocio: Boolean = true, registro: CuentaEnElRegistro? = null,
         cajaQueLaAbrio: String? = null,
     ) = DatosDelCobroSinRed(
         cuenta, puedeCobrar, abiertaAqui, cobroLocalPendiente, huboEfectivoSubido, premiumAcreditado, hayOtraCajaDelNegocio,
-        registro = registro, puedeDeclararNoSeCobro = puedeDeclarar, miDeviceId = "caja-1", cajaQueLaAbrio = cajaQueLaAbrio,
+        registro = registro, miDeviceId = "caja-1", cajaQueLaAbrio = cajaQueLaAbrio,
     )
 
     private fun decide(d: DatosDelCobroSinRed, p: CuentasEntreCajas.DelDueno? = null): DecisionSinRed = decidirCobroSinRed(d, p)
@@ -56,8 +55,8 @@ class CobroSinRedTest {
         assertEquals(TextosDeCuentaSinRed.SE_ABRIO_EN_OTRA_CAJA, TextosDeCuentaSinRed.noLaEncuentro(null))
         assertEquals("Se perdió el contacto con Caja 1: esta cuenta no se cobró aquí. No recibas el efectivo. Cóbrala en Caja 1 o cuando vuelva la conexión.",
             TextosDeCuentaSinRed.sePerdioElContacto("Caja 1"))
-        assertEquals("Ana empezó a cobrarla en Caja 2 y no confirmó. Pregúntale antes de cobrar.", TextosDeCuentaSinRed.noConfirmo("Ana", "Caja 2"))
-        assertEquals("No se cobró: cobrar aquí", TextosDeCuentaSinRed.NO_SE_COBRO_COBRAR_AQUI)
+        // F1 (tarea 6): el «no confirmó» ya no invita al cajero a decidir: lo revisa el gerente.
+        assertEquals("Ana empezó a cobrarla en Caja 2 y no confirmó. Avisa al gerente.", TextosDeCuentaSinRed.noConfirmo("Ana", "Caja 2"))
         assertEquals("Cobrada en Caja 2", TextosDeCuentaSinRed.cobradaEn("Caja 2", faltaSubirla = false))
         assertEquals("Cobrada en Caja 2 · falta subirla", TextosDeCuentaSinRed.cobradaEn("Caja 2", faltaSubirla = true))
     }
@@ -71,8 +70,9 @@ class CobroSinRedTest {
     @Test fun `la abrio aqui y su registro dice que otra caja la tiene, ya la cobró o no confirmó`() {
         assertEquals(Gris("Ana la está cobrando en Caja 2. Espera a que termine."), decide(datos(registro = enRegistro(EstadoDeCuenta.APARTADA))))
         assertEquals(Gris("Ana la está cobrando en Caja 2. Espera a que termine."), decide(datos(registro = enRegistro(EstadoDeCuenta.COMPROMETIDA))))
-        assertEquals(NoConfirmo("Ana empezó a cobrarla en Caja 2 y no confirmó. Pregúntale antes de cobrar.", 6000),
-            decide(datos(registro = enRegistro(EstadoDeCuenta.COMPROMETIDA), puedeDeclarar = true)))
+        // 🔴 F1 (tarea 6, K16): a los 2 min sin confirmar, sin red, ya no hay «No se cobró: cobrar aquí»: la cuenta espera.
+        assertEquals(Gris("Ana la está cobrando en Caja 2. Espera a que termine."),
+            decide(datos(registro = enRegistro(EstadoDeCuenta.COMPROMETIDA, falta = false).copy(desde = Instante("b", 0)))))
         assertEquals(Gris("Cobrada en Caja 2 · falta subirla"), decide(datos(registro = enRegistro(EstadoDeCuenta.CERRADA, falta = true))))
         assertEquals(Gris("Cobrada en Caja 1"), decide(datos(registro = enRegistro(EstadoDeCuenta.CERRADA, por = "caja-1"))))
     }

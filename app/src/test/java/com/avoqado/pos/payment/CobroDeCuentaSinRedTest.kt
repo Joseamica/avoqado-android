@@ -27,7 +27,6 @@ import com.avoqado.pos.payment.data.PayLaterQueue
 import com.avoqado.pos.payment.data.PayLaterRow
 import com.avoqado.pos.payment.domain.DecisionSinRed.Cobrar
 import com.avoqado.pos.payment.domain.DecisionSinRed.Gris
-import com.avoqado.pos.payment.domain.DecisionSinRed.NoConfirmo
 import com.avoqado.pos.payment.domain.TextosDeCuentaSinRed
 import com.avoqado.pos.payment.presentation.CobroDeCuentaViewModel
 import com.avoqado.pos.payment.presentation.LoQueSePinta
@@ -113,7 +112,13 @@ class CobroDeCuentaSinRedTest {
         repo, storage, mockk<ConnectivityMonitor>(), roles, mockk(relaxed = true), locales,
         copiaDeCuentas = copia, cuentasAbiertasAqui = marcas, cashPaymentRepository = efectivoReal,
         planManager = plan, cuentasEntreCajas = entre, duenoDeCuentas = dueno, payLaterQueue = pagarDespues,
+        managerOverride = gerente,
     )
+    /** F1 (tarea 6): el PIN del gerente que pide «Revisar» en la caja que abrió la cuenta. */
+    private var gerenteAutoriza = false
+    private val gerente = mockk<com.avoqado.pos.core.data.network.ManagerOverrideCoordinator>(relaxed = true) {
+        coEvery { preauthorize(any(), any(), any()) } answers { gerenteAutoriza }
+    }
 
     private fun cuenta(id: String = "o1", saldo: Int? = 6000, pagos: Int = 0, pago: String = "PENDING") = OrderSummary(
         id = id, esDeMesa = false, source = "AVOQADO_ANDROID", status = "PENDING", paymentStatus = pago,
@@ -457,10 +462,9 @@ class CobroDeCuentaSinRedTest {
         assertEquals(Gris("Ana la está cobrando en Caja 2. Espera a que termine."), m.sinRed.value)
         puedeDeclarar = true
         m.consultarSinRed("o1")
-        assertEquals(NoConfirmo("Ana empezó a cobrarla en Caja 2 y no confirmó. Pregúntale antes de cobrar.", 6000), m.sinRed.value)
-        // «No se cobró: cobrar aquí»: lo declara una persona y la cuenta se aparta aquí.
-        assertEquals(Cobrar(6000), m.noSeCobroYCobrarAqui("o1"))
-        coVerify(exactly = 1) { dueno.noSeCobro("v1", "o1", any()) }
+        // 🔴 F1 (tarea 6, K16): sin red, a los 2 min sin confirmar, el cajero ya no declara «No se cobró: cobrar aquí»: la cuenta espera.
+        assertEquals(Gris("Ana la está cobrando en Caja 2. Espera a que termine."), m.sinRed.value)
+        coVerify(exactly = 0) { dueno.noSeCobro(any(), any(), any()) }
         registro = CuentaEnElRegistro(EstadoDeCuenta.CERRADA, "caja-2", "Caja 2", "Ana", "i", Instante("b", 0), faltaSubirla = true)
         m.consultarSinRed("o1")
         assertEquals(Gris("Cobrada en Caja 2 · falta subirla"), m.sinRed.value)
@@ -588,14 +592,24 @@ class CobroDeCuentaSinRedTest {
         assertEquals(TextosDeTarjetas.SIN_RED, m.revalidarCobroSinRed("A", 10000))
     }
 
-    @Test fun `I2 - con internet la dueña ve el no confirmó a los 2 min y lo declara`() = runTest {
+    @Test fun `I2 F1 - con internet la dueña ve el no confirmó a los 2 min y sólo el PIN del gerente lo declara`() = runTest {
         val m = vm()
         registro = CuentaEnElRegistro(EstadoDeCuenta.COMPROMETIDA, "caja-2", "Caja 2", "Ana", "i", Instante("b", 0))
         assertNull(m.noConfirmoEnLinea("o1"))
         puedeDeclarar = true
-        assertEquals("Ana empezó a cobrarla en Caja 2 y no confirmó. Pregúntale antes de cobrar.", m.noConfirmoEnLinea("o1"))
-        assertTrue(m.declararNoSeCobro("o1"))
+        val texto = m.noConfirmoEnLinea("o1")
+        assertEquals("Ana empezó a cobrarla en Caja 2 y no confirmó. Avisa al gerente.", texto)
+
+        // Sin el PIN del gerente (cerró el teclado, no tiene el permiso o no hay red) no se declara nada.
+        assertFalse(m.declararNoSeCobroConGerente("o1", texto!!))
+        coVerify(exactly = 0) { dueno.noSeCobro(any(), any(), any()) }
+
+        gerenteAutoriza = true
+        assertTrue(m.declararNoSeCobroConGerente("o1", texto))
+        // Las dos veces se pidió el PIN del gerente, con el permiso de la declaración y el renglón de la cuenta.
+        coVerify(exactly = 2) { gerente.preauthorize(com.avoqado.pos.payment.domain.CancelacionDeCobro.PERMISO_DECLARAR_NO_COBRADO, any(), texto) }
         coVerify(exactly = 1) { dueno.noSeCobro("v1", "o1", any()) }
+        io.mockk.verify { gerente.descartarPreautorizado(com.avoqado.pos.payment.domain.CancelacionDeCobro.PERMISO_DECLARAR_NO_COBRADO) }
         assertNull(m.noConfirmoEnLinea("o1"))
     }
 }

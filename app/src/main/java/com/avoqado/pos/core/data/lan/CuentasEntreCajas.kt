@@ -223,9 +223,13 @@ class CuentasEntreCajas internal constructor(
         if (propia != null) {
             apartados.remove(orderId)
             if (propia == Respuesta.Concedida) return Puerta.Pasa(intento, esDueno = true, autorizadoEn = null)
-            // I2: con o sin red, a los 2 min de que otra caja la comprometió sin confirmar, su «no confirmó» (la salida vive en la cuenta).
+            // I2: a los 2 min de que otra caja la comprometió sin confirmar, su «no confirmó». 🔴 F1 (tarea 6): la salida vive en la cuenta
+            // y es del gerente con su PIN, que necesita internet; sin red, K16: la cuenta espera a esa caja.
             val e = if (propia is Respuesta.Ocupada) dueno.estadoDe(venueId, orderId) else null
-            if (e != null && dueno.puedeDeclararNoSeCobro(e)) return Puerta.NoPasa(com.avoqado.pos.payment.domain.TextosDeCuentaSinRed.noConfirmo(e.quien, e.caja))
+            if (e != null && dueno.puedeDeclararNoSeCobro(e)) return Puerta.NoPasa(
+                if (enLinea) com.avoqado.pos.payment.domain.TextosDeCuentaSinRed.noConfirmo(e.quien, e.caja)
+                else com.avoqado.pos.payment.domain.TextosDeCuentaSinRed.laEstaCobrandoEn(e.quien, e.caja),
+            )
             return Puerta.NoPasa(textoDe(propia, dueno.nombreCaja))
         }
         if (esTarjeta) return Puerta.Libre

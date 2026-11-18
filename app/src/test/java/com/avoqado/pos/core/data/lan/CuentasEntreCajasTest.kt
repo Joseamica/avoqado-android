@@ -308,6 +308,9 @@ class CuentasEntreCajasTest {
         a.ms += RegistroDeCuentas.NO_CONFIRMO_MS
         assertEquals(CuentasEntreCajas.Puerta.NoPasa(TextosDeCuentaSinRed.noConfirmo("Beto", "Caja 3")),
             a.entre.puerta(v, "o1", "llave-a", "Yo", enLinea = true, esTarjeta = false, esCuentaDePedidos = true))
+        // 🔴 F1 (tarea 6, K16): sin red no hay PIN del gerente; la cuenta espera a esa caja.
+        assertEquals(CuentasEntreCajas.Puerta.NoPasa(TextosDeCuentaSinRed.laEstaCobrandoEn("Beto", "Caja 3")),
+            a.entre.puerta(v, "o1", "llave-a2", "Yo", enLinea = false, esTarjeta = false, esCuentaDePedidos = true))
     }
 
     @Test fun `I2 - si se pierde la respuesta de comprometer sin conocer a la dueña, la suelta igual se guarda`() = runTest {

@@ -64,9 +64,11 @@ object TextosDeCuentaSinRed {
     fun sePerdioElContacto(caja: String) =
         "Se perdió el contacto con $caja: esta cuenta no se cobró aquí. No recibas el efectivo. Cóbrala en $caja o cuando vuelva la conexión."
 
-    /** En la caja que la abrió, 2 min después de que otra la comprometió sin avisar «cobrada». */
-    fun noConfirmo(quien: String, caja: String) = "${quien.ifBlank { "Alguien" }} empezó a cobrarla en $caja y no confirmó. Pregúntale antes de cobrar."
-    const val NO_SE_COBRO_COBRAR_AQUI = "No se cobró: cobrar aquí"
+    /**
+     * En la caja que la abrió, CON internet, 2 min después de que otra la comprometió sin avisar «cobrada». 🔴 F1 (tarea 6): el cajero no
+     * decide; «Revisar» pide el PIN del gerente. Sin red no hay PIN: la cuenta espera a esa caja o al internet ([laEstaCobrandoEn], K16).
+     */
+    fun noConfirmo(quien: String, caja: String) = "${quien.ifBlank { "Alguien" }} empezó a cobrarla en $caja y no confirmó. Avisa al gerente."
 
     /** «Avisándole a las otras cajas…» cuando todavía no se sabe cuál la abrió. */
     const val LAS_OTRAS_CAJAS = "las otras cajas"
@@ -127,8 +129,6 @@ data class DatosDelCobroSinRed(
     val hayOtraCajaDelNegocio: Boolean,
     /** Opción D: si esta caja la abrió, lo que dice su registro (null = LIBRE). */
     val registro: CuentaEnElRegistro? = null,
-    /** Opción D: el registro ya deja declarar «No se cobró» (otra caja la comprometió hace 2 min o más). */
-    val puedeDeclararNoSeCobro: Boolean = false,
     /** Opción D: el `deviceId` de esta caja (lo suyo en su registro no la bloquea antes del toque). */
     val miDeviceId: String = "",
     /** Opción D: el nombre de la caja que la abrió, si alguna vez contestó; null = no se sabe. */
@@ -139,9 +139,6 @@ sealed interface DecisionSinRed {
     /** [pedirPermiso]: al tocar se aparta con la caja que la abrió (en local si es ésta). */
     data class Cobrar(val saldoCents: Int, val pedirPermiso: Boolean = true) : DecisionSinRed
     data class Gris(val texto: String) : DecisionSinRed
-
-    /** Opción D, en la caja que la abrió: otra la comprometió y no confirmó en 2 min. Una persona decide con «No se cobró: cobrar aquí». */
-    data class NoConfirmo(val texto: String, val saldoCents: Int) : DecisionSinRed
 }
 
 /**
@@ -163,7 +160,7 @@ fun decidirCobroSinRed(d: DatosDelCobroSinRed, permiso: CuentasEntreCajas.DelDue
         return when {
             r?.estado == EstadoDeCuenta.CERRADA ->
                 DecisionSinRed.Gris(CuentasEntreCajas.textoDe(Respuesta.Cerrada(r.caja, r.faltaSubirla, r.conAbono), r.caja))
-            r != null && r.por != d.miDeviceId && d.puedeDeclararNoSeCobro -> DecisionSinRed.NoConfirmo(TextosDeCuentaSinRed.noConfirmo(r.quien, r.caja), saldo)
+            // 🔴 F1 (tarea 6, K16): también a los 2 min sin confirmar. Sin red nadie del piso declara «no se cobró»: la cuenta espera.
             r != null && r.por != d.miDeviceId -> DecisionSinRed.Gris(TextosDeCuentaSinRed.laEstaCobrandoEn(r.quien, r.caja))
             permiso != null -> deLaRespuesta(permiso, saldo)
             else -> DecisionSinRed.Cobrar(saldo)

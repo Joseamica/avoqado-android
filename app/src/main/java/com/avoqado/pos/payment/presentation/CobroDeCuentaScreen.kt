@@ -28,6 +28,7 @@ import com.avoqado.pos.tables.data.restanteCents
 import com.avoqado.pos.orders.data.CuentaGuardada
 import com.avoqado.pos.payment.domain.DatosDelCobroSinRed
 import com.avoqado.pos.payment.domain.DecisionSinRed
+import com.avoqado.pos.payment.domain.CancelacionDeCobro
 import com.avoqado.pos.payment.domain.TextosDeCuentaSinRed
 import com.avoqado.pos.payment.domain.decidirCobroSinRed
 import kotlinx.coroutines.CancellationException
@@ -67,6 +68,8 @@ class CobroDeCuentaViewModel @Inject constructor(
     private val payLaterQueue: com.avoqado.pos.payment.data.PayLaterQueue? = null,
     /** D12 (final fix ronda 2, R2-1): la lista durable de cobros con tarjeta de esta caja (una tarjeta en duda o cobrada da gris). */
     private val terminalPaymentService: com.avoqado.pos.payment.data.TerminalPaymentService? = null,
+    /** F1 (tarea 6): el PIN del gerente antes de declarar «no se cobró» en la caja que abrió la cuenta. */
+    private val managerOverride: com.avoqado.pos.core.data.network.ManagerOverrideCoordinator? = null,
 ) : ViewModel() {
     private val foto = MutableStateFlow<OrderDetail?>(null)
     val detalle = foto.asStateFlow()
@@ -192,7 +195,6 @@ class CobroDeCuentaViewModel @Inject constructor(
             premiumAcreditado = leer(false) { planManager?.tieneAcreditada("OFFLINE_LAN_HUB") },
             hayOtraCajaDelNegocio = leer(false) { cuentasEntreCajas?.hayOtraCajaConD() },
             registro = registro,
-            puedeDeclararNoSeCobro = duenoDeCuentas?.puedeDeclararNoSeCobro(registro) == true,
             miDeviceId = duenoDeCuentas?.deviceId.orEmpty(),
             cajaQueLaAbrio = if (!abiertaAqui && venue != null) runCatching { cuentasEntreCajas?.cajaQueLaAbrio(venue, orderId) }.getOrNull() else null,
         )
@@ -253,15 +255,6 @@ class CobroDeCuentaViewModel @Inject constructor(
         return decidirCobroSinRed(datos, permiso).also { decisionSinRed.value = it }
     }
 
-    /**
-     * «No se cobró: cobrar aquí» en la caja que la abrió (2 min después de que otra la comprometió sin confirmar). Lo declara una persona:
-     * el intento de la otra caja queda cancelado y la cuenta se aparta aquí. false = todavía no se puede o el disco falló.
-     */
-    suspend fun noSeCobroYCobrarAqui(orderId: String): DecisionSinRed {
-        declararNoSeCobro(orderId)
-        return pedirCobroSinRed(orderId)
-    }
-
     /** Suelta el apartado que sostiene esta pantalla (si sostiene uno). Nunca espera a la red. */
     fun soltarCobroSinRed() {
         val orden = apartadoDe ?: return
@@ -284,7 +277,6 @@ class CobroDeCuentaViewModel @Inject constructor(
         val texto = when {
             sinContactoCon != null -> TextosDeCuentaSinRed.sePerdioElContacto(sinContactoCon)
             decision is DecisionSinRed.Gris -> decision.texto
-            decision is DecisionSinRed.NoConfirmo -> decision.texto
             decision is DecisionSinRed.Cobrar && decision.saldoCents != saldoCents -> TextosDeCuentaSinRed.saldoCambio(decision.saldoCents)
             else -> null
         } ?: return null
@@ -307,7 +299,7 @@ class CobroDeCuentaViewModel @Inject constructor(
 
     /**
      * I2: con internet, en la caja que la abrió: el «<quién> empezó a cobrarla en <caja> y no confirmó…» de otra caja, a los 2 min. null =
-     * nada que decir. Su botón es «No se cobró: cobrar aquí» ([declararNoSeCobro]).
+     * nada que decir. 🔴 F1 (tarea 6): su botón es «Revisar», que pide el PIN del gerente ([declararNoSeCobroConGerente]).
      */
     suspend fun noConfirmoEnLinea(orderId: String): String? {
         val venue = storage.venueId ?: return null
@@ -316,9 +308,18 @@ class CobroDeCuentaViewModel @Inject constructor(
         return if (d.puedeDeclararNoSeCobro(r)) TextosDeCuentaSinRed.noConfirmo(r.quien, r.caja) else null
     }
 
-    /** «No se cobró» (lo declara una persona en la caja que la abrió). false = todavía no se puede, no es suya o el disco falló. */
-    suspend fun declararNoSeCobro(orderId: String): Boolean {
+    /**
+     * 🔴 F1 (tarea 6): «no se cobró» en la caja que la abrió, firmado por un GERENTE: primero su PIN (lo valida el SERVIDOR, con
+     * `payments:reconcile-uncharged`), y sólo entonces se declara en el registro de esta caja. El cajero no decide. Sin red no hay PIN:
+     * false. false también = el gerente no autorizó, todavía no se puede, no es suya o el disco falló.
+     */
+    suspend fun declararNoSeCobroConGerente(orderId: String, contexto: String): Boolean {
         val venue = storage.venueId ?: return false
+        val pin = managerOverride ?: return false
+        val permiso = CancelacionDeCobro.PERMISO_DECLARAR_NO_COBRADO
+        if (!pin.preauthorize(permiso, contexto = contexto)) return false
+        // El token de la autorización no viaja (el registro es local): se tira para que no lo use otra acción.
+        pin.descartarPreautorizado(permiso)
         val quien = storage.selectedStaffNameForCurrentVenue ?: storage.userFirstName.orEmpty()
         return duenoDeCuentas?.noSeCobro(venue, orderId, quien) == true
     }
@@ -535,17 +536,12 @@ private fun CobrarCuentaSinRed(orderId: String, copia: CuentaGuardada, viewModel
             text = if (revisando) textoRevisando else TextosDeCuentaSinRed.cobrarEnEfectivo(d.saldoCents),
             enabled = !revisando,
             onClick = { pedir { viewModel.pedirCobroSinRed(orderId) } })
-        is DecisionSinRed.NoConfirmo -> {
-            Text(d.texto)
-            PrimaryButton(text = if (revisando) textoRevisando else TextosDeCuentaSinRed.NO_SE_COBRO_COBRAR_AQUI, enabled = !revisando,
-                onClick = { pedir { viewModel.noSeCobroYCobrarAqui(orderId) } })
-        }
         is DecisionSinRed.Gris -> Text(d.texto)
         null -> PrimaryButton(text = TextosDeTarjetas.CONSULTANDO, enabled = false, onClick = {})
     }
 }
 
-/** I2: con internet, el «no confirmó» de otra caja y su salida, en la caja que abrió la cuenta. Se vuelve a mirar cada 10 s. */
+/** I2: con internet, el «no confirmó» de otra caja y su salida (F1: la revisa el gerente con su PIN). Se vuelve a mirar cada 10 s. */
 @Composable
 private fun NoConfirmoEnLinea(orderId: String, viewModel: CobroDeCuentaViewModel, onDeclarado: () -> Unit) {
     var texto by remember(orderId) { mutableStateOf<String?>(null) }
@@ -559,11 +555,11 @@ private fun NoConfirmoEnLinea(orderId: String, viewModel: CobroDeCuentaViewModel
     }
     texto?.let { t ->
         Text(t)
-        PrimaryButton(text = TextosDeCuentaSinRed.NO_SE_COBRO_COBRAR_AQUI, enabled = !declarando, onClick = {
+        PrimaryButton(text = CancelacionDeCobro.BOTON_REVISAR, enabled = !declarando, onClick = {
             declarando = true
             scope.launch {
                 try {
-                    if (viewModel.declararNoSeCobro(orderId)) { texto = null; onDeclarado() }
+                    if (viewModel.declararNoSeCobroConGerente(orderId, contexto = t)) { texto = null; onDeclarado() }
                 } finally { declarando = false }
             }
         })
