@@ -132,6 +132,8 @@ private data class PayInRequest(
     val createdAt: String? = null,
     /** Encargo 921513 (Codex r2): cuánto esperó en la cola, con el reloj del aparato. El SERVIDOR calcula «llegada − espera». */
     val edadMs: Long? = null,
+    /** hz:nube0000:na7ab987: quién lo hizo en el aparato ([autorParaElServidor]). Nulo no viaja; un SERVIDOR viejo lo ignora. */
+    val staffId: String? = null,
 )
 
 @Serializable
@@ -144,7 +146,15 @@ private data class PayOutRequest(
     val createdAt: String? = null,
     /** Encargo 921513 (Codex r2): cuánto esperó en la cola, con el reloj del aparato. El SERVIDOR calcula «llegada − espera». */
     val edadMs: Long? = null,
+    /** hz:nube0000:na7ab987: quién lo hizo en el aparato ([autorParaElServidor]). Nulo no viaja; un SERVIDOR viejo lo ignora. */
+    val staffId: String? = null,
 )
+
+/**
+ * hz:nube0000:na7ab987: el autor de un ingreso o retiro tal como lo espera el SERVIDOR (`staffId`, opcional, texto ≤ 64). Vacío o
+ * demasiado largo no viaja (sería inválido): queda «como hoy», a nombre de quien sube. El SERVIDOR decide si acepta al autor.
+ */
+internal fun autorParaElServidor(autor: String?): String? = autor?.takeIf { it.isNotBlank() && it.length <= 64 }
 
 /** La hora de un ingreso o retiro de la cola para el SERVIDOR: cuándo se hizo (ISO-8601) y cuánto lleva esperando. */
 data class HoraDelMovimiento(val createdAt: String?, val edadMs: Long?)
@@ -572,6 +582,13 @@ internal data class PendingDrawerOp(
      */
     val arranque: String? = null,
     val atMonotonico: Long? = null,
+    /**
+     * hz:nube0000:na7ab987: el `staffId` de quien hizo el ingreso o retiro, leído al tocar y guardado en la MISMA escritura de la
+     * operación, antes de la red. Viaja como `staffId` en todos sus envíos: si la pasada que lo sube es de otra persona (cierre
+     * automático de la sesión), el SERVIDOR lo registra a nombre de quien lo hizo (si lo puede comprobar). Nulo en una cola de una
+     * versión anterior (se lee igual y sube como hoy).
+     */
+    val autor: String? = null,
 )
 
 /**
@@ -1839,7 +1856,7 @@ class CashDrawerRepository @Inject constructor(
         // cola, así que la apertura de la caja NUEVA salía antes que el cierre no aterrizado de la
         // ANTERIOR: el servidor ligaba las dos y el arqueo de la vieja quedaba firmado con el
         // dinero de la nueva. Se reproduce la cola, que es FIFO y se DETIENE en lo que no confirme.
-        // Esta apertura es la última por `at`, así que sale al final — o no sale, que es lo correcto.
+        // Esta apertura es la última de la cola, así que sale al final — o no sale, que es lo correcto.
         //
         // 🔴 Y `ademas` va SÓLO si el disco falló (P3-4). Si la apertura quedó guardada, la cola ya
         // la tiene y volver a inyectarla podía mandarla DOS veces: el replay del sincronizador pudo
@@ -2019,6 +2036,9 @@ class CashDrawerRepository @Inject constructor(
     // MARK: - Events
 
     suspend fun addPayIn(amountCents: Int, note: String?): CashDrawerEventEntity? {
+        // Quién lo hizo, leído ANTES de cualquier espera (Codex r1 #7, como el retiro): viaja con la operación (na7ab987).
+        val quien = staffId
+        val nombre = staffName
         val session = getOpenSession() ?: return null
         val event = CashDrawerEventEntity(
             id = UUID.randomUUID().toString(),
@@ -2027,8 +2047,8 @@ class CashDrawerRepository @Inject constructor(
             type = CashDrawerEventType.PAY_IN.name,
             amountCents = amountCents,
             note = note,
-            staffId = staffId,
-            staffName = staffName,
+            staffId = quien,
+            staffName = nombre,
             createdAt = System.currentTimeMillis(),
         )
         dao.insertEvent(event)
@@ -2038,21 +2058,21 @@ class CashDrawerRepository @Inject constructor(
         val instante = instanteMonotonicoAhora()
         val op = PendingDrawerOp(
             "PAY_IN", session.id, amountCents, note, event.id, System.currentTimeMillis(),
-            arranque = instante.arranque, atMonotonico = instante.ms,
+            arranque = instante.arranque, atMonotonico = instante.ms, autor = quien,
         )
         encolar(op)
-        val confirmado = fireApiPayIn(amountCents, note, event.id, session.id)
+        val confirmado = fireApiPayIn(amountCents, note, event.id, session.id, quien)
         if (confirmado != null) quitar(op)
         return confirmado ?: event
     }
 
-    private suspend fun fireApiPayIn(amountCents: Int, note: String?, localEventId: String, sessionId: String): CashDrawerEventEntity? {
+    private suspend fun fireApiPayIn(amountCents: Int, note: String?, localEventId: String, sessionId: String, autor: String?): CashDrawerEventEntity? {
         try {
             val dollars = amountCents / 100.0
             val requestBody = json.encodeToString(
                 PayInRequest.serializer(),
                 // La llave es el id con el que la fila YA quedó en Room, no uno nuevo.
-                PayInRequest(amount = dollars, note = note, localId = localEventId, sessionId = sessionId),
+                PayInRequest(amount = dollars, note = note, localId = localEventId, sessionId = sessionId, staffId = autorParaElServidor(autor)),
             ).toRequestBody("application/json".toMediaType())
 
             val request = Request.Builder()
@@ -2145,7 +2165,7 @@ class CashDrawerRepository @Inject constructor(
             val instante = instanteMonotonicoAhora()
             val op = PendingDrawerOp(
                 "PAY_OUT", session.id, amountCents, note, event.id, System.currentTimeMillis(), autorizacion = autorizacion,
-                arranque = instante.arranque, atMonotonico = instante.ms,
+                arranque = instante.arranque, atMonotonico = instante.ms, autor = quien,
             )
             if (!runCatching { encolar(op, sucursal) }.getOrDefault(false)) {
                 Log.e(TAG, "❌ El retiro no quedó en la cola del aparato: se deshace y no se manda")
@@ -2240,12 +2260,18 @@ class CashDrawerRepository @Inject constructor(
         val (path, body) = if (op.kind == "PAY_IN") {
             "pay-in" to json.encodeToString(
                 PayInRequest.serializer(),
-                PayInRequest(amount = dollars, note = op.note, localId = localId, sessionId = op.sessionId, createdAt = hora?.createdAt, edadMs = hora?.edadMs),
+                PayInRequest(
+                    amount = dollars, note = op.note, localId = localId, sessionId = op.sessionId, createdAt = hora?.createdAt, edadMs = hora?.edadMs,
+                    staffId = autorParaElServidor(op.autor),
+                ),
             )
         } else {
             "pay-out" to json.encodeToString(
                 PayOutRequest.serializer(),
-                PayOutRequest(amount = dollars, note = op.note, localId = localId, sessionId = op.sessionId, createdAt = hora?.createdAt, edadMs = hora?.edadMs),
+                PayOutRequest(
+                    amount = dollars, note = op.note, localId = localId, sessionId = op.sessionId, createdAt = hora?.createdAt, edadMs = hora?.edadMs,
+                    staffId = autorParaElServidor(op.autor),
+                ),
             )
         }
         return Request.Builder().url("${baseUrlDe(sucursal)}/$path").post(body.toRequestBody("application/json".toMediaType())).apply {
@@ -2689,7 +2715,8 @@ class CashDrawerRepository @Inject constructor(
     data class ResultadoDelReplay(val adoptadas: Map<String, CashDrawerSessionEntity> = emptyMap())
 
     /**
-     * 🔴 SE REPRODUCE EN ORDEN CRONOLÓGICO ESTRICTO — FIFO por `at`, sin importar el tipo.
+     * 🔴 SE REPRODUCE EN EL ORDEN EN QUE SE GUARDÓ, sin importar el tipo (hasta el 17-nov era «por `at`», la hora del aparato,
+     * que alguien puede mover: hz:nube0000:na293737).
      *
      * Antes se ordenaba por TIPO y globalmente (`OPEN → PAY_* → CLOSE` sobre TODA la cola), y eso
      * era el hallazgo C1: con la caja A cerrada sin red y la caja B abierta después, el `OPEN(B)`
@@ -2697,7 +2724,7 @@ class CashDrawerRepository @Inject constructor(
      * negocio— ligaba B a la caja A que seguía abierta, el cliente lo leía como «mi apertura se
      * confirmó», borraba `OPEN(B)` de la cola y mandaba los movimientos de B contra A: el arqueo de
      * A quedaba firmado con dinero ajeno y la caja B no existía ni iba a existir. Dentro de UNA
-     * caja el orden no cambia: su apertura se encola al crearla, así que ya es la primera por `at`.
+     * caja el orden no cambia: su apertura se encola al crearla, así que ya es la primera de la lista.
      *
      * 🔴 Y LA BARRERA ES LA OTRA MITAD: la corrida se DETIENE en la primera entrada que quede en
      * REINTENTAR —sea apertura, movimiento o cierre—. Nada posterior en el tiempo se manda, así que
@@ -3005,12 +3032,15 @@ class CashDrawerRepository @Inject constructor(
         completarLlavesLegadas()
         // 🔴 `ademas` es la operación que se ACABA de encolar. Se mezcla por si el almacén no la
         // devolvió (cola ilegible, disco lleno): la intención del cajero no puede depender de que
-        // una lectura de disco funcione. Entra por `at`, así que sigue siendo la última y las
+        // una lectura de disco funcione. Entra al final, así que sigue siendo la última y las
         // barreras la frenan igual — no es un atajo alrededor del orden, es un respaldo del disco.
         val guardadas = pendientes()
         val todas = if (ademas != null && guardadas.none { mismaOperacion(it, ademas) }) guardadas + ademas else guardadas
         // Las ya rechazadas NO se reintentan: se quedan guardadas sólo para poder avisar.
-        val lista = todas.filter { it.rechazadaEn == null }.sortedBy { it.at }
+        // 🔴 EN EL ORDEN EN QUE SE GUARDARON, nunca por `at` (hz:nube0000:na293737): `encolar` sólo agrega al final, así que la
+        // lista ya es el orden de los hechos. `at` es la hora del aparato y alguien la mueve: con el reloj corregido a media cola,
+        // el cierre (20:05) subía antes que el retiro guardado como 21:03 y el servidor firmaba un faltante falso.
+        val lista = todas.filter { it.rechazadaEn == null }
         if (lista.isEmpty()) { cierreRetenidoEnLaUltimaCorrida = null; paseSolicitado.clear(); return ResultadoDelReplay() }
         var confirmados = 0
         // 🔴 Un movimiento RECHAZADO en una corrida ANTERIOR bloquea el cierre de SU caja: el

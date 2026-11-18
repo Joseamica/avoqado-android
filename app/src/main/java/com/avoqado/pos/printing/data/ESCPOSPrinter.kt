@@ -843,12 +843,13 @@ class ESCPOSPrinter(
 
         if (ticket.showPrices) {
             printDivider()
-            setBold(true)
+            // `ESC !` reescribe el modo completo (su bit de negritas es 0): el tamaño va ANTES de `ESC E 1` (D27).
             setDoubleHeight(true)
+            setBold(true)
             // Caja externa: Avoqado no cobra; su total es una referencia (spec 2026-09-30 D8).
             printTwoColumns(if (ticket.externalRoute) "Importe de referencia" else "TOTAL", ticket.formattedTotal)
-            setDoubleHeight(false)
             setBold(false)
+            setDoubleHeight(false)
         }
 
         printDoubleDivider()

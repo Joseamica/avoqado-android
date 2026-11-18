@@ -83,6 +83,20 @@ class AreaTicketPrintTest {
         assertTrue(render(ticket()).contains("CREMERÍA"))
     }
 
+    @Test
+    fun `el TOTAL sale en negritas — ESC E 1 va DESPUES de ESC ! porque ESC ! reescribe el modo completo`() {
+        // `ESC ! 0x10` pone todos los modos de golpe y su bit 3 (negritas) es 0: si `ESC E 1` va antes,
+        // la Epson imprime TOTAL grande pero NO en negritas (D27).
+        val bytes = ESCPOSPrinter(paperWidth = PaperWidth.MM58).generateAreaTicket(ticket())
+        val total = String(bytes, Charsets.ISO_8859_1).indexOf("TOTAL")
+        assertTrue("falta TOTAL", total > 0)
+        val antes = String(bytes.copyOfRange(0, total), Charsets.ISO_8859_1)
+        val size = antes.lastIndexOf(String(ESCPOSPrinter.DOUBLE_HEIGHT_ON, Charsets.ISO_8859_1))
+        val bold = antes.lastIndexOf(String(ESCPOSPrinter.BOLD_ON, Charsets.ISO_8859_1))
+        assertTrue("falta el tamaño doble antes de TOTAL", size >= 0)
+        assertTrue("las negritas deben ir DESPUES del tamaño", bold > size)
+    }
+
     // MARK: - Configurable por venue (§5.3)
 
     @Test

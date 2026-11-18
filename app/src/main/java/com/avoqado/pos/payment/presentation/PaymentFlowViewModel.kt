@@ -361,6 +361,17 @@ class PaymentFlowViewModel @Inject constructor(
             connectivityMonitor?.let { it.isConnected.value && it.isServerReachable.value } ?: true))
     }
 
+    /**
+     * Tarjeta de la nube na8a23ce (encargo 0199df): sin red, el subtítulo del cobro decía «Envía el cobro a una terminal para procesar el
+     * pago» ([SUBTITULO_SIN_RED]). La MISMA señal que apaga el gris de la fila de la terminal (D68 #12): sin ruta o sin servidor. Sin monitor (pruebas a mano), con red.
+     */
+    val sinRedEnElCobro: StateFlow<Boolean> by lazy {
+        combine(connectivityMonitor?.isConnected ?: flowOf(true), connectivityMonitor?.isServerReachable ?: flowOf(true)) { ruta, servidor ->
+            !(ruta && servidor)
+        }.stateIn(viewModelScope, SharingStarted.Eagerly,
+            connectivityMonitor?.let { !(it.isConnected.value && it.isServerReachable.value) } ?: false)
+    }
+
     private var cartState: CartState? = null
     // Copias del cobro, anteriores a cualquier suspensión; el piso/sucursal vivos pueden cambiar después.
     private var mesaDelCobro: com.avoqado.pos.tables.data.TableSession.Active? = null

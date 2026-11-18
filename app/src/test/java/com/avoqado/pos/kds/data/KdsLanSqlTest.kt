@@ -108,6 +108,31 @@ class KdsLanSqlTest {
         assertEquals(listOf("round:r1:st_cocina|oi_1" to null, "round:r1:st_cocina|oi_2" to 77L), soltadas)
     }
 
+    /** D28: la fila de una estación con impresora propia se suelta SIN papel; su hora de creación no cambia (el replay la usa). */
+    @Test
+    fun `P1 D28 soltar con trabajo cambia el trabajo y pone la hora, conserva la creacion, y solo en esa entrega`() {
+        entrega("sale:x:st_barra", creada = 5, renglones = "oi_1"); entrega("sale:x:st_barra", creada = 6, renglones = "oi_2")
+        assertEquals(1, actualizar(KdsLanSql.SOLTAR_CON_TRABAJO, "entregaId" to "sale:x:st_barra|oi_2", "trabajoJson" to "{\"planes\":[]}", "ahora" to 77L))
+        val filas = preparar("SELECT entregaId, trabajoJson, creadaEnMillis, soltadaEnMillis FROM entregas_kds_pendientes ORDER BY entregaId", emptyMap()).use { st ->
+            val rs = st.executeQuery()
+            generateSequence {
+                if (rs.next()) listOf(rs.getString("entregaId"), rs.getString("trabajoJson"), rs.getLong("creadaEnMillis"), (rs.getObject("soltadaEnMillis") as Number?)?.toLong()) else null
+            }.toList()
+        }
+        assertEquals(
+            listOf(listOf("sale:x:st_barra|oi_1", "{}", 5L, null), listOf("sale:x:st_barra|oi_2", "{\"planes\":[]}", 6L, 77L)),
+            filas,
+        )
+    }
+
+    /** D28 (Codex código r3): el replay relee UNA fila por su id antes de imprimir; una que ya no está no vuelve. */
+    @Test
+    fun `la relectura trae solo esa entrega y nada si ya no esta`() {
+        entrega("sale:a:st_barra", renglones = "oi_1"); entrega("sale:b:st_barra", renglones = "oi_1")
+        assertEquals(listOf("sale:b:st_barra"), folios(KdsLanSql.ENTREGA_POR_ID, "entregaId" to "sale:b:st_barra|oi_1"))
+        assertEquals(emptyList<String>(), folios(KdsLanSql.ENTREGA_POR_ID, "entregaId" to "sale:c:st_barra|oi_1"))
+    }
+
     @Test
     fun `las entregas de la sucursal salen en orden de creacion y sin las de otra sucursal`() {
         entrega("b", creada = 2); entrega("a", creada = 1); entrega("ajena", venue = "venue-2", creada = 0)

@@ -1111,9 +1111,20 @@ internal fun Transaction.toReceiptData(
     // JUNTOS sus renglones, su subtotal y su «Descuento»; sin cargo ni IVA aparte, porque la copia ya es lo cobrado sin propina. La
     // propina y el total siguen siendo los del comprobante. Sin copia, todo como hoy.
     val copia = lineasDelTicket?.takeIf { !esDevolucion }
-    val subtotal = copia?.subtotalCents ?: comprobante?.let { cents(it.subtotal) } ?: cents(kotlin.math.abs(amount))
+    // D41 «C» (17-nov): la cortesía que Mesas guardó en $0 vuelve al subtotal y al descuento, como en Mostrador y en el recibo digital.
+    // Sólo en un comprobante desglosado de un cobro sin copia; sus renglones se pintan con `totalEnElTicket` (la Agua a su bruto).
+    // Codex r5 #2: se suma en Long y, si el subtotal o el descuento ya no caben en el papel (centavos en Int, ~$21 millones), no se suma:
+    // queda como antes, cuadrado. Antes se desbordaba y salía un subtotal negativo.
+    val cortesia = run {
+        val c = cortesiaDelTicket?.takeIf { copia == null && !esDevolucion && comprobante?.desglosado == true && comprobante.parcial != true }
+            ?.let { kotlin.math.round(it * 100).toLong() }?.coerceAtLeast(0L) ?: 0L
+        val base = comprobante?.let { kotlin.math.round(it.subtotal * 100).toLong() } ?: 0L
+        val rebaja = comprobante?.discount?.let { kotlin.math.round(it * 100).toLong() }?.coerceAtLeast(0L) ?: 0L
+        if (c > 0L && base + c <= Int.MAX_VALUE && rebaja + c <= Int.MAX_VALUE) c.toInt() else 0
+    }
+    val subtotal = copia?.subtotalCents ?: comprobante?.let { cents(it.subtotal) + cortesia } ?: cents(kotlin.math.abs(amount))
     // Subtotal BRUTO + su descuento cuando el servidor desglosa (A7-R6): el mismo papel que el del cobro.
-    val descuento = (copia?.descuentoCents ?: comprobante?.discount?.let { cents(it) })?.takeIf { it > 0 } ?: 0
+    val descuento = ((copia?.descuentoCents ?: comprobante?.discount?.let { cents(it) })?.takeIf { it > 0 } ?: 0) + cortesia
     val cargo = if (esDevolucion || copia != null) 0 else comprobante?.let { cents(it.serviceCharge) }?.takeIf { it > 0 } ?: 0
     val impuestoAgregado = if (esDevolucion || copia != null) 0 else comprobante?.let { cents(it.addedTax) }?.takeIf { it > 0 } ?: 0
     val propina = comprobante?.let { cents(it.tip) } ?: cents(kotlin.math.abs(tipAmount))
@@ -1147,7 +1158,8 @@ internal fun Transaction.toReceiptData(
                 name = item.productName.ifEmpty { "Artículo" },
                 quantity = item.quantity,
                 unitPrice = cents(item.unitPrice),
-                totalPrice = cents(item.amount),
+                // D41 «C»: con la cortesía sumada, lo que el SERVIDOR dice que pinta el renglón (la de Mesas a su bruto); si no, su total.
+                totalPrice = cents(if (cortesia > 0) item.totalEnElTicket ?: item.amount else item.amount),
                 modifiers = item.modifiers.mapNotNull { it.name }.filter { it.isNotEmpty() }.ifEmpty { null },
             )
         }

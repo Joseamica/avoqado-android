@@ -302,4 +302,42 @@ class PrintConfigRepositoryTest {
         coVerify(exactly = 0) { payloadCache.load(any(), any()) }
         assertEquals(listOf("st_cocina"), repository.getCurrentConfig().stations.map { it.id })
     }
+
+    /**
+     * na27865a (tarjeta de la nube, 17-nov): A → B → A rápido. La lectura en disco de la copia de B tarda (Room en IO) y
+     * termina DESPUÉS de que la tablet ya volvió a A: `hydrateFromCache(B)` la publicaba sin mirar que B ya no es la pedida.
+     * Las comandas de A se rutearían con las estaciones e impresoras de B (o se darían por «sin impresora» y saldrían de la
+     * libreta). La copia tardía de una sucursal que ya no es la pedida no se publica.
+     */
+    @Test
+    fun `P1 la copia en disco de la sucursal anterior que llega tarde no pisa la de la vigente`() = runTest {
+        val json = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
+        val deA = configConEstacion()
+        val deB = PrintConfig(
+            printers = listOf(PrinterInfo(id = "pr_b", name = "Barra B", connectionType = "wifi", address = "192.168.1.60:9100")),
+            stations = listOf(StationInfo(id = "st_b", name = "Barra B", printerId = "pr_b")),
+            defaultStationId = "st_b",
+            version = "vb",
+        )
+        coEvery { apiService.getPrintConfig(any()) } throws java.io.IOException("sin internet")
+        val discoDeB = CompletableDeferred<Unit>()
+        coEvery { payloadCache.load(PayloadCache.TYPE_PRINT_CONFIG, "venue-b") } coAnswers {
+            discoDeB.await() // la lectura de B tarda
+            PayloadCache.Cached(json.encodeToString(PrintConfig.serializer(), deB), 100)
+        }
+        coEvery { payloadCache.load(PayloadCache.TYPE_PRINT_CONFIG, "venue-a") } returns
+            PayloadCache.Cached(json.encodeToString(PrintConfig.serializer(), deA), 100)
+
+        val haciaB = launch { repository.refreshConTope("venue-b", topeMs = 0) }
+        runCurrent()
+        repository.refreshConTope("venue-a", topeMs = 0) // regresa a A antes de que B termine de leer
+        discoDeB.complete(Unit)
+        haciaB.join()
+
+        assertEquals(listOf("st_cocina"), repository.getCurrentConfig().stations.map { it.id })
+        // Codex r1 #3: tampoco después. La descarga de B (en otro hilo) se volvía a poner como «la última pedida» y, al fallar
+        // sin red, hidrataba B encima de A. Se le da tiempo real a esa descarga de fondo antes de volver a mirar.
+        withContext(Dispatchers.Default) { delay(500) }
+        assertEquals(listOf("st_cocina"), repository.getCurrentConfig().stations.map { it.id })
+    }
 }

@@ -7,6 +7,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -49,6 +50,8 @@ class ComandasPendientesStore @Inject constructor(
      * el almacén con un solo argumento; sin ella «Ya la canté» sólo suelta la libreta, como antes.
      */
     private val entregaPorWifi: EntregaPorWifi? = null,
+    /** nab17320 (Codex r4): el borrado de «Ya la canté» se turna con el replay de entregas. Hilt da el único del proceso. */
+    private val candadoDeCierres: CandadoDeCierres = CandadoDeCierres(),
 ) {
     /** Donde corre el cierre de [yaLaCante]: el toque es de la pantalla, el borrado es de la base. */
     private val fondo = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -421,20 +424,63 @@ class ComandasPendientesStore @Inject constructor(
      * @return el cierre en curso (las pruebas lo esperan), o `null` si no había nada que cerrar.
      */
     fun yaLaCante(aviso: EstadoDeComanda.NoSalio? = null): Job? {
-        val trabajo = synchronized(cerrojo) {
+        val cierre = synchronized(cerrojo) {
             val vista = (if (aviso != null) entradas.lastOrNull { visible(it) && it.es(aviso) } else entradas.lastOrNull(::visible))
                 ?: return null
+            // nab17320 (nube, 17-nov): lo que se va a cerrar se anota ANTES de soltar la libreta. El borrado de sus filas corre
+            // en otro hilo: en ese hueco el replay de entregas ya no la ve en la libreta, pero su fila sigue viva, y la
+            // imprimía (el papel de una comanda que la cocina ya cantó). [seEstaCerrando] lo cubre hasta que el borrado termina.
+            val cierre = vista.estado.trabajo?.let(::cierreDeLaCantada)?.also { cerrandose += it }
             entradas = entradas.filter { it !== vista }
             persistir()
             publicar()
-            vista.estado.trabajo
+            cierre
+        } ?: return null
+        val entregas = entregaPorWifi ?: run { cerrandose.remove(cierre); return null }
+        return fondo.launch {
+            var cerrado = false
+            try {
+                // Codex r2 #4 y r3: un tropiezo de la base no se queda así: se reintenta el borrado (nunca el papel) a 1 s, 5 s,
+                // 30 s y luego cada minuto mientras la app viva. Si la app se cierra antes, al abrir saldría UNA vez (duplicado).
+                var intento = 0
+                while (true) {
+                    cerrado = candadoDeCierres.turno.withLock {
+                        // `true` = tropezó. D28: las de estación con impresora propia no se borran (la pantalla aún las
+                        // espera): se quedan sin papel.
+                        val v = cierre.venueId!!
+                        val respaldo = cierre.config.stations.filter { it.respaldoLocal }.map { it.id }.toSet()
+                        val (deRespaldo, propias) = cierre.planes.partition { it.stationId in respaldo }
+                        !entregas.cerrarPorPapel(v, cierre.orderNumber, deRespaldo) && !entregas.quitarPapel(v, cierre.orderNumber, propias)
+                    }
+                    if (cerrado) break
+                    kotlinx.coroutines.delay(REINTENTOS_DEL_CIERRE_MS.getOrElse(intento++) { REINTENTOS_DEL_CIERRE_MS.last() * 2 })
+                }
+            } finally {
+                // Codex r1 #2: si la base nunca dejó borrar, la fila sobrevive; seguir anotada en memoria evita que el replay la
+                // imprima en este proceso (al reabrir la app saldría UNA vez: duplicado, nunca pérdida).
+                if (cerrado) cerrandose.remove(cierre)
+            }
         }
-        val entregas = entregaPorWifi ?: return null
-        val venueId = trabajo?.venueId ?: return null
-        val respaldo = trabajo.config.stations.filter { it.respaldoLocal }.map { it.id }.toSet()
-        val planes = trabajo.planes.filter { it.stationId in respaldo }
-        if (planes.isEmpty()) return null
-        return fondo.launch { entregas.cerrarPorPapel(venueId, trabajo.orderNumber, planes) }
+    }
+
+    /**
+     * Lo que «Ya la canté» cierra de un trabajo: sus planes de RESPALDO (sus filas se borran, como antes) y, D28, los de estación
+     * con impresora propia (sus filas se quedan sin papel). Todos cuentan para [seEstaCerrando] mientras el cierre corre.
+     */
+    private fun cierreDeLaCantada(trabajo: TrabajoPendiente): TrabajoPendiente? {
+        if (entregaPorWifi == null || trabajo.venueId == null) return null
+        return trabajo.takeIf { it.planes.isNotEmpty() }
+    }
+
+    /** nab17320: los cierres de «Ya la canté» que todavía están borrando sus filas de entregas. */
+    private val cerrandose = java.util.concurrent.CopyOnWriteArrayList<TrabajoPendiente>()
+
+    /**
+     * nab17320: ¿una persona ya cantó este papel y su cierre sigue en curso? Mismo criterio que `cerrarPorPapel` (venue +
+     * orden + todos sus planes dentro de lo cantado). El replay de entregas lo trata como «ya resuelto»: no lo imprime.
+     */
+    fun seEstaCerrando(trabajo: TrabajoPendiente): Boolean = trabajo.planes.isNotEmpty() && cerrandose.any { c ->
+        c.venueId == trabajo.venueId && c.orderNumber == trabajo.orderNumber && trabajo.planes.all { it in c.planes }
     }
 
     /** Vacía la libreta entera, en memoria y en disco (todas las sucursales). Lo normal es soltar UNA: [soltarSi]. */
@@ -447,6 +493,8 @@ class ComandasPendientesStore @Inject constructor(
     }
 
     private companion object {
+        /** Codex r2 #4: reintentos del borrado de las entregas de «Ya la canté» si la base tropieza. */
+        val REINTENTOS_DEL_CIERRE_MS = listOf(1_000L, 5_000L, 30_000L)
         const val TAG = "ComandasPendientes"
         /** 8 horas: cubre un turno de mostrador y nunca llega al día siguiente. */
         const val VIGENCIA_MS = 8L * 60 * 60 * 1000

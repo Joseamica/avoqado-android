@@ -289,6 +289,83 @@ class TpvSettingsRepositoryFiltroTest {
         assertEquals(listOf("a"), r.terminalNavigation.value.visibleCategoryIds)
     }
 
+    // MARK: - na5c51e4: el «PIN de gerente» también llega con el refresco suave (cada 5 min)
+
+    private fun conPin(pin: Boolean, panel: String? = null, cats: String = "[\"a\"]") =
+        """{ "success": true, "data": { "settings": { "showReviewScreen": false },
+          "managerPinOverrideEnabled": $pin, "exchangesEnabled": $pin,
+          ${panel?.let { "\"componentsStatus\": { \"promotionsPanel\": \"$it\" }," } ?: ""}
+          "deviceTerminal": { "id": "t-1", "visibleCategoryIds": $cats, "visibleMenuIds": null } } }"""
+
+    @Test
+    fun `P2 el refresco suave toma el PIN de gerente que el negocio prendio o apago`() = runBlocking {
+        val r = repo(escalonado(
+            ok(conPin(false)) to null,
+            ok(conPin(true)) to null,
+            ok(conPin(false)) to null,
+        ).client)
+        r.refreshSettingsForVenue(VENUE_ID)
+        assertEquals(false, r.managerPinOverrideEnabled.value)
+
+        r.refrescarFiltroDelAparato(VENUE_ID)
+        assertEquals("se prendió en el DASHBOARD", true, r.managerPinOverrideEnabled.value)
+        assertEquals("el Cambio sigue con el refresco completo (va con «Sólo saldo a favor»)", false, r.exchangesEnabled.value)
+
+        r.refrescarFiltroDelAparato(VENUE_ID)
+        assertEquals("se apagó en el DASHBOARD", false, r.managerPinOverrideEnabled.value)
+    }
+
+    @Test
+    fun `P2 el PIN llega aunque la respuesta no traiga la terminal`() = runBlocking {
+        val sinTerminal = """{ "success": true, "data": { "managerPinOverrideEnabled": true } }"""
+        val r = repo(escalonado(ok(conPin(false)) to null, ok(sinTerminal) to null).client)
+        r.refreshSettingsForVenue(VENUE_ID)
+        val nav = r.terminalNavigation.value
+
+        r.refrescarFiltroDelAparato(VENUE_ID)
+
+        assertEquals(true, r.managerPinOverrideEnabled.value)
+        assertEquals("sin terminal el filtro no se toca", nav, r.terminalNavigation.value)
+    }
+
+    @Test
+    fun `P1 un servidor que no manda el campo o con la fila del negocio fallida no apaga el PIN`() = runBlocking {
+        val sinCampo = suave("[\"b\"]", "null") // no trae managerPinOverrideEnabled: el DTO lo rellenaría con false
+        val r = repo(escalonado(
+            ok(conPin(true)) to null,
+            ok(sinCampo) to null,
+            ok(conPin(false, panel = "failed")) to null,
+            ok("""{ "success": false, "data": { "managerPinOverrideEnabled": false } }""") to null,
+        ).client)
+        r.refreshSettingsForVenue(VENUE_ID)
+        assertEquals(true, r.managerPinOverrideEnabled.value)
+
+        r.refrescarFiltroDelAparato(VENUE_ID)
+        assertEquals("campo ausente", true, r.managerPinOverrideEnabled.value)
+        assertEquals("el filtro sí se aplicó", listOf("b"), r.terminalNavigation.value.visibleCategoryIds)
+        r.refrescarFiltroDelAparato(VENUE_ID)
+        assertEquals("fila fallida", true, r.managerPinOverrideEnabled.value)
+        assertEquals(true, r.exchangesEnabled.value)
+        r.refrescarFiltroDelAparato(VENUE_ID)
+        assertEquals("success:false", true, r.managerPinOverrideEnabled.value)
+    }
+
+    @Test
+    fun `P2 un PIN que llega tras un cambio de negocio se descarta`() = runBlocking {
+        val soltar = CountDownLatch(1)
+        val http = escalonado(ok(conPin(false)) to null, ok(conPin(true)) to soltar)
+        val r = repo(http.client)
+        r.refreshSettingsForVenue(VENUE_ID)
+
+        val s = async(Dispatchers.Default) { r.refrescarFiltroDelAparato(VENUE_ID) }
+        assertTrue(http.enVuelo[1].await(10, TimeUnit.SECONDS))
+        sesion = "venue-b"
+        soltar.countDown()
+        s.await()
+
+        assertEquals(false, r.managerPinOverrideEnabled.value)
+    }
+
     private companion object {
         const val VENUE_ID = "venue-a"
     }

@@ -204,15 +204,19 @@ class CashDrawerAperturaDurableTest {
 
     /**
      * Dentro de UNA caja el orden es el de siempre — apertura → movimiento → cierre — porque ése
-     * es el orden CRONOLÓGICO en que ocurrieron: la apertura se encola al crear la caja.
+     * es el orden en que ocurrieron: la apertura se encola al crear la caja.
+     *
+     * hz:nube0000:na293737 (17-nov-2026): antes esta prueba guardaba la cola AL REVÉS (cierre, retiro, apertura) y esperaba que
+     * el replay la ordenara por `at`. La app no puede escribir eso: `encolar` sólo agrega al final. Lo que sí pasa es que la HORA
+     * diga otra cosa (el reloj del aparato se movió), y el orden tiene que seguir siendo el de los hechos.
      */
     @Test
     fun `al reproducir, la apertura va antes que el retiro y que el cierre`() = runTest {
         val st = almacenConCola(
             colaCon(
-                cierre("prov-1", 25_000, at = 3),
+                apertura("prov-1", 200_000, "loc-open", at = 3),
                 retiro("prov-1", 5_000, "loc-a", at = 2),
-                apertura("prov-1", 200_000, "loc-open", at = 1),
+                cierre("prov-1", 25_000, at = 1),
             ),
         )
         val llamadas = mutableListOf<LlamadaCapturada>()

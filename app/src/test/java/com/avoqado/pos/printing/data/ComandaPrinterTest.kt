@@ -379,6 +379,9 @@ class ComandaPrinterTest {
 
         assertEquals(listOf("Cocina"), result.failedStations)
         assertEquals(listOf("USB Station"), result.skippedStations)
+        // D28: el saltado también por PLAN (un nombre como «SIN ESTACIÓN» puede repetirse).
+        assertEquals(listOf("st_usb"), result.skippedPlans.map { it.stationId })
+        assertEquals(listOf("st_cocina"), result.failedPlans.map { it.stationId })
         assertEquals(0, result.printed)
     }
 

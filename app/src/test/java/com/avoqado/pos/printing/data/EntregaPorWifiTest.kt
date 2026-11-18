@@ -227,6 +227,78 @@ class EntregaPorWifiTest {
         coVerify(exactly = 1) { dao.soltar(any(), any()) }
     }
 
+    /**
+     * D28: la hoja ya salió por la libreta. Sólo pierde su papel la fila de esa orden y esa estación cuyos renglones salieron
+     * TODOS; las demás no se tocan. Y queda en memoria para el replay.
+     */
+    @Test
+    fun `P1 D28 quitarPapel deja sin papel solo las filas cuyos renglones salieron todos en su estacion`() = runTest {
+        fun plan(station: String, vararg ids: String) = TicketPlan(station, false, ids.map { ConsolidatedLine("Café", 1, emptyList(), null, listOf(it)) })
+        fun fila(id: String, orden: String, plan: TicketPlan) = EntregaKdsPendienteEntity(
+            entregaId = id, sourceKey = "sale:ext-1:${plan.stationId}", venueId = "venue-1", stationId = plan.stationId!!, mensajeJson = "{}",
+            trabajoJson = Json.encodeToString(TrabajoPendiente.serializer(), trabajo.copy(orderNumber = orden, planes = listOf(plan))),
+            creadaEnMillis = 1,
+        )
+        val salio = trabajo.copy(planes = listOf(plan("st_barra", "oi_2")))
+        val aMedias = trabajo.copy(planes = listOf(plan("st_barra", "oi_2", "oi_5")))
+        coEvery { dao.delVenue("venue-1") } returns listOf(
+            fila("salio", "1234", plan("st_barra", "oi_2")),
+            fila("a-medias", "1234", plan("st_barra", "oi_2", "oi_5")),
+            fila("otra-orden", "9999", plan("st_barra", "oi_2")),
+            fila("otra-estacion", "1234", plan("st_postres", "oi_2")),
+        )
+        val trabajoJson = slot<String>()
+        coEvery { dao.soltarConTrabajo("salio", capture(trabajoJson), any()) } returns 1
+
+        assertEquals(false, entrega.quitarPapel("venue-1", "1234", listOf(plan("st_barra", "oi_2"))))
+
+        coVerify(exactly = 1) { dao.soltarConTrabajo(any(), any(), any()) }
+        assertEquals(trabajo, Json.decodeFromString(TrabajoPendiente.serializer(), trabajoJson.captured))
+        assertTrue(entrega.papelYaSalio(salio))
+        assertEquals(false, entrega.papelYaSalio(aMedias))
+    }
+
+    /** D28 (Codex código r1 #1): si la base no deja escribir (o leer), lo que salió queda en memoria para el replay. */
+    @Test
+    fun `P1 D28 si la base tropieza al quitar el papel lo cubre la memoria y dice que tropezo`() = runTest {
+        val salio = trabajo.copy(planes = listOf(TicketPlan("st_barra", false, listOf(ConsolidatedLine("Café", 1, emptyList(), null, listOf("oi_2"))))))
+        coEvery { dao.delVenue("venue-1") } throws IllegalStateException("disco ocupado")
+
+        assertEquals(true, entrega.quitarPapel("venue-1", "1234", salio.planes))
+
+        assertTrue(entrega.papelYaSalio(salio))
+        assertEquals(false, entrega.papelYaSalio(salio.copy(orderNumber = "9999")))
+    }
+
+    /** D28 (Codex código r2 #7): la memoria guarda a lo más [EntregaPorWifi.TOPE_DE_PAPELES]; con el tope lleno sale la más vieja. */
+    @Test
+    fun `P1 D28 la memoria de lo que salio tiene tope y suelta lo mas viejo`() = runTest {
+        coEvery { dao.delVenue("venue-1") } throws IllegalStateException("disco ocupado") // así cada una se anota en memoria
+        fun deLaOrden(n: Int) = trabajo.copy(orderNumber = "ORD-$n", planes = listOf(TicketPlan("st_barra", false, listOf(ConsolidatedLine("Café", 1, emptyList(), null, listOf("oi_$n"))))))
+
+        for (n in 0..EntregaPorWifi.TOPE_DE_PAPELES) entrega.quitarPapel("venue-1", "ORD-$n", deLaOrden(n).planes)
+
+        assertEquals("la más vieja ya salió de la memoria", false, entrega.papelYaSalio(deLaOrden(0)))
+        assertTrue(entrega.papelYaSalio(deLaOrden(1)))
+        assertTrue(entrega.papelYaSalio(deLaOrden(EntregaPorWifi.TOPE_DE_PAPELES)))
+    }
+
+    /** D28: el papel que sale después («Volver a imprimir», la libreta, «Ya la canté») no toca una fila que ya no lleva papel. */
+    @Test
+    fun `cerrarPorPapel no toca una fila sin papel`() = runTest {
+        val planBarra = TicketPlan("st_barra", false, listOf(ConsolidatedLine("Café", 1, emptyList(), null, listOf("oi_2"))))
+        coEvery { dao.delVenue("venue-1") } returns listOf(
+            EntregaKdsPendienteEntity(
+                entregaId = "sale:ext-1:st_barra|oi_2", sourceKey = "sale:ext-1:st_barra", venueId = "venue-1", stationId = "st_barra",
+                mensajeJson = "{}", trabajoJson = Json.encodeToString(TrabajoPendiente.serializer(), trabajo), creadaEnMillis = 1,
+            ),
+        )
+
+        entrega.cerrarPorPapel("venue-1", "1234", listOf(planBarra))
+
+        coVerify(exactly = 0) { dao.borrar(any()) }
+    }
+
     /** Ronda 1 (I2): el papel de respaldo que sale DESPUÉS («Volver a imprimir», el reloj de la libreta) cierra SU fila. */
     @Test
     fun `cerrarPorPapel borra solo las filas de esos planes y de esa orden`() = runTest {
