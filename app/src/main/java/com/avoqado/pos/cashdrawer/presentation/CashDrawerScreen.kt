@@ -122,42 +122,54 @@ private fun TabletCashDrawerLayout(
 
     // Show DailyReportView if active
     if (showDailyReport && reportSession != null) {
-        val tenderBreakdown by viewModel.tenderBreakdown.collectAsState()
-        LaunchedEffect(reportSession!!.id) {
+        // hz:nube0000:na12fc7f: sólo el desglose de ESTE corte; mientras no llega, «Consultando…» (nunca el del corte anterior).
+        // Codex r4 #1: la llave, las fechas, la sesión y los movimientos salen de la MISMA foto: «Reintentar» o «Imprimir» tocados
+        // justo cuando se elige otro corte no mezclan la llave de uno con las fechas o el papel del otro.
+        val sesionDelCorte = reportSession!!
+        val eventosDelCorte = reportEvents
+        val corte = llaveDelCorte(sesionDelCorte)
+        val desgloses by viewModel.desgloses.collectAsState()
+        val propio = desgloses[corte]
+        val tenderBreakdown = propio?.filas
+        LaunchedEffect(corte) {
             viewModel.loadTenderBreakdown(
-                reportSession!!.openedAt,
-                reportSession!!.closedAt ?: System.currentTimeMillis(),
+                corte,
+                sesionDelCorte.openedAt,
+                sesionDelCorte.closedAt ?: System.currentTimeMillis(),
             )
         }
         // D68 #13: si el corte se abrió sin red, al volver la red se pide el desglose otra vez (sólo si falta).
         val enLineaDelCorte by viewModel.enLinea.collectAsState()
-        LaunchedEffect(reportSession!!.id, enLineaDelCorte) {
+        LaunchedEffect(corte, enLineaDelCorte) {
             if (enLineaDelCorte) viewModel.recargarDesgloseSiFalta(
-                reportSession!!.openedAt,
-                reportSession!!.closedAt ?: System.currentTimeMillis(),
+                corte,
+                sesionDelCorte.openedAt,
+                sesionDelCorte.closedAt ?: System.currentTimeMillis(),
             )
         }
         val isPrintingCorte by viewModel.isPrintingCorte.collectAsState()
         DailyReportView(
-            session = reportSession!!,
-            events = reportEvents,
+            session = sesionDelCorte,
+            events = eventosDelCorte,
             // Sin esto la PANTALLA del corte decía "Avoqado" mientras el ticket
             // impreso llevaba el nombre real del negocio: el mismo corte, dos
             // encabezados distintos según dónde lo mires.
             venueName = viewModel.venueName,
             tenderBreakdown = tenderBreakdown,
+            cargandoDesglose = estaConsultando(propio),
             isPrinting = isPrintingCorte,
             onRetryBreakdown = {
                 viewModel.loadTenderBreakdown(
-                    reportSession!!.openedAt,
-                    reportSession!!.closedAt ?: System.currentTimeMillis(),
+                    corte,
+                    sesionDelCorte.openedAt,
+                    sesionDelCorte.closedAt ?: System.currentTimeMillis(),
                 )
             },
             sinConfirmar = reportSinConfirmar,
             onPrint = {
                 viewModel.printCorte(
-                    session = reportSession!!,
-                    events = reportEvents,
+                    session = sesionDelCorte,
+                    events = eventosDelCorte,
                     tenders = tenderBreakdown,
                     venueName = viewModel.venueName,
                     sinConfirmar = reportSinConfirmar,
@@ -435,42 +447,54 @@ private fun PhoneCashDrawerLayout(
 
     // Show DailyReportView if active
     if (showDailyReport && reportSession != null) {
-        val tenderBreakdown by viewModel.tenderBreakdown.collectAsState()
-        LaunchedEffect(reportSession!!.id) {
+        // hz:nube0000:na12fc7f: sólo el desglose de ESTE corte; mientras no llega, «Consultando…» (nunca el del corte anterior).
+        // Codex r4 #1: la llave, las fechas, la sesión y los movimientos salen de la MISMA foto: «Reintentar» o «Imprimir» tocados
+        // justo cuando se elige otro corte no mezclan la llave de uno con las fechas o el papel del otro.
+        val sesionDelCorte = reportSession!!
+        val eventosDelCorte = reportEvents
+        val corte = llaveDelCorte(sesionDelCorte)
+        val desgloses by viewModel.desgloses.collectAsState()
+        val propio = desgloses[corte]
+        val tenderBreakdown = propio?.filas
+        LaunchedEffect(corte) {
             viewModel.loadTenderBreakdown(
-                reportSession!!.openedAt,
-                reportSession!!.closedAt ?: System.currentTimeMillis(),
+                corte,
+                sesionDelCorte.openedAt,
+                sesionDelCorte.closedAt ?: System.currentTimeMillis(),
             )
         }
         // D68 #13: si el corte se abrió sin red, al volver la red se pide el desglose otra vez (sólo si falta).
         val enLineaDelCorte by viewModel.enLinea.collectAsState()
-        LaunchedEffect(reportSession!!.id, enLineaDelCorte) {
+        LaunchedEffect(corte, enLineaDelCorte) {
             if (enLineaDelCorte) viewModel.recargarDesgloseSiFalta(
-                reportSession!!.openedAt,
-                reportSession!!.closedAt ?: System.currentTimeMillis(),
+                corte,
+                sesionDelCorte.openedAt,
+                sesionDelCorte.closedAt ?: System.currentTimeMillis(),
             )
         }
         val isPrintingCorte by viewModel.isPrintingCorte.collectAsState()
         DailyReportView(
-            session = reportSession!!,
-            events = reportEvents,
+            session = sesionDelCorte,
+            events = eventosDelCorte,
             // Sin esto la PANTALLA del corte decía "Avoqado" mientras el ticket
             // impreso llevaba el nombre real del negocio: el mismo corte, dos
             // encabezados distintos según dónde lo mires.
             venueName = viewModel.venueName,
             tenderBreakdown = tenderBreakdown,
+            cargandoDesglose = estaConsultando(propio),
             isPrinting = isPrintingCorte,
             onRetryBreakdown = {
                 viewModel.loadTenderBreakdown(
-                    reportSession!!.openedAt,
-                    reportSession!!.closedAt ?: System.currentTimeMillis(),
+                    corte,
+                    sesionDelCorte.openedAt,
+                    sesionDelCorte.closedAt ?: System.currentTimeMillis(),
                 )
             },
             sinConfirmar = reportSinConfirmar,
             onPrint = {
                 viewModel.printCorte(
-                    session = reportSession!!,
-                    events = reportEvents,
+                    session = sesionDelCorte,
+                    events = eventosDelCorte,
                     tenders = tenderBreakdown,
                     venueName = viewModel.venueName,
                     sinConfirmar = reportSinConfirmar,
@@ -748,29 +772,33 @@ private fun CurrentDrawerContent(
 
     val partialSession = session
     if (showPartialReport && partialSession != null) {
-        val partialTenders by viewModel.tenderBreakdown.collectAsState()
+        // hz:nube0000:na12fc7f: sólo el desglose de ESTE parcial; mientras no llega, «Consultando…».
+        val corteParcial = llaveDelCorte(partialSession)
+        val desgloses by viewModel.desgloses.collectAsState()
+        val propioDelParcial = desgloses[corteParcial]
         val confirmado by viewModel.confirmadoConServidor.collectAsState()
         LaunchedEffect(partialSession.id) {
             // El corte parcial también pregunta al servidor: sin eso enseña el esperado sin el
             // reembolso o la venta de la terminal que sólo él conoce.
             viewModel.alEntrar()
-            viewModel.loadTenderBreakdown(partialSession.openedAt, System.currentTimeMillis())
+            viewModel.loadTenderBreakdown(corteParcial, partialSession.openedAt, System.currentTimeMillis())
         }
         // D68 #13: lo mismo en el corte parcial.
         val enLineaDelParcial by viewModel.enLinea.collectAsState()
         LaunchedEffect(partialSession.id, enLineaDelParcial) {
-            if (enLineaDelParcial) viewModel.recargarDesgloseSiFalta(partialSession.openedAt, System.currentTimeMillis())
+            if (enLineaDelParcial) viewModel.recargarDesgloseSiFalta(corteParcial, partialSession.openedAt, System.currentTimeMillis())
         }
         DailyReportView(
             session = partialSession,
             events = events,
             venueName = viewModel.venueName,
-            tenderBreakdown = partialTenders,
+            tenderBreakdown = propioDelParcial?.filas,
+            cargandoDesglose = estaConsultando(propioDelParcial),
             isPartial = true,
             showExpected = viewModel.puedeVerEsperado,
             isPrinting = isPrintingCorte,
             onRetryBreakdown = {
-                viewModel.loadTenderBreakdown(partialSession.openedAt, System.currentTimeMillis())
+                viewModel.loadTenderBreakdown(corteParcial, partialSession.openedAt, System.currentTimeMillis())
             },
             sinConfirmar = !confirmado,
             onPrint = { viewModel.printPartialCorte(partialSession, events) },

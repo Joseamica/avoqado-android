@@ -126,46 +126,57 @@ class CashDrawerViewModel @Inject constructor(
     private val _estadoDeLaApertura = MutableStateFlow(EstadoDeLaApertura.CONFIRMADA)
     val estadoDeLaApertura: StateFlow<EstadoDeLaApertura> = _estadoDeLaApertura.asStateFlow()
 
-    private val _tenderBreakdown = MutableStateFlow<List<CashDrawerRepository.TenderRow>?>(null)
-    val tenderBreakdown: StateFlow<List<CashDrawerRepository.TenderRow>?> = _tenderBreakdown.asStateFlow()
+    /**
+     * hz:nube0000:na12fc7f: el desglose por método de pago de CADA corte, por su llave ([llaveDelCorte]). Antes era UN solo valor
+     * para todos: el corte B a media carga enseñaba (e imprimía) el de A, y la impresión del parcial escribía encima de lo que
+     * hubiera en pantalla. Ahora sólo la pantalla escribe aquí ([loadTenderBreakdown]), cada lectura sólo toca SU corte y, dentro de
+     * un corte, sólo publica la que empezó al último. La impresión del parcial lee por su cuenta ([printPartialCorte]).
+     */
+    private val _desgloses = MutableStateFlow<Map<String, DesgloseDelCorte>>(emptyMap())
+    val desgloses: StateFlow<Map<String, DesgloseDelCorte>> = _desgloses.asStateFlow()
+
+    /** Cuántas lecturas se han empezado de cada corte: sólo la última publica (una vieja que llega tarde no pisa a una nueva). */
+    private val lecturasDelDesglose = mutableMapOf<String, Int>()
 
     /**
      * D68 #13 (prueba final del 13-nov): el corte hecho sin red seguía diciendo «No se pudo consultar el desglose por método de
-     * pago…» después de volver la red, hasta tocar «Reintentar». Lo que se arregla es SÓLO eso: con el desglose en «No se pudo
-     * consultar», al volver la red se pide otra vez ([recargarDesgloseSiFalta]). Codex r1–r5 encontraron carreras más viejas en
-     * esta pieza (otra caja a media carga, la impresión que escribe en la pantalla); no son de esta tarjeta y quedaron anotadas
-     * en el pizarrón. Aquí sólo: la última lectura que se pidió es la que se publica, y si la red volvió con una lectura en
-     * vuelo que después falla, se pide otra vez al terminar.
+     * pago…» después de volver la red, hasta tocar «Reintentar». Con el desglose en «No se pudo consultar», al volver la red se pide
+     * otra vez ([recargarDesgloseSiFalta]); si la red volvió con una lectura en vuelo que después falla, se pide otra vez al terminar.
+     * Sólo lo consume la lectura más reciente de ese corte, al terminar (nunca otra lectura al empezar).
      */
-    private var cargandoDesglose = false
-    private var generacionDelDesglose = 0
-    private var reintentoPendiente: Pair<Long, Long>? = null
+    private val reintentosDelDesglose = mutableMapOf<String, Pair<Long, Long>>()
 
-    /** Fetch the payment-method breakdown for a session's window (corte de caja). */
-    fun loadTenderBreakdown(fromMillis: Long, toMillis: Long) {
-        val generacion = ++generacionDelDesglose
-        cargandoDesglose = true
-        reintentoPendiente = null
+    /**
+     * El desglose por método de pago del corte [corte] (su ventana: [fromMillis]–[toMillis]), para la PANTALLA. Mientras consulta,
+     * el corte dice «Consultando…»; si falla, «No se pudo consultar» (como siempre: nunca se queda con un dato de otra ventana).
+     */
+    fun loadTenderBreakdown(corte: String, fromMillis: Long, toMillis: Long) {
+        val lectura = (lecturasDelDesglose[corte] ?: 0) + 1
+        lecturasDelDesglose[corte] = lectura
+        publicarDesglose(corte, DesgloseDelCorte(filas = null, consultando = true))
         viewModelScope.launch {
-            var desglose: List<CashDrawerRepository.TenderRow>? = null
+            var filas: List<CashDrawerRepository.TenderRow>? = null
             try {
-                desglose = repository.getTenderBreakdown(fromMillis, toMillis)
+                filas = repository.getTenderBreakdown(fromMillis, toMillis)
             } finally {
-                if (generacion == generacionDelDesglose) {
-                    _tenderBreakdown.value = desglose
-                    cargandoDesglose = false
-                    val otra = reintentoPendiente
-                    reintentoPendiente = null
-                    if (desglose == null && otra != null) loadTenderBreakdown(otra.first, otra.second)
+                if (lecturasDelDesglose[corte] == lectura) {
+                    publicarDesglose(corte, DesgloseDelCorte(filas))
+                    val otra = reintentosDelDesglose.remove(corte)
+                    if (filas == null && otra != null) loadTenderBreakdown(corte, otra.first, otra.second)
                 }
             }
         }
     }
 
-    /** D68 #13: al volver la red, si el corte está en «No se pudo consultar», se pide otra vez (o al terminar la que va en vuelo). */
-    fun recargarDesgloseSiFalta(fromMillis: Long, toMillis: Long) {
-        if (_tenderBreakdown.value != null) return
-        if (cargandoDesglose) reintentoPendiente = fromMillis to toMillis else loadTenderBreakdown(fromMillis, toMillis)
+    private fun publicarDesglose(corte: String, desglose: DesgloseDelCorte) {
+        _desgloses.value = _desgloses.value + (corte to desglose)
+    }
+
+    /** D68 #13: al volver la red, si el corte [corte] está en «No se pudo consultar», se pide otra vez (o al terminar la que va en vuelo). */
+    fun recargarDesgloseSiFalta(corte: String, fromMillis: Long, toMillis: Long) {
+        val actual = _desgloses.value[corte]
+        if (actual?.filas != null) return
+        if (actual?.consultando == true) reintentosDelDesglose[corte] = fromMillis to toMillis else loadTenderBreakdown(corte, fromMillis, toMillis)
     }
 
     /** D68 #13: con red y servidor; lo observa sólo la pantalla del corte (perezoso: las pruebas que no lo leen no lo arman). */
@@ -780,11 +791,14 @@ class CashDrawerViewModel @Inject constructor(
             val confirmado = sincronizar()
             val frescos = runCatching { repository.getEvents(session.id) }.getOrDefault(events)
             loadCurrentSession()
+            // Codex r1 #4 (17-nov): si mientras esperaba otro aparato cerró la caja, la consulta termina en su cierre. «Hasta ahora»
+            // sumaba los cobros de la caja siguiente: el servidor suma los pagos de la sucursal en esa ventana.
+            val hasta = runCatching { repository.getSession(session.id) }.getOrNull()?.closedAt ?: System.currentTimeMillis()
             // `null` si no se pudo consultar — NUNCA `emptyList()`, que significa "no hubo cobros".
-            val tenders = runCatching {
-                repository.getTenderBreakdown(session.openedAt, System.currentTimeMillis())
-            }.getOrNull()
-            _tenderBreakdown.value = tenders
+            val tenders = runCatching { repository.getTenderBreakdown(session.openedAt, hasta) }.getOrNull()
+            // hz:nube0000:na12fc7f: la impresión NUNCA escribe en la pantalla ni toca su reintento. Si su lectura salió bien (hay red),
+            // la pantalla del parcial vuelve a leer por SU camino, para que pantalla y papel no se queden distintos (Codex r1 #6).
+            if (tenders != null) loadTenderBreakdown(llaveDelCorte(session), session.openedAt, hasta)
             printCorte(
                 session = session,
                 events = frescos,
@@ -798,6 +812,21 @@ class CashDrawerViewModel @Inject constructor(
 
 
 }
+
+/**
+ * hz:nube0000:na12fc7f: el desglose por método de pago de UN corte. [filas] `null` = no se pudo consultar; [consultando] = hay una
+ * lectura en vuelo (y entonces [filas] es `null`).
+ */
+data class DesgloseDelCorte(val filas: List<CashDrawerRepository.TenderRow>?, val consultando: Boolean = false)
+
+/**
+ * La llave de un corte: la caja y su hora de cierre, o «parcial» con la caja abierta. El parcial y el definitivo de la misma caja
+ * son cortes distintos; el fin del parcial («ahora») no entra en la llave porque cambia en cada lectura (Codex r5 #1 de #266).
+ */
+fun llaveDelCorte(session: CashDrawerSessionEntity): String = "${session.id}|${session.closedAt ?: "parcial"}"
+
+/** El corte dice «Consultando…»: todavía no tiene lectura suya, o hay una en vuelo. */
+fun estaConsultando(desglose: DesgloseDelCorte?): Boolean = desglose == null || desglose.consultando
 
 /** Espejo EXACTO del permiso del server que gobierna el back-office de turnos. */
 const val PERMISO_VER_ESPERADO = "cash-drawer:view-expected"

@@ -32,20 +32,23 @@ class CorteDesgloseAlVolverLaRedTest {
         secureStorage = mockk(relaxed = true),
     )
 
+    /** El parcial de una caja: su fin «ahora» cambia en cada lectura y la llave no (Codex r5 #1 de #266). */
+    private val C = "caja-1|parcial"
+
     private val efectivo = listOf(CashDrawerRepository.TenderRow("CASH", 12_000))
 
     @Test fun `sin red falta el desglose y al volver la red se pide otra vez`() {
         val repo = mockk<CashDrawerRepository>(relaxed = true)
         coEvery { repo.getTenderBreakdown(1L, 2L) } returnsMany listOf(null, efectivo)
         val vm = pantalla(repo)
-        vm.loadTenderBreakdown(1L, 2L)
-        assertNull(vm.tenderBreakdown.value)
-        vm.recargarDesgloseSiFalta(1L, 2L)
-        assertEquals(efectivo, vm.tenderBreakdown.value)
+        vm.loadTenderBreakdown(C, 1L, 2L)
+        assertNull(vm.desgloses.value[C]?.filas)
+        vm.recargarDesgloseSiFalta(C, 1L, 2L)
+        assertEquals(efectivo, vm.desgloses.value[C]?.filas)
         // Ya lo tiene: volver a cambiar la red no lo pide otra vez ni lo borra.
-        vm.recargarDesgloseSiFalta(1L, 2L)
+        vm.recargarDesgloseSiFalta(C, 1L, 2L)
         coVerify(exactly = 2) { repo.getTenderBreakdown(1L, 2L) }
-        assertEquals(efectivo, vm.tenderBreakdown.value)
+        assertEquals(efectivo, vm.desgloses.value[C]?.filas)
     }
 
     @Test fun `con una lectura en vuelo no se pide una segunda`() {
@@ -53,11 +56,11 @@ class CorteDesgloseAlVolverLaRedTest {
         val respuesta = CompletableDeferred<List<CashDrawerRepository.TenderRow>?>()
         coEvery { repo.getTenderBreakdown(1L, 2L) } coAnswers { respuesta.await() }
         val vm = pantalla(repo)
-        vm.loadTenderBreakdown(1L, 2L)
-        vm.recargarDesgloseSiFalta(1L, 2L)
+        vm.loadTenderBreakdown(C, 1L, 2L)
+        vm.recargarDesgloseSiFalta(C, 1L, 2L)
         respuesta.complete(efectivo)
         coVerify(exactly = 1) { repo.getTenderBreakdown(1L, 2L) }
-        assertEquals(efectivo, vm.tenderBreakdown.value)
+        assertEquals(efectivo, vm.desgloses.value[C]?.filas)
     }
 
     @Test fun `Codex r1 2 la red vuelve durante una lectura que falla y al terminar se pide otra vez`() {
@@ -66,11 +69,11 @@ class CorteDesgloseAlVolverLaRedTest {
         var llamadas = 0
         coEvery { repo.getTenderBreakdown(1L, 2L) } coAnswers { llamadas++; if (llamadas == 1) primera.await() else efectivo }
         val vm = pantalla(repo)
-        vm.loadTenderBreakdown(1L, 2L)
-        vm.recargarDesgloseSiFalta(1L, 2L) // volvió la red con la lectura en vuelo
+        vm.loadTenderBreakdown(C, 1L, 2L)
+        vm.recargarDesgloseSiFalta(C, 1L, 2L) // volvió la red con la lectura en vuelo
         primera.complete(null) // y esa lectura falló
         assertEquals(2, llamadas)
-        assertEquals(efectivo, vm.tenderBreakdown.value)
+        assertEquals(efectivo, vm.desgloses.value[C]?.filas)
     }
 
     @Test fun `una lectura que empezo antes y termina despues no pisa a la nueva`() {
@@ -80,10 +83,10 @@ class CorteDesgloseAlVolverLaRedTest {
         coEvery { repo.getTenderBreakdown(1L, 2L) } coAnswers { vieja.await() }
         coEvery { repo.getTenderBreakdown(1L, 3L) } returns efectivo
         val vm = pantalla(repo)
-        vm.loadTenderBreakdown(1L, 2L)
-        vm.loadTenderBreakdown(1L, 3L)
+        vm.loadTenderBreakdown(C, 1L, 2L)
+        vm.loadTenderBreakdown(C, 1L, 3L)
         vieja.complete(otro)
-        assertEquals(efectivo, vm.tenderBreakdown.value)
+        assertEquals(efectivo, vm.desgloses.value[C]?.filas)
     }
 
 }

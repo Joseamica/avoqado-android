@@ -51,6 +51,11 @@ fun DailyReportView(
     /** `null` = no se pudo consultar el desglose; lista vacía = el corte no tuvo cobros. */
     tenderBreakdown: List<com.avoqado.pos.cashdrawer.data.CashDrawerRepository.TenderRow>? = null,
     /**
+     * hz:nube0000:na12fc7f: el desglose de ESTE corte todavía no llega. Se dice «Consultando…» en vez de enseñar el de otro corte
+     * o un «No se pudo consultar» que todavía no es cierto. Imprimir sigue disponible: sale el efectivo con su nota.
+     */
+    cargandoDesglose: Boolean = false,
+    /**
      * Corte PARCIAL: la caja sigue abierta y el dinero aún no se ha contado.
      *
      * Existe porque "Corte parcial" sólo imprimía: sin impresora configurada —o
@@ -230,7 +235,18 @@ fun DailyReportView(
             ReportSectionTitle(text = "Desglose por método de pago")
             Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
 
-            if (hasServerBreakdown && tenderBreakdown.orEmpty().isEmpty()) {
+            if (cargandoDesglose) {
+                ReportRow(label = "Efectivo", value = if (ciego) "Se revela al cerrar" else formatCurrency(displayCashCents))
+                Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
+                Text(
+                    text = "Consultando el desglose por método de pago…",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                // Codex r2 #5: la consulta no tiene plazo total; si se atora, «Reintentar» sigue a la mano, como antes.
+                Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
+                BotonReintentarDesglose(onRetryBreakdown)
+            } else if (hasServerBreakdown && tenderBreakdown.orEmpty().isEmpty()) {
                 // El server contestó y NO hubo cobros: eso es un dato, no una falla. Sin botón de
                 // reintentar — no hay nada que reintentar.
                 ReportRow(label = "Efectivo", value = if (ciego) "Se revela al cerrar" else formatCurrency(displayCashCents))
@@ -274,20 +290,7 @@ fun DailyReportView(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
-                Button(
-                    onClick = onRetryBreakdown,
-                    shape = RoundedCornerShape(50),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = MaterialTheme.colorScheme.surfaceVariant,
-                        contentColor = MaterialTheme.colorScheme.onSurface,
-                    ),
-                ) {
-                    Text(
-                        text = "Reintentar",
-                        style = MaterialTheme.typography.bodyMedium,
-                        fontWeight = FontWeight.SemiBold,
-                    )
-                }
+                BotonReintentarDesglose(onRetryBreakdown)
             }
 
             Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxl))
@@ -514,6 +517,25 @@ internal fun ReportRow(
             style = MaterialTheme.typography.bodyMedium,
             color = valueColor ?: MaterialTheme.colorScheme.onSurface,
             fontWeight = if (isBold) FontWeight.Bold else FontWeight.Medium,
+        )
+    }
+}
+
+/** «Reintentar» la consulta del desglose del corte: con «No se pudo consultar» y mientras consulta (Codex r2 #5). */
+@Composable
+private fun BotonReintentarDesglose(onRetryBreakdown: () -> Unit) {
+    Button(
+        onClick = onRetryBreakdown,
+        shape = RoundedCornerShape(50),
+        colors = ButtonDefaults.buttonColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant,
+            contentColor = MaterialTheme.colorScheme.onSurface,
+        ),
+    ) {
+        Text(
+            text = "Reintentar",
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.SemiBold,
         )
     }
 }
