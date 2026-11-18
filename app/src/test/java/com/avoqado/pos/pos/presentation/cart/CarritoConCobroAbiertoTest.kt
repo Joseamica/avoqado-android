@@ -31,6 +31,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -338,7 +339,7 @@ class CarritoConCobroAbiertoTest {
     }
 
     @Test
-    fun `P1 la clase que esperaba al catalogo y encontro el cobro abierto vuelve a quedar pendiente y entra al cerrarlo`() {
+    fun `P1 la clase que esperaba al catalogo y encontro el cobro abierto queda pendiente y la cajera la agrega al cerrarlo`() {
         val catalogo = MutableStateFlow<List<Product>>(emptyList())
         every { productsRepository.products } returns catalogo
         val semilla = ClassCheckoutSeed().apply { put(ClassCheckoutSeed.Seed(productId = "cafe", quantity = 1, reservationId = "res-1")) }
@@ -358,6 +359,8 @@ class CarritoConCobroAbiertoTest {
 
         vm.cerrarCobro()
         vm.consumePendingClassSeed()
+        assertTrue("D13: ya no entra sola", vm.cartState.value.isEmpty)
+        assertNull(vm.agregarClasePendiente(semilla.enEspera.value.single()))   // la cajera la agrega desde «Clase pendiente»
         assertEquals(listOf("Café"), vm.cartState.value.items.map { it.name })
         assertEquals("res-1", vm.cartState.value.reservationId)
     }
@@ -407,35 +410,41 @@ class CarritoConCobroAbiertoTest {
         assertTrue(semilla.hasPending())
     }
 
-    // ── D13: la clase en espera sabe de qué venta es ──────────────────────────
+    // ── D13: la clase en espera ya no entra sola ──────────────────────────────
+
+    private fun bea(venue: String? = "venue-1") =
+        ClassCheckoutSeed.Seed(productId = "cafe", quantity = 1, reservationId = "res-bea", persona = "Bea", venueId = venue)
 
     @Test
-    fun `D13 la clase que espero no entra al carrito de otra persona, entra al siguiente vacio`() {
-        val semilla = ClassCheckoutSeed().apply { put(ClassCheckoutSeed.Seed(productId = "cafe", quantity = 1, reservationId = "res-bea")) }
+    fun `D13 la clase que espero nunca entra sola, ni a la venta de otra persona`() {
+        val semilla = ClassCheckoutSeed().apply { put(bea()) }
         val vm = carrito(semilla)
         vm.addCustomAmount("Saldo pendiente", 2_000)
         vm.markPendingSplitOrder("orden-a")
-        vm.consumePendingClassSeed()                 // A va a medio cobrar: la clase de Bea espera
+        vm.consumePendingClassSeed()                 // A va a medio cobrar: la clase de Bea queda pendiente
 
         vm.vaciarDesdeElCobro()                      // A terminó
-        vm.addProduct(pan)                           // la cajera recupera o arma la venta B de otra persona
+        vm.addProduct(pan)                           // la cajera arma o recupera la venta B de otra persona
         vm.consumePendingClassSeed()                 // regresa a Mostrador, cierra un cobro de B…
 
         assertEquals("la clase de Bea no se mete en la venta de B", listOf("Pan"), vm.cartState.value.items.map { it.name })
-        assertNull(vm.cartState.value.reservationId)
-        assertTrue("la clase sigue esperando", semilla.hasPending())
+        assertEquals(listOf(bea()), vm.clasesPendientesDeEsteNegocio())
+        assertNotNull("ni con un toque: va en su propia venta", vm.agregarClasePendiente(bea()))
+        assertEquals(listOf("Pan"), vm.cartState.value.items.map { it.name })
 
-        vm.vaciarDesdeElCobro()                      // B terminó: carrito vacío
+        vm.vaciarDesdeElCobro()                      // B terminó: carrito vacío, tampoco entra sola
         vm.consumePendingClassSeed()
+        assertTrue(vm.cartState.value.isEmpty)
 
+        assertNull(vm.agregarClasePendiente(bea()))  // la cajera la agrega
         assertEquals(listOf("Café"), vm.cartState.value.items.map { it.name })
         assertEquals("res-bea", vm.cartState.value.reservationId)
-        assertFalse(semilla.hasPending())
+        assertTrue(vm.clasesPendientesDeEsteNegocio().isEmpty())
     }
 
     @Test
     fun `D13 una clase recien inscrita entra al carrito vivo como siempre`() {
-        val semilla = ClassCheckoutSeed().apply { put(ClassCheckoutSeed.Seed(productId = "cafe", quantity = 1, reservationId = "res-bea")) }
+        val semilla = ClassCheckoutSeed().apply { put(bea()) }
         val vm = carrito(semilla)
         vm.addProduct(pan)                           // Bea lleva un pan y además se inscribe
 
@@ -447,23 +456,59 @@ class CarritoConCobroAbiertoTest {
 
     @Test
     fun `D13 dos inscripciones antes de volver a Mostrador no se borran entre si`() {
-        val semilla = ClassCheckoutSeed().apply {
-            put(ClassCheckoutSeed.Seed(productId = "cafe", quantity = 1, reservationId = "res-bea"))
-            put(ClassCheckoutSeed.Seed(productId = "pan", quantity = 1, reservationId = "res-ana"))
-        }
+        val ana = ClassCheckoutSeed.Seed(productId = "pan", quantity = 1, reservationId = "res-ana", persona = "Ana", venueId = "venue-1")
+        val semilla = ClassCheckoutSeed().apply { put(bea()); put(ana) }
+        val vm = carrito(semilla)
+
+        vm.consumePendingClassSeed()                 // entra la de Bea; la de Ana choca con su reserva y queda pendiente
+
+        assertEquals(listOf("Café"), vm.cartState.value.items.map { it.name })
+        assertEquals("res-bea", vm.cartState.value.reservationId)
+        assertEquals(listOf(ana), vm.clasesPendientesDeEsteNegocio())
+
+        vm.vaciarDesdeElCobro()                      // se cobró la de Bea
+        assertNull(vm.agregarClasePendiente(ana))
+        assertEquals(listOf("Pan"), vm.cartState.value.items.map { it.name })
+        assertEquals("res-ana", vm.cartState.value.reservationId)
+    }
+
+    @Test
+    fun `D13 la clase de otra sucursal no se pierde ni se enseña aqui`() {
+        val semilla = ClassCheckoutSeed().apply { put(bea(venue = "venue-norte")) }
         val vm = carrito(semilla)
 
         vm.consumePendingClassSeed()
-        assertEquals("res-bea", vm.cartState.value.reservationId)
 
-        vm.consumePendingClassSeed()                 // la de Ana choca con la reserva de Bea: espera, no se pierde
-        assertEquals(listOf("Café"), vm.cartState.value.items.map { it.name })
-        assertTrue(vm.seedConflict.value)
-        assertTrue(semilla.hasPending())
+        assertTrue(vm.cartState.value.isEmpty)
+        assertTrue(vm.clasesPendientesDeEsteNegocio().isEmpty())
+        assertEquals("espera en su sucursal", listOf(bea(venue = "venue-norte")), semilla.enEspera.value)
+    }
 
-        vm.vaciarDesdeElCobro()                      // se cobró la de Bea
+    @Test
+    fun `D13 con un cliente elegido la clase no se agrega a su nombre`() {
+        val semilla = ClassCheckoutSeed().apply { put(bea()) }
+        val vm = carrito(semilla)
+        vm.abrirCobro()
         vm.consumePendingClassSeed()
-        assertEquals(listOf("Pan"), vm.cartState.value.items.map { it.name })
-        assertEquals("res-ana", vm.cartState.value.reservationId)
+        vm.cerrarCobro()
+        vm.setSelectedCustomer("cliente-beto", "Beto")   // quitó el último artículo de Beto y quedó Beto elegido
+
+        assertNotNull(vm.agregarClasePendiente(bea()))
+        assertTrue(vm.cartState.value.isEmpty)
+        assertEquals(listOf(bea()), vm.clasesPendientesDeEsteNegocio())
+    }
+
+    @Test
+    fun `D13 quitar de pendientes no toca nada mas`() {
+        val semilla = ClassCheckoutSeed().apply { put(bea()) }
+        val vm = carrito(semilla)
+        vm.abrirCobro()
+        vm.consumePendingClassSeed()
+        vm.cerrarCobro()
+
+        vm.quitarClasePendiente(bea())
+
+        assertTrue(vm.clasesPendientesDeEsteNegocio().isEmpty())
+        assertTrue(vm.cartState.value.isEmpty)
     }
 }

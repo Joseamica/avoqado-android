@@ -1,6 +1,9 @@
 package com.avoqado.pos.pos.data
 
 import javax.inject.Inject
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import javax.inject.Singleton
 
 /**
@@ -26,33 +29,41 @@ class ClassCheckoutSeed @Inject constructor() {
         /** Links the resulting sale back to the reservation. Consumed by the
          *  payment flow once the reservation↔sale linkage lands. */
         val reservationId: String? = null,
-        /**
-         * D13 (18-nov): ya tuvo su oportunidad y no pudo entrar (el cobro abierto, una venta a medio cobrar, otra reserva en
-         * el carrito). Desde entonces sólo entra a un carrito VACÍO: la venta que la detuvo ya terminó y nunca se mete en la de
-         * otra persona.
-         */
-        val enEspera: Boolean = false,
+        /** D13: de quién es, para el aviso «Clase pendiente» (nombre que se capturó al inscribir). */
+        val persona: String? = null,
+        /** D13: la sucursal donde se inscribió; en otra sucursal no entra ni se enseña. */
+        val venueId: String? = null,
     )
 
-    /** D13: una fila, no una casilla. Una segunda inscripción antes de volver a Mostrador ya no borra a la primera. */
-    private val pendientes = ArrayDeque<Seed>()
+    /** Recién inscritas: la siguiente entra sola al llegar a Mostrador, como siempre. D13: una fila, no una casilla. */
+    private val frescas = ArrayDeque<Seed>()
 
-    fun put(seed: Seed) = synchronized(this) { pendientes.addLast(seed) }
+    /**
+     * D13 (18-nov): las que no pudieron entrar en su momento (el cobro abierto, una venta a medio cobrar, otra reserva en el
+     * carrito). Ya NUNCA entran solas —meterlas solas cuando «parecía» el momento las mandaba a la venta de otra persona o con
+     * otro cliente (Codex D9 r8, D13 r1)—: Mostrador las enseña como «Clase pendiente» y la cajera decide cuándo agregarlas.
+     */
+    private val _enEspera = MutableStateFlow<List<Seed>>(emptyList())
+    val enEspera: StateFlow<List<Seed>> = _enEspera.asStateFlow()
 
-    /** La siguiente clase pendiente, una sola vez. */
-    fun consume(): Seed? = synchronized(this) { pendientes.removeFirstOrNull() }
+    fun put(seed: Seed) = synchronized(this) { frescas.addLast(seed) }
 
-    fun hasPending(): Boolean = synchronized(this) { pendientes.isNotEmpty() }
+    /** La siguiente recién inscrita, una sola vez. */
+    fun consume(): Seed? = synchronized(this) { frescas.removeFirstOrNull() }
 
-    /** La siguiente sin sacarla, para saber si espera un carrito vacío. */
-    fun siguiente(): Seed? = synchronized(this) { pendientes.firstOrNull() }
+    fun hasPending(): Boolean = synchronized(this) { frescas.isNotEmpty() || _enEspera.value.isNotEmpty() }
 
-    /** La que se sacó y no pudo entrar regresa al frente, en espera (D9, D13). */
-    fun devolver(seed: Seed) = synchronized(this) { pendientes.addFirst(seed.copy(enEspera = true)) }
-
-    /** La siguiente no pudo entrar sin sacarla (cobro abierto, venta a medio cobrar): queda en espera. */
-    fun esperar() = synchronized(this) {
-        pendientes.firstOrNull()?.let { pendientes[0] = it.copy(enEspera = true) }
-        Unit
+    /** No pudo entrar: pasa a «Clase pendiente» (sin repetir la misma reserva). */
+    fun esperar(seed: Seed) = synchronized(this) {
+        val repetida = seed.reservationId != null && _enEspera.value.any { it.reservationId == seed.reservationId }
+        if (!repetida) _enEspera.value = _enEspera.value + seed
     }
+
+    /** Ninguna recién inscrita puede entrar ahora (cobro abierto, venta a medio cobrar): todas pasan a pendientes. */
+    fun esperarTodas() = synchronized(this) {
+        while (frescas.isNotEmpty()) esperar(frescas.removeFirst())
+    }
+
+    /** La cajera la agregó o la quitó de pendientes. */
+    fun quitarDeEspera(seed: Seed) = synchronized(this) { _enEspera.value = _enEspera.value - seed }
 }

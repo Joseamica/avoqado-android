@@ -184,6 +184,9 @@ class ClassSessionDetailViewModel @Inject constructor(
                             productId = s.productId,
                             quantity = request.partySize,
                             reservationId = attendee.id,
+                            // D13: para el aviso «Clase pendiente» y para que no entre en otra sucursal.
+                            persona = request.guestName,
+                            venueId = secureStorage.venueId,
                         ),
                     )
                     refresh()

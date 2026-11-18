@@ -312,36 +312,7 @@ fun CheckoutScreen(
     LaunchedEffect(tableSessionActive?.orderId, tableSessionActive?.mode) {
         cartViewModel.consumePendingTableCobrar()
     }
-    // Class-seed conflict: the walk-in class wasn't added because the cart
-    // already links a different reservation — tell the cashier instead of
-    // silently dropping it.
-    val seedConflict by cartViewModel.seedConflict.collectAsState()
-    var seedConflictDialog by remember { mutableStateOf(false) }
-    val seedCtx = androidx.compose.ui.platform.LocalContext.current
-    LaunchedEffect(seedConflict) {
-        if (seedConflict) {
-            // En diálogo, no en Toast: el mesero acaba de intentar inscribir una
-            // clase y no pasó nada. Necesita entender que el carrito ya está ligado
-            // a otra reserva y qué hacer — un aviso que se desvanece (y que en la
-            // Sunmi puede ni salir en esta pantalla) lo deja atorado.
-            seedConflictDialog = true
-            cartViewModel.clearSeedConflict()
-        }
-    }
-
-    if (seedConflictDialog) {
-        AvoqadoDialog(
-            title = "El carrito ya tiene una reserva",
-            // D13: la clase nueva ya no se pierde (su lugar ya está apartado): espera y entra sola al siguiente carrito vacío.
-            description = "Este carrito está ligado a otra reserva. La clase nueva entra sola " +
-                "cuando termines esta venta.",
-            onDismiss = { seedConflictDialog = false },
-            actionButton = {
-                PrimaryButton(text = "Entendido", onClick = { seedConflictDialog = false })
-            },
-            content = {},
-        )
-    }
+    // D13: el choque con otra reserva ya no tira la clase: queda en «Clase pendiente» (`ClasePendiente`).
     var selectedProduct by remember { mutableStateOf<Product?>(null) }
     // Venta por peso (báscula): producto por peso pendiente de capturar peso.
     var weightProduct by remember { mutableStateOf<Product?>(null) }
@@ -1328,6 +1299,7 @@ fun CheckoutScreen(
         }
     }
     com.avoqado.pos.giftcards.presentation.VentaPorRecuperar(cartViewModel)
+    ClasePendiente(cartViewModel)
     cuentaConSaldoVisible?.let { id ->
         com.avoqado.pos.payment.presentation.CobroDeCuentaScreen(id, onSalir = { cuentaConSaldoVisible = null })
     }
@@ -1639,8 +1611,9 @@ fun CheckoutScreen(
     LaunchedEffect(cartState.isEmpty, showPaymentFlow) {
         if (cartState.isEmpty && !showPaymentFlow) {
             upsellViewModel.cancelPendingConversion()
-            // D13: la clase que esperaba a que terminara la venta entra al carrito vacío (también si la cajera lo vació a mano).
-            cartViewModel.consumePendingClassSeed()
+            // D13 (Codex r1 #5): un carrito vacío ya no tiene a quién sugerirle: la tira de la venta anterior se cierra sin
+            // registrarse (quitar todo y armar otra venta conserva la identidad del carrito).
+            upsellViewModel.soltarMomento()
         }
     }
     // D13: al cambiar de venta (restaurar un carrito guardado encima) la tira de «¿Algo más?» de la anterior se cierra sin

@@ -339,4 +339,17 @@ class UpsellViewModelTest {
 
         assertNotNull("B puede recibir su propia sugerencia", vm.offer(b, UpsellContext.COUNTER))
     }
+
+    @Test
+    fun `D13 con el carrito vacio la tira se cierra sin registrarse`() {
+        val vm = viewModel()
+        assertNotNull(vm.offer(cart("cafe"), UpsellContext.COUNTER))
+
+        vm.soltarMomento()                                     // quitaron todo: el carrito vacío no tiene a quién sugerirle
+
+        assertNull(vm.moment.value)
+        vm.finish(emptyList(), 0)
+        dispatcher.scheduler.advanceUntilIdle()
+        io.mockk.coVerify(exactly = 0) { repo.recordImpression(any(), any()) }
+    }
 }

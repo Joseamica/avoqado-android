@@ -258,6 +258,12 @@ class UpsellViewModel @Inject constructor(
      */
     fun soltarMomentoSiEsOtraVenta(venta: String) {
         if (_moment.value == null || ventaDelMomento == null || venta == ventaDelMomento) return
+        soltarMomento()
+    }
+
+    /** D13: cierra la tira sin registrarla (el carrito quedó vacío o la venta ya es otra). */
+    fun soltarMomento() {
+        if (_moment.value == null) return
         _moment.value = null
         ventaDelMomento = null
         ventaYaOfrecida = null
