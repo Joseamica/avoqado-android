@@ -638,6 +638,11 @@ class CartViewModel @Inject constructor(
     private val pendingGrantQueue: com.avoqado.pos.customers.data.PendingGrantQueue? = null,
     /** D2: el PIN del gerente para el descuento del cliente. Default para las pruebas que no lo usan; sin él no se ofrece el PIN. */
     private val managerOverrideCoordinator: com.avoqado.pos.core.data.network.ManagerOverrideCoordinator? = null,
+    /**
+     * na5c51e4: el PIN de gerente vigente (el que también trae el refresco suave). Default para las pruebas que no lo usan;
+     * sin él se lee lo guardado, como antes.
+     */
+    private val tpvSettingsRepository: com.avoqado.pos.tpvsettings.data.TpvSettingsRepository? = null,
 ) : ViewModel() {
 
     private val _cartState = MutableStateFlow(defaultCartState())
@@ -2763,7 +2768,8 @@ class CartViewModel @Inject constructor(
     private fun puedeAplicarDescuentos(): Boolean = com.avoqado.pos.core.domain.RoleManager(secureStorage).canApplyDiscounts
 
     /** El negocio tiene prendido el PIN de autorización de gerente (y hay quién lo pida). */
-    private fun pinPrendido(): Boolean = managerOverrideCoordinator != null && secureStorage.managerPinOverrideEnabled
+    private fun pinPrendido(): Boolean = managerOverrideCoordinator != null &&
+        (tpvSettingsRepository?.managerPinOverrideEnabled?.value ?: secureStorage.managerPinOverrideEnabled)
 
     /** 🔴 DINERO (D2). [CartState.puedeCrearOrdenConDescuentoDelCliente] con el cliente y la sesión de ahora. */
     fun puedeCrearOrdenConDescuentoDelCliente(): Boolean =
