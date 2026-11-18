@@ -62,6 +62,8 @@ class CarritoConCobroAbiertoTest {
     private val areaTicketRepository = mockk<AreaTicketRepository>(relaxed = true)
     private val apartadoDeVales = MutableStateFlow<AreaTicketCheckout?>(null)
 
+    private val pantallaDelCliente = com.avoqado.pos.customerdisplay.CustomerDisplayState()
+    private val cambioDeSucursal = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
     private val cafe = Product(id = "cafe", name = "Café", priceValue = 35.0)
     private val pan = Product(id = "pan", name = "Pan", priceValue = 20.0)
 
@@ -77,7 +79,7 @@ class CarritoConCobroAbiertoTest {
         every { savedCartsRepository.saveCart(any()) } returns true
         every { savedCartsRepository.deleteCart(any()) } returns true
         every { discountsRepository.discounts } returns MutableStateFlow<List<Discount>>(emptyList())
-        every { authRepository.venueSwitched } returns MutableSharedFlow(extraBufferCapacity = 1)
+        every { authRepository.venueSwitched } returns cambioDeSucursal
         every { classCheckoutSeed.consume() } returns null
         every { secureStorage.venueId } returns "venue-1"
         every { secureStorage.userId } returns "user-1"
@@ -102,7 +104,7 @@ class CarritoConCobroAbiertoTest {
         captureReferralUseCase = captureReferralUseCase,
         planManager = PlanManager(secureStorage),
         tableSession = com.avoqado.pos.tables.data.TableSession(),
-        customerDisplay = com.avoqado.pos.customerdisplay.CustomerDisplayState(),
+        customerDisplay = pantallaDelCliente,
         areaTicketRepository = areaTicketRepository,
         walletScanRepository = mockk(relaxed = true),
     )
@@ -187,7 +189,8 @@ class CarritoConCobroAbiertoTest {
 
         assertEquals(ResultadoPagarDespues.Error(AVISO_COBRO_ABIERTO), vm.createPayLaterOrder("cli-1"))
 
-        assertNoCambio("pagar después", vm, antes, null)
+        assertEquals(antes, vm.cartState.value)
+        assertNull("el diálogo de «Pagar después» ya lo dice: sin un segundo aviso", vm.avisoDelCobroAbierto.value)
     }
 
     @Test
@@ -202,20 +205,44 @@ class CarritoConCobroAbiertoTest {
     }
 
     @Test
-    fun `P1 la recarga de vendedores no vacia la venta durante el cobro aunque den de baja al vendedor`() {
+    fun `la recarga de vendedores es del sistema y suelta al vendedor dado de baja aunque haya cobro`() {
         val vm = cafeConElCobroAbierto()
-        val antes = vm.cartState.value
         coEvery { staffRepository.getActiveStaff() } returns Result.success(listOf(StaffMember(id = "otro", firstName = "Ana", lastName = "Q")))
 
         vm.fetchStaff()
 
-        assertEquals(antes, vm.cartState.value)
-        // …pero el disco ya no lo guarda: la venta siguiente no hereda al vendedor dado de baja (Codex r1 #9).
+        // Lo de siempre (la foto del cobro no cambia): disco y carrito sin el vendedor dado de baja, sin aviso de la cajera.
         verify(exactly = 1) { secureStorage.clearSelectedStaffForCurrentVenue() }
-        // Al cerrar el cobro, la siguiente recarga sí hace lo de siempre (vacía y suelta al vendedor dado de baja).
-        vm.cerrarCobro()
-        vm.fetchStaff()
         assertTrue(vm.cartState.value.isEmpty)
+        assertNull(vm.avisoDelCobroAbierto.value)
+    }
+
+    @Test
+    fun `cambiar de sucursal termina la venta aunque quedara el cobro abierto`() {
+        val vm = carrito()
+        vm.addProduct(cafe)
+        vm.setSelectedCustomer("cli-1", "Ana")
+        vm.abrirCobro()
+
+        cambioDeSucursal.tryEmit(Unit)
+
+        assertTrue(vm.cartState.value.isEmpty)
+        assertNull(vm.selectedCustomer.value)
+    }
+
+    @Test
+    fun `con el cobro abierto la pantalla del cliente es del cobro y se pone al dia al cerrarlo`() {
+        val vm = carrito()
+        vm.addProduct(cafe)
+        vm.abrirCobro()
+        val delCobro = pantallaDelCliente.content.value
+
+        vm.aplicarCobroConfirmado(splitType = "EQUALPARTS", paidItemIds = emptySet(), remainingBalanceCents = 1_000)
+        assertEquals("el «Saldo pendiente» no tapa lo que enseña el cobro", delCobro, pantallaDelCliente.content.value)
+
+        vm.cerrarCobro()
+        vm.refreshCustomerDisplay()
+        assertTrue(pantallaDelCliente.content.value != delCobro)
     }
 
     // MARK: - Lo que el propio cobro sí escribe
@@ -322,6 +349,19 @@ class CarritoConCobroAbiertoTest {
         vm.consumePendingClassSeed()
         assertEquals(listOf("Café"), vm.cartState.value.items.map { it.name })
         assertEquals("res-1", vm.cartState.value.reservationId)
+    }
+
+    @Test
+    fun `la clase no entra a una venta a medio cobrar, espera a la siguiente`() {
+        val semilla = ClassCheckoutSeed().apply { put(ClassCheckoutSeed.Seed(productId = "cafe", quantity = 1, reservationId = "res-1")) }
+        val vm = carrito(semilla)
+        vm.addCustomAmount("Saldo pendiente", 2_000)
+        vm.markPendingSplitOrder("orden-1")
+
+        vm.consumePendingClassSeed()
+
+        assertEquals(listOf("Saldo pendiente"), vm.cartState.value.items.map { it.name })
+        assertTrue(semilla.hasPending())
     }
 
     @Test

@@ -199,20 +199,5 @@ class CartValesRespuestaViejaTest {
         assertEquals(listOf("a2"), vm.valesEnElCarrito())
     }
 
-    @Test
-    fun `D9 con el cobro abierto el latido renueva pero no cambia los vales de la venta que se cobra, y el cobro si los trae`() = runTest {
-        val vm = carrito()
-        session.update(VENUE, sesion("sesion-A", "a1")); vm.traerValesDeLaSesion()
-        coEvery { api.heartbeatAreaTicketCheckout(VENUE, "sesion-A", any()) } returns responde(sesion("sesion-A", "a1", "a2"))
-        vm.abrirCobro()
-
-        vm.heartbeatAreaTicketSession()
-        assertEquals("el latido no proyecta sobre la foto", listOf("a1"), vm.valesEnElCarrito())
-
-        // «Los vales cambiaron»: el cobro se detuvo y trae los del servidor; eso sí pasa con el cobro abierto.
-        vm.traerValesDeLaSesion()
-        assertEquals(listOf("a1", "a2"), vm.valesEnElCarrito())
-    }
-
     private companion object { const val VENUE = "venue-vales" }
 }

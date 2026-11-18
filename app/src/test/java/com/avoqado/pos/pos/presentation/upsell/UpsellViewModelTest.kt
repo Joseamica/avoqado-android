@@ -269,4 +269,16 @@ class UpsellViewModelTest {
 
         io.mockk.coVerify(exactly = 0) { repo.recordImpression(any(), any()) }
     }
+
+    @Test
+    fun `D9 resuelto el momento no se vuelve a ofrecer en la misma venta, en la siguiente si`() {
+        val vm = viewModel()
+        val venta = cart("cafe")
+        assertNotNull(vm.offer(venta, UpsellContext.COUNTER))
+
+        vm.finish(emptyList(), 0)   // el cliente contestó en su pantalla; la cajera toca «Cobrar» otra vez
+
+        assertNull(vm.offer(venta, UpsellContext.COUNTER))
+        assertNotNull(vm.offer(cart("cafe"), UpsellContext.COUNTER))
+    }
 }

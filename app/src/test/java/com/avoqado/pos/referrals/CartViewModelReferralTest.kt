@@ -715,4 +715,29 @@ class CartViewModelReferralTest {
         assertTrue(viewModel.referralValidation.value is ReferralCaptureUiState.Valid)
         assertEquals(antes, viewModel.cartState.value)
     }
+
+    @Test
+    fun `D9 el rechazo de la captura de A no toca a B aunque traiga el mismo cliente y el mismo codigo`() = runTest {
+        coEvery { validateReferralUseCase(any(), any(), any()) } returns Result.success(
+            ValidationResult.Valid(referrerName = "Ana López", discountPercent = 10, referrerCustomerId = "cust-ana"),
+        )
+        coEvery { captureReferralUseCase(any(), any(), any(), any(), any()) } returns Result.failure(
+            ReferralValidationException(ValidationResult.Reason.EXISTING_CUSTOMER),
+        )
+        val viewModel = createViewModel()
+        selectCustomer(viewModel, id = "cust-7")
+        viewModel.onReferralCodeChange("ANA-2026")
+        viewModel.validateReferralCode()
+        advanceUntilIdle()
+        val antes = viewModel.cartState.value
+
+        val ok = viewModel.captureReferralOnPayment(
+            orderId = "order-A",
+            pendiente = CartViewModel.ReferralPendiente(code = "ANA-2026", customerId = "cust-7", staffId = "staff-1", venta = "venta-A"),
+        )
+
+        assertFalse(ok)
+        assertTrue(viewModel.referralValidation.value is ReferralCaptureUiState.Valid)
+        assertEquals(antes, viewModel.cartState.value)
+    }
 }

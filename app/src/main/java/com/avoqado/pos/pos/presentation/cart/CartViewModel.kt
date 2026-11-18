@@ -715,6 +715,7 @@ class CartViewModel @Inject constructor(
 
     fun cerrarCobro() {
         cobroAbierto = false
+        _avisoDelCobroAbierto.value = null   // decía «cancela el cobro»: ya no aplica (Codex r2 #11)
         // D4: lo que la venta intentó cobrar ya no está en pantalla: desde ahora lo decide su evidencia (también su duda).
         pendingGrantQueue?.soltarVenta()
     }
@@ -1327,7 +1328,7 @@ class CartViewModel @Inject constructor(
                 // Dejarlo puesto hacía que la primera orden del local B naciera con un
                 // `customerId` del local A — un id de OTRO tenant dentro de la orden.
                 Log.d("🛒", "Venue switched — clearing cart")
-                finalizarVenta()
+                delCobro { finalizarVenta() }   // D9 (Codex r2 #9): el cambio de sucursal termina la venta aunque quedara la marca
                 fetchStaff()
             }
         }
@@ -1339,7 +1340,9 @@ class CartViewModel @Inject constructor(
                 // Espejo a la pantalla del cliente (POS de doble pantalla): el
                 // cliente ve su carrito en vivo mientras el cajero teclea.
                 // No-op en equipos de una sola pantalla.
-                customerDisplay.showCart(state)
+                // D9: con el cobro abierto la pantalla es del cobro (propina, calificación): una actualización del sistema en el
+                // carrito vivo no la tapa. Al cerrarlo, la pantalla de cobro llama a `refreshCustomerDisplay()`.
+                if (!cobroAbierto) customerDisplay.showCart(state)
             }
         }
     }
@@ -1443,13 +1446,11 @@ class CartViewModel @Inject constructor(
                     _staffOptions.value = staff
                     val selectedId = _cartState.value.selectedStaffId
                     val selected = staff.firstOrNull { it.id == selectedId }
-                    if (selected != null && selected.fullName != _cartState.value.selectedStaffName) {
-                        if (!cobroLoImpide(avisar = false)) selectStaff(selected.id, selected.fullName)
-                    } else if (selectedId.isNotBlank() && selected == null) {
+                    // D9: la recarga es del sistema, no de la cajera: se aplica aunque haya cobro (la foto del cobro no cambia).
+                    if (selected != null && selected.fullName != _cartState.value.selectedStaffName) delCobro {
+                        selectStaff(selected.id, selected.fullName)
+                    } else if (selectedId.isNotBlank() && selected == null) delCobro {
                         secureStorage.clearSelectedStaffForCurrentVenue()
-                        // D9 (Codex r1 #9): con el cobro abierto la venta que se cobra no se vacía; el disco ya quedó sin el
-                        // vendedor, así que la venta siguiente no lo hereda.
-                        if (cobroLoImpide(avisar = false)) return@fold
                         _cartState.value = defaultCartState()
                         // El aviso era del carrito que se acaba de vaciar (igual que en `clearCart()`; A3 m1).
                         _avisoDelCarrito.value = null
@@ -1536,15 +1537,16 @@ class CartViewModel @Inject constructor(
     }
 
     fun consumePendingClassSeed() {
-        // D9: con el cobro abierto la clase no entra a la venta que se cobra, y la semilla NO se consume: entra al cerrarlo.
-        if (cobroLoImpide(avisar = false)) return
+        // D9: con el cobro abierto o una venta a medio cobrar, la clase no entra y la semilla NO se consume: entra a la venta
+        // siguiente (la pantalla la vuelve a pedir al cerrarse el cobro). Con abono, agregarla trababa el «Cobrar» (Codex r2 #1).
+        if (cobroLoImpide(avisar = false) || hayVentaAMedias()) return
         val seed = classCheckoutSeed.consume() ?: return
         viewModelScope.launch {
             if (productsRepository.products.value.isEmpty()) {
                 productsRepository.fetchProducts()
             }
             // D9 (Codex r1 #3): el cobro se abrió mientras cargaba el catálogo: la semilla regresa y entra al cerrarlo.
-            if (cobroLoImpide(avisar = false)) {
+            if (cobroLoImpide(avisar = false) || hayVentaAMedias()) {
                 if (!classCheckoutSeed.hasPending()) classCheckoutSeed.put(seed)
                 return@launch
             }
@@ -1577,7 +1579,6 @@ class CartViewModel @Inject constructor(
     }
 
     private fun freezePreparationForPendingProducts() {
-        if (cobroLoImpide(avisar = false)) return   // D9 (Codex r1 #6): llegó la config de cocina con el cobro abierto
         if (_pendingSplitOrder.value != null) return
         val immediate = immediateServiceCourse() ?: return
         val courses = serviceCoursesRepository?.courses?.value.orEmpty()
@@ -2460,7 +2461,7 @@ class CartViewModel @Inject constructor(
      * Esa parada sólo ocurre sin abonos en la orden, así que nunca regresa al carrito algo ya pagado.
      */
     fun traerValesDeLaSesion() {
-        delCobro { areaTicketRepository.session.current()?.let { replaceAreaTicketLines(it, _cartState.value.identidadDeVenta) } }
+        areaTicketRepository.session.current()?.let { replaceAreaTicketLines(it, _cartState.value.identidadDeVenta) }
     }
 
     /**
@@ -2682,9 +2683,6 @@ class CartViewModel @Inject constructor(
         // 🔴 D10 (Codex r1 #1): tampoco por la restauración al entrar a Cobrar. Mientras «Pagar después» manda esta venta, sus
         // vales se quedan apartados (sin dueño nuevo) y siguen la regla 8 cuando termine.
         if (pagarDespuesTomoLaFoto) return false
-        // D9: tampoco con el cobro abierto (restaurar al entrar a Cobrar, el latido, quitar un vale en red que responde tarde).
-        // El latido sigue renovando el apartado; si el servidor cambió sus vales, el cobro lo detecta y los trae él.
-        if (cobroLoImpide(avisar = false)) return false
         val sesion = areaTicketRepository.session
         if (_cartState.value.identidadDeVenta != venta || sesion.current()?.id != checkout.id) return false
         val duena = sesion.ventaDuena ?: venta.also(sesion::anotarVentaDuena)
@@ -3198,6 +3196,8 @@ class CartViewModel @Inject constructor(
         val code: String,
         val customerId: String,
         val staffId: String,
+        /** D9 (Codex r2 #4): la venta de la que es (`identidadDeVenta` antes de cerrarla); null en copias viejas. */
+        val venta: String? = null,
     )
 
     /**
@@ -3215,7 +3215,7 @@ class CartViewModel @Inject constructor(
         val staffId = _cartState.value.selectedStaffId.takeIf { it.isNotBlank() }
             ?: secureStorage.userId
             ?: return null
-        return ReferralPendiente(code = code, customerId = customerId, staffId = staffId)
+        return ReferralPendiente(code = code, customerId = customerId, staffId = staffId, venta = _cartState.value.identidadDeVenta)
     }
 
     suspend fun captureReferralOnPayment(
@@ -3246,7 +3246,8 @@ class CartViewModel @Inject constructor(
                 (e as? ReferralValidationException)?.let { ex ->
                     // D9 (Codex r1 #7): el rechazo es de ESTA captura. Si el carrito ya trae otro referido u otro cliente (la venta
                     // siguiente), no se le toca; si es el mismo, es el desenlace de su propio cobro.
-                    val esElMismo = _referralCode.value.trim() == captura.code && _selectedCustomer.value?.id == captura.customerId
+                    val esElMismo = _referralCode.value.trim() == captura.code && _selectedCustomer.value?.id == captura.customerId &&
+                        (captura.venta == null || captura.venta == _cartState.value.identidadDeVenta)
                     if (esElMismo) {
                         _referralValidation.value = ReferralCaptureUiState.Invalid(ex.reason)
                         clearReferralDiscountOnly(reponerElDelCliente = false)
@@ -3532,7 +3533,8 @@ class CartViewModel @Inject constructor(
      * hasta que está a salvo. Una venta con premio de sellos nunca entra a la fila para mandarse (R8).
      */
     suspend fun createPayLaterOrder(customerId: String): ResultadoPagarDespues {
-        if (cobroLoImpide()) return ResultadoPagarDespues.Error(AVISO_COBRO_ABIERTO)
+        // Sin el ámbar: el diálogo de «Pagar después» ya dice el rechazo (Codex r2 #11: eran dos avisos).
+        if (cobroLoImpide(avisar = false)) return ResultadoPagarDespues.Error(AVISO_COBRO_ABIERTO)
         bloqueoDeEntrega()?.let { return ResultadoPagarDespues.Error(it) }
         val cliente = _selectedCustomer.value?.takeIf { it.id == customerId } ?: SelectedCustomer(customerId, "Cliente")
         _pagarDespuesEnCurso.value = EnvioPagarDespues(cliente.name, _cartState.value.totalCents)

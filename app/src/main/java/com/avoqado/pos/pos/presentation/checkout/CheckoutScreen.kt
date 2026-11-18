@@ -644,16 +644,20 @@ fun CheckoutScreen(
      * Cierra el momento de upsell y sigue al cobro — por CUALQUIERA de las dos
      * superficies (la tira del cajero o la pantalla del cliente).
      *
-     * 🔴 Pase lo que pase, esto termina en `proceedToPayment()`. Un fallo al
+     * 🔴 Pase lo que pase, desde la tira de la cajera esto termina en `proceedToPayment()`. Un fallo al
      * agregar un postre no puede dejar al mostrador sin poder cobrar.
+     *
+     * 🔴 D9 (founder, 18-nov: «A», como Toast): desde la pantalla del CLIENTE sólo contesta «¿Algo más?» (agrega lo
+     * elegido o no) y NO abre el cobro: lo abre la cajera con «Cobrar» cuando termina. Si el cliente lo abría, quedaba
+     * encima de lo que la cajera hacía (un producto a medio agregar, un cliente a medio crear) y eso quedaba a medias.
      */
-    fun resolveUpsell(accept: Boolean) {
+    fun resolveUpsell(accept: Boolean, desdeElCliente: Boolean = false) {
         // Del FLUJO, no de `upsellMoment` capturado: el toque pudo llegar de la
         // pantalla del cliente, fuera de esta recomposición.
         val moment = upsellViewModel.moment.value ?: return
         if (!accept) {
             upsellViewModel.finish(emptyList(), 0)
-            proceedToPayment()
+            if (desdeElCliente) cartViewModel.refreshCustomerDisplay() else proceedToPayment()
             return
         }
         checkoutScope.launch {
@@ -667,7 +671,7 @@ fun CheckoutScreen(
 
             if (result == null) {
                 upsellViewModel.finish(emptyList(), 0)
-                proceedToPayment()
+                if (desdeElCliente) cartViewModel.refreshCustomerDisplay() else proceedToPayment()
                 return@launch
             }
 
@@ -675,7 +679,7 @@ fun CheckoutScreen(
             upsellViewModel.finish(result.added, addedCents)
             // El cliente ve su carrito ya actualizado antes de pagar.
             cartViewModel.refreshCustomerDisplay()
-            proceedToPayment(result.cart)
+            if (!desdeElCliente) proceedToPayment(result.cart)
         }
     }
 
@@ -1273,6 +1277,8 @@ fun CheckoutScreen(
             hoja = hojaDeTarjetas,
             onVender = vender@{
                 if (cartViewModel.hayConsultasDeCodigo || com.avoqado.pos.giftcards.domain.LectorParaTarjetas.abierta.value) return@vender
+                // D9 (Codex r2 #8): mientras «Pagar después» manda la venta, su rechazo la regresa al carrito: no se vende otra cosa.
+                if (cartViewModel.detenerPorPagarDespues()) return@vender
                 tarjetasViewModel.alAbrir(cartViewModel.cartState.value.isEmpty)
                 val venue = tarjetasViewModel.venueActual
                 val ajustes = venue?.let(tarjetasViewModel::ajustesParaVender)
@@ -2310,8 +2316,8 @@ fun CheckoutScreen(
     // Registrarlo una vez y no por momento: son las mismas dos funciones siempre.
     LaunchedEffect(Unit) {
         upsellViewModel.bindCustomerActions(
-            onConfirm = { resolveUpsell(accept = true) },
-            onDismiss = { resolveUpsell(accept = false) },
+            onConfirm = { resolveUpsell(accept = true, desdeElCliente = true) },
+            onDismiss = { resolveUpsell(accept = false, desdeElCliente = true) },
         )
     }
 
