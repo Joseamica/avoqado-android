@@ -341,14 +341,22 @@ class CartViewModelTarjetaEscaneadaTest {
         )
     }
 
-    @Test fun `D14 una tarjeta de regalo valida con la pistola en ingles se reconoce aunque haya productos parecidos`() = runTest {
-        // Codex r5 #2: dos productos coinciden SIN mayúsculas con la lectura del aparato; la tarjeta gana, como antes de r5.
-        val a = Product(id = "a", name = "A", priceValue = 10.0, sku = "abcd'efgh'jkmn'pqrs'k")
-        val b = Product(id = "b", name = "B", priceValue = 20.0, barcode = "Abcd'Efgh'Jkmn'Pqrs'K")
-        every { productsRepository.products } returns MutableStateFlow(listOf(a, b))
+    @Test fun `D14 en MOSTRADOR la segunda lectura no adivina tarjetas de regalo`() = runTest {
+        // Codex r7 #1: con el teclado en español la tarjeta se lee en su hoja (su propio lector), como en develop.
+        every { productsRepository.products } returns MutableStateFlow(emptyList())
         val vm = createViewModel()
-        val r = vm.resolveScannedBarcode("ABCD'EFGH'JKMN'PQRS'K", lecturaUs = "ABCD-EFGH-JKMN-PQRS-K")
-        assertTrue("$r", r is ScannedBarcodeResult.GiftCardFound)
+        assertEquals(
+            ScannedBarcodeResult.Unknown("CAFE'VERD'E000'0039'9"),
+            vm.resolveScannedBarcode("CAFE'VERD'E000'0039'9", lecturaUs = "CAFE-VERD-E000-0039-9"),
+        )
+    }
+
+    @Test fun `D14 un SKU guardado en minusculas se encuentra con la etiqueta en mayusculas`() = runTest {
+        // Codex r6 #2 y r7 #2: 17 letras y números, pero con U y L no es tarjeta: sí se compara sin mayúsculas.
+        val p = Product(id = "p", name = "Café", priceValue = 50.0, sku = "cafe-regular-000001")
+        every { productsRepository.products } returns MutableStateFlow(listOf(p))
+        val vm = createViewModel()
+        assertEquals(ScannedBarcodeResult.ProductFound(p), vm.resolveScannedBarcode("CAFE'REGULAR'000001", lecturaUs = "CAFE-REGULAR-000001"))
     }
 
     @Test fun `D14 un producto encontrado sin mayusculas por el aparato no gana al exacto de la otra lectura`() = runTest {

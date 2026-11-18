@@ -2561,7 +2561,7 @@ class CartViewModel @Inject constructor(
         consultasDeCodigo.update { it + 1 }
         try {
             // D14 (rediseño tras Codex r6): primero la lectura del aparato, EXACTAMENTE como antes (vales, báscula, tarjetas,
-            // productos). La de EE. UU. sólo entra después y sólo para productos o una tarjeta en su formato impreso.
+            // productos). La de EE. UU. sólo entra después y sólo para productos del catálogo.
             val resultado = resolverCodigo(rawCode)
             if (lecturaUs == null) return resultado
             // Las teclas de «AB-123» con la pistola en inglés y de «AB'123» con la pistola en español son LAS MISMAS: si cada
@@ -2570,12 +2570,11 @@ class CartViewModel @Inject constructor(
             val doble = ScannedBarcodeResult.CodigoDoble(avisoDeCodigoDoble(rawCode.trim(), lecturaUs.trim()))
             return when (resultado) {
                 is ScannedBarcodeResult.ProductFound -> if (enIngles.any { it.id != resultado.product.id }) doble else resultado
+                // Codex r7 #1: la tarjeta de regalo NO se adivina con la segunda lectura (un SKU de proveedor podía abrir la hoja
+                // de saldo): con el teclado en español se lee en la hoja de tarjetas, que tiene su propio lector, como hoy.
                 is ScannedBarcodeResult.Unknown -> when {
                     enIngles.size > 1 -> doble
                     enIngles.size == 1 -> ScannedBarcodeResult.ProductFound(enIngles.single())
-                    com.avoqado.pos.giftcards.domain.ReconocedorDeTarjeta.esTarjetaImpresa(lecturaUs) ->
-                        com.avoqado.pos.giftcards.domain.ReconocedorDeTarjeta.reconocer(lecturaUs)
-                            ?.let { ScannedBarcodeResult.GiftCardFound(it) } ?: resultado
                     else -> resultado
                 }
                 else -> resultado

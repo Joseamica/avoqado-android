@@ -18,7 +18,7 @@ object ReconocedorDeTarjeta {
     /**
      * D14 (Codex r5 #3): ¿es un código que el SERVIDOR pudo emitir? Mismo `normalizeGiftCardCode`: mayúsculas, I/L → 1,
      * O → 0, alfabeto y carácter de control (Luhn mod 32). Lo usa la segunda lectura de la pistola, que no debe convertir un
-     * SKU desconocido con guiones («CAFE-REGULAR-000001») en una consulta de tarjeta. Una liga de tarjeta también cuenta.
+     * SKU con guiones («CAFE-REGULAR-000001») en una tarjeta al comparar sin mayúsculas. Una liga de tarjeta también cuenta.
      */
     fun esDelServidor(crudo: String): Boolean {
         val prueba = reconocer(crudo) ?: return false
@@ -27,14 +27,6 @@ object ReconocedorDeTarjeta {
         if (limpio.length != 17 || limpio.any { it !in ALFABETO }) return false
         return caracterDeControl(limpio.substring(0, 16)) == limpio[16]
     }
-
-    private val impresa = Regex("^[0-9A-Za-z]{4}-[0-9A-Za-z]{4}-[0-9A-Za-z]{4}-[0-9A-Za-z]{4}-[0-9A-Za-z]$")
-
-    /**
-     * D14 (Codex r6 #3): la segunda lectura de la pistola sólo cuenta como tarjeta en su formato IMPRESO
-     * (`XXXX-XXXX-XXXX-XXXX-X`, `formatGiftCardCode` del servidor) y si [esDelServidor]. Un SKU con otros guiones no.
-     */
-    fun esTarjetaImpresa(crudo: String): Boolean = impresa.matches(crudo.trim()) && esDelServidor(crudo)
 
     /** Luhn mod 32 sobre el alfabeto Crockford (`caracterDeControl` de `giftCardCode.ts`). */
     private fun caracterDeControl(payload: String): Char {
