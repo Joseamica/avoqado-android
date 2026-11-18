@@ -268,12 +268,23 @@ class CartViewModelTarjetaEscaneadaTest {
         assertEquals(ScannedBarcodeResult.ProductFound(product), vm.resolveScannedBarcode("PIZZAS'003", lecturaUs = "PIZZAS-003"))
     }
 
-    @Test fun `D14 la lectura del aparato gana si encuentra algo`() = runTest {
+    @Test fun `D14 la lectura del aparato gana si la de EE UU no existe`() = runTest {
         val delAparato = Product(id = "a", name = "Etiqueta rara", priceValue = 10.0, sku = "PIZZAS'003")
-        val otra = Product(id = "b", name = "Pizza", priceValue = 169.0, sku = "PIZZAS-003")
-        every { productsRepository.products } returns MutableStateFlow(listOf(delAparato, otra))
+        every { productsRepository.products } returns MutableStateFlow(listOf(delAparato))
         val vm = createViewModel()
         assertEquals(ScannedBarcodeResult.ProductFound(delAparato), vm.resolveScannedBarcode("PIZZAS'003", lecturaUs = "PIZZAS-003"))
+    }
+
+    @Test fun `D14 si las dos lecturas son productos distintos no se agrega ninguno`() = runTest {
+        // Codex r3: con la pistola en inglés «AB-123» y con la pistola en español «AB'123» son las MISMAS teclas.
+        val conApostrofo = Product(id = "a", name = "Etiqueta rara", priceValue = 10.0, sku = "PIZZAS'003")
+        val conGuion = Product(id = "b", name = "Pizza", priceValue = 169.0, sku = "PIZZAS-003")
+        every { productsRepository.products } returns MutableStateFlow(listOf(conApostrofo, conGuion))
+        val vm = createViewModel()
+        assertEquals(
+            ScannedBarcodeResult.Error(avisoDeCodigoDoble("PIZZAS'003", "PIZZAS-003")),
+            vm.resolveScannedBarcode("PIZZAS'003", lecturaUs = "PIZZAS-003"),
+        )
     }
 
     @Test fun `D14 si ninguna de las dos lecturas existe se avisa con la del aparato`() = runTest {

@@ -320,6 +320,7 @@ fun TableOrderScreen(
     var previousChargeNotice by cobroDeLaMesa::avisoCobroAnterior
     val tablesViewModel: TablesViewModel = androidx.hilt.navigation.compose.hiltViewModel()
     var unknownBarcode by remember { mutableStateOf<String?>(null) }
+    var codigoDoble by remember { mutableStateOf<String?>(null) }
     // Menú … por tiempo (¡Listo!/Repetir). Par (curso, abierto).
     var courseMenuTarget by remember { mutableStateOf<Pair<String?, String>?>(null) }
     var showDiscardDialog by remember { mutableStateOf(false) }
@@ -995,12 +996,18 @@ fun TableOrderScreen(
                 // escáner y la otra ya no agrega (Codex d2 #3).
                 if (!showBarcodeScanner) return@escanear
                 showBarcodeScanner = false
-                fun buscar(codigo: String) = catalogViewModel.products.value.find { product ->
+                fun exacto(codigo: String) = catalogViewModel.products.value.find { product ->
                     product.sku == codigo || product.barcode == codigo || product.gtin == codigo
-                } ?: catalogViewModel.products.value.parecidoACodigo(codigo)
+                }
+                fun buscar(codigo: String) = exacto(codigo) ?: catalogViewModel.products.value.parecidoACodigo(codigo)
+                // D14 (Codex r3): las dos lecturas son las MISMAS teclas; si cada una es un producto distinto, no se adivina.
+                val delAparato = exacto(barcode)
+                val enIngles = lecturaUs?.let(::exacto)
                 // D14: la pistola en inglés con el teclado del aparato en español («PIZZAS'003»).
                 val matched = buscar(barcode) ?: lecturaUs?.let(::buscar)
-                if (matched != null) {
+                if (delAparato != null && enIngles != null && delAparato.id != enIngles.id) {
+                    codigoDoble = com.avoqado.pos.pos.presentation.cart.avisoDeCodigoDoble(barcode.trim(), lecturaUs.trim())
+                } else if (matched != null) {
                     handleProductTap(matched)
                     panelTab = PanelTab.CUENTA
                 } else {
@@ -1024,6 +1031,15 @@ fun TableOrderScreen(
                 onDismiss = { showBarcodeScanner = false },
             )
         }
+    }
+
+    codigoDoble?.let { aviso ->
+        AvoqadoDialog(
+            title = "Dos productos con esta etiqueta",
+            description = aviso,
+            onDismiss = { codigoDoble = null },
+            actionButton = { PrimaryButton(text = "Entendido", onClick = { codigoDoble = null }, fullWidth = true) },
+        ) {}
     }
 
     unknownBarcode?.let { scannedCode ->

@@ -72,6 +72,11 @@ import java.util.UUID
 import javax.inject.Inject
 import com.avoqado.pos.core.util.aCentavos
 
+/** D14: la misma etiqueta coincide con dos productos según cómo esté configurada la pistola. */
+fun avisoDeCodigoDoble(delAparato: String, enIngles: String) =
+    "La etiqueta puede ser «$enIngles» o «$delAparato» y los dos están en el catálogo. Agrega el producto a mano " +
+        "o cambia uno de los dos códigos."
+
 sealed interface ScannedBarcodeResult {
     data class GiftCardFound(val prueba: com.avoqado.pos.giftcards.data.PruebaDeTarjeta) : ScannedBarcodeResult
     data class ProductFound(val product: Product) : ScannedBarcodeResult
@@ -2552,6 +2557,16 @@ class CartViewModel @Inject constructor(
         if (cobroAbierto) return ScannedBarcodeResult.Error("Se abrió el cobro: vuelve a escanear al terminar.")
         consultasDeCodigo.update { it + 1 }
         try {
+            // D14 (Codex r3): las teclas de «AB-123» con la pistola en inglés y de «AB'123» con la pistola en español son LAS
+            // MISMAS. Si el catálogo tiene los dos, no hay forma de saber cuál es la etiqueta: se avisa y no se agrega ninguno
+            // (como el PLU de báscula repetido). Sólo se mira el catálogo del aparato: nada de vales ni servidor.
+            if (lecturaUs != null) {
+                val delAparato = productoConCodigo(rawCode)
+                val enIngles = productoConCodigo(lecturaUs)
+                if (delAparato != null && enIngles != null && delAparato.id != enIngles.id) {
+                    return ScannedBarcodeResult.Error(avisoDeCodigoDoble(rawCode.trim(), lecturaUs.trim()))
+                }
+            }
             val resultado = resolverCodigo(rawCode)
             // D14: la pistola en inglés con el teclado del aparato en español («PIZZAS'003»). Sólo si la lectura del aparato no
             // encontró nada; si tampoco la de EE. UU. encuentra, se avisa con la del aparato, como siempre.
@@ -2565,11 +2580,14 @@ class CartViewModel @Inject constructor(
         }
     }
 
+    private fun productoConCodigo(rawCode: String): Product? {
+        val code = rawCode.trim()
+        return products.value.firstOrNull { it.sku == code || it.barcode == code || it.gtin == code }
+    }
+
     private suspend fun resolverCodigo(rawCode: String): ScannedBarcodeResult {
         val code = rawCode.trim()
-        val localProduct = products.value.firstOrNull {
-            it.sku == code || it.barcode == code || it.gtin == code
-        }
+        val localProduct = productoConCodigo(code)
         if (!com.avoqado.pos.pos.data.isAreaTicketCode(code)) {
             localProduct?.let { return ScannedBarcodeResult.ProductFound(it) }
 
