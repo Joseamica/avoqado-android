@@ -1096,12 +1096,17 @@ class ComandaDispatcherTest {
             currentCoroutineContext().ensureActive()
             filas[fila.entregaId] = fila
         }
-        override suspend fun delVenue(venueId: String) = filas.values.filter { it.venueId == venueId }.sortedBy { it.creadaEnMillis }
+        /** D28 (Codex código r3): la base no deja leer la lista (así cada `quitarPapel` se anota en memoria). */
+        var fallaDelVenue = false
+        override suspend fun delVenue(venueId: String): List<EntregaKdsPendienteEntity> {
+            if (fallaDelVenue) throw IllegalStateException("disco ocupado")
+            return filas.values.filter { it.venueId == venueId }.sortedBy { it.creadaEnMillis }
+        }
         override suspend fun borrar(entregaId: String): Int {
             currentCoroutineContext().ensureActive()
             return if (filas.remove(entregaId) != null) 1 else 0
         }
-        override suspend fun existe(entregaId: String) = filas.containsKey(entregaId)
+        override suspend fun porId(entregaId: String) = filas[entregaId]
         override suspend fun soltar(entregaId: String, ahora: Long): Int {
             currentCoroutineContext().ensureActive()
             val fila = filas[entregaId] ?: return 0
@@ -1413,9 +1418,13 @@ class ComandaDispatcherTest {
         var tronando: Set<String> = emptySet()
         var pantallaContesta = false
         val hojas = mutableListOf<Pair<String?, Boolean>>()
-        private val wifi = EntregaPorWifi(
+        /** Lo que pasa UNA vez, en el siguiente empuje a la pantalla (p. ej., la libreta imprime mientras la pasada avanza). */
+        var alEmpujar: (suspend () -> Unit)? = null
+        val wifi = EntregaPorWifi(
             transporteLan, tabla,
-            mockk<ClienteDeComandas> { coEvery { entregar(any(), any(), any()) } answers { pantallaContesta } },
+            mockk<ClienteDeComandas> {
+                coEvery { entregar(any(), any(), any()) } coAnswers { alEmpujar?.also { alEmpujar = null }?.invoke(); pantallaContesta }
+            },
         )
         /** La ronda insiste lo de siempre (`despacharEnFondo` no acota los intentos), pero sin esperas reales. */
         val despachador = ComandaDispatcher(
@@ -1467,10 +1476,15 @@ class ComandaDispatcherTest {
          * La venta de mostrador: la impresora truena y la pantalla no acusa. El `NoSalio` va a la libreta dentro del despacho,
          * como lo guarda `PaymentFlowViewModel.aplicarEstadoDeComanda`. [guardadaEn]: la hora del aparato al guardarla.
          */
-        suspend fun despachar(lineas: List<RoutableItem> = listOf(cafePorProducto), guardadaEn: Long = System.currentTimeMillis()) =
+        suspend fun despachar(
+            lineas: List<RoutableItem> = listOf(cafePorProducto),
+            guardadaEn: Long = System.currentTimeMillis(),
+            orderNumber: String = "1234",
+            folio: String = "sale:ext-1",
+        ) =
             despachador.dispatch(
-                venueId = "venue-1", lines = lineas, orderNumber = "1234", orderType = "En tienda",
-                maxIntentos = 1, servidorLaTiene = true, origenDelFolio = "sale:ext-1",
+                venueId = "venue-1", lines = lineas, orderNumber = orderNumber, orderType = "En tienda",
+                maxIntentos = 1, servidorLaTiene = true, origenDelFolio = folio,
                 alCambiarEstado = { e -> if (e is EstadoDeComanda.NoSalio) libreta.guardar(e, guardadaEn) },
             ) as EstadoDeComanda.NoSalio
 
@@ -1564,6 +1578,46 @@ class ComandaDispatcherTest {
         cocina.tic()
         assertEquals(listOf("st_barra" to false), cocina.hojas)
         assertTrue("las dos tarjetas llegaron a la pantalla", cocina.tabla.filas.isEmpty())
+    }
+
+    /**
+     * Codex código r3: la pasada del replay lee la cola al empezar. Mientras empuja una tarjeta anterior (B), vuelve el papel y
+     * la libreta imprime la comanda A y otras 500: la base ya dice que A no lleva papel, pero la memoria la olvidó (tope). Al
+     * llegar a A con su copia vieja, el replay relee la fila: cero hojas de RESPALDO, y la fila sigue para la pantalla.
+     */
+    @Test
+    fun `P1 D28 si la libreta imprime una comanda mientras la pasada atiende otra, el replay relee la fila y no saca RESPALDO`() = runTest {
+        val cocina = CocinaDelEnsayo(barraConImpresoraYPantalla)
+        // B: una comanda anterior que la libreta ya imprimió; su fila sólo espera a la pantalla (y va primero en la cola).
+        cocina.despachar(orderNumber = "1111", folio = "sale:ext-b")
+        cocina.impresoraPrendida = true
+        assertEquals(EstadoDeComanda.Salio, cocina.laLibretaImprime())
+        val idB = "sale:ext-b:st_barra|oi_2"
+        cocina.tabla.filas[idB] = cocina.tabla.filas.getValue(idB).copy(creadaEnMillis = 1)
+        // A: la comanda del ensayo; la libreta la tiene.
+        cocina.impresoraPrendida = false
+        cocina.despachar()
+        val idA = "sale:ext-1:st_barra|oi_2"
+        assertEquals("A con papel, B sin él (en orden de id)", listOf(true, false), cocina.filasConPapel())
+
+        cocina.impresoraPrendida = true
+        cocina.alEmpujar = {
+            assertEquals(EstadoDeComanda.Salio, cocina.laLibretaImprime()) // sale A: la base la deja sin papel
+            cocina.tabla.fallaDelVenue = true
+            repeat(EntregaPorWifi.TOPE_DE_PAPELES) { n ->
+                cocina.wifi.quitarPapel("venue-1", "OTRA-$n", listOf(TicketPlan("st_barra", false, listOf(ConsolidatedLine("Té", 1, emptyList(), null, listOf("otra_$n"))))))
+            }
+            cocina.tabla.fallaDelVenue = false
+        }
+        cocina.tic()
+
+        assertTrue("la memoria ya olvidó a A", !cocina.wifi.papelYaSalio(TrabajoPendiente(
+            planes = listOf(TicketPlan("st_barra", false, listOf(ConsolidatedLine("Café", 1, emptyList(), null, listOf("oi_2"))))),
+            config = barraConImpresoraYPantalla, orderNumber = "1234", orderType = "En tienda", serverName = null,
+            comboNames = emptyMap(), venueId = "venue-1", orderId = null,
+        )))
+        assertEquals("cero hojas de RESPALDO: B y A salieron una vez, por la libreta", listOf("st_barra" to false, "st_barra" to false), cocina.hojas)
+        assertTrue("la fila de A sigue para la pantalla", cocina.tabla.filas.containsKey(idA))
     }
 
     /** D28 no toca «sólo pantalla»: su papel de respaldo vive en la fila, y el replay lo saca si la libreta no lo tiene. */

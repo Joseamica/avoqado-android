@@ -125,6 +125,14 @@ class KdsLanSqlTest {
         )
     }
 
+    /** D28 (Codex código r3): el replay relee UNA fila por su id antes de imprimir; una que ya no está no vuelve. */
+    @Test
+    fun `la relectura trae solo esa entrega y nada si ya no esta`() {
+        entrega("sale:a:st_barra", renglones = "oi_1"); entrega("sale:b:st_barra", renglones = "oi_1")
+        assertEquals(listOf("sale:b:st_barra"), folios(KdsLanSql.ENTREGA_POR_ID, "entregaId" to "sale:b:st_barra|oi_1"))
+        assertEquals(emptyList<String>(), folios(KdsLanSql.ENTREGA_POR_ID, "entregaId" to "sale:c:st_barra|oi_1"))
+    }
+
     @Test
     fun `las entregas de la sucursal salen en orden de creacion y sin las de otra sucursal`() {
         entrega("b", creada = 2); entrega("a", creada = 1); entrega("ajena", venue = "venue-2", creada = 0)

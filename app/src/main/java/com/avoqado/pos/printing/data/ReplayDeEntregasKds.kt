@@ -198,13 +198,17 @@ class ReplayDeEntregasKds @Inject constructor(
         // tarda segundos. Si en ese rato alguien la resolvió —«Ya la canté» suelta la libreta y borra su fila; o su papel salió por
         // otro camino—, esta copia ya es vieja: imprimirla sacaba una comanda que la cocina ya tiene. Revisar e imprimir se hace con
         // el TURNO que también toma el borrado de «Ya la canté» ([CandadoDeCierres]): el cierre no puede terminar en medio.
-        candadoDeCierres.turno.withLock { decidirPapel(fila, venueId, trabajo) }
+        candadoDeCierres.turno.withLock { decidirPapel(fila, venueId) }
     }
 
-    /** Con el turno de [CandadoDeCierres] tomado: revisa que la fila siga viva y sea de la sucursal vigente, y decide su papel. */
-    private suspend fun decidirPapel(fila: EntregaKdsPendienteEntity, venueId: String, trabajo: TrabajoPendiente) {
-        if (!sigueEnLaTabla(fila)) return
-        // D28: esta fila se leyó al empezar la pasada; si en ese rato la libreta imprimió su hoja, ya no lleva papel.
+    /**
+     * Con el turno de [CandadoDeCierres] tomado: relee la fila, revisa que siga con papel y sea de la sucursal vigente, y decide su
+     * papel con lo RELEÍDO. D28 (Codex código r3): mientras la pasada atendía otras filas, la libreta pudo imprimir ésta y dejarla
+     * sin papel en la base; la copia del inicio de la pasada ya no sirve. La memoria ([EntregaPorWifi.papelYaSalio]) sólo cubre la
+     * escritura de ese despojo que falló.
+     */
+    private suspend fun decidirPapel(fila: EntregaKdsPendienteEntity, venueId: String) {
+        val trabajo = releer(fila)?.takeIf { it.planes.isNotEmpty() } ?: return
         if (comandasPendientesStore.seEstaCerrando(trabajo) || laLibretaLoTiene(trabajo) || entregaPorWifi.papelYaSalio(trabajo)) return
         // I1: la espera a la pantalla (hasta 3 s + el empuje) da tiempo a un cambio de sucursal, y el refresco de la config
         // (hasta 1.5 s) también. Se revalida ANTES — nunca se refresca la config de una sucursal que ya no es la vigente —
@@ -244,16 +248,19 @@ class ReplayDeEntregasKds @Inject constructor(
     }
 
     /**
-     * nab17320: ¿la fila sigue pendiente? Si la base no deja leer, esta pasada NO la imprime (Codex r5 #1: pudo haberse cantado);
-     * la fila, si de verdad sigue, la retoma el siguiente tic (un minuto): espera, nunca pérdida.
+     * nab17320 y D28: el trabajo de la fila tal como está AHORA en la base, o `null` si ya no está (se resolvió por otro camino) o
+     * es ilegible. Si la base no deja leer, esta pasada NO la imprime (Codex r5 #1: pudo haberse cantado); la fila, si de verdad
+     * sigue, la retoma el siguiente tic (un minuto): espera, nunca pérdida.
      */
-    private suspend fun sigueEnLaTabla(fila: EntregaKdsPendienteEntity): Boolean = try {
-        dao.existe(fila.entregaId).also { if (!it) Log.i(TAG, "✋ ${fila.entregaId} ya se resolvió por otro camino: no se imprime") }
+    private suspend fun releer(fila: EntregaKdsPendienteEntity): TrabajoPendiente? = try {
+        val actual = dao.porId(fila.entregaId)
+        if (actual == null) Log.i(TAG, "✋ ${fila.entregaId} ya se resolvió por otro camino: no se imprime")
+        actual?.let { runCatching { json.decodeFromString(TrabajoPendiente.serializer(), it.trabajoJson) }.getOrNull() }
     } catch (e: CancellationException) {
         throw e
     } catch (e: Exception) {
-        Log.w(TAG, "No se pudo revisar si ${fila.entregaId} sigue pendiente: ${e.message} — el siguiente tic lo intenta")
-        false
+        Log.w(TAG, "No se pudo releer ${fila.entregaId}: ${e.message} — el siguiente tic lo intenta")
+        null
     }
 
     /** I1: si la sucursal ya no es la vigente, se deja todo (nada se borra) y la pasada termina. */
