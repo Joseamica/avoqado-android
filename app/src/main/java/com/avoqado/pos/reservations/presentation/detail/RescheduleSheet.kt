@@ -76,6 +76,11 @@ fun RescheduleSheet(
     LaunchedEffect(guardadoSinRed) {
         if (guardadoSinRed != null) pendingConfirm = null
     }
+    // Si el envío falla (también la red cortada a media petición: «No pudimos confirmar el cambio…»), la confirmación de
+    // pantalla completa se cierra para que el aviso se vea aquí y no quede tapado (Codex r2 #1).
+    LaunchedEffect(state.error) {
+        if (state.error != null) pendingConfirm = null
+    }
 
     if (showDatePicker) {
         val datePickerState = rememberDatePickerState(

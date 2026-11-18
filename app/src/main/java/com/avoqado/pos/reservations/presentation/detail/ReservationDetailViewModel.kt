@@ -6,6 +6,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.data.network.ServerErrorText
+import com.avoqado.pos.core.data.network.SesionSinRenovar
 import com.avoqado.pos.core.util.ConnectivityMonitor
 import com.avoqado.pos.pos.data.ProductsRepository
 import com.avoqado.pos.printing.data.ComandaPrinter
@@ -86,12 +87,16 @@ class ReservationDetailViewModel @Inject constructor(
                 } else {
                     // na15bdb8: nunca el texto crudo del sistema («Failed to connect to /192.168…», en inglés).
                     val e = r.exceptionOrNull()
-                    val sinRed = ServerErrorText.isOffline(e)
-                    it.copy(
-                        isLoading = false,
-                        errorSinRed = sinRed,
-                        error = if (sinRed) TEXTO_SIN_RED_AL_CARGAR else ServerErrorText.humanize(e, "No se pudo cargar la cita."),
-                    )
+                    when {
+                        // La sesión no se renovó: su propio texto ya lo explica (Codex r2 #6).
+                        e is SesionSinRenovar -> it.copy(
+                            isLoading = false,
+                            errorSinRed = !e.motivo.startsWith("servidor:"),
+                            error = ServerErrorText.humanize(e),
+                        )
+                        ServerErrorText.isOffline(e) -> it.copy(isLoading = false, errorSinRed = true, error = TEXTO_SIN_RED_AL_CARGAR)
+                        else -> it.copy(isLoading = false, error = ServerErrorText.humanize(e, "No se pudo cargar la cita."))
+                    }
                 }
             }
         }
@@ -145,7 +150,15 @@ class ReservationDetailViewModel @Inject constructor(
                     )
                     // La red se cortó A MEDIA petición (el aparato aún creía tener red): pudo llegar o no. No se encola a
                     // ciegas ni se dice «error»: se pide revisar antes de repetir (na15bdb8, Codex r1 #4).
-                    ServerErrorText.isOffline(r.exceptionOrNull()) -> current.copy(
+                    r.exceptionOrNull() is SesionSinRenovar -> current.copy(
+                        reservation = before,
+                        pendingAction = null,
+                        errorSinRed = !(r.exceptionOrNull() as SesionSinRenovar).motivo.startsWith("servidor:"),
+                        error = ServerErrorText.humanize(r.exceptionOrNull()),
+                    )
+                    // Una respuesta cortada a la mitad (`ProtocolException`, «unexpected end of stream») tampoco dice si se
+                    // guardó (Codex r2 #1).
+                    ServerErrorText.isOffline(r.exceptionOrNull()) || r.exceptionOrNull() is java.net.ProtocolException -> current.copy(
                         reservation = before,
                         pendingAction = null,
                         errorSinRed = true,

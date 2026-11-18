@@ -134,4 +134,37 @@ class ReagendarSinRedTest {
         assertEquals("Ese horario ya está ocupado", v.state.value.error)
         assertEquals(false, v.state.value.errorSinRed)
     }
+
+    @Test
+    fun `una respuesta cortada a la mitad tambien pide revisar la cita`() = runTest(dispatcher) {
+        val repo: ReservationRepository = mockk(relaxed = true)
+        every { repo.changes } returns MutableSharedFlow()
+        coEvery { repo.fetchOne("r1", any()) } returns Result.success(cita())
+        coEvery { repo.runAction("r1", com.avoqado.pos.reservations.domain.ReservationAction.RESCHEDULE, reagendar) } returns
+            Result.failure(java.net.ProtocolException("unexpected end of stream"))
+
+        val v = vm(repo)
+        advanceUntilIdle()
+        v.runAction(com.avoqado.pos.reservations.domain.ReservationAction.RESCHEDULE, reagendar)
+        advanceUntilIdle()
+
+        assertEquals(ReservationDetailViewModel.TEXTO_SIN_CONFIRMAR, v.state.value.error)
+    }
+
+    @Test
+    fun `la sesion que no se renovo conserva su propio texto`() = runTest(dispatcher) {
+        val repo: ReservationRepository = mockk(relaxed = true)
+        every { repo.changes } returns MutableSharedFlow()
+        coEvery { repo.fetchOne("r1", any()) } returns Result.success(cita())
+        coEvery { repo.runAction("r1", com.avoqado.pos.reservations.domain.ReservationAction.RESCHEDULE, reagendar) } returns
+            Result.failure(com.avoqado.pos.core.data.network.SesionSinRenovar("servidor:503"))
+
+        val v = vm(repo)
+        advanceUntilIdle()
+        v.runAction(com.avoqado.pos.reservations.domain.ReservationAction.RESCHEDULE, reagendar)
+        advanceUntilIdle()
+
+        assertEquals("Sin conexión: no se pudo renovar la sesión.", v.state.value.error)
+        assertEquals("el servidor contestó mal: no es falta de red", false, v.state.value.errorSinRed)
+    }
 }

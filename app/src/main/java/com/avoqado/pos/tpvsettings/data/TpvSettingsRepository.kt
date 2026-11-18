@@ -755,16 +755,16 @@ class TpvSettingsRepository internal constructor(
             val result = json.decodeFromString<VenueSettingsResponse>(body)
             val data = result.data?.takeIf { result.success } ?: return
             val terminal = data.deviceTerminal
-            // na5c51e4: el PIN de gerente (y el «Cambio», de la misma fila del negocio) también llegan aquí, aunque no venga la
-            // terminal. Sólo lo que el servidor MANDÓ de verdad: un servidor viejo que no trae el campo no lo apaga con el
-            // `false` de relleno, y si la lectura de esa fila falló (`promotionsPanel: failed`) se conserva lo que había.
+            // na5c51e4: el PIN de gerente también llega aquí, aunque no venga la terminal. Sólo si el servidor lo MANDÓ de verdad:
+            // un servidor viejo que no trae el campo no lo apaga con el `false` de relleno, y si la lectura de esa fila falló
+            // (`promotionsPanel: failed`) se conserva lo que había. El «Cambio» NO: va junto con «Sólo saldo a favor» y
+            // aplicarlo solo dejaría reglas de devolución viejas (Codex r2 #5); ése sigue con el refresco completo.
             val fila = venueRowSiVino(body, data)
             val aplicado = synchronized(ticketLock) {
                 if (completoGen != generacion || completosEnCurso > 0 || secureStorage.venueId != venueId || loadedVenueId != venueId) {
                     null
                 } else {
                     fila.pin?.let { _managerPinOverrideEnabled.value = it; secureStorage.managerPinOverrideEnabled = it }
-                    fila.cambios?.let { _exchangesEnabled.value = it; secureStorage.exchangesEnabled = it }
                     terminal?.let {
                         _terminalNavigation.value.copy(
                             visibleCategoryIds = it.visibleCategoryIds,
@@ -1082,20 +1082,20 @@ internal data class ComponentsStatusDto(
 internal data class SettingsFingerprintsDto(val settings: String? = null)
 
 /** Lo de la fila del negocio que el refresco suave puede aplicar; `null` = no vino o no es de fiar (no se toca). */
-internal data class FilaDelNegocioSuave(val pin: Boolean?, val cambios: Boolean?)
+internal data class FilaDelNegocioSuave(val pin: Boolean?)
 
 /**
  * na5c51e4: qué trae DE VERDAD la respuesta. El DTO pone `false` donde falta un campo; aquí se mira el cuerpo crudo para no
  * apagar el PIN con el relleno de un servidor viejo. Con la fila del negocio fallida (`promotionsPanel: failed`), nada.
  */
 internal fun venueRowSiVino(body: String, data: VenueSettingsData): FilaDelNegocioSuave {
-    if (data.componentsStatus?.promotionsPanel == ComponentsStatusDto.FAILED) return FilaDelNegocioSuave(null, null)
+    if (data.componentsStatus?.promotionsPanel == ComponentsStatusDto.FAILED) return FilaDelNegocioSuave(null)
     val crudo = runCatching {
         (Json.parseToJsonElement(body) as? kotlinx.serialization.json.JsonObject)?.get("data") as? kotlinx.serialization.json.JsonObject
-    }.getOrNull() ?: return FilaDelNegocioSuave(null, null)
+    }.getOrNull() ?: return FilaDelNegocioSuave(null)
     fun booleano(llave: String): Boolean? =
         (crudo[llave] as? kotlinx.serialization.json.JsonPrimitive)?.takeIf { !it.isString }?.content?.toBooleanStrictOrNull()
-    return FilaDelNegocioSuave(pin = booleano("managerPinOverrideEnabled"), cambios = booleano("exchangesEnabled"))
+    return FilaDelNegocioSuave(pin = booleano("managerPinOverrideEnabled"))
 }
 
 @Serializable

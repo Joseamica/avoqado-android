@@ -14,7 +14,7 @@ object CanalDeAviso {
     data class Opcion(val valor: RescheduleNotificationChannel, val texto: String, val ayuda: String? = null)
 
     val OPCIONES: List<Opcion> = listOf(
-        Opcion(RescheduleNotificationChannel.push, "WhatsApp o correo (el que tenga)", "Si no tiene WhatsApp o no le llega, se le manda por correo."),
+        Opcion(RescheduleNotificationChannel.push, "WhatsApp o correo (el que tenga)", "Por WhatsApp si tiene teléfono; si no tiene, por correo."),
         Opcion(RescheduleNotificationChannel.whatsapp, "Sólo WhatsApp"),
         Opcion(RescheduleNotificationChannel.email, "Sólo correo"),
         Opcion(RescheduleNotificationChannel.none, "Sin notificación"),

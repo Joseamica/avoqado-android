@@ -309,7 +309,7 @@ class TpvSettingsRepositoryFiltroTest {
 
         r.refrescarFiltroDelAparato(VENUE_ID)
         assertEquals("se prendió en el DASHBOARD", true, r.managerPinOverrideEnabled.value)
-        assertEquals(true, r.exchangesEnabled.value)
+        assertEquals("el Cambio sigue con el refresco completo (va con «Sólo saldo a favor»)", false, r.exchangesEnabled.value)
 
         r.refrescarFiltroDelAparato(VENUE_ID)
         assertEquals("se apagó en el DASHBOARD", false, r.managerPinOverrideEnabled.value)
