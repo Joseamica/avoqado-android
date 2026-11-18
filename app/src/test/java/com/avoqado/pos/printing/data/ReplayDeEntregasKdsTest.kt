@@ -422,4 +422,42 @@ class ReplayDeEntregasKdsTest {
         coVerify(exactly = 1) { cola.enqueue("venue-1", "KDS_TICKET_MARK", any(), any(), false) }
         coVerify(exactly = 3) { dao.borrar("sale:vieja:st_barra|") }
     }
+
+    // MARK: - nab17320: «Ya la canté» a media pasada
+
+    /**
+     * nab17320 (tarjeta de la nube, 17-nov): la pasada lee sus filas AL EMPEZAR. Mientras empuja la fila B (hasta 3 s), la
+     * cajera toca «Ya la canté» sobre la comanda A: la libreta la suelta y `cerrarPorPapel` borra su fila. La pasada sigue
+     * con su copia vieja de A: `laLibretaLoTiene(A)` ya da falso y la manda a `reintentar` — sale el papel de una comanda
+     * que la cocina ya tiene cantada. Una fila que ya no está en la tabla no se imprime.
+     */
+    @Test
+    fun `P1 una comanda cantada con Ya la cante mientras la pasada procesa otra fila no se imprime`() = runTest {
+        val plan = TicketPlan("st_barra", false, listOf(ConsolidatedLine("Café", 1, emptyList(), null, listOf("oi_a"))))
+        val trabajoA = trabajo.copy(orderNumber = "A-1", planes = listOf(plan))
+        val enLibreta = MutableStateFlow(listOf(EstadoDeComanda.NoSalio(listOf("Barra"), "offline", "A-1", trabajoA)))
+        every { pendientes.pendiente } returns MutableStateFlow(enLibreta.value.first())
+        every { pendientes.pendientes } returns enLibreta
+        val filaA = fila("sale:a:st_barra", 0).copy(
+            entregaId = "sale:a:st_barra|oi_a",
+            trabajoJson = Json.encodeToString(TrabajoPendiente.serializer(), trabajoA),
+        )
+        val filaB = fila("sale:b:st_barra", 0)
+        val enTabla = mutableListOf(filaB, filaA)
+        coEvery { dao.delVenue("venue-1") } coAnswers { enTabla.toList() }
+        coEvery { dao.borrar(any()) } coAnswers { if (enTabla.removeAll { it.entregaId == firstArg<String>() }) 1 else 0 }
+        // La fila B es reciente: se empuja a la pantalla. En esos segundos la cajera canta A: la libreta la suelta y su
+        // fila se borra (lo que hacen `yaLaCante` y `cerrarPorPapel`).
+        coEvery { entregaPorWifi.empujar(match { it.sourceKey == "sale:b:st_barra" }, any()) } coAnswers {
+            enLibreta.value = emptyList()
+            enTabla.removeAll { it.entregaId == filaA.entregaId }
+            true
+        }
+        coEvery { entregaPorWifi.empujar(match { it.sourceKey == "sale:a:st_barra" }, any()) } returns false
+        coEvery { despachador.reintentar(any(), any(), false) } returns EstadoDeComanda.Salio
+
+        replay.reproducirAlAbrir("venue-1", ahora = 60_000)
+
+        coVerify(exactly = 0) { despachador.reintentar(match { it.orderNumber == "A-1" }, any(), any()) }
+    }
 }
