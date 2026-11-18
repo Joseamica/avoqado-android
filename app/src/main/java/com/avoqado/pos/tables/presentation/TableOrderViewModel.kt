@@ -1524,8 +1524,12 @@ class TableOrderViewModel @Inject constructor(
             _queued.value = _queued.value + com.avoqado.pos.tables.data.stampTableRoundLines(lines, intentId).filterNot { it.externalId in yaPintados }
         }
         _isSending.value = false
-        if (mesaCambio) onDone(false, RONDA_GUARDADA_MESA_CAMBIO)
-        else onDone(true, rondasEnCuentaAparte[intentId]?.let { textoDeCuentaAparte(it) } ?: mensaje)
+        // Codex r5: la ronda que el SERVIDOR ya puso en una cuenta aparte dice dónde quedó, aunque la apertura sin red se haya promovido
+        // mientras tanto (eso cuenta como «la mesa cambió»; el saldo ya quedó en gris arriba).
+        val enCuentaAparte = rondasEnCuentaAparte[intentId]
+        if (enCuentaAparte != null) onDone(true, textoDeCuentaAparte(enCuentaAparte))
+        else if (mesaCambio) onDone(false, RONDA_GUARDADA_MESA_CAMBIO)
+        else onDone(true, mensaje)
         // D5 · B2b: la ronda quedó en la cola; con el piloto, «Pagar $X» ya la cuenta (foto + esta ronda).
         if (!session.isProvisional) refrescarSaldoSinRed()
         // Corte E: la venta offline descuenta el stock local aproximado. Si falla, la ronda sigue guardada (D16).
