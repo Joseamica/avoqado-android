@@ -4,9 +4,21 @@ import android.view.KeyCharacterMap
 import android.view.KeyEvent
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.map
+
+/**
+ * Un código leído. [lecturaUs] es la MISMA ráfaga traducida con el teclado de EE. UU. (D14, 18-nov): con el teclado del
+ * aparato en español (Android 14+ lo elige solo por el idioma), el «-» de una pistola en inglés llega como «'» y
+ * «PIZZAS-003» se lee «PIZZAS'003». Viaja pegada a su código (nunca se busca por texto: una etiqueta que de verdad dice
+ * «PIZZAS'003» no hereda la traducción de otra lectura) y sólo existe cuando la lectura del aparato trae un carácter que
+ * un código no usa ([LectorHidBus.RAROS]): así una pistola configurada en español, que ya lee bien «AB-123», nunca se
+ * reinterpreta como «AB/123» (Codex r1 #1 y #2). Quien busca prueba [texto] y, si no encuentra nada, [lecturaUs].
+ */
+data class CodigoLeido(val texto: String, val lecturaUs: String? = null)
 
 /**
  * Puente entre las teclas que recibe la Activity y [LectorHid], compartido por toda la app.
@@ -25,27 +37,19 @@ import kotlinx.coroutines.flow.asSharedFlow
 @Singleton
 class LectorHidBus @Inject constructor() {
     private val lector = LectorHid()
-    private val _codigos = MutableSharedFlow<String>(extraBufferCapacity = 8)
-    val codigos: SharedFlow<String> = _codigos.asSharedFlow()
+    private val _leidos = MutableSharedFlow<CodigoLeido>(extraBufferCapacity = 8)
+
+    /** Cada código con su lectura en inglés, si la hay ([CodigoLeido]). */
+    val leidos: SharedFlow<CodigoLeido> = _leidos.asSharedFlow()
+
+    /** Sólo el texto, para quien busca códigos de puros dígitos (vales), que se leen igual en los dos teclados. */
+    val codigos: Flow<String> = leidos.map { it.texto }
 
     /**
      * keyCodes cuyo ACTION_DOWN se consumió: su ACTION_UP debe consumirse también, o el
      * campo con foco recibe la mitad de una tecla.
      */
     private val consumidas = mutableSetOf<Int>()
-
-    /**
-     * D14 (18-nov): con el teclado del aparato en español (Android 14+ lo elige solo por el idioma), el «-» de una pistola en
-     * inglés llega como «'» y «PIZZAS-003» se lee «PIZZAS'003». No se sabe en qué idioma viene la pistola, así que se
-     * guardan las dos lecturas y quien busca prueba primero la del aparato y luego [comoTecladoUs]. Sólo los últimos
-     * códigos con diferencia (los que pueden estar esperando en [codigos]).
-     */
-    private val lecturasUs = object : LinkedHashMap<String, String>() {
-        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, String>?) = size > 16
-    }
-
-    /** El mismo código leído con el teclado de EE. UU., si el teclado del aparato lo cambió; `null` si no hubo diferencia. */
-    fun comoTecladoUs(codigo: String): String? = synchronized(lecturasUs) { lecturasUs[codigo.trim()] }
 
     /** El teclado de EE. UU. (el del teclado virtual): traduce la tecla sin la distribución que eligió el aparato. */
     private val tecladoUs: KeyCharacterMap? by lazy { runCatching { KeyCharacterMap.load(KeyCharacterMap.VIRTUAL_KEYBOARD) }.getOrNull() }
@@ -58,7 +62,7 @@ class LectorHidBus @Inject constructor() {
      */
     fun recibirDelLectorIntegrado(texto: String?) {
         val codigo = texto?.trim().orEmpty()
-        if (codigo.isNotEmpty()) _codigos.tryEmit(codigo)
+        if (codigo.isNotEmpty()) _leidos.tryEmit(CodigoLeido(codigo))
     }
 
     /** @return `true` si la tecla NO debe llegar a la UI. */
@@ -129,8 +133,10 @@ class LectorHidBus @Inject constructor() {
                 true
             }
             is TeclaHid.Codigo -> {
-                if (decision.textoUs != decision.texto) synchronized(lecturasUs) { lecturasUs[decision.texto] = decision.textoUs }
-                _codigos.tryEmit(decision.texto)
+                val lecturaUs = decision.textoUs.takeIf { us ->
+                    us != decision.texto && decision.texto.any { it in RAROS } && us.none { it in RAROS }
+                }
+                _leidos.tryEmit(CodigoLeido(decision.texto, lecturaUs))
                 consumidas += keyCode
                 true
             }
@@ -138,6 +144,13 @@ class LectorHidBus @Inject constructor() {
     }
 
     companion object {
+        /**
+         * Lo que el teclado del aparato en español escribe en lugar de un símbolo de una pistola en inglés y que un código no
+         * usa: «'» (en vez de «-»), «¿» («=»), «¡» («+»), «ñ»/«Ñ» («;»/«:»), «°» («~»), «¬». Si la lectura del aparato no trae
+         * ninguno, se queda como está (D14).
+         */
+        internal const val RAROS = "'¿¡ñÑ°¬"
+
         /** Teclas que cambian a otras sin escribir nada. Constantes, no `KeyEvent.isModifierKey`: en los tests JVM ese estático es un stub. */
         private val MODIFICADORES = setOf(
             KeyEvent.KEYCODE_SHIFT_LEFT, KeyEvent.KEYCODE_SHIFT_RIGHT,

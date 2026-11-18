@@ -990,14 +990,16 @@ fun TableOrderScreen(
                 .fillMaxSize()
                 .background(Color.Black),
         ) {
-            val alEscanear: (String) -> Unit = escanear@{ barcode ->
+            val alEscanearLectura: (String, String?) -> Unit = escanear@{ barcode, lecturaUs ->
                 // Cámara y pistola pueden leer la misma etiqueta casi a la vez: la primera cierra el
                 // escáner y la otra ya no agrega (Codex d2 #3).
                 if (!showBarcodeScanner) return@escanear
                 showBarcodeScanner = false
-                val matched = catalogViewModel.products.value.find { product ->
-                    product.sku == barcode || product.barcode == barcode || product.gtin == barcode
-                } ?: catalogViewModel.products.value.parecidoACodigo(barcode)
+                fun buscar(codigo: String) = catalogViewModel.products.value.find { product ->
+                    product.sku == codigo || product.barcode == codigo || product.gtin == codigo
+                } ?: catalogViewModel.products.value.parecidoACodigo(codigo)
+                // D14: la pistola en inglés con el teclado del aparato en español («PIZZAS'003»).
+                val matched = buscar(barcode) ?: lecturaUs?.let(::buscar)
                 if (matched != null) {
                     handleProductTap(matched)
                     panelTab = PanelTab.CUENTA
@@ -1005,6 +1007,7 @@ fun TableOrderScreen(
                     unknownBarcode = barcode
                 }
             }
+            val alEscanear: (String) -> Unit = { alEscanearLectura(it, null) }
             // La pistola (USB/Bluetooth) y el lector integrado de Sunmi entregan por `LectorHidBus`, no
             // por el campo: sin escucharlo aquí su código se perdía (sólo Cobrar escuchaba). Sólo con
             // esta pantalla RESUMED: al cambiar de pestaña la saliente y Cobrar conviven ~700 ms y el
@@ -1012,7 +1015,7 @@ fun TableOrderScreen(
             val ciclo = androidx.lifecycle.compose.LocalLifecycleOwner.current
             LaunchedEffect(ciclo) {
                 ciclo.repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.RESUMED) {
-                    catalogViewModel.codigosEscaneados.collect { alEscanear(it) }
+                    catalogViewModel.codigosEscaneados.collect { alEscanearLectura(it.texto, it.lecturaUs) }
                 }
             }
             com.avoqado.pos.pos.presentation.scanner.BarcodeScannerView(

@@ -658,8 +658,8 @@ class CartViewModel @Inject constructor(
      * que un escaneo de cámara ([resolveScannedBarcode]): producto, vale, báscula o la
      * tarjeta del cliente — el lector sirve para todo lo que la cámara ya leía.
      */
-    val codigosEscaneados: kotlinx.coroutines.flow.SharedFlow<String>
-        get() = lectorHidBus.codigos
+    val codigosEscaneados: kotlinx.coroutines.flow.SharedFlow<com.avoqado.pos.pos.data.CodigoLeido>
+        get() = lectorHidBus.leidos
 
     /** La misma puerta que `MainActivity.dispatchKeyEvent`, para una hoja (otra ventana) abierta sobre el cobro. */
     fun procesarTecla(evento: android.view.KeyEvent): Boolean = lectorHidBus.procesar(evento)
@@ -2545,7 +2545,8 @@ class CartViewModel @Inject constructor(
         areaTicketRepository.heartbeat()?.let { replaceAreaTicketLines(it, venta) }
     }
 
-    suspend fun resolveScannedBarcode(rawCode: String): ScannedBarcodeResult {
+    /** @param lecturaUs la misma lectura de la pistola con el teclado de EE. UU. ([com.avoqado.pos.pos.data.CodigoLeido]); la cámara no la trae. */
+    suspend fun resolveScannedBarcode(rawCode: String, lecturaUs: String? = null): ScannedBarcodeResult {
         if (com.avoqado.pos.giftcards.domain.LectorParaTarjetas.abierta.value) return ScannedBarcodeResult.Error("Termina la consulta de la tarjeta primero.")
         // Con el cobro abierto no se consulta nada: ni el servidor se entera de un vale que no se va a cobrar.
         if (cobroAbierto) return ScannedBarcodeResult.Error("Se abrió el cobro: vuelve a escanear al terminar.")
@@ -2555,7 +2556,7 @@ class CartViewModel @Inject constructor(
             // D14: la pistola en inglés con el teclado del aparato en español («PIZZAS'003»). Sólo si la lectura del aparato no
             // encontró nada; si tampoco la de EE. UU. encuentra, se avisa con la del aparato, como siempre.
             if (resultado is ScannedBarcodeResult.Unknown) {
-                lectorHidBus.comoTecladoUs(rawCode)?.let { resolverCodigo(it) }
+                lecturaUs?.let { resolverCodigo(it) }
                     ?.takeIf { it !is ScannedBarcodeResult.Unknown }?.let { return it }
             }
             return resultado

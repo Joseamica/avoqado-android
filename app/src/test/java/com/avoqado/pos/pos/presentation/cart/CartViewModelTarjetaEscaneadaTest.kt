@@ -209,10 +209,10 @@ class CartViewModelTarjetaEscaneadaTest {
         every { dialogo.setOnKeyListener(any()) } answers { listener = firstArg() }
         var procesados = 0
         val receptor = backgroundScope.launch(kotlinx.coroutines.test.UnconfinedTestDispatcher(testScheduler)) {
-            cart.codigosEscaneados.collect { codigo ->
+            cart.codigosEscaneados.collect { leido ->
                 // Misma guardia de CheckoutScreen.manejarCodigo; se invoca el carrito real sólo si está libre.
                 if (!com.avoqado.pos.giftcards.domain.LectorParaTarjetas.abierta.value) {
-                    procesados++; cart.resolveScannedBarcode(codigo)
+                    procesados++; cart.resolveScannedBarcode(leido.texto, leido.lecturaUs)
                 }
             }
         }
@@ -261,38 +261,31 @@ class CartViewModelTarjetaEscaneadaTest {
         assertNotNull(listener);soltar();assertNull(listener)
     }
 
-    /** Una pistola teclea [codigo]; el aparato lo convierte en [delAparato] (teclado en español). */
-    private fun com.avoqado.pos.pos.data.LectorHidBus.leer(delAparato: String, codigo: String) {
-        delAparato.forEachIndexed { i, c ->
-            procesar(android.view.KeyEvent.ACTION_DOWN, android.view.KeyEvent.KEYCODE_A, c.code, 7, 1_000L + i * 10, 0,
-                unicodeCharUs = codigo[i].code)
-        }
-        procesar(android.view.KeyEvent.ACTION_DOWN, android.view.KeyEvent.KEYCODE_ENTER, '\n'.code, 7, 1_000L + delAparato.length * 10, 0)
-    }
-
     @Test fun `D14 pistola en ingles con el aparato en espanol encuentra el producto`() = runTest {
         val product = Product(id = "p", name = "Pizza", priceValue = 169.0, sku = "PIZZAS-003")
         every { productsRepository.products } returns MutableStateFlow(listOf(product))
-        val lector = com.avoqado.pos.pos.data.LectorHidBus()
-        lector.leer(delAparato = "PIZZAS'003", codigo = "PIZZAS-003")
-        val vm = createViewModel(lector)
-        assertEquals(ScannedBarcodeResult.ProductFound(product), vm.resolveScannedBarcode("PIZZAS'003"))
+        val vm = createViewModel()
+        assertEquals(ScannedBarcodeResult.ProductFound(product), vm.resolveScannedBarcode("PIZZAS'003", lecturaUs = "PIZZAS-003"))
     }
 
-    @Test fun `D14 pistola configurada en espanol sigue con la lectura del aparato`() = runTest {
-        val product = Product(id = "p", name = "Pizza", priceValue = 169.0, sku = "PIZZAS-003")
-        every { productsRepository.products } returns MutableStateFlow(listOf(product))
-        val lector = com.avoqado.pos.pos.data.LectorHidBus()
-        lector.leer(delAparato = "PIZZAS-003", codigo = "PIZZAS/003")
-        val vm = createViewModel(lector)
-        assertEquals(ScannedBarcodeResult.ProductFound(product), vm.resolveScannedBarcode("PIZZAS-003"))
+    @Test fun `D14 la lectura del aparato gana si encuentra algo`() = runTest {
+        val delAparato = Product(id = "a", name = "Etiqueta rara", priceValue = 10.0, sku = "PIZZAS'003")
+        val otra = Product(id = "b", name = "Pizza", priceValue = 169.0, sku = "PIZZAS-003")
+        every { productsRepository.products } returns MutableStateFlow(listOf(delAparato, otra))
+        val vm = createViewModel()
+        assertEquals(ScannedBarcodeResult.ProductFound(delAparato), vm.resolveScannedBarcode("PIZZAS'003", lecturaUs = "PIZZAS-003"))
     }
 
     @Test fun `D14 si ninguna de las dos lecturas existe se avisa con la del aparato`() = runTest {
         every { productsRepository.products } returns MutableStateFlow(emptyList())
-        val lector = com.avoqado.pos.pos.data.LectorHidBus()
-        lector.leer(delAparato = "ZZZ'9", codigo = "ZZZ-9")
-        val vm = createViewModel(lector)
-        assertEquals(ScannedBarcodeResult.Unknown("ZZZ'9"), vm.resolveScannedBarcode("ZZZ'9"))
+        val vm = createViewModel()
+        assertEquals(ScannedBarcodeResult.Unknown("ZZZ'9"), vm.resolveScannedBarcode("ZZZ'9", lecturaUs = "ZZZ-9"))
+    }
+
+    @Test fun `D14 la camara sin lectura en ingles se queda como hoy`() = runTest {
+        val product = Product(id = "p", name = "Pizza", priceValue = 169.0, sku = "PIZZAS-003")
+        every { productsRepository.products } returns MutableStateFlow(listOf(product))
+        val vm = createViewModel()
+        assertEquals(ScannedBarcodeResult.Unknown("PIZZAS'003"), vm.resolveScannedBarcode("PIZZAS'003"))
     }
 }

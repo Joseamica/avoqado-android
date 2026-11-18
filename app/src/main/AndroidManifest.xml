@@ -117,6 +117,7 @@
         <activity
             android:name=".customerdisplay.CustomerDisplayActivity"
             android:exported="false"
+            android:configChanges="keyboard|keyboardHidden|navigation"
             android:launchMode="singleInstance"
             android:taskAffinity=".customerdisplay"
             android:excludeFromRecents="true"

@@ -1542,7 +1542,7 @@ fun CheckoutScreen(
     // 🔴 UN solo manejador para la cámara y para el lector de pistola: el `when` sobre
     // `ScannedBarcodeResult` vive aquí una vez. Duplicarlo por canal de entrada es
     // exactamente el defecto que tuvo el servidor con los sellos (tarjeta sí, efectivo no).
-    val manejarCodigo: (String) -> Unit = manejar@{ barcode ->
+    val manejarLectura: (String, String?) -> Unit = manejar@{ barcode, lecturaUs ->
         if (com.avoqado.pos.giftcards.domain.LectorParaTarjetas.abierta.value) return@manejar
         if (!codigoEntraALaVenta(cobroAbierto = showPaymentFlow || cartViewModel.cobroAbierto || aperturaDeTarjetas != null, emitiendoVale = areaOperationsState.issuing)) return@manejar
         showBarcodeScanner = false
@@ -1553,7 +1553,7 @@ fun CheckoutScreen(
             // El cliente de ANTES de la consulta: si el cajero lo quitó o eligió otro mientras respondía, su toque gana
             // y la tarjeta escaneada no se vuelve a ligar (Codex, cliente en cobrar r3 #1).
             val clienteAlEscanear = cartViewModel.selectedCustomer.value?.id
-            val result = cartViewModel.resolveScannedBarcode(barcode)
+            val result = cartViewModel.resolveScannedBarcode(barcode, lecturaUs)
             // La consulta pudo tardar (red): si mientras tanto se abrió el cobro, no se aplica (pendientes, Codex r1 #2).
             if (!entra() || com.avoqado.pos.giftcards.domain.LectorParaTarjetas.abierta.value) return@launch
             // Una hoja abierta (la ficha cuando es hoja —teléfono o ventana angosta— y la de tallas) va encima de toda la caja:
@@ -1613,11 +1613,13 @@ fun CheckoutScreen(
             }
         }
     }
+    // La cámara no trae lectura en inglés (D14): sólo la pistola.
+    val manejarCodigo: (String) -> Unit = { manejarLectura(it, null) }
 
     // Lector de pistola (USB/Bluetooth): teclea el código y cierra con Enter. Llega por
     // `LectorHidBus` desde la Activity y entra por el MISMO camino que la cámara.
     LaunchedEffect(Unit) {
-        cartViewModel.codigosEscaneados.collect { manejarCodigo(it) }
+        cartViewModel.codigosEscaneados.collect { manejarLectura(it.texto, it.lecturaUs) }
     }
     // El carrito sigue a esta pantalla: un cobro restaurado (girar la tablet, volver a la pestaña) sigue abierto para él, y
     // una pantalla que vuelve SIN cobro suelta una marca vieja, para que la pistola nunca se quede ignorada para siempre.
