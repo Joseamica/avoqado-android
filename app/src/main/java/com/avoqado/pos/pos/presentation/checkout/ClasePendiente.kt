@@ -90,7 +90,9 @@ fun ClasePendiente(cart: CartViewModel, vm: ClasePendienteViewModel = hiltViewMo
     var revisando by remember(pendiente) { mutableStateOf(false) }
     val clase = catalogo.firstOrNull { it.id == pendiente.productId }?.name ?: "Clase"
     val lugares = if (pendiente.quantity > 1) " (${pendiente.quantity} lugares)" else ""
-    AvoqadoDialog(title = "Clase pendiente de cobrar", onDismiss = { vistas = vistas + pendiente }) {
+    // Codex r4 #1: mientras se consulta a recepción, la decisión ya se tomó («Agregar»): no se puede aplazar ni quitar a medias.
+    AvoqadoDialog(title = "Clase pendiente de cobrar", onDismiss = { if (!revisando) vistas = vistas + pendiente },
+        dismissOnClickOutside = !revisando) {
         Text(listOfNotNull(clase, pendiente.persona).joinToString(" · ") + lugares)
         if (!libre) Text("Va en su propia venta: termina o guarda la venta actual (y quita al cliente) para agregarla.")
         mensaje?.let { Text(it) }
@@ -110,7 +112,7 @@ fun ClasePendiente(cart: CartViewModel, vm: ClasePendienteViewModel = hiltViewMo
                 revisando = false
             }
         })
-        TextButton(onClick = { vistas = vistas + pendiente }) { Text("La agrego después") }
-        TextButton(onClick = { cart.quitarClasePendiente(pendiente) }) { Text("Ya no la cobro aquí") }
+        TextButton(enabled = !revisando, onClick = { vistas = vistas + pendiente }) { Text("La agrego después") }
+        TextButton(enabled = !revisando, onClick = { cart.quitarClasePendiente(pendiente) }) { Text("Ya no la cobro aquí") }
     }
 }

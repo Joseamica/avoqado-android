@@ -572,4 +572,18 @@ class CarritoConCobroAbiertoTest {
         assertEquals(listOf(bea(), ana), vm.clasesPendientesDeEsteNegocio())
         assertFalse(semilla.hayFrescas())
     }
+
+    @Test
+    fun `D13 la inscripcion de otra sucursal no detiene la fila`() {
+        // Codex r4 #2: Norte espera en su sucursal y la de Sur (ésta) se procesa en su turno.
+        val norte = ClassCheckoutSeed.Seed(productId = "cafe", quantity = 1, reservationId = "res-n", persona = "Nadia", venueId = "venue-norte")
+        val semilla = ClassCheckoutSeed().apply { put(norte); put(bea()) }
+        val vm = carrito(semilla)
+
+        vm.consumePendingClassSeed()
+
+        assertEquals(listOf("Café"), vm.cartState.value.items.map { it.name })
+        assertEquals("res-bea", vm.cartState.value.reservationId)
+        assertEquals(listOf(norte), semilla.enEspera.value)
+    }
 }

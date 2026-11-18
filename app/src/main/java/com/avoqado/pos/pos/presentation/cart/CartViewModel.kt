@@ -1564,50 +1564,61 @@ class CartViewModel @Inject constructor(
         addCustomAmount(name = label, amountCents = session.totalCents)
     }
 
+    /** D13 (Codex r4 #2): una sola inscripción a la vez, en el orden en que llegaron. */
+    private var consumiendoClase = false
+
     fun consumePendingClassSeed() {
+        // La que está corriendo procesa la siguiente al terminar: dos a la vez se podían desordenar con el catálogo vacío.
+        if (consumiendoClase) return
         // D9/D13: con el cobro abierto o una venta a medio cobrar (su «Saldo pendiente» frenaría el siguiente «Cobrar», Codex r6
         // #1), ninguna recién inscrita entra: pasan a «Clase pendiente» y la cajera decide cuándo agregarlas (nunca solas).
         if (cobroLoImpide(avisar = false) || hayVentaAMedias()) { classCheckoutSeed.esperarTodas(); return }
         val seed = classCheckoutSeed.consume() ?: return
         // D13 (Codex r1 #4): la de otra sucursal no se busca en este catálogo (se perdía sin aviso): espera en la suya.
-        if (seed.venueId != null && seed.venueId != secureStorage.venueId) { classCheckoutSeed.esperar(seed); return }
+        if (seed.venueId != null && seed.venueId != secureStorage.venueId) {
+            classCheckoutSeed.esperar(seed)
+            consumePendingClassSeed()   // Codex r4 #2: la siguiente de la fila no se queda escondida
+            return
+        }
+        consumiendoClase = true
         viewModelScope.launch {
-            if (productsRepository.products.value.isEmpty()) {
-                productsRepository.fetchProducts()
-            }
-            // D9 (Codex r1 #3): el cobro se abrió mientras cargaba el catálogo: pasa a pendientes.
-            if (cobroLoImpide(avisar = false) || hayVentaAMedias()) {
-                classCheckoutSeed.esperar(seed)
-                return@launch
-            }
-            val product = productsRepository.products.value.firstOrNull { it.id == seed.productId }
-            if (product == null) {
-                // D13 (Codex r2 #8): antes se perdía con un log (el lugar ya estaba apartado en el servidor). Ahora queda en
-                // «Clase pendiente», donde la cajera ve que no está en el catálogo o la quita.
-                Log.w("🛒", "Class seed product ${seed.productId} not in catalog — goes to pending")
-                classCheckoutSeed.esperar(seed)
-                // D13 (Codex r3 #4): la siguiente de la fila también se procesa (antes se quedaba escondida).
+            try {
+                if (productsRepository.products.value.isEmpty()) {
+                    productsRepository.fetchProducts()
+                }
+                // D9 (Codex r1 #3): el cobro se abrió mientras cargaba el catálogo: pasa a pendientes (y las demás al seguir).
+                if (cobroLoImpide(avisar = false) || hayVentaAMedias()) {
+                    classCheckoutSeed.esperar(seed)
+                    return@launch
+                }
+                val product = productsRepository.products.value.firstOrNull { it.id == seed.productId }
+                if (product == null) {
+                    // D13 (Codex r2 #8): antes se perdía con un log (el lugar ya estaba apartado en el servidor). Ahora queda en
+                    // «Clase pendiente», donde la cajera ve que no está en el catálogo o la quita.
+                    Log.w("🛒", "Class seed product ${seed.productId} not in catalog — goes to pending")
+                    classCheckoutSeed.esperar(seed)
+                    return@launch
+                }
+                // Don't clobber a different reservation already linked to the cart:
+                // seeding class B into a cart that already carries class A's
+                // reservationId would leave the sale linked to only one of them.
+                val existingResId = _cartState.value.reservationId
+                if (existingResId != null && seed.reservationId != null && existingResId != seed.reservationId) {
+                    // D13: antes se perdía (con su lugar ya apartado en el servidor); ahora queda en «Clase pendiente».
+                    Log.w("🛒", "Cart already linked to reservation $existingResId — seed ${seed.reservationId} goes to pending")
+                    classCheckoutSeed.esperar(seed)
+                    return@launch
+                }
+                addProductWithModifiers(product, quantity = seed.quantity, modifiers = emptyList())
+                seed.reservationId?.let { resId ->
+                    _cartState.update { it.copy(reservationId = resId) }
+                }
+                Log.d("🛒", "Seeded class ${product.name} x${seed.quantity} from walk-in flow")
+            } finally {
+                consumiendoClase = false
+                // Codex r3 #4 y r4 #2: la siguiente de la fila se procesa en su orden, salga como salga ésta.
                 if (classCheckoutSeed.hayFrescas()) consumePendingClassSeed()
-                return@launch
             }
-            // Don't clobber a different reservation already linked to the cart:
-            // seeding class B into a cart that already carries class A's
-            // reservationId would leave the sale linked to only one of them.
-            val existingResId = _cartState.value.reservationId
-            if (existingResId != null && seed.reservationId != null && existingResId != seed.reservationId) {
-                // D13: antes se perdía (con su lugar ya apartado en el servidor); ahora queda en «Clase pendiente».
-                Log.w("🛒", "Cart already linked to reservation $existingResId — seed ${seed.reservationId} goes to pending")
-                classCheckoutSeed.esperar(seed)
-                if (classCheckoutSeed.hayFrescas()) consumePendingClassSeed()
-                return@launch
-            }
-            addProductWithModifiers(product, quantity = seed.quantity, modifiers = emptyList())
-            seed.reservationId?.let { resId ->
-                _cartState.update { it.copy(reservationId = resId) }
-            }
-            Log.d("🛒", "Seeded class ${product.name} x${seed.quantity} from walk-in flow")
-            // Otra recién inscrita en la fila (dos inscripciones antes de volver): su reserva choca con ésta y pasa a pendientes.
-            if (classCheckoutSeed.hayFrescas()) consumePendingClassSeed()
         }
     }
 

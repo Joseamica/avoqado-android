@@ -636,7 +636,8 @@ fun CheckoutScreen(
         // pantalla del cliente, fuera de esta recomposición.
         // D13 (Codex r3 #5): si el carrito ya es otra venta (restauraron B y el efecto que cierra la tira de A no ha corrido),
         // el toque de A no agrega nada a B: la tira se cierra aquí mismo, sin registrarse.
-        upsellViewModel.soltarMomentoSiEsOtraVenta(cartViewModel.cartState.value.identidadDeVenta)
+        val ventaAlTocar = cartViewModel.cartState.value.identidadDeVenta
+        upsellViewModel.soltarMomentoSiEsOtraVenta(ventaAlTocar)
         val moment = upsellViewModel.moment.value ?: return
         if (!accept) {
             upsellViewModel.finish(emptyList(), 0)
@@ -644,6 +645,12 @@ fun CheckoutScreen(
             return
         }
         checkoutScope.launch {
+            // D13 (Codex r4 #3): entre el toque y este trabajo pudieron restaurar otra venta. Se vuelve a mirar justo antes de
+            // agregar (el acomodador agrega todo sin pausas): si ya es otra, la tira se cierra sin registrarse.
+            if (cartViewModel.cartState.value.identidadDeVenta != ventaAlTocar) {
+                upsellViewModel.soltarMomento()
+                return@launch
+            }
             // 🔴 El acomodador re-valida contra el catálogo VIVO y DEVUELVE el
             // carrito resultante. De ahí sale el snapshot, de ningún otro lado:
             // leer `cartState` aquí daría el carrito de ANTES de agregar.
