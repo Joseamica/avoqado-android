@@ -1629,6 +1629,9 @@ fun CheckoutScreen(
     LaunchedEffect(cartState.isEmpty, showPaymentFlow) {
         if (cartState.isEmpty && !showPaymentFlow) upsellViewModel.cancelPendingConversion()
     }
+    LaunchedEffect(cartState.identidadDeVenta) {
+        if (!showPaymentFlow) upsellViewModel.soltarSiEsOtraVenta(cartState.identidadDeVenta)
+    }
 
     // Barcode scanner overlay
     if (showBarcodeScanner) {
@@ -2347,10 +2350,11 @@ fun CheckoutScreen(
                 showSplitPayment = false
                 // D9: si otro abrió el cobro con la hoja abierta (el «No, gracias» del cliente), su división no cambia: se avisa.
                 if (!cartViewModel.avisarSiElCobroEstaAbierto()) {
-                    // Como «Dividir importe» desde el cobro: un upsell cobrado en partes no cuenta como convertido (Codex r5 #4).
-                    upsellViewModel.cancelPendingConversion()
                     pendingSplitConfig = splitConfig
                     proceedToPayment()
+                    // Como «Dividir importe» desde el cobro: un upsell cobrado en partes no cuenta como convertido (Codex r5 #4).
+                    // DESPUÉS de abrir: abrir cierra una tira minimizada y la registra como «No, gracias» (Codex r6 #3).
+                    upsellViewModel.cancelPendingConversion()
                 }
             },
         )

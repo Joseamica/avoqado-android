@@ -146,6 +146,7 @@ class UpsellViewModel @Inject constructor(
             // Sin esto su ticket promedio sale de un conjunto vacío = 0, y el
             // "aumento real" del reporte se vuelve el ticket ENTERO del otro grupo.
             pendingConversionId = impressionId
+            ventaDelMomento = cart.identidadDeVenta
             ventaYaOfrecida = cart.identidadDeVenta
             return null
         }
@@ -238,6 +239,14 @@ class UpsellViewModel @Inject constructor(
     fun cancelPendingConversion() {
         pendingConversionId = null
         ventaYaOfrecida = null
+    }
+
+    /**
+     * D9 (Codex r6 #2): sin cobro, la cajera pasó a OTRA venta (restauró un carrito guardado encima): la sugerencia pendiente
+     * era de la anterior y se suelta. Compara con la venta del momento, así que repintar la pantalla no la suelta.
+     */
+    fun soltarSiEsOtraVenta(venta: String) {
+        if (pendingConversionId != null && ventaDelMomento != null && venta != ventaDelMomento) cancelPendingConversion()
     }
 
     private fun isSurfaceEnabled(context: UpsellContext) = when (context) {

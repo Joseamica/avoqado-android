@@ -296,5 +296,25 @@ class UpsellViewModelTest {
         dispatcher.scheduler.advanceUntilIdle()
         io.mockk.coVerify(exactly = 0) { repo.convertImpression(any(), any()) }
     }
+
+    @Test
+    fun `D9 restaurar otra venta encima suelta la sugerencia pendiente, repintar la misma no`() {
+        val vm = viewModel()
+        val a = cart("cafe")
+        vm.offer(a, UpsellContext.COUNTER)
+        vm.finish(emptyList(), 0)   // el cliente de A contestó en su pantalla
+
+        vm.soltarSiEsOtraVenta(a.identidadDeVenta)           // la pantalla se repintó: sigue siendo A
+        vm.onOrderPaid("orden-A")
+        dispatcher.scheduler.advanceUntilIdle()
+        io.mockk.coVerify(exactly = 1) { repo.convertImpression(any(), "orden-A") }
+
+        vm.offer(cart("pan"), UpsellContext.COUNTER)
+        vm.finish(emptyList(), 0)
+        vm.soltarSiEsOtraVenta(cart("pan").identidadDeVenta)  // restauraron B encima
+        vm.onOrderPaid("orden-B")
+        dispatcher.scheduler.advanceUntilIdle()
+        io.mockk.coVerify(exactly = 0) { repo.convertImpression(any(), "orden-B") }
+    }
 }
 

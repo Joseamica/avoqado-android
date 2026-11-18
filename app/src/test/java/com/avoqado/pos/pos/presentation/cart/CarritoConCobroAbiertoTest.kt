@@ -393,4 +393,18 @@ class CarritoConCobroAbiertoTest {
         vm.cerrarCobro()
         assertEquals("immediate", vm.cartState.value.items.single().serviceCourse?.id)
     }
+
+    @Test
+    fun `la clase no entra a una venta a medio cobrar, espera a que termine`() {
+        val semilla = ClassCheckoutSeed().apply { put(ClassCheckoutSeed.Seed(productId = "cafe", quantity = 1, reservationId = "res-1")) }
+        val vm = carrito(semilla)
+        vm.addCustomAmount("Saldo pendiente", 2_000)
+        vm.markPendingSplitOrder("orden-1")
+
+        vm.consumePendingClassSeed()
+
+        assertEquals(listOf("Saldo pendiente"), vm.cartState.value.items.map { it.name })
+        assertTrue(semilla.hasPending())
+    }
 }
+

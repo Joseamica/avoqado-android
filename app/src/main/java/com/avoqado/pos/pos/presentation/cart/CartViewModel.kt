@@ -1566,16 +1566,16 @@ class CartViewModel @Inject constructor(
     }
 
     fun consumePendingClassSeed() {
-        // D9: con el cobro abierto la clase no entra a la venta que se cobra y la semilla NO se consume: la pantalla la vuelve a
-        // pedir al cerrarse el cobro.
-        if (cobroLoImpide(avisar = false)) return
+        // D9: con el cobro abierto, o con una venta a medio cobrar (su «Saldo pendiente» frenaría el siguiente «Cobrar», Codex r6
+        // #1), la clase no entra y la semilla NO se consume: la pantalla la vuelve a pedir al cerrarse el cobro.
+        if (cobroLoImpide(avisar = false) || hayVentaAMedias()) return
         val seed = classCheckoutSeed.consume() ?: return
         viewModelScope.launch {
             if (productsRepository.products.value.isEmpty()) {
                 productsRepository.fetchProducts()
             }
             // D9 (Codex r1 #3): el cobro se abrió mientras cargaba el catálogo: la semilla regresa y entra al cerrarlo.
-            if (cobroLoImpide(avisar = false)) {
+            if (cobroLoImpide(avisar = false) || hayVentaAMedias()) {
                 classCheckoutSeed.devolver(seed)
                 return@launch
             }
