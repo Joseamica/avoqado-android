@@ -81,6 +81,14 @@ class RegistroDeCuentasTest {
         assertEquals(Respuesta.Ocupada("Ana", "Caja 2"), reg.apartar(beto).respuesta)
     }
 
+    @Test fun `Codex r1 5 - No se cobró con el intento que vio el gerente no cancela otro intento de la misma cuenta`() {
+        val reg = Registro().comprometer(ana).registro
+        pasan(NO_CONFIRMO_MS)
+        val intento = reg.estado()!!.intento
+        assertFalse("otro intento: nada", r.noSeCobro(reg, "o1", ahora(), hora, intento = "$intento-otro").hecho)
+        assertTrue("el que vio: sí", r.noSeCobro(reg, "o1", ahora(), hora, intento = intento).hecho)
+    }
+
     @Test fun `No se cobró sale a los 2 min, cancela el intento y rechaza sus apartar y comprometer tardíos`() {
         val reg = Registro().comprometer(ana).registro
         pasan(NO_CONFIRMO_MS - 1)

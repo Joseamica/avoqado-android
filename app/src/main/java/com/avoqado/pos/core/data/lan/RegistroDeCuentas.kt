@@ -187,11 +187,15 @@ object RegistroDeCuentas {
     fun puedeDeclararNoSeCobro(c: CuentaEnElRegistro?, ahora: Instante): Boolean =
         c?.estado == EstadoDeCuenta.COMPROMETIDA && c.desde.arranque == ahora.arranque && ahora.ms - c.desde.ms >= NO_CONFIRMO_MS
 
-    /** «No se cobró: cobrar aquí»: la cuenta vuelve a LIBRE y su intento queda cancelado en disco. Antes de tiempo, nada. */
-    fun noSeCobro(r0: Registro, orderId: String, ahora: Instante, hora: Long): Declaracion {
+    /**
+     * «No se cobró»: la cuenta vuelve a LIBRE y su intento queda cancelado en disco. Antes de tiempo, nada. 🔴 Codex android r1 #5:
+     * con [intento], sólo ESE (el que el gerente vio al abrir su teclado): si mientras tanto la otra caja soltó ése y empezó otro, nada.
+     */
+    fun noSeCobro(r0: Registro, orderId: String, ahora: Instante, hora: Long, intento: String? = null): Declaracion {
         val r = normalizar(r0, ahora, hora)
         val c = r.cuentas[orderId]
         if (!puedeDeclararNoSeCobro(c, ahora)) return Declaracion(r, false)
+        if (intento != null && c?.intento != intento) return Declaracion(r, false)
         return Declaracion(Registro(r.cuentas - orderId, r.cancelados + (c!!.intento to hora)), true)
     }
 }

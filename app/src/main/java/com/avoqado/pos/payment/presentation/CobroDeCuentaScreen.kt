@@ -309,11 +309,24 @@ class CobroDeCuentaViewModel @Inject constructor(
         return if (d.puedeDeclararNoSeCobro(r)) TextosDeCuentaSinRed.noConfirmo(r.quien, r.caja) else null
     }
 
-    /** F1: el título del teclado del gerente: qué se firma («…lo que Ana empezó a cobrar en Caja 2»). null = ya no hay nada que firmar. */
-    suspend fun pinParaFirmarNoSeCobro(orderId: String): String? {
+    /**
+     * F1: lo que firma el gerente, CONGELADO al abrir su teclado: el título («…lo que Ana empezó a cobrar en Caja 2») y el INTENTO exacto
+     * de esa caja (Codex android r1 #5). null = ya no hay nada que firmar.
+     */
+    data class FirmaDeLaCuenta(val titulo: String, val intento: String)
+
+    suspend fun pinParaFirmarNoSeCobro(orderId: String): FirmaDeLaCuenta? {
         val venue = storage.venueId ?: return null
-        val r = duenoDeCuentas?.estadoDe(venue, orderId) ?: return null
-        return TextosDeCuentaSinRed.pinParaFirmar(r.quien, r.caja)
+        val d = duenoDeCuentas ?: return null
+        val r = d.estadoDe(venue, orderId)?.takeIf { d.puedeDeclararNoSeCobro(it) } ?: return null
+        return FirmaDeLaCuenta(TextosDeCuentaSinRed.pinParaFirmar(r.quien, r.caja), r.intento)
+    }
+
+    /** Codex android r1 #5: cómo quedó la cuenta cuando el intento que vio el gerente ya no es el vigente. */
+    private fun comoQuedo(r: com.avoqado.pos.core.data.lan.CuentaEnElRegistro?): String = when {
+        r == null -> TextosDeCuentaSinRed.YA_NO_HAY_COBRO_PENDIENTE
+        r.estado == com.avoqado.pos.core.data.lan.EstadoDeCuenta.CERRADA -> TextosDeCuentaSinRed.cobradaEn(r.caja, r.faltaSubirla)
+        else -> TextosDeCuentaSinRed.laEstaCobrandoEn(r.quien, r.caja)
     }
 
     /**
@@ -322,15 +335,19 @@ class CobroDeCuentaViewModel @Inject constructor(
      * devuelve lo pinta el MISMO teclado: un PIN que no es de un gerente con permiso, demasiados intentos o sin red (sin red no hay PIN:
      * la cuenta espera). `Granted` = firmado.
      */
-    suspend fun firmarNoSeCobro(orderId: String, pin: String): OverrideResult {
+    suspend fun firmarNoSeCobro(orderId: String, pin: String, intento: String): OverrideResult {
         val venue = storage.venueId ?: return OverrideResult.Failed("No hay una sucursal activa. Vuelve a entrar.")
         val validador = permisos ?: return OverrideResult.Failed(CancelacionDeCobro.FIRMA_SIN_RED)
+        val dueno = duenoDeCuentas ?: return OverrideResult.Failed(TextosDeCuentaSinRed.YA_NO_HAY_COBRO_PENDIENTE)
+        // Codex android r1 #5: si el intento que vio el gerente ya no es el vigente, se dice cómo quedó y no se libera nada.
+        dueno.estadoDe(venue, orderId).let { if (it?.intento != intento) return OverrideResult.Failed(comoQuedo(it)) }
         return when (val r = validador.requestToken(venue, pin, CancelacionDeCobro.PERMISO_DECLARAR_NO_COBRADO)) {
             // El token no viaja a ningún lado (el registro es local): el PIN validado ES la firma, y el servidor la dejó en su bitácora.
+            // El registro anota al GERENTE que firmó (el nombre que contestó el servidor), y sólo sobre ESE intento.
             is OverrideResult.Granted -> {
-                val quien = storage.selectedStaffNameForCurrentVenue ?: storage.userFirstName.orEmpty()
-                if (duenoDeCuentas?.noSeCobro(venue, orderId, quien) == true) r
-                else OverrideResult.Failed("No se pudo anotar en esta caja. Vuelve a intentarlo.")
+                val gerente = r.authorizedByName.ifBlank { storage.selectedStaffNameForCurrentVenue ?: storage.userFirstName.orEmpty() }
+                if (dueno.noSeCobro(venue, orderId, gerente, intento)) r
+                else OverrideResult.Failed(comoQuedo(dueno.estadoDe(venue, orderId)))
             }
             OverrideResult.WrongPin, OverrideResult.Insufficient -> OverrideResult.Failed(CancelacionDeCobro.PIN_NO_ES_DE_GERENTE)
             else -> r
@@ -558,8 +575,8 @@ private fun CobrarCuentaSinRed(orderId: String, copia: CuentaGuardada, viewModel
 @Composable
 private fun NoConfirmoEnLinea(orderId: String, viewModel: CobroDeCuentaViewModel, onDeclarado: () -> Unit) {
     var texto by remember(orderId) { mutableStateOf<String?>(null) }
-    // El teclado del gerente: su título (qué se firma) y su llave (uno nuevo nace vacío). null = cerrado.
-    var teclado by remember(orderId) { mutableStateOf<Pair<Long, String>?>(null) }
+    // El teclado del gerente: su llave (uno nuevo nace vacío) y lo que firma (título e intento exacto). null = cerrado.
+    var teclado by remember(orderId) { mutableStateOf<Pair<Long, CobroDeCuentaViewModel.FirmaDeLaCuenta>?>(null) }
     val scope = rememberCoroutineScope()
     LaunchedEffect(orderId) {
         while (true) {
@@ -573,18 +590,18 @@ private fun NoConfirmoEnLinea(orderId: String, viewModel: CobroDeCuentaViewModel
             scope.launch { viewModel.pinParaFirmarNoSeCobro(orderId)?.let { teclado = System.nanoTime() to it } }
         })
     }
-    teclado?.let { (id, titulo) ->
+    teclado?.let { (id, firma) ->
         com.avoqado.pos.designsystem.components.ManagerOverrideSheet(
             prompt = com.avoqado.pos.core.data.network.ManagerOverrideCoordinator.Prompt(
                 id = id, permission = CancelacionDeCobro.PERMISO_DECLARAR_NO_COBRADO, actionLabel = CancelacionDeCobro.BOTON_FIRMAR,
             ),
             onSubmit = { pin ->
-                viewModel.firmarNoSeCobro(orderId, pin).also {
+                viewModel.firmarNoSeCobro(orderId, pin, firma.intento).also {
                     if (it is OverrideResult.Granted) { teclado = null; texto = null; onDeclarado() }
                 }
             },
             onDismiss = { teclado = null },
-            title = titulo,
+            title = firma.titulo,
             description = texto.orEmpty(),
             actionText = CancelacionDeCobro.BOTON_FIRMAR,
         )

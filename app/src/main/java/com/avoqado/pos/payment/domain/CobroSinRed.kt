@@ -70,6 +70,9 @@ object TextosDeCuentaSinRed {
      */
     fun noConfirmo(quien: String, caja: String) = "${quien.ifBlank { "Alguien" }} empezó a cobrarla en $caja y no confirmó. Avisa al gerente."
 
+    /** Codex android r1 #5: el intento que vio el gerente ya no está (la otra caja lo soltó o se cerró): no se firma nada. */
+    const val YA_NO_HAY_COBRO_PENDIENTE = "Esa caja ya soltó esa cuenta: no hay nada que firmar."
+
     /** F1 (un paso): el título del teclado del gerente, que ya dice qué firma. */
     fun pinParaFirmar(quien: String, caja: String) =
         "Gerente: escribe tu PIN para marcar como no cobrado lo que ${quien.ifBlank { "alguien" }} empezó a cobrar en $caja"

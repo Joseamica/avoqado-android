@@ -101,7 +101,7 @@ class CobroDeCuentaSinRedTest {
         coEvery { estadoDe(any(), any()) } answers { registro }
         every { puedeDeclararNoSeCobro(any()) } answers { puedeDeclarar }
         every { deviceId } returns "caja-yo"
-        coEvery { noSeCobro(any(), any(), any()) } answers { registro = null; puedeDeclarar = false; true }
+        coEvery { noSeCobro(any(), any(), any(), any()) } answers { registro = null; puedeDeclarar = false; true }
     }
     private val filasDePagarDespues = MutableStateFlow<List<PayLaterRow>>(emptyList())
     private val pagarDespues = mockk<PayLaterQueue> { every { filas } returns filasDePagarDespues }
@@ -464,7 +464,7 @@ class CobroDeCuentaSinRedTest {
         m.consultarSinRed("o1")
         // 🔴 F1 (tarea 6, K16): sin red, a los 2 min sin confirmar, el cajero ya no declara «No se cobró: cobrar aquí»: la cuenta espera.
         assertEquals(Gris("Ana la está cobrando en Caja 2. Espera a que termine."), m.sinRed.value)
-        coVerify(exactly = 0) { dueno.noSeCobro(any(), any(), any()) }
+        coVerify(exactly = 0) { dueno.noSeCobro(any(), any(), any(), any()) }
         registro = CuentaEnElRegistro(EstadoDeCuenta.CERRADA, "caja-2", "Caja 2", "Ana", "i", Instante("b", 0), faltaSubirla = true)
         m.consultarSinRed("o1")
         assertEquals(Gris("Cobrada en Caja 2 · falta subirla"), m.sinRed.value)
@@ -601,21 +601,38 @@ class CobroDeCuentaSinRedTest {
         assertEquals("Ana empezó a cobrarla en Caja 2 y no confirmó. Avisa al gerente.", texto)
 
         // El teclado ya dice qué se firma (un paso, Codex código r1 #10).
-        assertEquals("Gerente: escribe tu PIN para marcar como no cobrado lo que Ana empezó a cobrar en Caja 2",
-            m.pinParaFirmarNoSeCobro("o1"))
+        val firma = m.pinParaFirmarNoSeCobro("o1")!!
+        assertEquals("Gerente: escribe tu PIN para marcar como no cobrado lo que Ana empezó a cobrar en Caja 2", firma.titulo)
+        assertEquals("el intento exacto que vio el gerente", "i", firma.intento)
 
         // El PIN de alguien sin el permiso (o equivocado): el MISMO teclado lo dice y no se declara nada.
         assertEquals(com.avoqado.pos.core.data.network.OverrideResult.Failed(com.avoqado.pos.payment.domain.CancelacionDeCobro.PIN_NO_ES_DE_GERENTE),
-            m.firmarNoSeCobro("o1", "0000"))
+            m.firmarNoSeCobro("o1", "0000", firma.intento))
         respuestaAlPin = com.avoqado.pos.core.data.network.OverrideResult.WrongPin
         assertEquals(com.avoqado.pos.core.data.network.OverrideResult.Failed(com.avoqado.pos.payment.domain.CancelacionDeCobro.PIN_NO_ES_DE_GERENTE),
-            m.firmarNoSeCobro("o1", "1111"))
-        coVerify(exactly = 0) { dueno.noSeCobro(any(), any(), any()) }
+            m.firmarNoSeCobro("o1", "1111", firma.intento))
+        coVerify(exactly = 0) { dueno.noSeCobro(any(), any(), any(), any()) }
 
         respuestaAlPin = com.avoqado.pos.core.data.network.OverrideResult.Granted(token = "t", authorizedByName = "Gerente")
-        assertTrue(m.firmarNoSeCobro("o1", "4321") is com.avoqado.pos.core.data.network.OverrideResult.Granted)
+        assertTrue(m.firmarNoSeCobro("o1", "4321", firma.intento) is com.avoqado.pos.core.data.network.OverrideResult.Granted)
         coVerify(exactly = 1) { gerente.requestToken("v1", "4321", com.avoqado.pos.payment.domain.CancelacionDeCobro.PERMISO_DECLARAR_NO_COBRADO, null) }
-        coVerify(exactly = 1) { dueno.noSeCobro("v1", "o1", any()) }
+        // Codex android r1 #5: el registro anota al GERENTE que firmó (el nombre que devolvió el servidor), no a quien opera la caja.
+        coVerify(exactly = 1) { dueno.noSeCobro("v1", "o1", "Gerente", "i") }
         assertNull(m.noConfirmoEnLinea("o1"))
+    }
+
+    @Test fun `Codex r1 5 - si la otra caja solto A y empezo B mientras el gerente tecleaba, se dice como quedo y no se libera B`() = runTest {
+        val m = vm()
+        registro = CuentaEnElRegistro(EstadoDeCuenta.COMPROMETIDA, "caja-2", "Caja 2", "Ana", "i-a", Instante("b", 0))
+        puedeDeclarar = true
+        val firma = m.pinParaFirmarNoSeCobro("o1")!!
+        // Con el teclado abierto, Caja 2 suelta A y compromete B sobre la misma cuenta (y B también cumple sus 2 min).
+        registro = CuentaEnElRegistro(EstadoDeCuenta.COMPROMETIDA, "caja-2", "Caja 2", "Beto", "i-b", Instante("b", 0))
+        respuestaAlPin = com.avoqado.pos.core.data.network.OverrideResult.Granted(token = "t", authorizedByName = "Gerente")
+
+        assertEquals(com.avoqado.pos.core.data.network.OverrideResult.Failed("Beto la está cobrando en Caja 2. Espera a que termine."),
+            m.firmarNoSeCobro("o1", "4321", firma.intento))
+        coVerify(exactly = 0) { dueno.noSeCobro(any(), any(), any(), any()) }
+        coVerify(exactly = 0) { gerente.requestToken(any(), any(), any(), any()) }
     }
 }

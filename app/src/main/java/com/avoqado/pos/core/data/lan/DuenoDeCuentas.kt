@@ -160,11 +160,14 @@ class DuenoDeCuentas internal constructor(
         true
     }
 
-    /** «No se cobró: cobrar aquí» (una persona en ESTA caja). false = todavía no se puede, no es mía o el disco falló. */
-    suspend fun noSeCobro(venueId: String, orderId: String, quienDeclara: String): Boolean = try {
+    /**
+     * «No se cobró» en ESTA caja, firmado por [quienDeclara] (F1: el gerente). false = todavía no se puede, no es mía, ya no es ese
+     * [intento] (Codex android r1 #5) o el disco falló.
+     */
+    suspend fun noSeCobro(venueId: String, orderId: String, quienDeclara: String, intento: String? = null): Boolean = try {
         conRegistro(venueId, orderId) { reg ->
             val antes = reg.cuentas[orderId]
-            val d = RegistroDeCuentas.noSeCobro(reg, orderId, reloj(), horaDePared())
+            val d = RegistroDeCuentas.noSeCobro(reg, orderId, reloj(), horaDePared(), intento)
             // ponytail: la bitácora es el log del aparato más el intento cancelado en disco; una nota en el servidor pediría un intent nuevo.
             if (d.hecho) Log.w(TAG, "📝 «No se cobró» de $orderId, declarado por $quienDeclara: intento ${antes?.intento} de ${antes?.caja} cancelado")
             d.registro to d.hecho
