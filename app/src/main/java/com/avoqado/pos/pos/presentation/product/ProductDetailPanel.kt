@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -32,6 +33,7 @@ import androidx.compose.material.icons.Icons
 import com.avoqado.pos.core.util.formatMoney
 import com.avoqado.pos.designsystem.components.AvoqadoModalBottomSheet
 
+import com.avoqado.pos.designsystem.components.CantidadTecleable
 import com.avoqado.pos.designsystem.components.CircleBackButton
 import androidx.compose.material.icons.automirrored.filled.NoteAdd
 import androidx.compose.material.icons.filled.AttachMoney
@@ -53,6 +55,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateListOf
@@ -148,6 +151,12 @@ fun ProductDetailPanel(
             sheetState = sheetState,
         ) {
             com.avoqado.pos.designsystem.components.ImmersiveWindow()
+            // La hoja es otra ventana: sus teclas no pasan por MainActivity. Con la casilla de cantidad activa, una tecla
+            // física (la pistola) tampoco le llega aquí (Codex r3 #2, r5 #1).
+            com.avoqado.pos.giftcards.presentation.LectorHidDeLaVentana { evento ->
+                com.avoqado.pos.designsystem.components.CasillaDeCantidad.activa &&
+                    com.avoqado.pos.pos.data.LectorHidBus.esTeclaFisicaQueEscribe(evento)
+            }
             ProductDetailContent(
                 product = product,
                 discounts = discounts,
@@ -170,6 +179,8 @@ private enum class DetailSubView {
 
 // MARK: - Main content (shared between side panel and bottom sheet)
 
+// Todo lo elegido aquí es DE ESTE producto: si la pistola trae otro con la ficha abierta, la ficha empieza de cero. Sin la
+// llave, el té heredaba la cantidad y los extras del café (con sus ids y su precio) y así llegaban al carrito (pizarrón D3, 17-nov).
 @Composable
 private fun ProductDetailContent(
     product: Product,
@@ -179,7 +190,7 @@ private fun ProductDetailContent(
     onDismiss: () -> Unit,
     conX: Boolean = true,
     ajusteDePrecio: AccesoAlAjuste = AccesoAlAjuste.LIBRE,
-) {
+) = key(product.id) {
     val addToCartTapThrottleMs = 800L
     val selectedModifiers = remember { mutableStateListOf<SelectedModifier>() }
     var quantity by remember { mutableIntStateOf(1) }
@@ -389,7 +400,9 @@ private fun MainDetailView(
 ) {
     var showMissingRequired by remember { mutableStateOf(false) }
 
-    Column(modifier = Modifier.fillMaxSize()) {
+    // imePadding: la cantidad se teclea en la barra de abajo. En la tableta ya lo pone MainActivity (y esto aplica 0); en el
+    // teléfono el panel es una hoja, otra ventana, y sin esto el teclado taparía la cantidad y «Agregar» (Codex r2 #5).
+    Column(modifier = Modifier.fillMaxSize().imePadding()) {
         if (showMissingRequired && missingRequiredGroups.isNotEmpty()) {
             Text(
                 text = "Falta elegir: ${missingRequiredGroups.joinToString(", ")}",
@@ -601,12 +614,7 @@ private fun MainDetailView(
                         modifier = Modifier.size(18.dp),
                     )
                 }
-                Text(
-                    text = "$quantity",
-                    style = MaterialTheme.typography.titleMedium,
-                    modifier = Modifier.width(40.dp),
-                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                )
+                CantidadTecleable(cantidad = quantity, onCantidad = onQuantityChange)
                 IconButton(
                     onClick = { onQuantityChange(quantity + 1) },
                     modifier = Modifier.size(36.dp),

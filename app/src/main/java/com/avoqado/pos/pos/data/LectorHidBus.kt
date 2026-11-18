@@ -68,6 +68,7 @@ class LectorHidBus @Inject constructor() {
         deviceId: Int,
         eventTimeMs: Long,
         repeatCount: Int,
+        casillaDeCantidad: Boolean = com.avoqado.pos.designsystem.components.CasillaDeCantidad.activa,
     ): Boolean {
         if (accion == KeyEvent.ACTION_UP) return consumidas.remove(keyCode)
         if (accion != KeyEvent.ACTION_DOWN) return false
@@ -90,7 +91,15 @@ class LectorHidBus @Inject constructor() {
         val caracter = if (unicodeChar in 0x20..0xFFFF) Char(unicodeChar) else null
 
         return when (val decision = lector.procesar(caracter, esTerminador, esFisico, deviceId, eventTimeMs)) {
-            TeclaHid.DejarPasar -> false
+            // 🔴 Con la casilla de cantidad activa sólo vale el teclado de la pantalla (founder, 17-nov: en ANDROID no hay
+            // teclado). Una tecla física ahí es la pistola —su 1.er carácter, que LectorHid deja pasar mientras no la
+            // conoce, se volvía cantidad— o un Enter que soltaría la casilla y picaría otro botón (Codex r1 #1, r2 #6).
+            TeclaHid.DejarPasar -> if (casillaDeCantidad && esTeclaFisicaQueEscribe(deviceId, unicodeChar, keyCode)) {
+                consumidas += keyCode
+                true
+            } else {
+                false
+            }
             TeclaHid.Consumir -> {
                 consumidas += keyCode
                 true
@@ -103,9 +112,9 @@ class LectorHidBus @Inject constructor() {
         }
     }
 
-    private companion object {
+    companion object {
         /** Teclas que cambian a otras sin escribir nada. Constantes, no `KeyEvent.isModifierKey`: en los tests JVM ese estático es un stub. */
-        val MODIFICADORES = setOf(
+        private val MODIFICADORES = setOf(
             KeyEvent.KEYCODE_SHIFT_LEFT, KeyEvent.KEYCODE_SHIFT_RIGHT,
             KeyEvent.KEYCODE_ALT_LEFT, KeyEvent.KEYCODE_ALT_RIGHT,
             KeyEvent.KEYCODE_CTRL_LEFT, KeyEvent.KEYCODE_CTRL_RIGHT,
@@ -113,5 +122,22 @@ class LectorHidBus @Inject constructor() {
             KeyEvent.KEYCODE_CAPS_LOCK, KeyEvent.KEYCODE_NUM_LOCK,
             KeyEvent.KEYCODE_FUNCTION, KeyEvent.KEYCODE_SYM,
         )
+
+        /**
+         * Una tecla FÍSICA (pistola o teclado de verdad, no el de la pantalla ni `adb input`) que escribe algo, o un Enter o
+         * un Tab (lo que cierra un código; el Tab movería el foco, Codex r6 #7):
+         * lo que la casilla de cantidad no recibe (founder, 17-nov: en ANDROID no hay teclado). La usa también la hoja del
+         * teléfono, que es otra ventana y no pasa por `MainActivity.dispatchKeyEvent`.
+         */
+        fun esTeclaFisicaQueEscribe(evento: KeyEvent): Boolean =
+            esTeclaFisicaQueEscribe(evento.deviceId, evento.unicodeChar, evento.keyCode)
+
+        internal fun esTeclaFisicaQueEscribe(deviceId: Int, unicodeChar: Int, keyCode: Int): Boolean {
+            val esFisico = deviceId != KeyCharacterMap.VIRTUAL_KEYBOARD && deviceId > 0
+            val escribe = unicodeChar in 0x20..0xFFFF
+            val cierra = keyCode == KeyEvent.KEYCODE_ENTER || keyCode == KeyEvent.KEYCODE_NUMPAD_ENTER ||
+                keyCode == KeyEvent.KEYCODE_TAB
+            return esFisico && (escribe || cierra)
+        }
     }
 }
