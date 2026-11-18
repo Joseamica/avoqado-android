@@ -16,8 +16,8 @@ import com.avoqado.pos.areatickets.data.AreaTicketRepository
 import com.avoqado.pos.areatickets.data.tieneAbono
 import com.avoqado.pos.areatickets.data.NormalCheckoutItem
 import com.avoqado.pos.areatickets.data.moneyToCents
-import com.avoqado.pos.areatickets.data.comentarioQueViaja
-import com.avoqado.pos.areatickets.data.motivoQueViaja
+import com.avoqado.pos.areatickets.data.comentarioDelSuelto
+import com.avoqado.pos.areatickets.data.motivoDelSuelto
 import com.avoqado.pos.cashdrawer.data.CashDrawerRepository
 import com.avoqado.pos.kds.data.KDSRepository
 import com.avoqado.pos.kds.domain.KDSOrderBus
@@ -6839,8 +6839,8 @@ class PaymentFlowViewModel @Inject constructor(
                             quantity = item.quantity,
                             notes = item.itemNote,
                             discountId = item.itemDiscountId,
-                            discountReason = item.motivoQueViaja(),
-                            discountReasonComment = item.comentarioQueViaja(),
+                            discountReason = item.motivoDelSuelto(),
+                            discountReasonComment = item.comentarioDelSuelto(),
                         )
                     }
                     val productId = (item.type as? CartItemType.ProductItem)?.productId ?: return@mapNotNull null
@@ -6851,8 +6851,8 @@ class PaymentFlowViewModel @Inject constructor(
                         modifierIds = item.selectedModifiers.map { it.modifierId },
                         discountId = item.itemDiscountId,
                         weightQuantity = item.weightKg,
-                        discountReason = item.motivoQueViaja(),
-                        discountReasonComment = item.comentarioQueViaja(),
+                        discountReason = item.motivoDelSuelto(),
+                        discountReasonComment = item.comentarioDelSuelto(),
                     )
                 }
             val checkout = areaTicketRepository.materialize(

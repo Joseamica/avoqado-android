@@ -313,6 +313,14 @@ internal fun CartItem.motivoQueViaja(): String? = discountReason?.takeIf { !isCo
 /** D4: su comentario, sólo si viaja el motivo. */
 internal fun CartItem.comentarioQueViaja(): String? = discountReasonComment?.takeIf { motivoQueViaja() != null && it.isNotBlank() }
 
+/**
+ * D4 (Codex r4 #3): el producto SUELTO del cobro de vales no manda su «Ajuste de precio» (deuda aparte, es dinero); si trae uno, el motivo
+ * podría explicar esa rebaja y caer en la fila del descuento del catálogo: no viaja. Sin ajuste, la misma regla que Mostrador.
+ */
+internal fun CartItem.motivoDelSuelto(): String? = motivoQueViaja()?.takeIf { priceAdjustment == null }
+
+internal fun CartItem.comentarioDelSuelto(): String? = comentarioQueViaja()?.takeIf { priceAdjustment == null }
+
 /** 🔴 D5: un vale pedido en una vez anterior de la app cuya respuesta nunca llegó. Se queda su llave: «Recuperar» la reusa. */
 @Serializable
 data class ValeSinConfirmar(

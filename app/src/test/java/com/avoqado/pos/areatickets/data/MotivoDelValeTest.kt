@@ -92,4 +92,14 @@ class MotivoDelValeTest {
         assertTrue(texto, texto.contains("\"discountReason\":\"Frecuente\""))
         assertTrue(texto, texto.contains("\"discountReasonComment\":\"c\""))
     }
+
+    @Test
+    fun `un suelto con ajuste de precio no manda el motivo (el ajuste no viaja en el cobro de vales)`() {
+        val conAjuste = linea("s", motivo = "Producto dañado", comentario = "Bajé a $80").also { it.priceAdjustment = 8000 }
+        assertNull(conAjuste.motivoDelSuelto())
+        assertNull(conAjuste.comentarioDelSuelto())
+        val sinAjuste = linea("t", motivo = "Cliente frecuente", comentario = "Viene diario")
+        assertEquals("Cliente frecuente", sinAjuste.motivoDelSuelto())
+        assertEquals("Viene diario", sinAjuste.comentarioDelSuelto())
+    }
 }
