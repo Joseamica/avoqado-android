@@ -384,4 +384,58 @@ class TransactionReprintReceiptTest {
         assertNull(detalle("null").lineasDelTicket)
         assertEquals("p", detalle("""{"raro":true}""").id)
     }
+
+    /**
+     * D41 «C» (tarjeta `hz:nube0000:naec8c3f`): Coca $25 + Agua $20 de cortesía + Café $30, 10 % de cuenta, cobrado $49.50. El SERVIDOR
+     * manda `ticketTotals` como lo entienden las apps publicadas ($55 · −$5.50: la Agua en $0) y, aparte, `cortesiaDelTicket` (20) y en
+     * cada renglón `totalEnElTicket`. La reimpresión nueva dice $75 · −$25.50 con la Agua a $20.00, igual que Mostrador y el digital.
+     */
+    @Test
+    fun `D41 la reimpresion de una venta con cortesia de Mesas suma la cortesia, pinta la Agua a su bruto y cuadra`() {
+        val json = Json { ignoreUnknownKeys = true }
+        val t = json.decodeFromString<TransactionDetailResponse>(
+            """{"success":true,"transaction":{"id":"p","method":"CASH","amount":49.5,"cortesiaDelTicket":20,
+                "ticketTotals":{"kind":"COBRO","desglosado":true,"subtotal":55,"discount":5.5,"serviceCharge":0,"addedTax":0,"tip":0,"total":49.5},
+                "items":[{"id":"c","productName":"Coca","quantity":1,"unitPrice":25,"total":25,"totalEnElTicket":25},
+                         {"id":"a","productName":"Agua","quantity":1,"unitPrice":20,"total":0,"totalEnElTicket":20},
+                         {"id":"f","productName":"Café","quantity":1,"unitPrice":30,"total":30,"totalEnElTicket":30}]}}""",
+        ).transaction!!
+        val r = t.toReceiptData(venueName = "T", reprintedAt = cuando)
+        assertEquals(listOf(7500, 2550, 4950), listOf(r.subtotal, r.discountAmount, r.total))
+        assertEquals(listOf(2500, 2000, 3000), r.items.map { it.totalPrice })
+        assertEquals(r.subtotal, r.items.sumOf { it.totalPrice })
+        assertEquals(true, cuadra(r))
+        // `total` sigue siendo el de la orden: lo leen las devoluciones (una cortesía no se devuelve).
+        assertEquals(0.0, t.items[1].amount, 0.0)
+
+        // Mostrador: el SERVIDOR ya guarda la Agua a precio lleno y no manda `cortesiaDelTicket`: el mismo papel.
+        val mostrador = json.decodeFromString<Transaction>(
+            """{"id":"m","method":"CASH","amount":49.5,
+                "ticketTotals":{"kind":"COBRO","desglosado":true,"subtotal":75,"discount":25.5,"serviceCharge":0,"addedTax":0,"tip":0,"total":49.5},
+                "items":[{"productName":"Coca","total":25,"totalEnElTicket":25},{"productName":"Agua","total":20,"totalEnElTicket":20},
+                         {"productName":"Café","total":30,"totalEnElTicket":30}]}""",
+        ).toReceiptData(venueName = "T", reprintedAt = cuando)
+        assertEquals(listOf(7500, 2550, 4950), listOf(mostrador.subtotal, mostrador.discountAmount, mostrador.total))
+        assertEquals(listOf(2500, 2000, 3000), mostrador.items.map { it.totalPrice })
+    }
+
+    @Test
+    fun `D41 sin cortesiaDelTicket (SERVIDOR viejo o recibo de antes) la reimpresion sale como hoy, y una devolucion o copia D1 no la suman`() {
+        val json = Json { ignoreUnknownKeys = true }
+        val viejo = json.decodeFromString<Transaction>(
+            """{"id":"p","method":"CASH","amount":49.5,
+                "ticketTotals":{"kind":"COBRO","desglosado":true,"subtotal":55,"discount":5.5,"serviceCharge":0,"addedTax":0,"tip":0,"total":49.5},
+                "items":[{"productName":"Coca","total":25,"totalEnElTicket":25},{"productName":"Agua","total":0,"totalEnElTicket":20},
+                         {"productName":"Café","total":30,"totalEnElTicket":30}]}""",
+        ).toReceiptData(venueName = "T", reprintedAt = cuando)
+        assertEquals(listOf(5500, 550, 4950), listOf(viejo.subtotal, viejo.discountAmount, viejo.total))
+        assertEquals(listOf(2500, 0, 3000), viejo.items.map { it.totalPrice })
+        // Una devolución no suma la cortesía aunque llegue el campo.
+        val devolucion = json.decodeFromString<Transaction>(
+            """{"id":"d","method":"CASH","amount":-10,"cortesiaDelTicket":20,
+                "ticketTotals":{"kind":"DEVOLUCION","desglosado":false,"subtotal":10,"serviceCharge":0,"addedTax":0,"tip":0,"total":10}}""",
+        ).toReceiptData(venueName = "T", reprintedAt = cuando)
+        assertEquals(listOf(1000, 1000), listOf(devolucion.subtotal, devolucion.total))
+        assertNull(devolucion.discountAmount)
+    }
 }
