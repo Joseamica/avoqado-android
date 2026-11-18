@@ -67,6 +67,7 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.util.UUID
 import javax.inject.Inject
@@ -1581,14 +1582,22 @@ class CartViewModel @Inject constructor(
             return
         }
         consumiendoClase = true
+        // Codex r5 #2: si el carrito se descarta (o algo lanza) a media carga, la inscripción ya salió de la fila: vuelve a
+        // «Clase pendiente» en vez de perderse con su lugar apartado.
+        var colocada = false
         viewModelScope.launch {
             try {
                 if (productsRepository.products.value.isEmpty()) {
                     productsRepository.fetchProducts()
                 }
+                // Codex r5 #3: la cajera cambió de sucursal mientras cargaba el catálogo: espera en la suya.
+                if (seed.venueId != null && seed.venueId != secureStorage.venueId) {
+                    classCheckoutSeed.esperar(seed); colocada = true
+                    return@launch
+                }
                 // D9 (Codex r1 #3): el cobro se abrió mientras cargaba el catálogo: pasa a pendientes (y las demás al seguir).
                 if (cobroLoImpide(avisar = false) || hayVentaAMedias()) {
-                    classCheckoutSeed.esperar(seed)
+                    classCheckoutSeed.esperar(seed); colocada = true
                     return@launch
                 }
                 val product = productsRepository.products.value.firstOrNull { it.id == seed.productId }
@@ -1596,7 +1605,7 @@ class CartViewModel @Inject constructor(
                     // D13 (Codex r2 #8): antes se perdía con un log (el lugar ya estaba apartado en el servidor). Ahora queda en
                     // «Clase pendiente», donde la cajera ve que no está en el catálogo o la quita.
                     Log.w("🛒", "Class seed product ${seed.productId} not in catalog — goes to pending")
-                    classCheckoutSeed.esperar(seed)
+                    classCheckoutSeed.esperar(seed); colocada = true
                     return@launch
                 }
                 // Don't clobber a different reservation already linked to the cart:
@@ -1606,18 +1615,21 @@ class CartViewModel @Inject constructor(
                 if (existingResId != null && seed.reservationId != null && existingResId != seed.reservationId) {
                     // D13: antes se perdía (con su lugar ya apartado en el servidor); ahora queda en «Clase pendiente».
                     Log.w("🛒", "Cart already linked to reservation $existingResId — seed ${seed.reservationId} goes to pending")
-                    classCheckoutSeed.esperar(seed)
+                    classCheckoutSeed.esperar(seed); colocada = true
                     return@launch
                 }
                 addProductWithModifiers(product, quantity = seed.quantity, modifiers = emptyList())
                 seed.reservationId?.let { resId ->
                     _cartState.update { it.copy(reservationId = resId) }
                 }
+                colocada = true
                 Log.d("🛒", "Seeded class ${product.name} x${seed.quantity} from walk-in flow")
             } finally {
+                if (!colocada) classCheckoutSeed.esperar(seed)
                 consumiendoClase = false
-                // Codex r3 #4 y r4 #2: la siguiente de la fila se procesa en su orden, salga como salga ésta.
-                if (classCheckoutSeed.hayFrescas()) consumePendingClassSeed()
+                // Codex r3 #4 y r4 #2: la siguiente de la fila se procesa en su orden, salga como salga ésta. Con el carrito ya
+                // descartado no (r5 #2): se quedaría sin correr; la toma el carrito siguiente.
+                if (classCheckoutSeed.hayFrescas() && viewModelScope.isActive) consumePendingClassSeed()
             }
         }
     }

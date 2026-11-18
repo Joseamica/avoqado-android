@@ -99,7 +99,10 @@ fun ClasePendiente(cart: CartViewModel, vm: ClasePendienteViewModel = hiltViewMo
         PrimaryButton(text = "Agregar al carrito", enabled = libre && !revisando, isLoading = revisando, onClick = {
             revisando = true
             scope.launch {
-                when (val r = vm.revisar(pendiente)) {
+                val r = vm.revisar(pendiente)
+                // Codex r5 #1: un «La agrego después» que entró en el mismo cuadro que «Agregar» gana: no se agrega.
+                if (pendiente in vistas) { revisando = false; return@launch }
+                when (r) {
                     is ClasePendienteViewModel.Revision.YaNo -> { cart.quitarClasePendiente(pendiente); aviso = r.motivo }
                     else -> {
                         // Se vuelve a revisar en el carrito: mientras se consultaba pudo empezar otra venta.
