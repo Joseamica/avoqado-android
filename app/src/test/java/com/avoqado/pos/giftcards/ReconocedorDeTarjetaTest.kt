@@ -50,4 +50,13 @@ class ReconocedorDeTarjetaTest {
         assertEquals(1, scanners.size)
         assertFalse(scanners.single().readLines().any { "Log." in it && ("$" + "code" in it || "$" + "value" in it) })
     }
+
+    @Test fun `D14 esDelServidor acepta un codigo con su caracter de control y rechaza lo que el servidor nunca emite`() {
+        // Calculado con el `caracterDeControl` de giftCardCode.ts (Luhn mod 32, Crockford).
+        org.junit.Assert.assertTrue(ReconocedorDeTarjeta.esDelServidor("ABCD-EFGH-JKMN-PQRS-K"))
+        org.junit.Assert.assertTrue(ReconocedorDeTarjeta.esDelServidor("abcd-efgh-jkmn-pqrs-k"))
+        org.junit.Assert.assertFalse("control equivocado", ReconocedorDeTarjeta.esDelServidor("ABCD-EFGH-JKMN-PQRS-0"))
+        org.junit.Assert.assertFalse("U no es del alfabeto", ReconocedorDeTarjeta.esDelServidor("CAFE-REGULAR-000001"))
+        org.junit.Assert.assertFalse(ReconocedorDeTarjeta.esDelServidor("PIZZAS-003"))
+    }
 }

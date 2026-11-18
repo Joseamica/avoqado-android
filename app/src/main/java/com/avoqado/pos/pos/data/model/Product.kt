@@ -153,8 +153,10 @@ fun List<Product>.parecidoACodigo(codigo: String): Product? {
  */
 fun List<Product>.candidatosDeDosLecturas(delAparato: String, enIngles: String): List<Product> {
     val lecturas = listOf(delAparato.trim(), enIngles.trim())
-    fun coincide(campo: String, lectura: String) = campo == lectura ||
-        (ReconocedorDeTarjeta.reconocer(lectura) == null && !pareceTarjetaDeCliente(lectura) && campo.equals(lectura, ignoreCase = true))
+    // Codex r5 #2: si CUALQUIERA de las dos es tarjeta, sólo cuentan las coincidencias exactas (como la búsqueda «parecida»,
+    // que tampoco compara una tarjeta sin mayúsculas): la tarjeta se reconoce como siempre.
+    val soloExacto = lecturas.any { ReconocedorDeTarjeta.reconocer(it) != null || pareceTarjetaDeCliente(it) }
+    fun coincide(campo: String, lectura: String) = campo == lectura || (!soloExacto && campo.equals(lectura, ignoreCase = true))
     return filter { p -> listOfNotNull(p.sku, p.barcode, p.gtin).any { campo -> lecturas.any { coincide(campo, it) } } }
         .distinctBy { it.id }
 }

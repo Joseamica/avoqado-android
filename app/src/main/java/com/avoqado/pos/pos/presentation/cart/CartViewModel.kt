@@ -75,8 +75,8 @@ import com.avoqado.pos.core.util.aCentavos
 
 /** D14: la misma etiqueta coincide con dos productos según cómo esté configurada la pistola. */
 fun avisoDeCodigoDoble(delAparato: String, enIngles: String) =
-    "La etiqueta puede ser «$enIngles» o «$delAparato» y los dos están en el catálogo. Agrega el producto a mano " +
-        "o cambia uno de los dos códigos."
+    "La etiqueta «$enIngles» (o «$delAparato», según cómo esté configurada la pistola) coincide con más de un producto del " +
+        "catálogo. Agrega el producto a mano o corrige los códigos en el catálogo."
 
 sealed interface ScannedBarcodeResult {
     data class GiftCardFound(val prueba: com.avoqado.pos.giftcards.data.PruebaDeTarjeta) : ScannedBarcodeResult
@@ -2571,7 +2571,10 @@ class CartViewModel @Inject constructor(
             // encontró nada; si tampoco la de EE. UU. encuentra, se avisa con la del aparato, como siempre.
             if (resultado is ScannedBarcodeResult.Unknown) {
                 lecturaUs?.let { resolverCodigo(it) }
-                    ?.takeIf { it !is ScannedBarcodeResult.Unknown }?.let { return it }
+                    ?.takeIf { it !is ScannedBarcodeResult.Unknown }
+                    // Codex r5 #3: un SKU desconocido con guiones no se vuelve consulta de tarjeta; sólo un código del servidor.
+                    ?.takeIf { it !is ScannedBarcodeResult.GiftCardFound || com.avoqado.pos.giftcards.domain.ReconocedorDeTarjeta.esDelServidor(lecturaUs) }
+                    ?.let { return it }
             }
             return resultado
         } finally {

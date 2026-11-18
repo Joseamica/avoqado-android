@@ -330,4 +330,24 @@ class CartViewModelTarjetaEscaneadaTest {
         val vm = createViewModel()
         assertEquals(ScannedBarcodeResult.Unknown("PIZZAS'003"), vm.resolveScannedBarcode("PIZZAS'003"))
     }
+
+    @Test fun `D14 un SKU desconocido con guiones no se vuelve consulta de tarjeta`() = runTest {
+        // Codex r5 #3: 17 letras y números al quitar los guiones, pero con U y L, que el servidor nunca emite.
+        every { productsRepository.products } returns MutableStateFlow(emptyList())
+        val vm = createViewModel()
+        assertEquals(
+            ScannedBarcodeResult.Unknown("CAFE'REGULAR'000001"),
+            vm.resolveScannedBarcode("CAFE'REGULAR'000001", lecturaUs = "CAFE-REGULAR-000001"),
+        )
+    }
+
+    @Test fun `D14 una tarjeta de regalo valida con la pistola en ingles se reconoce aunque haya productos parecidos`() = runTest {
+        // Codex r5 #2: dos productos coinciden SIN mayúsculas con la lectura del aparato; la tarjeta gana, como antes de r5.
+        val a = Product(id = "a", name = "A", priceValue = 10.0, sku = "abcd'efgh'jkmn'pqrs'k")
+        val b = Product(id = "b", name = "B", priceValue = 20.0, barcode = "Abcd'Efgh'Jkmn'Pqrs'K")
+        every { productsRepository.products } returns MutableStateFlow(listOf(a, b))
+        val vm = createViewModel()
+        val r = vm.resolveScannedBarcode("ABCD'EFGH'JKMN'PQRS'K", lecturaUs = "ABCD-EFGH-JKMN-PQRS-K")
+        assertTrue("$r", r is ScannedBarcodeResult.GiftCardFound)
+    }
 }
