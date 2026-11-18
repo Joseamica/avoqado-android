@@ -25,6 +25,8 @@ import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.NonCancellable
@@ -254,23 +256,41 @@ class CustomerDisplaySyncTest {
     }
 
     @Test
-    fun `logo en vuelo y luego 404 se queda en fabrica`() = runBlocking {
+    fun `logo en vuelo y luego 404 se queda en fabrica`() = logoEnVueloY404(discoLento = false)
+
+    /** La misma, con el disco del desligado lento (lo que pasa en un runner cargado): el resultado no puede depender del reloj. */
+    @Test
+    fun `logo en vuelo y luego 404 se queda en fabrica aunque el disco tarde`() = logoEnVueloY404(discoLento = true)
+
+    private fun logoEnVueloY404(discoLento: Boolean) = runBlocking {
         val retenida = CompletableDeferred<Unit>()
         val bajando = CountDownLatch(1)
+        // El trabajo de la descarga (la corrutina que llama a `ensure` y después pide su turno en la fila).
+        val descarga = AtomicReference<Job?>(null)
         // Como OkHttp bloqueante: la descarga NO se entera de la cancelación y termina igual.
         coEvery { images.ensure(any(), any()) } coAnswers {
+            descarga.set(currentCoroutineContext()[Job])
             bajando.countDown()
             withContext(NonCancellable) { retenida.await() }
             bajar(firstArg())
         }
         fichaResponse = { ficha(HUELLA_A, logo = LOGO_ASSET_JSON) }
-        val sync = sync()
+        val lento = AtomicBoolean(false)
+        val espia = spyk(store())
+        every { espia.update(any()) } answers { if (lento.get()) Thread.sleep(600); callOriginal() }
+        val sync = sync(almacen = espia)
         sync.afterPoll(VENUE, TERMINAL, senales(HUELLA_A))
         assertTrue(bajando.await(5, TimeUnit.SECONDS))
 
+        lento.set(discoLento)
         sync.onDeviceUnbound(VENUE)
         retenida.complete(Unit)
-        Thread.sleep(300)
+        // Sin reloj (antes: `Thread.sleep(300)`, rojo con el runner cargado, CI 43808201290). Se espera a que el trabajo de la
+        // descarga TERMINE (cancelado, o después de su unidad en la fila: lo que publicaría tarde ya pasó) y luego la fila: el
+        // desligado se formó ANTES (`launchUnit` toma su lugar en la misma llamada) y el `Mutex` es justo, así que al volver de
+        // `vaciarLaFila` ya corrió completo.
+        withTimeout(5_000) { descarga.get()!!.join() }
+        vaciarLaFila(sync)
 
         assertNull(state.design.value)
         assertTrue(store().load().manifests.isEmpty())
@@ -1360,14 +1380,23 @@ class CustomerDisplaySyncTest {
     }
 
     @Test
-    fun `r6 2 - A logout A con la fila ocupada cancela la descarga de A y pasa por fabrica`() = runBlocking {
+    fun `r6 2 - A logout A con la fila ocupada cancela la descarga de A y pasa por fabrica`() = aLogoutA(hiloLento = false)
+
+    /** La misma, con el hilo que recibe la cancelación lento (runner cargado): el resultado no puede depender del reloj. */
+    @Test
+    fun `r6 2 - A logout A cancela la descarga de A aunque la cancelacion llegue tarde`() = aLogoutA(hiloLento = true)
+
+    private fun aLogoutA(hiloLento: Boolean) = runBlocking {
         val retenida = CompletableDeferred<Unit>()
-        val cancelada = AtomicBoolean(false)
+        // La cancelación despierta el `catch` en un hilo de IO, en su turno: se ESPERA (antes se leía al instante, rojo con el
+        // runner cargado, CI 43741324345).
+        val cancelada = CountDownLatch(1)
         coEvery { images.ensure(any(), any()) } coAnswers {
             try {
                 retenida.await()
             } catch (e: CancellationException) {
-                cancelada.set(true)
+                if (hiloLento) Thread.sleep(300)
+                cancelada.countDown()
                 throw e
             }
             bajar(firstArg())
@@ -1390,7 +1419,7 @@ class CustomerDisplaySyncTest {
         vaciarLaFila(sync)
         mirando.cancel()
 
-        assertTrue("la descarga de la sesión cerrada siguió viva", cancelada.get())
+        assertTrue("la descarga de la sesión cerrada siguió viva", cancelada.await(5, TimeUnit.SECONDS))
         assertTrue("el logout no retiró el diseño: $vistos", null in vistos)
         assertEquals(HUELLA_A, state.design.value!!.ficha.fingerprint)   // lo guardado de A, otra vez publicado
     }
@@ -1834,7 +1863,9 @@ class CustomerDisplaySyncTest {
      * Una unidad de la fila que no toca nada (una sucursal sin terminal): al volver, ya corrió todo lo que estaba formado
      * antes. Funciona porque `onCapabilitiesReported` pasa por la fila y el `Mutex` de corrutinas es justo (FIFO).
      */
-    private suspend fun vaciarLaFila(sync: CustomerDisplaySync) = sync.onCapabilitiesReported("ninguna")
+    private suspend fun vaciarLaFila(sync: CustomerDisplaySync) =
+        // Con tope (Codex r2, encargo 5053f3): si una unidad se queda con la fila, la prueba FALLA en 10 s en vez de colgarse.
+        withTimeout(10_000) { sync.onCapabilitiesReported("ninguna") }
 
     /**
      * Deja la fila tomada por una unidad que no toca nada (el reporte de capacidades de una sucursal sin terminal),
