@@ -620,35 +620,6 @@ class AvisoDuraderoDeOtrasVentasTest {
     }
 
     @Test
-    fun `P1 sin red la declaracion no cobrado dice lo mismo y no se encola`() = runTest {
-        codigoDelPost = 409
-        respuestaDelPost = ocupadaPor("r-ajeno")
-        val vm = nuevaVenta()
-        cobrarConTarjeta(vm)
-        vm.revisarCobroQueOcupa() // con red: el servidor dice que sigue en duda
-        advanceUntilIdle()
-        sinRed = true
-
-        vm.declararNoCobrado() // «Ya revisé la terminal: no se cobró», sin red
-        advanceUntilIdle()
-
-        val estado = vm.state.value as PaymentFlowState.Undetermined
-        assertEquals(com.avoqado.pos.payment.domain.CancelacionDeCobro.SIN_CONEXION_REVISION, estado.message)
-        assertTrue("la duda sigue ahí: no se resolvió nada", estado.fromPreviousSale)
-        assertEquals("se intentó UNA vez", 1, declaraciones)
-
-        // 🔴 Online-only A PROPÓSITO: al volver la red NO se manda sola (una afirmación de hace diez minutos podría caer
-        // sobre un cobro que entretanto sí pasó), y no queda en la cola de sincronización.
-        sinRed = false
-        advanceTimeBy(10 * 60 * 1000L)
-        advanceUntilIdle()
-        assertEquals("nadie la reenvió", 1, declaraciones)
-        io.mockk.coVerify(exactly = 0) {
-            syncOutbox.enqueue(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any())
-        }
-    }
-
-    @Test
     fun `P1 sin scope la duda ajena no invita a cobrar en efectivo`() = runTest {
         for (scope in listOf(null, "FUTURE_SCOPE")) {
             codigoDelPost = 409
@@ -661,9 +632,6 @@ class AvisoDuraderoDeOtrasVentasTest {
             advanceUntilIdle()
             val duda = vm.state.value as PaymentFlowState.Undetermined
             assertTrue(duda.message, duda.message.endsWith(com.avoqado.pos.payment.domain.CancelacionDeCobro.SIN_CONEXION_REVISION_ESTA_VENTA))
-            vm.declararNoCobrado()
-            advanceUntilIdle()
-            assertEquals(com.avoqado.pos.payment.domain.CancelacionDeCobro.SIN_CONEXION_REVISION_ESTA_VENTA, (vm.state.value as PaymentFlowState.Undetermined).message)
             sinRed = false
         }
     }
@@ -689,9 +657,6 @@ class AvisoDuraderoDeOtrasVentasTest {
         vm.revisarCobroDeOtraVenta("r-otra")
         advanceUntilIdle()
         assertEquals("Quedó un cobro sin confirmar de otra venta. $estaVenta", (vm.state.value as PaymentFlowState.Undetermined).message)
-        vm.declararNoCobrado()
-        advanceUntilIdle()
-        assertEquals("su declaración sin red, lo mismo", estaVenta, (vm.state.value as PaymentFlowState.Undetermined).message)
         assertEquals("la duda de esa venta sigue guardada", listOf("r-otra"), ids())
 
         // 2) «Revisar ese cobro» con alcance ORDER: el cobro que bloquea es de ESTA venta.
@@ -703,9 +668,6 @@ class AvisoDuraderoDeOtrasVentasTest {
         vm.revisarCobroQueOcupa()
         advanceUntilIdle()
         assertEquals("Quedó un cobro sin confirmar de esta venta. $estaVenta", (vm.state.value as PaymentFlowState.Undetermined).message)
-        vm.declararNoCobrado()
-        advanceUntilIdle()
-        assertEquals("su declaración sin red, lo mismo", estaVenta, (vm.state.value as PaymentFlowState.Undetermined).message)
 
         // 3) El «Cobro sin confirmar» PROPIO: el cobro que mandó esta pantalla no se sabe cómo quedó.
         sinRed = false
@@ -717,12 +679,12 @@ class AvisoDuraderoDeOtrasVentasTest {
         vm.recheckCardCharge() // «Volver a consultar» sin red
         advanceUntilIdle()
         assertEquals(estaVenta, (vm.state.value as PaymentFlowState.Undetermined).message)
-        vm.declararNoCobrado() // «Ya revisé la terminal: no se cobró» sin red
-        advanceUntilIdle()
         val propia = vm.state.value as PaymentFlowState.Undetermined
         assertEquals(estaVenta, propia.message)
         assertFalse("nunca invita al efectivo sobre su propia duda: ${propia.message}", propia.message.contains("efectivo"))
         assertEquals("la duda propia y la de la otra venta siguen guardadas", setOf("r-otra", postsEnviados.last()), ids().toSet())
+        // 🔴 F1 (tarea 6): en ninguna de las tres dudas el piso manda una declaración: la firma el gerente en «Por revisar».
+        assertEquals("el piso nunca declara", 0, declaraciones)
     }
 
     @Test
@@ -738,9 +700,6 @@ class AvisoDuraderoDeOtrasVentasTest {
         vm.revisarCobroQueOcupa()
         advanceUntilIdle()
         assertEquals("Quedó un cobro sin confirmar de otra venta. $otraVenta", (vm.state.value as PaymentFlowState.Undetermined).message)
-        vm.declararNoCobrado()
-        advanceUntilIdle()
-        assertEquals(otraVenta, (vm.state.value as PaymentFlowState.Undetermined).message)
         assertTrue("el cobro ajeno no entra a la lista: ${ids()}", ids().isEmpty())
     }
 
@@ -761,9 +720,6 @@ class AvisoDuraderoDeOtrasVentasTest {
         vm.revisarCobroQueOcupa()
         advanceUntilIdle()
         assertEquals("Quedó un cobro sin confirmar de otra venta. $estaVenta", (vm.state.value as PaymentFlowState.Undetermined).message)
-        vm.declararNoCobrado()
-        advanceUntilIdle()
-        assertEquals("su declaración sin red, lo mismo", estaVenta, (vm.state.value as PaymentFlowState.Undetermined).message)
         assertEquals("su duda sigue guardada", listOf("r-de-esta-tablet"), ids())
     }
 }

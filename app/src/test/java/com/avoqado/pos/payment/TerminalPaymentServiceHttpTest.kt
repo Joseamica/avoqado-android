@@ -389,6 +389,22 @@ class TerminalPaymentServiceHttpTest {
         assertEquals(1, server.requestCount)
     }
 
+    /** 🔴 F1 (tarea 6): una fila antigua sin importe le pregunta a Avoqado por su ID, sólo para mostrarlo. Nunca un cero inventado. */
+    @Test
+    fun `F1 el importe de una fila antigua sale del estado de la solicitud, con propina, y sin respuesta es null`() = runBlocking {
+        enqueue(200, """{"success":true,"status":"UNKNOWN","inProgress":false,"amount":350.5,"tip":35}""")
+        assertEquals(38_550, service.importeDelCobro("r-viejo", "venue-del-cobro"))
+        val pedido = server.takeRequest()
+        assertEquals("/api/v1/mobile/venues/venue-del-cobro/terminal-payment/r-viejo", pedido.path)
+        assertEquals("se pregunta en segundo plano: un 403 no saca el aviso global", "1",
+            pedido.getHeader(com.avoqado.pos.core.data.network.ForbiddenInterceptor.BACKGROUND_HEADER))
+
+        enqueue(200, """{"success":true,"status":"UNKNOWN","inProgress":false}""")
+        assertNull("sin importe en la respuesta no se inventa uno", service.importeDelCobro("r-viejo", null))
+        enqueue(404, """{"success":false,"status":"NOT_FOUND"}""")
+        assertNull(service.importeDelCobro("r-viejo", null))
+    }
+
     @Test
     fun `P1 la consulta que nunca recibe respuesta es sin red y un 500 no lo es`() = runBlocking {
         // Fix round 1 de C1 (O1): el MISMO criterio que ya usa la app (`ConsultaDeEstado.sinRespuesta`). Sólo la ausencia de

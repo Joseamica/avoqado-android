@@ -61,12 +61,4 @@ class RegresionesDeRedR4Test {
         assertTrue("Sin red actual se conserva el diálogo antes de entregar el envío", codigo.contains("if(!viewModel.conectado.value||!viewModel.servidor.value)return@PrimaryButton"))
         assertTrue("Al entregar el envío se cierra como r2", codigo.contains("confirmar=falseenviando=true"))
     }
-    @Test fun `declaracion despachada cierra y deja visible el rechazo ambar`() {
-        val codigo = fuente("PaymentResultScreen").replace(Regex("\\s+"), "")
-        assertTrue("La declaración cierra antes de entregar el envío al modelo", codigo.contains("if(cerrarDialogoDeRecibo(true))onCerrar()onConfirmar()"))
-        assertTrue(codigo.contains("text=message"))
-        assertTrue(codigo.contains("color=if(declaracionRechazada)WarningelseMaterialTheme.colorScheme.onSurfaceVariant"))
-        val flujo = fuente("PaymentFlowScreen").replace(Regex("\\s+"), "")
-        assertTrue("Publica el rechazo del modelo", flujo.contains("declaracionRechazada=currentState.declaracionRechazada"))
-    }
 }

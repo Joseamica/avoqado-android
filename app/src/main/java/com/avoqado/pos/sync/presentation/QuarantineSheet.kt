@@ -118,12 +118,18 @@ fun QuarantineSheet(
     val cancelacionesViewModel: com.avoqado.pos.payment.presentation.CancelacionesPendientesViewModel = hiltViewModel()
     val cancelaciones by cancelacionesViewModel.pendientes.collectAsState()
     val cancelacionesEnCurso by cancelacionesViewModel.enCurso.collectAsState()
-    val cancelacionesDeclarando by cancelacionesViewModel.declarando.collectAsState()
+    // 🔴 F1 (tarea 6): la revisión del gerente. Lo ven todos; firmar pide SU PIN primero y va sobre la fila exacta.
     val avisosDeCancelacion by cancelacionesViewModel.avisos.collectAsState()
-    val cancelacionesPidiendoPin by cancelacionesViewModel.pidiendoPin.collectAsState()
-    var cancelacionPorDeclarar by androidx.compose.runtime.remember { mutableStateOf<com.avoqado.pos.payment.data.IntencionDeCancelarCobro?>(null) }
+    val cobrosPorConfirmar by cancelacionesViewModel.cobrosPorConfirmar.collectAsState()
+    val pasoDelGerente by cancelacionesViewModel.paso.collectAsState()
 
     LaunchedEffect(Unit) { viewModel.load();historial.cargar() }
+    LaunchedEffect(cancelacionesViewModel) {
+        while (true) {
+            cancelacionesViewModel.refrescar(recuperarImportes = true)
+            kotlinx.coroutines.delay(5_000)
+        }
+    }
     LaunchedEffect(successMessage) { if (successMessage != null) historial.cargar() }
     // D63 (Codex r4): «Conservar para revisión» avisa por el canal de error y le pone motivo Q15: el cobro pasa a «Cobros por
     // revisar», donde está «Dejar para soporte». Sin recargar, había que cerrar y abrir la hoja para verlo.
@@ -186,7 +192,7 @@ fun QuarantineSheet(
                     modifier = Modifier.weight(1f).fillMaxWidth(),
                     contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = AvoqadoTheme.spacing.xxl, vertical = AvoqadoTheme.spacing.lg),
                 ) {
-                    if (historial.canRead && revisiones.isEmpty() && (revisadas || (items.isEmpty() && failedPayments.isEmpty() && failedReservations.isEmpty() && cancelaciones.isEmpty() && cobrosInterrumpidos.isEmpty() && cuentasPagarDespues.isEmpty() && paquetesPorRevisar.isEmpty() && deOtrasSucursales.isEmpty()))) {
+                    if (historial.canRead && revisiones.isEmpty() && (revisadas || (items.isEmpty() && failedPayments.isEmpty() && failedReservations.isEmpty() && cancelaciones.isEmpty() && cobrosPorConfirmar.isEmpty() && cobrosInterrumpidos.isEmpty() && cuentasPagarDespues.isEmpty() && paquetesPorRevisar.isEmpty() && deOtrasSucursales.isEmpty()))) {
                         item {
                             Text(
                                 if (revisadas) "No hay cobros revisados." else "No hay operaciones pendientes de revisión.",
@@ -313,6 +319,21 @@ fun QuarantineSheet(
                             }
                             HorizontalDivider()
                         }
+                        // F1 (tarea 6): las tarjetas en duda de este aparato. El piso sólo las ve; «Revisar» pide el PIN del gerente.
+                        if (cobrosPorConfirmar.isNotEmpty()) item { SeccionDeRevision(com.avoqado.pos.payment.domain.CancelacionDeCobro.SECCION_COBROS_POR_CONFIRMAR) }
+                        items(cobrosPorConfirmar, key = { "por-confirmar-${it.requestId}" }) { cobro ->
+                            var abierto by rememberSaveable("por-confirmar-${cobro.requestId}") { mutableStateOf(false) }
+                            Column(Modifier.fillMaxWidth().padding(vertical = AvoqadoTheme.spacing.md), verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
+                                Text(com.avoqado.pos.payment.domain.CancelacionDeCobro.TITULO_TARJETA_POR_CONFIRMAR, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                                Text(importeDeLaFila(cobro.montoCents), style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold)
+                                ReferenciaDeRevision("Folio ${cobro.requestId.take(8)}", cobro.desdeMillis?.let { formatTime(it) }.orEmpty(), abierto, { abierto = !abierto })
+                                avisosDeCancelacion[cobro.requestId]?.let { Text(it, style = MaterialTheme.typography.bodyMedium, color = Warning) }
+                                AccionDeRevision(text = com.avoqado.pos.payment.domain.CancelacionDeCobro.BOTON_REVISAR,
+                                    onClick = { cancelacionesViewModel.revisar(cobro) }, principal = true)
+                                if (abierto) Text("Folio ${cobro.requestId}", style = MaterialTheme.typography.bodySmall)
+                            }
+                            HorizontalDivider()
+                        }
                         if (cancelaciones.isNotEmpty()) item { SeccionDeRevision("Cancelaciones pendientes") }
                         items(cancelaciones, key = { "cancelacion-${it.id}" }) { cancelacion ->
                             var abierto by rememberSaveable("cancelacion-${cancelacion.id}") { mutableStateOf(false) }
@@ -325,11 +346,12 @@ fun QuarantineSheet(
                                 if (!esAvisoDeCobro) Text(com.avoqado.pos.payment.domain.CancelacionDeCobro.cuerpoDeLaFila(cancelacion.sinRed, cancelacion.terminalLibre), style = MaterialTheme.typography.bodyMedium)
                                 cancelacion.motivo?.takeIf { it.isNotBlank() }?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
                                 val consultando = cancelacion.id in cancelacionesEnCurso
-                                avisosDeCancelacion[cancelacion.id]?.let { Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error) }
-                                val declarandoEsta = cancelacion.id in cancelacionesDeclarando
-                                if (com.avoqado.pos.payment.domain.CancelacionDeCobro.filaPuedeDeclarar(cancelacion.terminalLibre, cancelacion.sinRed, cancelacion.requestId, esAvisoDeCobro)) {
-                                    AccionDeRevision(text = if (declarandoEsta) "Confirmando…" else com.avoqado.pos.payment.domain.CancelacionDeCobro.BOTON_DECLARAR_NO_COBRADO,
-                                        onClick = { cancelacionPorDeclarar = cancelacion }, enabled = !consultando && !declarandoEsta, isLoading = declarandoEsta, principal = true)
+                                cancelacion.requestId?.let { avisosDeCancelacion[it] }?.let { Text(it, style = MaterialTheme.typography.bodyMedium, color = Warning) }
+                                // F1 (tarea 6): «Revisar» = la revisión del gerente (PIN primero), incluso si la solicitud nunca llegó a la TPV.
+                                val fila = cancelacionesViewModel.filaDe(cancelacion)
+                                if (fila != null && com.avoqado.pos.payment.domain.CancelacionDeCobro.filaPuedeDeclarar(cancelacion.terminalLibre, cancelacion.sinRed, cancelacion.requestId, esAvisoDeCobro)) {
+                                    AccionDeRevision(text = com.avoqado.pos.payment.domain.CancelacionDeCobro.BOTON_REVISAR,
+                                        onClick = { cancelacionesViewModel.revisar(fila) }, enabled = !consultando, principal = true)
                                 }
                                 AccionDeRevision(text = if (consultando) "Consultando…" else com.avoqado.pos.payment.domain.CancelacionDeCobro.BOTON_VOLVER_A_CONSULTAR, onClick = { cancelacionesViewModel.volverAConsultar(cancelacion.id) }, enabled = !consultando)
                                 if (abierto) Text("Folio ${cancelacion.id}", style = MaterialTheme.typography.bodySmall)
@@ -527,25 +549,12 @@ fun QuarantineSheet(
         ) {}
     }
 
-    // D19: la MISMA confirmación del cobro («Confirma que no se cobró», firmado con su nombre). Nunca un solo toque.
-    cancelacionPorDeclarar?.let { cancelacion ->
-        com.avoqado.pos.payment.presentation.DialogoDeclararNoCobrado(
-            montoDelCobro = cancelacion.montoCents?.let { formatMoney(it) },
-            onConfirmar = {
-                cancelacionesViewModel.declarar(cancelacion)
-                cancelacionPorDeclarar = null
-            },
-            onCerrar = { cancelacionPorDeclarar = null },
-        )
-    }
-
-    cancelacionesPidiendoPin?.let { peticion ->
-        com.avoqado.pos.payment.presentation.TecladoDelPinDeGerente(
-            peticion = peticion,
-            onEnviar = cancelacionesViewModel::enviarPin,
-            onCerrar = cancelacionesViewModel::cerrarPin,
-        )
-    }
+    RevisionDelGerente(
+        paso = pasoDelGerente,
+        onIdentificar = cancelacionesViewModel::identificar,
+        onFirmar = cancelacionesViewModel::firmar,
+        onCerrar = cancelacionesViewModel::cerrar,
+    )
 
     successMessage?.let {
         AvoqadoSuccessToast(message = it, onDismiss = viewModel::consumeSuccess)
@@ -577,6 +586,64 @@ private fun formatTime(epochMs: Long, timezone: String? = null): String =
 private fun formatMoney(cents: Int): String =
     NumberFormat.getCurrencyInstance(Locale("es", "MX")).format(cents / 100.0)
 
+/** F1: el importe de una fila; sin importe guardado (fila antigua, se está preguntando), «Importe por confirmar». Nunca otro número. */
+private fun importeDeLaFila(cents: Int?): String = cents?.let(::formatMoney) ?: com.avoqado.pos.payment.domain.CancelacionDeCobro.IMPORTE_POR_CONFIRMAR
+
+/** F1: el renglón que identifica la fila exacta para el gerente: importe · hora del negocio · folio corto. */
+private fun renglonParaElGerente(c: com.avoqado.pos.payment.presentation.CobroPorConfirmar): String =
+    listOfNotNull(importeDeLaFila(c.montoCents), c.desdeMillis?.let { formatTime(it) }, "Folio ${c.requestId.take(8)}").joinToString(" · ")
+
+/**
+ * 🔴 F1 (tarea 6): la revisión del gerente, sobre la fila EXACTA. Primero «Gerente: escribe tu PIN» (el mismo teclado de siempre); sólo
+ * con el gerente identificado sale la decisión, «Firma del gerente» → «Firmar». El PIN viaja en el cuerpo de la firma y nunca se guarda;
+ * quién puede firmar lo decide el SERVIDOR. La lógica vive en [com.avoqado.pos.payment.presentation.CancelacionesPendientesViewModel].
+ */
+@Composable
+private fun RevisionDelGerente(
+    paso: com.avoqado.pos.payment.presentation.PasoDelGerente,
+    onIdentificar: (String) -> Unit,
+    onFirmar: () -> Unit,
+    onCerrar: () -> Unit,
+) {
+    val textos = com.avoqado.pos.payment.domain.CancelacionDeCobro
+    when (paso) {
+        com.avoqado.pos.payment.presentation.PasoDelGerente.Cerrado -> Unit
+        is com.avoqado.pos.payment.presentation.PasoDelGerente.PedirPin -> {
+            val renglon = renglonParaElGerente(paso.cobro)
+            com.avoqado.pos.designsystem.components.ManagerOverrideSheet(
+                prompt = com.avoqado.pos.core.data.network.ManagerOverrideCoordinator.Prompt(
+                    id = paso.id,
+                    permission = textos.PERMISO_DECLARAR_NO_COBRADO,
+                    actionLabel = renglon,
+                ),
+                // Identificar no manda nada: el PIN se firma en el paso siguiente. `Granted` es lo que limpia el teclado.
+                onSubmit = { pin -> onIdentificar(pin); com.avoqado.pos.core.data.network.OverrideResult.Granted(token = "", authorizedByName = "") },
+                onDismiss = onCerrar,
+                title = textos.PIN_DEL_GERENTE,
+                description = if (paso.pinRechazado) "${textos.PIN_NO_PUEDE_FIRMAR} $renglon" else renglon,
+            )
+        }
+        is com.avoqado.pos.payment.presentation.PasoDelGerente.Firmar -> com.avoqado.pos.designsystem.components.AvoqadoDialog(
+            title = textos.FIRMA_DEL_GERENTE,
+            description = textos.textoDeLaFirma(renglonParaElGerente(paso.cobro)),
+            onDismiss = onCerrar,
+            dismissOnClickOutside = false,
+            actionButton = {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    com.avoqado.pos.designsystem.components.PrimaryButton(
+                        text = textos.BOTON_FIRMAR,
+                        onClick = onFirmar,
+                        enabled = !paso.enviando,
+                        isLoading = paso.enviando,
+                        fullWidth = true,
+                    )
+                    TextButton(onClick = onCerrar, enabled = !paso.enviando) { Text(textos.BOTON_CANCELAR_FIRMA) }
+                }
+            },
+        ) {}
+    }
+}
+
 /**
  * 🔴 Lo que queda por cancelar se VE fuera del flujo de cobro.
  *
@@ -588,12 +655,28 @@ private fun formatMoney(cents: Int): String =
 fun CancelacionesPendientesBanner(onClick: () -> Unit) {
     val viewModel: com.avoqado.pos.payment.presentation.CancelacionesPendientesViewModel = hiltViewModel()
     val pendientes by viewModel.pendientes.collectAsState()
-    if (pendientes.isEmpty()) return
-    BannerDeRevision(
-        texto = com.avoqado.pos.payment.domain.CancelacionDeCobro.bannerPendientes(pendientes.size),
-        necesitaAtencion = true,
-        onClick = onClick,
-    )
+    val porConfirmar by viewModel.cobrosPorConfirmar.collectAsState()
+    // F1 (tarea 6): las tarjetas en duda de este aparato también se VEN aquí: es la puerta del gerente a «Cobros por confirmar».
+    // ponytail: la lista durable no avisa sus cambios; se relee cada 5 s mientras la banda está montada.
+    LaunchedEffect(viewModel) {
+        while (true) {
+            viewModel.refrescar()
+            kotlinx.coroutines.delay(5_000)
+        }
+    }
+    val texto = textoDeLaBandaDePorConfirmar(porConfirmar.size, pendientes.size) ?: return
+    BannerDeRevision(texto = texto, necesitaAtencion = true, onClick = onClick)
+}
+
+/** F1: la banda de lo que espera al gerente. null = nada que avisar. PURA. */
+internal fun textoDeLaBandaDePorConfirmar(cobros: Int, cancelaciones: Int): String? {
+    val textos = com.avoqado.pos.payment.domain.CancelacionDeCobro
+    return when {
+        cobros == 0 && cancelaciones == 0 -> null
+        cobros == 0 -> textos.bannerPendientes(cancelaciones)
+        cancelaciones == 0 -> textos.bannerPorConfirmar(cobros)
+        else -> "${textos.bannerPorConfirmar(cobros)} · ${textos.bannerPendientes(cancelaciones)}"
+    }
 }
 
 @Composable

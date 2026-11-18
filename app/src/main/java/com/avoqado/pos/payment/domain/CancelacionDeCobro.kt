@@ -241,6 +241,48 @@ object CancelacionDeCobro {
     /** Banner fuera del flujo de cobro: lo que queda pendiente se VE, no se deduce. */
     fun bannerPendientes(cuantas: Int): String = "Cancelaciones pendientes: $cuantas"
 
+    // MARK: - 🔴 F1 mínimo, tarea 6 (founder, 17-nov: «el sistema solo»; 18-nov: «que nunca trabe una terminal»)
+    //
+    // El mesero o el cajero NUNCA declara «se cobró / no se cobró»: ve el importe del intento y [Seguir]. La duda la revisa el gerente
+    // con SU PIN, sobre la fila exacta, en «Operaciones por revisar». Los textos son los de la TPV (`BlumonRecoveryContent.kt` y
+    // `NoSeCobroDesdeElAviso.kt`, tareas 4 y 5), letra por letra; iOS los copia igual.
+
+    const val TITULO_TARJETA_POR_CONFIRMAR = "Tarjeta por confirmar"
+
+    /** K19: el importe es el del INTENTO guardado (con propina), nunca el del carrito; null = no consta y no se inventa. */
+    fun tarjetaPorConfirmar(montoDelCobro: String?): String =
+        "Tarjeta ${montoDelCobro?.let { "$it " }.orEmpty()}por confirmar. No la repitas. Avisa al gerente."
+
+    /** Una fila antigua sin importe guardado, mientras se le pregunta a Avoqado por su ID. */
+    const val IMPORTE_POR_CONFIRMAR = "Importe por confirmar"
+
+    /** K19a: la consulta sigue sola mientras la pantalla está a la vista. */
+    const val CONFIRMANDO_CON_EL_BANCO = "Confirmando con el banco… No pases la tarjeta otra vez."
+
+    /** La única salida de piso: deja la duda guardada y vuelve a vender. Nunca cancela, cierra la cuenta ni reenvía el cobro. */
+    const val BOTON_SEGUIR = "Seguir"
+
+    /** D6 en el piso: la terminal ya se soltó y la venta sigue en duda; ya no invita a declarar. */
+    const val CUERPO_TERMINAL_LIBRE_PISO = "La terminal ya está libre, pero no consta si esta venta se cobró. Avisa al gerente."
+
+    // ── La revisión del gerente: elegir la fila → «Gerente: escribe tu PIN» → «Firma del gerente» → «Firmar».
+    const val SECCION_COBROS_POR_CONFIRMAR = "Cobros por confirmar"
+    fun bannerPorConfirmar(cuantos: Int): String = "Cobros por confirmar: $cuantos"
+    const val BOTON_REVISAR = "Revisar"
+    const val PIN_DEL_GERENTE = "Gerente: escribe tu PIN"
+    const val PIN_NO_PUEDE_FIRMAR = "Ese PIN no puede firmar este cobro."
+    const val FIRMA_DEL_GERENTE = "Firma del gerente"
+    const val BOTON_FIRMAR = "Firmar"
+    const val BOTON_CANCELAR_FIRMA = "Cancelar"
+
+    /** Lo que firma el gerente: que revisó la terminal y el cobro no aparece. [renglon] = importe · hora · folio corto. */
+    fun textoDeLaFirma(renglon: String): String =
+        "$renglon. Firmas que revisaste la terminal y este cobro no aparece; queda en Avoqado con tu nombre y la hora. " +
+            "La firma necesita internet."
+
+    /** La firma no salió por falta de red: la fila sigue pendiente, nada se encola. */
+    const val FIRMA_SIN_RED = "Sin conexión: la firma necesita internet. El cobro sigue por confirmar."
+
     // MARK: - Contrato con el servidor
 
     /** Código del 409 que impide cancelar/anular una cuenta con un cobro de terminal vivo. */

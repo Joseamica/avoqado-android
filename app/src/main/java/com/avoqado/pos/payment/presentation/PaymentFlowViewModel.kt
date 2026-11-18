@@ -4,9 +4,6 @@ import com.avoqado.pos.giftcards.data.*
 import com.avoqado.pos.giftcards.domain.*
 import kotlinx.serialization.json.*
 import com.avoqado.pos.payment.data.model.ObjetivoDeLaDeclaracion
-import com.avoqado.pos.payment.data.model.OrigenDeLaDeclaracion
-import com.avoqado.pos.payment.data.model.PeticionDePinDeGerente
-import com.avoqado.pos.core.data.network.OverrideResult
 import com.avoqado.pos.payment.domain.CajonDeDinero
 import android.util.Log
 import androidx.lifecycle.ViewModel
@@ -32,7 +29,6 @@ import com.avoqado.pos.payment.data.OrderRepository
 import com.avoqado.pos.payment.data.PaymentSyncService
 import com.avoqado.pos.payment.data.TerminalListResult
 import com.avoqado.pos.payment.data.TerminalPaymentResult
-import com.avoqado.pos.payment.data.ResultadoDeDeclaracion
 import com.avoqado.pos.payment.domain.CancelacionDeCobro
 import com.avoqado.pos.payment.data.TerminalPaymentService
 import com.avoqado.pos.payment.data.model.ColaDelCobro
@@ -1365,44 +1361,6 @@ class PaymentFlowViewModel @Inject constructor(
     private var cancelacionObservada: String? = null
     private var observadorDeCancelacion: kotlinx.coroutines.Job? = null
 
-    /**
-     * C2 (fix 1, I1): la intención cuya declaración «Ya revisé la terminal: no se cobró» va en vuelo. Es PROPIA de la
-     * declaración: el `checking` de la pantalla también lo mueve el coordinador cuando consulta solo, y usarlo de guarda
-     * tiraba en silencio el «Sí, no se cobró» del cajero.
-     */
-    private var declaracionEnVuelo: String? = null
-
-    /**
-     * C2 (fix 1, m1): la intención cuyo cobro el servidor ya liberó por la declaración. Si una corrida vieja del
-     * coordinador (su consulta salió ANTES de la liberación) contesta «no consta», se le vuelve a preguntar UNA vez.
-     */
-    private var liberadaPorDeclaracion: String? = null
-
-    /**
-     * C4 (22-oct, P4): la declaración «no se cobró» que espera el PIN de un gerente. El servidor la rechazó con
-     * `SUPERVISOR_AUTHORIZATION_REQUIRED` (quien opera la tablet no tiene `payments:reconcile-uncharged`) y la pantalla abrió
-     * el teclado. Guarda lo necesario para repetir la MISMA declaración con el PIN y aplicar su respuesta por el MISMO camino
-     * que la primera. 🔴 Nunca guarda el PIN: ése sólo vive en la llamada que lo manda.
-     */
-    private class EsperaDelPin(
-        val peticion: PeticionDePinDeGerente,
-        val objetivo: ObjetivoDeLaDeclaracion,
-        val generacion: Int,
-        val aplicarLaRespuesta: (ResultadoDeDeclaracion) -> Unit,
-        /** Lo que contestó el servidor sin PIN. Si el teclado se cierra sin PIN, la declaración falla con esto, como antes. */
-        val rechazo: ResultadoDeDeclaracion.Rechazada,
-    ) {
-        /** El envío con PIN en vuelo. Mientras exista, cerrar el teclado no hace nada y otro envío espera a éste. */
-        var envio: kotlinx.coroutines.Deferred<OverrideResult>? = null
-    }
-    private var esperaDelPin: EsperaDelPin? = null
-    private var ultimaPeticionDePin = 0L
-
-    private val _pidiendoPinDeGerente = MutableStateFlow<PeticionDePinDeGerente?>(null)
-
-    /** C4: el servidor pidió el PIN de un gerente para declarar «no se cobró»; la pantalla de su origen muestra el teclado. */
-    val pidiendoPinDeGerente: StateFlow<PeticionDePinDeGerente?> = _pidiendoPinDeGerente.asStateFlow()
-
     /** El cobro que esta pantalla ya aplicó tras descubrir que la terminal sí cobró. */
     private var cobroAplicadoTrasCancelar: String? = null
 
@@ -2732,8 +2690,6 @@ class PaymentFlowViewModel @Inject constructor(
         // ni su salida. El aviso de «no se pudo guardar» describía la venta pasada y reaparecía
         // encima de ésta.
         dejarDeObservarLaCancelacion()
-        // C4: tampoco hereda un teclado de PIN de gerente de la venta anterior.
-        descartarEsperaDelPin()
         ordenCreadaPorEsteFlujo = false
         ultimoIntento = null
         cobroAplicadoTrasCancelar = null
@@ -5029,7 +4985,6 @@ class PaymentFlowViewModel @Inject constructor(
                         _state.value = if (CancelacionDeCobro.motivoCaducado(actual.message, libre)) {
                             actual.copy(
                                 message = conEncabezado(encabezado, outcome.message),
-                                declaracionRechazada = false,
                                 terminalLibreVentaEnDuda = libre,
                             )
                         } else {
@@ -5123,19 +5078,12 @@ class PaymentFlowViewModel @Inject constructor(
     }
 
     /**
-     * El cajero revisó la terminal, vio la advertencia del riesgo de doble cobro y aun así
-     * decide cobrar otra vez. Es una decisión HUMANA y explícita — nunca un camino automático.
-     */
-    fun chargeAgainDespiteUndetermined() { /* Only authoritative recovery permits another charge. */ }
-
-    /**
-     * Lo que se va a declarar, CONGELADO desde el contexto durable del cobro pendiente — nunca del
-     * carrito que el cajero tiene enfrente.
+     * El cobro en duda que muestra la pantalla, CONGELADO desde el contexto durable del cobro pendiente — nunca del carrito que el
+     * cajero tiene enfrente.
      *
-     * 🔴 P1 de la auditoría de Codex (19-sep): con un pendiente de $100 y una venta nueva de $500,
-     * el diálogo afirmaba «el cobro de $500 no pasó» mientras la declaración iba sobre el de $100.
-     * El cajero FIRMA CON SU NOMBRE esa afirmación; el importe tiene que ser el del cobro que
-     * libera. Y si no consta, `montoCentavos` es `null`: el diálogo dice «ese cobro», no uno falso.
+     * 🔴 P1 de la auditoría de Codex (19-sep): con un pendiente de $100 y una venta nueva de $500, la pantalla hablaba del cobro de
+     * $500. 🔴 F1 (tarea 6): ya nadie declara desde aquí; el importe es lo que ve el cajero («Tarjeta $X por confirmar»). Si no
+     * consta, `montoCentavos` es `null` y se dice «Importe por confirmar», no uno falso.
      */
     fun objetivoDeLaDeclaracion(): ObjetivoDeLaDeclaracion? {
         val requestId = cobroSinConfirmarEnPantalla() ?: return null
@@ -5145,224 +5093,11 @@ class PaymentFlowViewModel @Inject constructor(
     }
 
     /**
-     * «Ya revisé la terminal: no se cobró». El cajero MIRÓ la pantalla del aparato y lo declara;
-     * el servidor libera la venta y la ranura de una sola vez.
-     *
-     * 🔴 Es la salida que faltaba el 18-sep: Testarudo estuvo 26 minutos sin poder cobrar y sólo
-     * se destrabó escribiendo SQL en el Postgres de producción. La protección hizo su trabajo
-     * —cero cobros dobles—; lo que no existía era una salida para el cajero.
-     *
-     * 🔴 Y NO cobra: libera. Quien decide si se vuelve a cobrar es el cajero, en la pantalla
-     * siguiente, como hasta hoy.
+     * 🔴 F1 (tarea 6): el importe de una fila antigua (sin importe en su contexto), preguntado a Avoqado por su ID. Sólo para mostrarlo;
+     * `null` = no se pudo saber y la pantalla sigue con «Importe por confirmar». Nunca el del carrito.
      */
-    fun declararNoCobrado() {
-        // El objetivo se congela ANTES de tocar nada: es el mismo que vio el cajero en el diálogo.
-        val objetivo = objetivoDeLaDeclaracion() ?: return
-        declarar(objetivo, OrigenDeLaDeclaracion.COBRO_SIN_CONFIRMAR)
-    }
+    suspend fun importeDelCobro(requestId: String, venueId: String?): Int? = terminalPaymentService.importeDelCobro(requestId, venueId)
 
-    /**
-     * C2 (22-oct): el camino ÚNICO de «Ya revisé la terminal: no se cobró», venga de «Cobro sin confirmar» o de
-     * «Cancelación pendiente». La declaración es la misma —mismo servicio, online-only y nunca encolada—; el [origen]
-     * sólo decide qué pantalla espera la respuesta y qué sigue cuando el servidor libera.
-     *
-     * C4 (22-oct) lo extiende AQUÍ, una sola vez para los dos orígenes:
-     * - `SUPERVISOR_AUTHORIZATION_REQUIRED` (el mesero, sin `payments:reconcile-uncharged`) ⇒ se pide el PIN de un gerente
-     *   ([pidiendoPinDeGerente]); con él se repite la MISMA declaración ([enviarPinDeGerente]) y su respuesta se aplica por
-     *   el mismo `aplicarLaRespuesta`;
-     * - `EXECUTION_STILL_ACTIVE` ⇒ el texto honesto [CancelacionDeCobro.TERMINAL_REPORTA_SIN_TERMINAR].
-     *
-     * No es `suspend` a propósito: el «Consultando…» se pinta en el MISMO toque, antes de lanzar nada, como siempre.
-     */
-    private fun declarar(objetivo: ObjetivoDeLaDeclaracion, origen: OrigenDeLaDeclaracion) {
-        // 🔴 P2 de Codex: si el flujo se reinicia (rotación) mientras la declaración va en vuelo, la
-        // respuesta vieja NO puede gobernar la pantalla nueva — ponía `SelectingTerminal` sobre un
-        // flujo sin método de pago y el cajero acababa en «Método de pago no seleccionado». Misma
-        // guarda que ya usa `reconcileThenOffer`.
-        val generacion = paymentGeneration
-        val aplicarLaRespuesta: (ResultadoDeDeclaracion) -> Unit = when (origen) {
-            OrigenDeLaDeclaracion.COBRO_SIN_CONFIRMAR -> empezarDeclaracionDelCobroSinConfirmar(objetivo)
-            OrigenDeLaDeclaracion.CANCELACION_PENDIENTE -> empezarDeclaracionDeLaCancelacion() ?: return
-        }
-
-        viewModelScope.launch {
-            val r = conTextoHonesto(terminalPaymentService.declararNoCobrado(objetivo.requestId, objetivo.venueId))
-            if (generacion != paymentGeneration) return@launch
-            // C4: el servidor pide gerente. La declaración NO termina: sigue «en vuelo» (el `checking` de «Cobro sin
-            // confirmar», la bandera propia de «Cancelación pendiente») hasta que el gerente teclee o el teclado se cierre.
-            if (r is ResultadoDeDeclaracion.Rechazada && r.code == CancelacionDeCobro.CODIGO_PIDE_PIN_DE_GERENTE &&
-                pedirPinDeGerente(objetivo, origen, generacion, aplicarLaRespuesta, r)
-            ) {
-                return@launch
-            }
-            aplicarLaRespuesta(r)
-        }
-    }
-
-    /**
-     * C4 (P5): `EXECUTION_STILL_ACTIVE` dice la verdad. El texto del servidor («Espera unos segundos y vuelve a consultar»)
-     * invita a insistir sobre algo que no cede en segundos. Es la única excepción a «el rechazo viaja tal cual desde el
-     * servidor»; el código se conserva.
-     */
-    private fun conTextoHonesto(r: ResultadoDeDeclaracion): ResultadoDeDeclaracion =
-        if (r is ResultadoDeDeclaracion.Rechazada && r.code == CancelacionDeCobro.CODIGO_EJECUCION_AUN_ACTIVA) {
-            r.copy(mensaje = CancelacionDeCobro.TERMINAL_REPORTA_SIN_TERMINAR)
-        } else {
-            r
-        }
-
-    /**
-     * C4: abre el teclado del PIN de gerente, si la pantalla que declaró sigue ahí. `false` ⇒ no se abre y quien llama
-     * aplica el rechazo como siempre (que, con la pantalla ya ida, no repinta nada).
-     */
-    private fun pedirPinDeGerente(
-        objetivo: ObjetivoDeLaDeclaracion,
-        origen: OrigenDeLaDeclaracion,
-        generacion: Int,
-        aplicarLaRespuesta: (ResultadoDeDeclaracion) -> Unit,
-        rechazo: ResultadoDeDeclaracion.Rechazada,
-    ): Boolean {
-        val sigueEnPantalla = when (origen) {
-            OrigenDeLaDeclaracion.COBRO_SIN_CONFIRMAR -> _state.value is PaymentFlowState.Undetermined
-            OrigenDeLaDeclaracion.CANCELACION_PENDIENTE ->
-                _state.value is PaymentFlowState.CancelacionPendiente &&
-                    declaracionEnVuelo != null && declaracionEnVuelo == cancelacionObservada
-        }
-        if (!sigueEnPantalla) return false
-        val peticion = PeticionDePinDeGerente(id = ++ultimaPeticionDePin, origen = origen)
-        esperaDelPin = EsperaDelPin(peticion, objetivo, generacion, aplicarLaRespuesta, rechazo)
-        _pidiendoPinDeGerente.value = peticion
-        return true
-    }
-
-    /**
-     * C4: el gerente tecleó su PIN. Se repite la MISMA declaración con el PIN en el cuerpo, y la respuesta se aplica por el
-     * camino único de su origen. Devuelve lo que muestra el teclado:
-     * - el PIN no sirvió (otra vez `SUPERVISOR_AUTHORIZATION_REQUIRED`: el servidor contesta igual a un PIN equivocado y al
-     *   de alguien sin el permiso) ⇒ [OverrideResult.Insufficient], «Ese código tampoco tiene este permiso», que es cierto en
-     *   los dos casos. El teclado se queda;
-     * - demasiados intentos (429) ⇒ [OverrideResult.TooManyAttempts]. El teclado se queda;
-     * - cualquier otra respuesta (liberada, otro rechazo, sesión renovada, sin red) cierra el teclado y la dice la pantalla.
-     *   Sin red se usa el texto de siempre según de quién es la duda (C1), y nada se encola.
-     *
-     * 🔴 Corre en `viewModelScope`, no en el del teclado: si el teclado se fuera con la declaración viajando, su respuesta
-     * se aplica igual (el servidor pudo haber liberado). El PIN no se guarda en ningún lado.
-     */
-    suspend fun enviarPinDeGerente(pin: String): OverrideResult {
-        val espera = esperaDelPin ?: return TECLADO_CERRADO
-        espera.envio?.takeIf { it.isActive }?.let { return it.await() }
-        val envio = viewModelScope.async {
-            val r = terminalPaymentService.declararNoCobrado(espera.objetivo.requestId, espera.objetivo.venueId, supervisorPin = pin)
-            alResponderConPin(espera, conTextoHonesto(r))
-        }
-        espera.envio = envio
-        return envio.await()
-    }
-
-    private fun alResponderConPin(espera: EsperaDelPin, r: ResultadoDeDeclaracion): OverrideResult {
-        espera.envio = null
-        // El teclado de ESTA espera ya no está (el flujo se reinició, se salió o la cancelación se resolvió sola): la
-        // respuesta no gobierna nada. Misma regla que la generación de `declarar`.
-        if (esperaDelPin !== espera || espera.generacion != paymentGeneration) return TECLADO_CERRADO
-        if (r is ResultadoDeDeclaracion.Rechazada) {
-            when (r.code) {
-                CancelacionDeCobro.CODIGO_PIDE_PIN_DE_GERENTE -> return OverrideResult.Insufficient
-                CancelacionDeCobro.CODIGO_DEMASIADOS_INTENTOS -> return OverrideResult.TooManyAttempts
-            }
-        }
-        descartarEsperaDelPin()
-        espera.aplicarLaRespuesta(r)
-        return TECLADO_CERRADO
-    }
-
-    /**
-     * C4: el teclado se cerró sin PIN. Cerrar = cancelar: la declaración falla como fallaba antes de C4, con el motivo del
-     * servidor, y la bandera de la declaración vuelve a falso (el botón no se queda muerto). Con un PIN viajando no hace
-     * nada: decide la respuesta del servidor, que pudo haber liberado.
-     */
-    fun cerrarTecladoDelPin(id: Long) {
-        val espera = esperaDelPin?.takeIf { it.peticion.id == id } ?: return
-        if (espera.envio?.isActive == true) return
-        descartarEsperaDelPin()
-        if (espera.generacion != paymentGeneration) return
-        espera.aplicarLaRespuesta(espera.rechazo)
-    }
-
-    /** C4: el teclado se va sin aplicar nada: el flujo se reinició, se salió o la cancelación se resolvió sola. */
-    private fun descartarEsperaDelPin() {
-        esperaDelPin = null
-        _pidiendoPinDeGerente.value = null
-    }
-
-    /**
-     * «Cobro sin confirmar»: congela lo que la respuesta necesita, pinta «Consultando…» y devuelve cómo aplicarla.
-     * Es la conducta de siempre de [declararNoCobrado], movida tal cual.
-     */
-    private fun empezarDeclaracionDelCobroSinConfirmar(objetivo: ObjetivoDeLaDeclaracion): (ResultadoDeDeclaracion) -> Unit {
-        val requestId = objetivo.requestId
-        val total = currentBaseAmount() + currentTipCents
-        val fromPreviousSale = (_state.value as? PaymentFlowState.Undetermined)?.fromPreviousSale == true
-        // C1 (fix rounds 2-4): ¿la duda que se declara es AJENA a la venta que se quiere cobrar («Revisar ese cobro» con
-        // TERMINAL y un cobro que esta tablet no conoce)? Congelado con el objetivo, que es `cobroEnRevision` cuando es
-        // revisión. Decide el texto sin red.
-        val ajenaAEstaVenta = revisaCobroDeOtraVenta() &&
-            cobroEnRevision?.let { it.requestId == requestId && it.ajeno } == true &&
-            !loConoceEstaTablet(requestId) &&
-            bloqueadorEnPantalla?.let { it.requestId == requestId && it.scope == "TERMINAL" } == true
-
-        // Se conserva el mensaje que ya estaba: `checking` es lo que indica que hay algo en vuelo, y
-        // escribir «Cancelando el cobro…» aquí sería falso — no se está cancelando nada.
-        val terminalLibreVentaEnDuda = (_state.value as? PaymentFlowState.Undetermined)?.terminalLibreVentaEnDuda == true
-        val mensajeActual = (_state.value as? PaymentFlowState.Undetermined)?.message ?: CardChargeDecision.UNDETERMINED_MESSAGE
-        _state.value = PaymentFlowState.Undetermined(
-            totalAmount = total,
-            message = mensajeActual,
-            checking = true,
-            fromPreviousSale = fromPreviousSale,
-            terminalLibreVentaEnDuda = terminalLibreVentaEnDuda,
-        )
-
-        return { r ->
-            when (r) {
-                is ResultadoDeDeclaracion.Liberada -> {
-                    undeterminedRequestId = null
-                    // El MISMO desenlace que «consta que no se cobró»: el cajero decide si cobra.
-                    if (fromPreviousSale) {
-                        resolverCobroAnterior(CancelacionDeCobro.DECLARACION_LISTO)
-                    } else {
-                        ofrecerTerminales(total)
-                    }
-                }
-                // El pendiente SE CONSERVA en los dos casos que siguen: nada se resolvió.
-                is ResultadoDeDeclaracion.Rechazada ->
-                    _state.value = PaymentFlowState.Undetermined(
-                        totalAmount = total,
-                        message = r.mensaje,
-                        checking = false,
-                        fromPreviousSale = fromPreviousSale,
-                        declaracionRechazada = true,
-                        terminalLibreVentaEnDuda = terminalLibreVentaEnDuda,
-                    )
-                is ResultadoDeDeclaracion.SesionRenovada ->
-                    _state.value = PaymentFlowState.Undetermined(
-                        totalAmount = total,
-                        message = CancelacionDeCobro.DECLARACION_SESION_RENOVADA,
-                        terminalLibreVentaEnDuda = terminalLibreVentaEnDuda,
-                        checking = false,
-                        fromPreviousSale = fromPreviousSale,
-                    )
-                is ResultadoDeDeclaracion.SinConexion ->
-                    _state.value = PaymentFlowState.Undetermined(
-                        totalAmount = total,
-                        // C1 (O1 y fix round 2): el texto sin red según de quién es la duda. NO se encola: es online-only a
-                        // propósito.
-                        message = textoSinRed(ajenaAEstaVenta),
-                        checking = false,
-                        fromPreviousSale = fromPreviousSale,
-                    )
-            }
-        }
-    }
 
     // MARK: - Cancelar la venta (§C.4): el cobro primero, la orden sólo cuando conste
 
@@ -5477,7 +5212,6 @@ class PaymentFlowViewModel @Inject constructor(
      */
     fun salirDejandoPendiente() {
         dejarDeObservarLaCancelacion()
-        descartarEsperaDelPin()
         // Un desenlace que llegue tarde ya no gobierna esta pantalla, pero SÍ la llave durable.
         paymentGeneration++
         isProcessingPayment = false
@@ -5487,94 +5221,10 @@ class PaymentFlowViewModel @Inject constructor(
     /** «Volver a consultar» desde «Cancelación pendiente»: sólo pregunta, nunca cobra ni borra. */
     fun volverAConsultarCancelacion() {
         val id = cancelacionObservada ?: return
-        // C2: una consulta nueva del cajero reemplaza la respuesta de su última declaración.
         (_state.value as? PaymentFlowState.CancelacionPendiente)?.let {
-            _state.value = it.copy(checking = true, avisoDeDeclaracion = null)
+            _state.value = it.copy(checking = true)
         }
         cancelacionDeCobro.procesarAhora(id)
-    }
-
-    /**
-     * C2 (22-oct): lo que se declararía desde «Cancelación pendiente», CONGELADO de la intención que observa esta pantalla
-     * —nunca del carrito—. La pantalla ofrece «Ya revisé la terminal: no se cobró» sólo si no es `null`.
-     *
-     * - `null` si la intención es SÓLO de la orden (`requestId == null`): no hubo cobro, no hay nada que declarar.
-     * - El venue es el de la intención (el del COBRO, no el de la sesión: Codex P2-5 de la etapa 2).
-     * - El importe sale del contexto durable del cobro, como en [objetivoDeLaDeclaracion]; si no consta, `null` y el
-     *   diálogo dice «ese cobro». No se usa el monto de la intención: es el de la venta al cancelar, y podría no ser el del
-     *   cobro (otro intento de la misma orden con otra propina).
-     */
-    fun objetivoDeLaDeclaracionDeCancelacion(): ObjetivoDeLaDeclaracion? {
-        val id = cancelacionObservada ?: return null
-        val intencion = cancelacionDeCobro.pendientes.value.firstOrNull { it.id == id } ?: return null
-        val requestId = intencion.requestId?.takeIf { it.isNotBlank() } ?: return null
-        val contexto = terminalPaymentService.contextoDe(requestId)
-        val monto = contexto?.amountCents?.let { it + (contexto.tipCents ?: 0) }
-        return ObjetivoDeLaDeclaracion(
-            requestId = requestId,
-            venueId = intencion.venueId.takeIf { it.isNotBlank() },
-            montoCentavos = monto,
-        )
-    }
-
-    /**
-     * C2 (22-oct, P2 de la spec): «Ya revisé la terminal: no se cobró» en «Cancelación pendiente».
-     *
-     * Amaena, 20-oct: la Nexgo quedó 35 min trabada con un cobro que la tablet había pedido cancelar, y esta pantalla sólo
-     * ofrecía consultar o salir. Ahora el cajero declara lo que ve en la terminal por el MISMO camino que «Cobro sin
-     * confirmar». Si el servidor libera, el coordinador vuelve a preguntar, ve NOT_CHARGED y recién entonces cancela la
-     * orden: el ViewModel nunca la borra por su cuenta.
-     */
-    fun declararDesdeCancelacion() {
-        if (_state.value !is PaymentFlowState.CancelacionPendiente) return
-        // Un doble toque no manda dos declaraciones. 🔴 La guarda es la bandera PROPIA de la declaración, nunca el
-        // `checking` que también mueve el coordinador: con el diálogo abierto, una consulta suya de fondo tiraba en
-        // silencio el «Sí, no se cobró» del cajero (fix 1, I1).
-        if (declaracionEnVuelo != null && declaracionEnVuelo == cancelacionObservada) return
-        val objetivo = objetivoDeLaDeclaracionDeCancelacion() ?: return
-        declarar(objetivo, OrigenDeLaDeclaracion.CANCELACION_PENDIENTE)
-    }
-
-    /**
-     * «Cancelación pendiente»: marca la declaración en vuelo (bandera PROPIA, no el `checking` del coordinador), borra la
-     * respuesta de la declaración anterior y devuelve cómo aplicar la nueva, atada a ESTA intención. `null` si la pantalla
-     * ya no es la de la cancelación.
-     */
-    private fun empezarDeclaracionDeLaCancelacion(): ((ResultadoDeDeclaracion) -> Unit)? {
-        val id = cancelacionObservada ?: return null
-        val actual = _state.value as? PaymentFlowState.CancelacionPendiente ?: return null
-        declaracionEnVuelo = id
-        // Fix 1, m2: el motivo de un rechazo anterior no se queda junto a «Consultando…» de un intento que quizá sí libera.
-        _state.value = actual.copy(declarando = true, avisoDeDeclaracion = null)
-        return { r -> alResponderLaDeclaracionDeLaCancelacion(id, r) }
-    }
-
-    private fun alResponderLaDeclaracionDeLaCancelacion(id: String, r: ResultadoDeDeclaracion) {
-        if (declaracionEnVuelo == id) declaracionEnVuelo = null
-        // Sólo gobierna si la pantalla sigue en ESTA cancelación: el coordinador pudo cerrarla mientras tanto (la terminal
-        // confirmó sola), y una respuesta tardía no puede repintar una pantalla que ya se fue.
-        if (cancelacionObservada != id) return
-        val actual = _state.value as? PaymentFlowState.CancelacionPendiente ?: return
-        when (r) {
-            // El servidor liberó el cobro. NO se cierra nada aquí: el coordinador consulta YA, ve NOT_CHARGED, cancela la
-            // orden (barrera de siempre) y avisa «Cerrada» → `terminarLaCancelacion`. Mientras, sigue «Consultando…». Si
-            // una corrida suya ya en vuelo se come este `procesarAhora` y contesta «no consta», la marca la repite (m1).
-            is ResultadoDeDeclaracion.Liberada -> {
-                liberadaPorDeclaracion = id
-                _state.value = actual.copy(declarando = false, checking = true)
-                cancelacionDeCobro.procesarAhora(id)
-            }
-            // En los tres que siguen la intención SE CONSERVA (nada se resolvió) y la respuesta se ve en la misma pantalla.
-            // `checking` no se toca: es del coordinador, que puede seguir consultando.
-            is ResultadoDeDeclaracion.Rechazada ->
-                _state.value = actual.copy(declarando = false, avisoDeDeclaracion = r.mensaje)
-            is ResultadoDeDeclaracion.SesionRenovada ->
-                _state.value = actual.copy(declarando = false, avisoDeDeclaracion = CancelacionDeCobro.DECLARACION_SESION_RENOVADA)
-            // 🔴 Online-only A PROPÓSITO: no se encola. La duda es de ESTA venta (su propio cobro), así que el texto nunca
-            // invita a cobrarla en efectivo (C1, fix round 2).
-            is ResultadoDeDeclaracion.SinConexion ->
-                _state.value = actual.copy(declarando = false, avisoDeDeclaracion = textoSinRed(ajenaAEstaVenta = false))
-        }
     }
 
     /** El cobro que esta pantalla puede pedir cancelar, con el contexto para poder hacerlo. */
@@ -5732,10 +5382,6 @@ class PaymentFlowViewModel @Inject constructor(
         observadorDeCancelacion?.cancel()
         observadorDeCancelacion = null
         cancelacionObservada = null
-        declaracionEnVuelo = null
-        liberadaPorDeclaracion = null
-        // C4: sin cancelación que observar no hay nada que declarar desde ella: su teclado del PIN se va.
-        if (esperaDelPin?.peticion?.origen == OrigenDeLaDeclaracion.CANCELACION_PENDIENTE) descartarEsperaDelPin()
     }
 
     private fun alCambiarLaCancelacion(id: String, estado: com.avoqado.pos.payment.data.EstadoDeCancelacion?) {
@@ -5748,25 +5394,12 @@ class PaymentFlowViewModel @Inject constructor(
             null -> Unit
             is com.avoqado.pos.payment.data.EstadoDeCancelacion.EnCurso ->
                 if (actual is PaymentFlowState.CancelacionPendiente) _state.value = actual.copy(checking = true)
-            is com.avoqado.pos.payment.data.EstadoDeCancelacion.Pendiente -> {
-                // C2 (fix 1, m1): el servidor ya liberó este cobro por la declaración, pero esta corrida consultó antes.
-                // Se le pregunta otra vez, UNA sola (la marca se consume: un servidor que nunca diga NOT_CHARGED no hace
-                // girar al coordinador), y la pantalla sigue en «Consultando…».
-                val repreguntar = liberadaPorDeclaracion == id
-                if (repreguntar) liberadaPorDeclaracion = null
+            is com.avoqado.pos.payment.data.EstadoDeCancelacion.Pendiente ->
                 _state.value = PaymentFlowState.CancelacionPendiente(
                     totalAmount = total,
                     sinRed = estado.sinRed,
                     terminalLibre = estado.terminalLibre,
-                    checking = repreguntar,
-                    // C2: la respuesta a la última declaración del cajero se queda hasta que él consulte o declare otra
-                    // vez; una corrida de fondo del coordinador no la borra. F1: salvo «Sin conexión…» si ya tuvo red.
-                    avisoDeDeclaracion = (actual as? PaymentFlowState.CancelacionPendiente)?.avisoDeDeclaracion
-                        ?.takeUnless { !estado.sinRed && CancelacionDeCobro.motivoCaducado(it, estado.terminalLibre) },
-                    declarando = declaracionEnVuelo == id,
                 )
-                if (repreguntar) cancelacionDeCobro.procesarAhora(id)
-            }
             // Consta que no se cobró: el dinero ya está resuelto. Lo que quede de la orden lo
             // termina el coordinador solo, y el cajero puede seguir vendiendo.
             is com.avoqado.pos.payment.data.EstadoDeCancelacion.NoSeCobroOrdenPendiente -> terminarLaCancelacion()
@@ -7111,12 +6744,6 @@ class PaymentFlowViewModel @Inject constructor(
          */
         private fun textoSinRed(ajenaAEstaVenta: Boolean): String =
             if (ajenaAEstaVenta) CancelacionDeCobro.SIN_CONEXION_REVISION else CancelacionDeCobro.SIN_CONEXION_REVISION_ESTA_VENTA
-
-        /**
-         * C4: lo que recibe el teclado del PIN cuando la pantalla ya lo cerró. `Granted` es lo único con lo que
-         * `ManagerOverrideSheet` borra el PIN tecleado; aquí no hay token: el PIN fue en el cuerpo de la declaración.
-         */
-        private val TECLADO_CERRADO = OverrideResult.Granted(token = "", authorizedByName = "")
 
         /** El aviso de un cobro de otra venta se calla a los 10 min desde el cobro: una duda y, desde el 26-sep, un «SÍ pasó». */
         const val VENTANA_AVISO_MS = 10L * 60 * 1000

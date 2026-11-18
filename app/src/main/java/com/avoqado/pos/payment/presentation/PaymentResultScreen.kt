@@ -76,12 +76,7 @@ import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.designsystem.theme.Success
 import com.avoqado.pos.designsystem.theme.Warning
 import com.avoqado.pos.payment.data.model.PaymentMethod
-import com.avoqado.pos.payment.data.model.PeticionDePinDeGerente
 import com.avoqado.pos.payment.data.model.SincronizacionDelCobro
-import com.avoqado.pos.core.data.network.ManagerOverrideCoordinator
-import com.avoqado.pos.core.data.network.OverrideResult
-import com.avoqado.pos.core.domain.PermissionLabels
-import com.avoqado.pos.designsystem.components.ManagerOverrideSheet
 import com.avoqado.pos.payment.domain.CancelacionDeCobro
 import com.avoqado.pos.payment.domain.CardChargeDecision
 
@@ -885,57 +880,92 @@ fun PaymentErrorView(
 // MARK: - Cobro no confirmado (ni éxito ni fracaso)
 
 /**
- * 🔴 El tercer desenlace. Se muestra cuando NO se pudo determinar si la tarjeta se cobró:
- * fallo de transporte, plazo de espera vencido o server inalcanzable justo donde la terminal
- * ya pudo haber cobrado.
+ * 🔴 F1 mínimo, tarea 6 (founder, 17-nov: «el sistema solo; lo que menos tenga que decidir el personal»; 18-nov: «que nunca trabe una
+ * terminal»). La tarjeta en duda en el POS de ANDROID y de WINDOWS (mismas fuentes): el cajero o el mesero ve el importe del INTENTO
+ * y una sola acción, [Seguir]. Ninguna decisión sobre el dinero: ni «No se cobró», ni «Cancelar la venta», ni cobrar otra vez. La duda
+ * sigue guardada en el aparato, la consulta sigue sola mientras la pantalla está a la vista, y el gerente la revisa con su PIN en
+ * «Operaciones por revisar» (`QuarantineSheet`). Los textos son los de la TPV (tarea 5).
  *
- * Reglas de esta pantalla:
- *  - NO dice "Error": no consta que haya fallado (y decirlo produjo un doble cobro real).
- *  - La acción destacada es la SEGURA: volver a consultar, que jamás cobra.
- *  - "Cobrar de nuevo" existe —el negocio no se puede quedar parado— pero SÓLO tras una
- *    advertencia explícita del riesgo, confirmada por el cajero.
+ * - [Seguir] nunca se apaga (tampoco con una consulta en vuelo) y sale UNA vez: dos toques, Esc (Windows) y Atrás son la misma
+ *   salida. Salir no cancela, no cierra la cuenta y no reenvía el cobro.
+ *
+ * @param montoDelCobro el importe del intento guardado (importe + propina), ya formateado; `null` = no consta («Importe por
+ *   confirmar» mientras se le pregunta a Avoqado por su ID). 🔴 Nunca el del carrito.
+ * @param confirmando con red: la consulta automática sigue (K19a).
+ * @param sinRed sin red en esta tablet: se dice con el texto de siempre, sin rojo.
  */
-@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+@Composable
+fun TarjetaPorConfirmarView(
+    montoDelCobro: String?,
+    confirmando: Boolean,
+    sinRed: Boolean,
+    onSeguir: () -> Unit,
+) {
+    var salio by remember { mutableStateOf(false) }
+    val seguir = { if (!salio) { salio = true; onSeguir() } }
+    androidx.activity.compose.BackHandler { seguir() }
+    AtajoDeTeclado(Key.Escape) { seguir() }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(AvoqadoTheme.spacing.xxxl),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+    ) {
+        if (sinRed) Text(com.avoqado.pos.giftcards.domain.TextosDeTarjetas.SIN_RED)
+        Icon(Icons.Filled.HelpOutline, contentDescription = null, tint = Warning, modifier = Modifier.size(56.dp))
+        Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxl))
+        Text(
+            text = CancelacionDeCobro.TITULO_TARJETA_POR_CONFIRMAR,
+            style = MaterialTheme.typography.headlineLarge,
+            textAlign = TextAlign.Center,
+        )
+        if (montoDelCobro == null) {
+            Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
+            Text(
+                text = CancelacionDeCobro.IMPORTE_POR_CONFIRMAR,
+                style = MaterialTheme.typography.titleMedium,
+                textAlign = TextAlign.Center,
+            )
+        }
+        Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
+        Text(
+            text = CancelacionDeCobro.tarjetaPorConfirmar(montoDelCobro),
+            style = MaterialTheme.typography.bodyLarge,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.widthIn(max = 400.dp),
+        )
+        if (confirmando && !sinRed) {
+            Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))
+            Text(
+                text = CancelacionDeCobro.CONFIRMANDO_CON_EL_BANCO,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center,
+            )
+        }
+        Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxxl))
+        Box(modifier = Modifier.widthIn(max = 320.dp)) {
+            PrimaryButton(text = CancelacionDeCobro.BOTON_SEGUIR, onClick = seguir, fullWidth = true, tecla = "Esc")
+        }
+    }
+}
+
+/**
+ * El cambio de talla («Cambio», IQ) cuyo envío quedó sin confirmar. No es un cobro de terminal que declarar: sólo «Confirmar estado»
+ * (pregunta, nunca cobra) y «Salir (queda pendiente)». F1 le quitó todo lo que era del cobro de la venta (declarar, cancelar).
+ */
 @Composable
 fun PaymentUndeterminedView(
     message: String,
     isChecking: Boolean,
     onRecheck: () -> Unit,
-    onChargeAgain: () -> Unit,
-    /** «Salir (queda pendiente)»: el cajero se va y NO se borra nada. */
+    /** «Salir (queda pendiente)»: se sale y NO se borra nada. */
     onSalir: () -> Unit,
-    /**
-     * «Cancelar la venta»: cancela el cobro y, cuando conste que no se cobró, la venta.
-     *
-     * `null` cuando el cobro sin confirmar es de OTRA venta: esa orden no la creó este flujo y
-     * cancelarla desde aquí borraría una cuenta que nadie pidió cancelar.
-     */
-    onCancelarVenta: (() -> Unit)? = null,
-    /** El cobro sin confirmar quedó de otra venta: confirmarlo no paga la actual. */
-    fromPreviousSale: Boolean = false,
-    /** El servidor rechazó la declaración: su motivo se pinta en ÁMBAR para que se vea que contestó. */
-    declaracionRechazada: Boolean = false,
-    /**
-     * «Ya revisé la terminal: no se cobró». `null` ⇒ el botón no se ofrece y la pantalla es
-     * exactamente la de siempre (un APK nuevo contra un servidor que todavía no lo soporta).
-     */
-    onDeclararNoCobrado: (() -> Unit)? = null,
-    /**
-     * El monto DEL COBRO PENDIENTE (no el de la venta en curso), para que el diálogo diga sobre
-     * cuál se está declarando. `null` cuando no consta: el texto dice «ese cobro».
-     */
-    montoDelCobro: String? = null,
-    terminalLibreVentaEnDuda: Boolean = false,
     recheckLabel: String? = null,
-    accionesDeRedHabilitadas: Boolean = true,
-    /**
-     * D11: quien la usa ya vuelve a preguntar solo cada 5 s (el cobro de la venta). Entonces «Volver a consultar» sobra: la
-     * pantalla hace una sola pregunta y su botón es «No se cobró». El Cambio no consulta solo y conserva su botón.
-     */
-    consultaSola: Boolean = false,
 ) {
     var showLeaveWarning by remember { mutableStateOf(false) }
-    var pedirConfirmacionDeclaracion by remember { mutableStateOf(false) }
 
     // 🔴 Sin esto, un "atrás" desmonta la pantalla y toda la ceremonia de la advertencia
     // desaparece en silencio. La llave vive en disco, así que salir NO pierde el cobro —
@@ -951,104 +981,29 @@ fun PaymentUndeterminedView(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
-        if (!accionesDeRedHabilitadas) Text(com.avoqado.pos.giftcards.domain.TextosDeTarjetas.SIN_RED)
-        Icon(
-            Icons.Filled.HelpOutline,
-            contentDescription = null,
-            tint = Warning,
-            modifier = Modifier.size(if (consultaSola) 56.dp else 80.dp),
-        )
-
+        Icon(Icons.Filled.HelpOutline, contentDescription = null, tint = Warning, modifier = Modifier.size(80.dp))
         Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxl))
-
-        Text(
-            text = when {
-                CancelacionDeCobro.hablaDeTerminalLibre(terminalLibreVentaEnDuda, fromPreviousSale) -> CancelacionDeCobro.TERMINAL_LIBRE_VENTA_EN_DUDA
-                consultaSola -> CancelacionDeCobro.tituloSinConfirmar(montoDelCobro, fromPreviousSale)
-                fromPreviousSale -> "Cobro anterior sin confirmar"
-                else -> "Cobro sin confirmar"
-            },
-            style = MaterialTheme.typography.headlineLarge,
-            textAlign = TextAlign.Center,
-        )
-
+        Text(text = "Cobro sin confirmar", style = MaterialTheme.typography.headlineLarge, textAlign = TextAlign.Center)
         Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
-
         Text(
             text = message,
             style = MaterialTheme.typography.bodyLarge,
-            // 🔴 El motivo de un RECHAZO va en ámbar: con el gris de siempre, la pantalla quedaba
-            // idéntica tras tocar el botón y parecía que no había pasado nada (founder, 21-sep).
-            color = if (declaracionRechazada) Warning else MaterialTheme.colorScheme.onSurfaceVariant,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
             textAlign = TextAlign.Center,
             modifier = Modifier.widthIn(max = 400.dp),
         )
-
-        val preguntaSola = consultaSola && onDeclararNoCobrado != null
-        if (preguntaSola) {
-            Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))
-            QueHacerSegunLaTerminal()
-            if (accionesDeRedHabilitadas) {
-                Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
-                Text(
-                    text = CancelacionDeCobro.CONSULTA_AUTOMATICA,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-        }
-
         Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxxl))
-
-        // Acción segura: sólo pregunta, nunca cobra. Si ya se pregunta sola, no compite con la decisión del cajero.
-        if (!preguntaSola) {
-            PrimaryButton(
-                text = if (isChecking) "Consultando..." else recheckLabel ?: "Volver a consultar",
-                onClick = onRecheck,
-                enabled = accionesDeRedHabilitadas && !isChecking,
-                isLoading = isChecking,
-            )
-        }
-
-        // 🔴 La salida que faltaba: el cajero MIRA la terminal y lo declara. No cobra — libera.
-        if (onDeclararNoCobrado != null) {
-            if (!preguntaSola) Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
-            BotonDeclararNoCobrado(
-                enabled = accionesDeRedHabilitadas && !isChecking,
-                onClick = { pedirConfirmacionDeclaracion = true },
-                texto = if (CancelacionDeCobro.hablaDeTerminalLibre(terminalLibreVentaEnDuda, fromPreviousSale)) {
-                    CancelacionDeCobro.NO_SE_COBRO_COBRAR_OTRA_VEZ
-                } else {
-                    CancelacionDeCobro.BOTON_DECLARAR_NO_COBRADO
-                },
-            )
-        }
-
-        Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))
-
-        // 🔴 Dos salidas DISTINTAS, y confundirlas es lo que dejaba órdenes huérfanas: salir no
-        // toca nada; cancelar la venta pide detener el cobro y sólo después cancela la cuenta.
-        androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.md, Alignment.CenterHorizontally)) {
-            TextButton(onClick = onSalir, enabled = !isChecking) {
-                Text(CancelacionDeCobro.BOTON_SALIR_PENDIENTE, textAlign = TextAlign.Center)
-            }
-
-            if (onCancelarVenta != null) {
-                TextButton(onClick = onCancelarVenta, enabled = !isChecking) {
-                    Text(CancelacionDeCobro.BOTON_CANCELAR_VENTA, textAlign = TextAlign.Center)
-                }
-            }
-        }
-    }
-
-    if (pedirConfirmacionDeclaracion && onDeclararNoCobrado != null) {
-        DialogoDeclararNoCobrado(
-            montoDelCobro = montoDelCobro,
-            onConfirmar = onDeclararNoCobrado,
-            onCerrar = { pedirConfirmacionDeclaracion = false },
-            accionesDeRedHabilitadas = accionesDeRedHabilitadas,
-            confirmarHabilitado = !isChecking,
+        // Acción segura: sólo pregunta, nunca cobra.
+        PrimaryButton(
+            text = if (isChecking) "Consultando..." else recheckLabel ?: "Volver a consultar",
+            onClick = onRecheck,
+            enabled = !isChecking,
+            isLoading = isChecking,
         )
+        Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))
+        TextButton(onClick = onSalir, enabled = !isChecking) {
+            Text(CancelacionDeCobro.BOTON_SALIR_PENDIENTE, textAlign = TextAlign.Center)
+        }
     }
 
     // Salir está permitido (bloquear la caja sería peor), pero nunca en silencio: se dice
@@ -1078,125 +1033,6 @@ fun PaymentUndeterminedView(
             )
         }
     }
-}
-
-/**
- * «Ya revisé la terminal: no se cobró». C2 (22-oct): lo comparten «Cobro sin confirmar» y «Cancelación pendiente», para
- * que se vea igual en las dos.
- *
- * Va en segundo plano visual (contorno ámbar, no botón primario) porque la acción recomendada sigue siendo consultar:
- * preguntar nunca se equivoca.
- */
-@Composable
-private fun BotonDeclararNoCobrado(
-    enabled: Boolean,
-    onClick: () -> Unit,
-    texto: String = CancelacionDeCobro.BOTON_DECLARAR_NO_COBRADO,
-) {
-    // 🔴 Nada de pantalla completa: en una tablet de 1920 px dejaba una píldora de lado a lado con el
-    // texto diminuto en el centro (founder, 21-sep, viéndolo en la D3). Se acota para alinear la columna.
-    Box(modifier = Modifier.widthIn(max = 320.dp)) {
-        PrimaryButton(text = texto, onClick = onClick, enabled = enabled, fullWidth = true)
-    }
-}
-
-/** D11: qué hacer según lo que el cajero ve en la terminal. Lo que se pregunta, se contesta aquí mismo. */
-@Composable
-private fun QueHacerSegunLaTerminal() {
-    Column(verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.xs), modifier = Modifier.widthIn(max = 400.dp)) {
-        listOf(
-            CancelacionDeCobro.SI_DICE_APROBADO to CancelacionDeCobro.SI_DICE_APROBADO_QUE_HACER,
-            CancelacionDeCobro.SI_NO_SE_COBRO to CancelacionDeCobro.SI_NO_SE_COBRO_QUE_HACER,
-        ).forEach { (caso, queHacer) ->
-            Text(
-                text = androidx.compose.ui.text.buildAnnotatedString {
-                    pushStyle(androidx.compose.ui.text.SpanStyle(fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold))
-                    append(caso)
-                    pop()
-                    append(" ")
-                    append(queHacer)
-                },
-                style = MaterialTheme.typography.bodyMedium,
-            )
-        }
-    }
-}
-
-/**
- * La confirmación de «Ya revisé la terminal: no se cobró». C2 (22-oct): sacada de [PaymentUndeterminedView] sin cambiar un
- * solo texto, para que «Cancelación pendiente» pida exactamente lo mismo.
- *
- * Declarar mueve el estado de una venta, así que nunca en un solo toque: se repite con todas sus letras QUÉ se está
- * afirmando y que queda firmado con su nombre.
- *
- * @param montoDelCobro el importe DEL COBRO que se declara; `null` ⇒ el texto dice «ese cobro».
- */
-@Composable
-internal fun DialogoDeclararNoCobrado(
-    montoDelCobro: String?,
-    onConfirmar: () -> Unit,
-    onCerrar: () -> Unit,
-    accionesDeRedHabilitadas: Boolean = true,
-    confirmarHabilitado: Boolean = true,
-) {
-    AvoqadoDialog(
-        title = CancelacionDeCobro.DECLARACION_TITULO,
-        description = if (!accionesDeRedHabilitadas) com.avoqado.pos.giftcards.domain.TextosDeTarjetas.SIN_RED else CancelacionDeCobro.cuerpoDeLaDeclaracion(montoDelCobro),
-        onDismiss = onCerrar,
-        actionButton = {
-            // Los dos botones en la MISMA ranura: `AvoqadoDialog` no tiene una secundaria, y
-            // «Mejor no» tiene que estar a la vista — la X de la esquina no es una salida
-            // evidente cuando lo que se pide es confirmar algo sobre dinero.
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                PrimaryButton(
-                    text = CancelacionDeCobro.DECLARACION_CONFIRMAR,
-                    enabled = accionesDeRedHabilitadas && confirmarHabilitado,
-                    onClick = {
-                        if (!accionesDeRedHabilitadas || !confirmarHabilitado) return@PrimaryButton
-                        if (cerrarDialogoDeRecibo(true)) onCerrar()
-                        onConfirmar()
-                    },
-                    fullWidth = true,
-                )
-                TextButton(onClick = onCerrar) {
-                    Text(CancelacionDeCobro.DECLARACION_CANCELAR)
-                }
-            }
-        },
-    ) {
-        Icon(
-            imageVector = Icons.Filled.HelpOutline,
-            contentDescription = null,
-            tint = Warning,
-            modifier = Modifier.size(24.dp),
-        )
-    }
-}
-
-/**
- * C4 (22-oct, P4): el teclado donde un gerente teclea su PIN para que el mesero —sin `payments:reconcile-uncharged`—
- * declare «no se cobró». Lo pide el SERVIDOR (`SUPERVISOR_AUTHORIZATION_REQUIRED`); la tablet nunca decide quién puede.
- *
- * Reusa [ManagerOverrideSheet]: el mismo teclado, los mismos textos de error en línea, el mismo «tocar fuera no cancela».
- * Pero NO pasa por `ManagerOverrideCoordinator`: aquí no hay token de un solo uso. El PIN viaja en el CUERPO de la misma
- * declaración, que es lo que espera el servidor. Cerrarlo = la declaración falla como antes, con el motivo del servidor.
- */
-@Composable
-fun TecladoDelPinDeGerente(
-    peticion: PeticionDePinDeGerente,
-    onEnviar: suspend (String) -> OverrideResult,
-    onCerrar: () -> Unit,
-) {
-    ManagerOverrideSheet(
-        prompt = ManagerOverrideCoordinator.Prompt(
-            id = peticion.id,
-            permission = CancelacionDeCobro.PERMISO_DECLARAR_NO_COBRADO,
-            actionLabel = PermissionLabels.of(CancelacionDeCobro.PERMISO_DECLARAR_NO_COBRADO),
-        ),
-        onSubmit = onEnviar,
-        onDismiss = onCerrar,
-        title = CancelacionDeCobro.PIN_DE_GERENTE_TITULO,
-    )
 }
 
 // MARK: - Cancelación del cobro (§C.4)
@@ -1237,35 +1073,25 @@ fun CancelandoCobroView(onSalir: () -> Unit) {
 /**
  * 🔴 «Cancelación pendiente» — ÁMBAR, nunca rojo: no falló nada, falta que CONSTE.
  *
- * La venta se cancela sola en cuanto el desenlace llegue (la intención vive en disco y se
- * reproduce sola), así que salir de aquí no pierde nada.
+ * La venta se cancela sola en cuanto el desenlace llegue (la intención vive en disco y se reproduce sola), así que salir de aquí no
+ * pierde nada. 🔴 F1 (tarea 6): el cajero ya no declara «no se cobró» desde aquí; si la terminal ya se soltó y no consta, la revisa el
+ * gerente con su PIN en «Operaciones por revisar». [Seguir] es la salida de siempre (`salirDejandoPendiente`): nunca se apaga y sale
+ * UNA vez (dos toques, Esc o Atrás).
  */
-@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 fun CancelacionPendienteView(
     sinRed: Boolean,
     isChecking: Boolean,
     onVolverAConsultar: () -> Unit,
     onSalir: () -> Unit,
-    /**
-     * C2 (22-oct): «Ya revisé la terminal: no se cobró» sobre el cobro que se pidió cancelar. `null` ⇒ no se ofrece (la
-     * intención es sólo de la orden: no hubo cobro que declarar) y la pantalla es la de siempre.
-     */
-    onDeclararNoCobrado: (() -> Unit)? = null,
-    /** El importe DEL COBRO que se declara, para el diálogo; `null` ⇒ el texto dice «ese cobro». */
-    montoDelCobro: String? = null,
-    /** Lo que contestó la declaración cuando no liberó (motivo del servidor, sin red, sesión renovada); va en ámbar. */
-    avisoDeDeclaracion: String? = null,
-    /**
-     * C2 (fix 1, I1): la declaración va en vuelo. Es lo ÚNICO que apaga el botón de declarar: que el coordinador esté
-     * consultando ([isChecking]) no lo apaga, para que su consulta de fondo no deje el botón muerto.
-     */
-    declarando: Boolean = false,
     accionesDeRedHabilitadas: Boolean = true,
-    /** D6: la terminal ya se soltó y la venta sigue en duda. Sólo cambia las palabras, y sólo si hay a qué declarar. */
+    /** D6: la terminal ya se soltó y la venta sigue en duda. Sólo cambia las palabras. */
     terminalLibre: Boolean = false,
 ) {
-    var pedirConfirmacionDeclaracion by remember { mutableStateOf(false) }
+    var salio by remember { mutableStateOf(false) }
+    val seguir = { if (!salio) { salio = true; onSalir() } }
+    androidx.activity.compose.BackHandler { seguir() }
+    AtajoDeTeclado(Key.Escape) { seguir() }
 
     Column(
         modifier = Modifier
@@ -1275,27 +1101,14 @@ fun CancelacionPendienteView(
         verticalArrangement = Arrangement.Center,
     ) {
         if (!accionesDeRedHabilitadas) Text(com.avoqado.pos.giftcards.domain.TextosDeTarjetas.SIN_RED)
-        Icon(
-            Icons.Filled.HelpOutline,
-            contentDescription = null,
-            tint = Warning,
-            modifier = Modifier.size(80.dp),
-        )
-
+        Icon(Icons.Filled.HelpOutline, contentDescription = null, tint = Warning, modifier = Modifier.size(80.dp))
         Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxl))
-
-        Text(
-            text = CancelacionDeCobro.TITULO_PENDIENTE,
-            style = MaterialTheme.typography.headlineLarge,
-            textAlign = TextAlign.Center,
-        )
-
+        Text(text = CancelacionDeCobro.TITULO_PENDIENTE, style = MaterialTheme.typography.headlineLarge, textAlign = TextAlign.Center)
         Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
-
         Text(
             text = when {
                 sinRed -> CancelacionDeCobro.CUERPO_SIN_RED
-                terminalLibre && onDeclararNoCobrado != null -> CancelacionDeCobro.CUERPO_TERMINAL_LIBRE
+                terminalLibre -> CancelacionDeCobro.CUERPO_TERMINAL_LIBRE_PISO
                 else -> CancelacionDeCobro.CUERPO_PENDIENTE
             },
             style = MaterialTheme.typography.bodyLarge,
@@ -1303,59 +1116,15 @@ fun CancelacionPendienteView(
             textAlign = TextAlign.Center,
             modifier = Modifier.widthIn(max = 400.dp),
         )
-
-        // 🔴 La respuesta de la declaración, en ámbar: sin esto la pantalla quedaba idéntica tras el toque y el botón
-        // parecía muerto (founder, 21-sep, en «Cobro sin confirmar»).
-        if (avisoDeDeclaracion != null) {
-            Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
-            Text(
-                text = avisoDeDeclaracion,
-                style = MaterialTheme.typography.bodyLarge,
-                color = Warning,
-                textAlign = TextAlign.Center,
-                modifier = Modifier.widthIn(max = 400.dp),
-            )
-        }
-
         Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxxl))
-
-        // C2: la salida de Amaena (20-oct). El cajero mira la terminal y lo declara; si el servidor libera, la venta se
-        // cancela sola por el camino de siempre (el coordinador), nunca desde aquí.
-        // D11: igual que «Cobro sin confirmar», una sola decisión en grande. Aquí la consulta de fondo espera más entre
-        // intentos, así que «Volver a consultar» se queda, pero en chico. Sin nada que declarar, es lo único que hay.
-        if (onDeclararNoCobrado != null) {
-            BotonDeclararNoCobrado(enabled = accionesDeRedHabilitadas && !declarando, onClick = { pedirConfirmacionDeclaracion = true })
-        } else {
-            PrimaryButton(
-                text = CancelacionDeCobro.BOTON_VOLVER_A_CONSULTAR,
-                onClick = onVolverAConsultar,
-                enabled = accionesDeRedHabilitadas && !isChecking,
-                isLoading = isChecking,
-            )
+        Box(modifier = Modifier.widthIn(max = 320.dp)) {
+            PrimaryButton(text = CancelacionDeCobro.BOTON_SEGUIR, onClick = seguir, fullWidth = true, tecla = "Esc")
         }
-
         Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))
-
-        androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.md, Alignment.CenterHorizontally)) {
-            if (onDeclararNoCobrado != null) {
-                TextButton(onClick = onVolverAConsultar, enabled = accionesDeRedHabilitadas && !isChecking) {
-                    Text(CancelacionDeCobro.BOTON_VOLVER_A_CONSULTAR, textAlign = TextAlign.Center)
-                }
-            }
-            TextButton(onClick = onSalir, enabled = !isChecking) {
-                Text(CancelacionDeCobro.BOTON_SALIR_PENDIENTE, textAlign = TextAlign.Center)
-            }
+        // Sólo pregunta, nunca cobra ni borra.
+        TextButton(onClick = onVolverAConsultar, enabled = accionesDeRedHabilitadas && !isChecking) {
+            Text(if (isChecking) "Consultando…" else CancelacionDeCobro.BOTON_VOLVER_A_CONSULTAR, textAlign = TextAlign.Center)
         }
-    }
-
-    if (pedirConfirmacionDeclaracion && onDeclararNoCobrado != null) {
-        DialogoDeclararNoCobrado(
-            montoDelCobro = montoDelCobro,
-            onConfirmar = onDeclararNoCobrado,
-            onCerrar = { pedirConfirmacionDeclaracion = false },
-            accionesDeRedHabilitadas = accionesDeRedHabilitadas,
-            confirmarHabilitado = !declarando,
-        )
     }
 }
 

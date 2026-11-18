@@ -179,7 +179,8 @@ fun TerminalSelectionScreen(
 
 /**
  * Aviso ÁMBAR —nunca rojo de error: no detuvo nada— de un cobro con tarjeta de OTRA venta. Toda la línea se toca:
- * «Revisar» abre la pantalla de siempre sobre ese cobro; «Entendido» cierra el de un cobro que SÍ pasó.
+ * «Ver» abre ese cobro sólo para verlo (F1, tarea 6: su importe y [Seguir]; nadie declara desde ahí, lo firma el gerente en
+ * «Operaciones por revisar»); «Entendido» cierra el de un cobro que SÍ pasó.
  */
 @Composable
 private fun AvisoDeOtroCobroLinea(aviso: AvisoDeOtroCobro, enabled: Boolean, onClick: () -> Unit) {
@@ -210,7 +211,7 @@ private fun AvisoDeOtroCobroLinea(aviso: AvisoDeOtroCobro, enabled: Boolean, onC
                 modifier = Modifier.weight(1f),
             )
             Text(
-                text = if (aviso.yaCobrado) "Entendido" else "Revisar",
+                text = if (aviso.yaCobrado) "Entendido" else TEXTO_VER_AVISO,
                 style = MaterialTheme.typography.labelLarge,
                 fontWeight = FontWeight.SemiBold,
                 color = Warning,
@@ -271,3 +272,6 @@ private fun TerminalCard(
 }
 
 internal fun controlDeTerminalDeTarjeta(cuenta: Boolean, conectado: Boolean, servidor: Boolean, disponible: Boolean): Boolean = disponible && (!cuenta || conectado && servidor)
+
+/** F1 (tarea 6): el aviso de 10 min es informativo: «Ver», nunca «No se cobró». */
+internal const val TEXTO_VER_AVISO = "Ver"

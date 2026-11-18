@@ -22,8 +22,6 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.avoqado.pos.designsystem.components.BarreraDeAtajos
-import com.avoqado.pos.payment.data.model.ObjetivoDeLaDeclaracion
-import com.avoqado.pos.payment.data.model.OrigenDeLaDeclaracion
 import com.avoqado.pos.core.util.formatMoneyFromCents
 import com.avoqado.pos.customers.data.model.Customer
 import com.avoqado.pos.designsystem.components.AvoqadoWarningToast
@@ -148,9 +146,6 @@ fun PaymentFlowScreen(
     val terminals by viewModel.onlineTerminals.collectAsState()
     val avisoDeOtroCobro by viewModel.avisoDeOtroCobro.collectAsState()
     val segundoAviso by viewModel.segundoAviso.collectAsState()
-    // C4: el servidor pidió el PIN de un gerente para declarar «no se cobró». El teclado sale sólo sobre la pantalla que
-    // declaró (su `origen`).
-    val pinDeGerente by viewModel.pidiendoPinDeGerente.collectAsState()
     // 🔴 Se COLECTA, no se lee del ViewModel a pelo: el refresh del catálogo es
     // asíncrono, y sin observarlo la hoja de "¿cómo pagó el cliente?" se quedaba
     // con la lista vacía de cuando se compuso — la primera venta tras abrir la app
@@ -424,30 +419,16 @@ fun PaymentFlowScreen(
                 CancelandoCobroView(onSalir = { viewModel.salirDejandoPendiente() })
             }
             is PaymentFlowState.CancelacionPendiente -> {
-                // C2: el objetivo sale de la intención que se está cancelando (su cobro, su venue y el importe de su
-                // contexto durable), nunca del carrito. Sin cobro (intención sólo de la orden) no se ofrece declarar.
-                val objetivo = viewModel.objetivoDeLaDeclaracionDeCancelacion()
+                // 🔴 F1 (tarea 6): el cajero no declara desde aquí. [Seguir] = `salirDejandoPendiente`, la única salida de piso: la
+                // intención sigue en disco y el coordinador la termina solo; lo que no conste, lo firma el gerente en «Por revisar».
                 CancelacionPendienteView(
                     accionesDeRedHabilitadas = accionesDeRedHabilitadas,
                     sinRed = currentState.sinRed,
                     terminalLibre = currentState.terminalLibre,
-                    // «Volver a consultar» y «Salir» esperan a lo que esté en vuelo: la consulta del coordinador o la
-                    // declaración. El botón de declarar sólo espera a la declaración (fix 1, I1).
-                    isChecking = currentState.checking || currentState.declarando,
+                    isChecking = currentState.checking,
                     onVolverAConsultar = { viewModel.volverAConsultarCancelacion() },
                     onSalir = { viewModel.salirDejandoPendiente() },
-                    onDeclararNoCobrado = { viewModel.declararDesdeCancelacion() }.takeIf { objetivo != null },
-                    montoDelCobro = objetivo?.montoCentavos?.let { formatMoneyFromCents(it) },
-                    avisoDeDeclaracion = currentState.avisoDeDeclaracion,
-                    declarando = currentState.declarando,
                 )
-                pinDeGerente?.takeIf { it.origen == OrigenDeLaDeclaracion.CANCELACION_PENDIENTE }?.let { peticion ->
-                    TecladoDelPinDeGerente(
-                        peticion = peticion,
-                        onEnviar = { pin -> viewModel.enviarPinDeGerente(pin) },
-                        onCerrar = { viewModel.cerrarTecladoDelPin(peticion.id) },
-                    )
-                }
             }
             is PaymentFlowState.Success -> {
                 // El dinero ya se comprometió. Consumir el carrito ahora mantiene la
@@ -635,37 +616,20 @@ fun PaymentFlowScreen(
                         viewModel.recheckCardCharge(automatica = true)
                     }
                 }
-                PaymentUndeterminedView(
-                    consultaSola = true,
-                    accionesDeRedHabilitadas = accionesDeRedHabilitadas,
-                    message = currentState.message,
-                    isChecking = currentState.checking,
-                    // M-5: el título dice «anterior» sólo si el cobro es de OTRA venta; «…de esta venta.» lleva el neutro.
-                    fromPreviousSale = viewModel.revisaCobroDeOtraVenta(),
-                    declaracionRechazada = currentState.declaracionRechazada,
-                    terminalLibreVentaEnDuda = currentState.terminalLibreVentaEnDuda,
-                    onRecheck = { viewModel.recheckCardCharge() },
-                    onChargeAgain = { viewModel.chargeAgainDespiteUndetermined() },
-                    onSalir = { viewModel.salirDejandoPendiente() },
-                    // El cobro sin confirmar de OTRA venta no se cancela desde aquí: su orden no
-                    // la creó este flujo.
-                    onCancelarVenta = { viewModel.cancelarVenta() }.takeIf { !currentState.fromPreviousSale },
-                    // 🔴 Se ofrece TAMBIÉN cuando el pendiente es de otra venta: ése es justamente
-                    // el caso que dejó a Testarudo 26 minutos sin cobrar el 18-sep — una solicitud
-                    // vieja reteniendo la ranura de la terminal.
-                    onDeclararNoCobrado = { viewModel.declararNoCobrado() },
-                    // 🔴 El importe sale del OBJETIVO (el contexto durable del cobro pendiente),
-                    // NUNCA de `currentState.totalAmount` — ése es el de la venta en curso, que con
-                    // un pendiente de otra venta es un importe distinto. P1 de Codex (19-sep).
-                    montoDelCobro = viewModel.objetivoDeLaDeclaracion()?.montoCentavos?.let { formatMoneyFromCents(it) },
-                )
-                pinDeGerente?.takeIf { it.origen == OrigenDeLaDeclaracion.COBRO_SIN_CONFIRMAR }?.let { peticion ->
-                    TecladoDelPinDeGerente(
-                        peticion = peticion,
-                        onEnviar = { pin -> viewModel.enviarPinDeGerente(pin) },
-                        onCerrar = { viewModel.cerrarTecladoDelPin(peticion.id) },
-                    )
+                // 🔴 F1 (tarea 6): el importe es el del INTENTO (su contexto durable), NUNCA `currentState.totalAmount` — ése es el de la
+                // venta en curso. Una fila antigua sin importe le pregunta a Avoqado por su ID; mientras, «Importe por confirmar».
+                val objetivo = viewModel.objetivoDeLaDeclaracion()
+                var recuperado by remember(objetivo?.requestId) { mutableStateOf<Int?>(null) }
+                LaunchedEffect(objetivo?.requestId) {
+                    if (objetivo != null && objetivo.montoCentavos == null) recuperado = viewModel.importeDelCobro(objetivo.requestId, objetivo.venueId)
                 }
+                TarjetaPorConfirmarView(
+                    montoDelCobro = (objetivo?.montoCentavos ?: recuperado)?.let { formatMoneyFromCents(it) },
+                    confirmando = true,
+                    sinRed = !accionesDeRedHabilitadas,
+                    // La única salida de piso: la solicitud sigue guardada; nunca cancela, cierra la cuenta ni reenvía el cobro.
+                    onSeguir = { viewModel.salirDejandoPendiente() },
+                )
             }
         }
 

@@ -78,7 +78,7 @@ fun ExchangeScreen(viewModel: ExchangeViewModel, onClose: () -> Unit,
                             retryLabel = TextosCambio.PROBAR_OTRA_VEZ, cancelLabel = TextosCambio.CERRAR, titleLabel = TextosCambio.CANCELADO)
                         send.phase == ExchangeSendPhase.UNCERTAIN && send.result != null -> PaymentUndeterminedView(
                             message = message ?: send.message.orEmpty(), isChecking = false, onRecheck = payments::retry,
-                            onChargeAgain = {}, onSalir = onClose, recheckLabel = TextosCambio.CONFIRMAR_ESTADO)
+                            onSalir = onClose, recheckLabel = TextosCambio.CONFIRMAR_ESTADO)
                         else -> Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(AvoqadoTheme.spacing.lg),
                             verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.md)) {
                             Text(message ?: send.message.orEmpty(), style = MaterialTheme.typography.titleMedium)

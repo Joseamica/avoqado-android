@@ -974,10 +974,12 @@ class TerminalPaymentService @Inject constructor(
                 response.code to (response.body?.string() ?: "")
             }
 
+            var importeCents: Int? = null
             val probe = when {
                 responseCode in 200..299 -> {
                     val dto = json.decodeFromString(TerminalPaymentStatusDto.serializer(), body)
                     Log.d("💳", "Payment status $requestId → ${dto.status} (inProgress=${dto.inProgress}, outcome=${dto.outcome})")
+                    importeCents = dto.importeCents()
                     dto.aProbe()
                 }
                 responseCode == 404 -> {
@@ -990,12 +992,20 @@ class TerminalPaymentService @Inject constructor(
                     ChargeStatusProbe.Unreachable
                 }
             }
-            ConsultaDeEstado(probe, sinRespuesta = false)
+            ConsultaDeEstado(probe, sinRespuesta = false, importeCents = importeCents)
         } catch (e: Exception) {
             Log.e("💳", "Error fetching payment status: ${e.message}")
             ConsultaDeEstado(ChargeStatusProbe.Unreachable, sinRespuesta = true)
         }
     }
+
+    /**
+     * 🔴 F1 (tarea 6): el importe (importe + propina, en centavos) de una solicitud cuya fila no lo guardó —la llave única vieja se
+     * migró sin contexto—, preguntado a Avoqado por su ID. Sólo para MOSTRARLO («Importe por confirmar» mientras); no decide nada del
+     * cobro. `null` = no se pudo saber (sin red, 404, otro error). En segundo plano: un 403 no saca el aviso global de permisos.
+     */
+    suspend fun importeDelCobro(requestId: String, venueId: String?): Int? =
+        consultarEstado(requestId, venueId, enSegundoPlano = true).importeCents
 
     /**
      * Averigua cómo terminó de verdad un cobro cuyo desenlace no consta, consultando el estado
@@ -1684,6 +1694,8 @@ data class RespuestaDeCancelacion(
 data class ConsultaDeEstado(
     val probe: ChargeStatusProbe,
     val sinRespuesta: Boolean,
+    /** F1: el importe + propina que guardó el servidor (centavos); `null` si no contestó o no lo mandó. Sólo para mostrar. */
+    val importeCents: Int? = null,
 )
 
 @Serializable
@@ -1778,7 +1790,13 @@ data class TerminalPaymentStatusDto(
      * seria CODIGO MUERTO — que es exactamente el defecto que Codex encontro el 21-sep en el servidor.
      */
     val errorMessage: String? = null,
+    /** F1: importe y propina de la solicitud, en PESOS (`TerminalPaymentStatus.amount`/`tip` del servidor). Sólo para mostrar. */
+    val amount: Double? = null,
+    val tip: Double? = null,
 ) {
+    /** Importe + propina en centavos; `null` si el servidor no mandó el importe (nunca un cero inventado). */
+    fun importeCents(): Int? = amount?.let { Math.round((it + (tip ?: 0.0)) * 100).toInt() }
+
     fun aProbe(): ChargeStatusProbe.Known = ChargeStatusProbe.Known(
         status = status,
         inProgress = inProgress,

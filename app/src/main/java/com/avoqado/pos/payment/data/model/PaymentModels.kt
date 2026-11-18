@@ -152,16 +152,7 @@ sealed class PaymentFlowState {
         val message: String,
         val checking: Boolean = false,
         val fromPreviousSale: Boolean = false,
-        /**
-         * El servidor RECHAZÓ la declaración del cajero y éste es su motivo.
-         *
-         * 🔴 Founder, 21-sep, tocando la D3: «le pongo *ya revisé la terminal* y no pasa nada». Sí
-         * pasaba —la petición salía y el servidor contestaba 409— pero la respuesta llega en ~65 ms y
-         * el mensaje nuevo se parece al anterior, así que la pantalla se veía idéntica y el botón
-         * parecía muerto. Con esto el motivo se pinta en ámbar: se ve que algo contestó.
-         */
-        val declaracionRechazada: Boolean = false,
-        /** Sólo presentación; la venta sigue pendiente hasta evidencia o declaración. */
+        /** Sólo presentación; la venta sigue pendiente hasta evidencia o la firma del gerente (F1). */
         val terminalLibreVentaEnDuda: Boolean = false,
     ) : PaymentFlowState()
 
@@ -178,20 +169,12 @@ sealed class PaymentFlowState {
      * desenlace llegue, y el cajero puede salir — la intención vive en disco y sigue reproduciéndose.
      *
      * @param sinRed el último intento murió sin respuesta del servidor.
-     * @param avisoDeDeclaracion C2 (22-oct): lo que contestó «Ya revisé la terminal: no se cobró» cuando NO liberó el
-     *   cobro —el motivo del servidor, el texto sin red o la sesión renovada—. Se pinta en ámbar debajo del cuerpo, para
-     *   que se vea que algo contestó (el «botón muerto» del 21-sep). `null` ⇒ la pantalla de siempre. Se queda hasta que
-     *   el cajero consulte o declare otra vez; una corrida de fondo del coordinador no lo borra.
-     * @param declarando C2 (fix 1): la declaración va en vuelo. Es PROPIO de la declaración y distinto de [checking], que
-     *   también mueve el coordinador cuando consulta solo: sólo esto apaga el botón de declarar.
      * @param terminalLibre D6: el servidor ya soltó la terminal y la venta sigue en duda. Sólo cambia las palabras.
      */
     data class CancelacionPendiente(
         val totalAmount: Int,
         val sinRed: Boolean = false,
         val checking: Boolean = false,
-        val avisoDeDeclaracion: String? = null,
-        val declarando: Boolean = false,
         val terminalLibre: Boolean = false,
     ) : PaymentFlowState()
 }
@@ -607,9 +590,8 @@ data class OrderPromotionData(
 )
 
 /**
- * Lo que el cajero va a declarar: la identidad del cobro pendiente, su venue y su importe, todo
- * congelado ANTES de enseñar el diálogo. `montoCentavos` es `null` cuando no consta — y entonces
- * el diálogo NO inventa uno.
+ * El cobro en duda que muestra la pantalla: su identidad, su venue y su importe, congelados del contexto durable. `montoCentavos` es
+ * `null` cuando no consta — y entonces la pantalla NO inventa uno («Importe por confirmar»). F1: ya nadie declara desde el piso.
  */
 data class ObjetivoDeLaDeclaracion(
     val requestId: String,
@@ -617,29 +599,3 @@ data class ObjetivoDeLaDeclaracion(
     val montoCentavos: Int?,
 )
 
-/**
- * C2 (22-oct): desde qué pantalla se declara «Ya revisé la terminal: no se cobró». La declaración es UNA sola (mismo
- * servicio, misma regla online-only y, desde C4, el mismo PIN de gerente); el origen sólo decide qué pantalla espera la
- * respuesta y qué sigue cuando el servidor libera el cobro.
- */
-enum class OrigenDeLaDeclaracion {
-    /** «Cobro sin confirmar»: al liberar, el cajero decide si vuelve a cobrar. */
-    COBRO_SIN_CONFIRMAR,
-
-    /** «Cancelación pendiente»: al liberar, el coordinador consulta, ve NOT_CHARGED y cancela la orden. */
-    CANCELACION_PENDIENTE,
-}
-
-/**
- * C4 (22-oct, P4): el SERVIDOR pidió el PIN de un gerente para declarar «no se cobró» (`SUPERVISOR_AUTHORIZATION_REQUIRED`:
- * quien opera la tablet —el mesero— no tiene `payments:reconcile-uncharged`). Mientras exista, la pantalla de [origen]
- * muestra el teclado.
- *
- * 🔴 No lleva el PIN ni nada de la declaración: el PIN sólo vive en la llamada que lo manda, en el cuerpo.
- *
- * @param id llave del teclado: un teclado nuevo nace vacío (nunca con el PIN de otro).
- */
-data class PeticionDePinDeGerente(
-    val id: Long,
-    val origen: OrigenDeLaDeclaracion,
-)
