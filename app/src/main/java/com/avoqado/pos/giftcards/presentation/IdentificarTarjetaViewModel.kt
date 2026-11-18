@@ -73,7 +73,7 @@ class IdentificarTarjetaViewModel @Inject constructor(
         if (almacen.venueId != venueId || almacen.userId == null) return
         venue = venueId; usuario = almacen.userId; this.ajustes = ajustes
         escucha = viewModelScope.launch(start = CoroutineStart.UNDISPATCHED) {
-            lector.codigos.collect { crudo -> if (LectorParaTarjetas.abierta.value) launch { porEscaneo(crudo) } }
+            lector.codigos.collect { crudo -> if (LectorParaTarjetas.abierta.value) launch { porEscaneo(lecturaDeTarjeta(crudo)) } }
         }
         LectorParaTarjetas.abrir()
     }
@@ -131,6 +131,16 @@ class IdentificarTarjetaViewModel @Inject constructor(
             throw e
         } finally { if (g == generacion) ocupada = false }
     }
+    /**
+     * D14: el código de la tarjeta lleva guiones y, con el teclado del aparato en español, una pistola en inglés los manda
+     * como «'». Si la lectura del aparato no es una tarjeta y la de EE. UU. sí, se usa ésa.
+     */
+    private fun lecturaDeTarjeta(crudo: String): String {
+        if (ReconocedorDeTarjeta.reconocer(crudo) != null) return crudo
+        val us = lector.comoTecladoUs(crudo) ?: return crudo
+        return if (ReconocedorDeTarjeta.reconocer(us) != null) us else crudo
+    }
+
     suspend fun porEscaneo(crudo: String) {
         if (!contextoVigente() || ocupada) return
         entrada.value = crudo; ultimaPrueba = null

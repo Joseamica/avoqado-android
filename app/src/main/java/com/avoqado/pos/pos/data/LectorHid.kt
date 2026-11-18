@@ -13,8 +13,12 @@ sealed interface TeclaHid {
     /** Parte de una ráfaga ya demostrada: se come para que no ensucie el campo con foco. */
     data object Consumir : TeclaHid
 
-    /** La ráfaga terminó: esto es un código escaneado. */
-    data class Codigo(val texto: String) : TeclaHid
+    /**
+     * La ráfaga terminó: esto es un código escaneado. [textoUs] es la misma ráfaga leída con el teclado de EE. UU. (D14):
+     * con el teclado del aparato en español, el «-» de una pistola en inglés llega como «'»; quien busca el código prueba
+     * [texto] y, si no encuentra nada, [textoUs].
+     */
+    data class Codigo(val texto: String, val textoUs: String = texto) : TeclaHid
 }
 
 /**
@@ -53,6 +57,7 @@ class LectorHid(
     private val largoMinimo: Int = 4,
 ) {
     private val buffer = StringBuilder()
+    private val bufferUs = StringBuilder()
     private var ultimaTeclaMs: Long = 0
     private var teclasEnRafaga: Int = 0
     private var aparatoDeLaRafaga: Int = SIN_APARATO
@@ -74,6 +79,7 @@ class LectorHid(
         esFisico: Boolean,
         deviceId: Int,
         ahoraMs: Long,
+        caracterUs: Char? = caracter,
     ): TeclaHid {
         // El teclado en pantalla nunca es un lector, por rápido que alguien escriba.
         if (!esFisico) {
@@ -83,6 +89,7 @@ class LectorHid(
 
         if (esTerminador) {
             val codigo = buffer.toString().trim()
+            val codigoUs = bufferUs.toString().trim()
             // `teclasEnRafaga >= 2` es lo que distingue una ráfaga de una tecla suelta:
             // sin eso, el Enter de "aceptar" de cualquier diálogo se leería como el
             // cierre de un escaneo. Y el Enter tiene que venir PEGADO a la ráfaga y del
@@ -94,7 +101,7 @@ class LectorHid(
             limpiar()
             return if (huboRafaga && codigo.length >= largoMinimo) {
                 lectoresConocidos += deviceId
-                TeclaHid.Codigo(codigo)
+                TeclaHid.Codigo(codigo, codigoUs)
             } else {
                 TeclaHid.DejarPasar
             }
@@ -112,10 +119,12 @@ class LectorHid(
             (ahoraMs - ultimaTeclaMs) <= maxIntervaloMs
         if (!continuaLaRafaga) {
             buffer.setLength(0)
+            bufferUs.setLength(0)
             teclasEnRafaga = 0
             aparatoDeLaRafaga = deviceId
         }
         buffer.append(caracter)
+        bufferUs.append(caracterUs ?: caracter)
         teclasEnRafaga++
         ultimaTeclaMs = ahoraMs
 
@@ -128,6 +137,7 @@ class LectorHid(
 
     private fun limpiar() {
         buffer.setLength(0)
+        bufferUs.setLength(0)
         teclasEnRafaga = 0
         aparatoDeLaRafaga = SIN_APARATO
         ultimaTeclaMs = 0

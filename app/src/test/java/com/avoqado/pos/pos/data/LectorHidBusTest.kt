@@ -227,4 +227,31 @@ class LectorHidBusTest {
         assertFalse(LectorHidBus.esTeclaFisicaQueEscribe(LECTOR, 0, KeyEvent.KEYCODE_SHIFT_LEFT))
         assertFalse(LectorHidBus.esTeclaFisicaQueEscribe(LECTOR, 0, KeyEvent.KEYCODE_BACK))
     }
+
+    @Test
+    fun `D14 un codigo que el teclado del aparato cambio guarda su lectura en ingles`() = runTest {
+        val bus = LectorHidBus()
+        bus.codigos.test {
+            "AB'12".forEachIndexed { i, c ->
+                bus.procesar(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_A, c.code, LECTOR, 1_000L + i * 10, 0,
+                    unicodeCharUs = (if (c == '\'') '-' else c).code)
+            }
+            bus.enter(ms = 1_100)
+            assertEquals("AB'12", awaitItem())
+        }
+        assertEquals("AB-12", bus.comoTecladoUs("AB'12"))
+        assertEquals("AB-12", bus.comoTecladoUs(" AB'12 "))
+    }
+
+    @Test
+    fun `D14 sin diferencia entre teclados no hay lectura en ingles`() = runTest {
+        val bus = LectorHidBus()
+        bus.codigos.test {
+            bus.rafaga("abc12")
+            bus.enter(ms = 1_100)
+            assertEquals("abc12", awaitItem())
+        }
+        org.junit.Assert.assertNull(bus.comoTecladoUs("abc12"))
+        org.junit.Assert.assertNull(bus.comoTecladoUs("otro"))
+    }
 }

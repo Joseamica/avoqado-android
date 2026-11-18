@@ -2551,7 +2551,14 @@ class CartViewModel @Inject constructor(
         if (cobroAbierto) return ScannedBarcodeResult.Error("Se abrió el cobro: vuelve a escanear al terminar.")
         consultasDeCodigo.update { it + 1 }
         try {
-            return resolverCodigo(rawCode)
+            val resultado = resolverCodigo(rawCode)
+            // D14: la pistola en inglés con el teclado del aparato en español («PIZZAS'003»). Sólo si la lectura del aparato no
+            // encontró nada; si tampoco la de EE. UU. encuentra, se avisa con la del aparato, como siempre.
+            if (resultado is ScannedBarcodeResult.Unknown) {
+                lectorHidBus.comoTecladoUs(rawCode)?.let { resolverCodigo(it) }
+                    ?.takeIf { it !is ScannedBarcodeResult.Unknown }?.let { return it }
+            }
+            return resultado
         } finally {
             consultasDeCodigo.update { it - 1 }
         }

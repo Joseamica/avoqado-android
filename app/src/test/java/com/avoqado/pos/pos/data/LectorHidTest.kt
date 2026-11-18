@@ -209,4 +209,17 @@ class LectorHidTest {
 
         assertEquals(TeclaHid.DejarPasar, repetido)
     }
+
+    @Test
+    fun `D14 junta tambien la lectura del teclado de EE UU de cada tecla`() {
+        // El aparato con el teclado en español convierte el «-» de una pistola en inglés en «'».
+        val lector = LectorHid()
+        "AB'12".forEachIndexed { i, c ->
+            lector.procesar(caracter = c, esTerminador = false, esFisico = true, deviceId = 7, ahoraMs = 1_000L + i * 10,
+                caracterUs = if (c == '\'') '-' else c)
+        }
+        val fin = lector.procesar(caracter = null, esTerminador = true, esFisico = true, deviceId = 7, ahoraMs = 1_100)
+
+        assertEquals(TeclaHid.Codigo("AB'12", textoUs = "AB-12"), fin)
+    }
 }

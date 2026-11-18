@@ -35,6 +35,22 @@ class LectorHidBus @Inject constructor() {
     private val consumidas = mutableSetOf<Int>()
 
     /**
+     * D14 (18-nov): con el teclado del aparato en español (Android 14+ lo elige solo por el idioma), el «-» de una pistola en
+     * inglés llega como «'» y «PIZZAS-003» se lee «PIZZAS'003». No se sabe en qué idioma viene la pistola, así que se
+     * guardan las dos lecturas y quien busca prueba primero la del aparato y luego [comoTecladoUs]. Sólo los últimos
+     * códigos con diferencia (los que pueden estar esperando en [codigos]).
+     */
+    private val lecturasUs = object : LinkedHashMap<String, String>() {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, String>?) = size > 16
+    }
+
+    /** El mismo código leído con el teclado de EE. UU., si el teclado del aparato lo cambió; `null` si no hubo diferencia. */
+    fun comoTecladoUs(codigo: String): String? = synchronized(lecturasUs) { lecturasUs[codigo.trim()] }
+
+    /** El teclado de EE. UU. (el del teclado virtual): traduce la tecla sin la distribución que eligió el aparato. */
+    private val tecladoUs: KeyCharacterMap? by lazy { runCatching { KeyCharacterMap.load(KeyCharacterMap.VIRTUAL_KEYBOARD) }.getOrNull() }
+
+    /**
      * El lector INTEGRADO de las Sunmi (OrderPAD y similares) no entra por teclas: su modo
      * "teclado" teclea como teclado VIRTUAL, que [LectorHid] descarta a propósito, y el código
      * caía al buscador. Se usa su aviso ([LectorIntegradoSunmi.ACCION]), que ya trae el código
@@ -55,6 +71,7 @@ class LectorHidBus @Inject constructor() {
         // `eventTime` es SystemClock.uptimeMillis(): monótono y viene con el evento.
         eventTimeMs = event.eventTime,
         repeatCount = event.repeatCount,
+        unicodeCharUs = tecladoUs?.get(event.keyCode, event.metaState)?.takeIf { it != 0 } ?: event.unicodeChar,
     )
 
     /**
@@ -69,6 +86,7 @@ class LectorHidBus @Inject constructor() {
         eventTimeMs: Long,
         repeatCount: Int,
         casillaDeCantidad: Boolean = com.avoqado.pos.designsystem.components.CasillaDeCantidad.activa,
+        unicodeCharUs: Int = unicodeChar,
     ): Boolean {
         if (accion == KeyEvent.ACTION_UP) return consumidas.remove(keyCode)
         if (accion != KeyEvent.ACTION_DOWN) return false
@@ -94,8 +112,9 @@ class LectorHidBus @Inject constructor() {
         // 0, un carácter de control o un acento muerto (bit COMBINING_ACCENT, negativo)
         // no escriben nada: se tratan como tecla que no imprime.
         val caracter = if (unicodeChar in 0x20..0xFFFF) Char(unicodeChar) else null
+        val caracterUs = if (unicodeCharUs in 0x20..0xFFFF) Char(unicodeCharUs) else null
 
-        return when (val decision = lector.procesar(caracter, esTerminador, esFisico, deviceId, eventTimeMs)) {
+        return when (val decision = lector.procesar(caracter, esTerminador, esFisico, deviceId, eventTimeMs, caracterUs)) {
             // 🔴 Con la casilla de cantidad activa sólo vale el teclado de la pantalla (founder, 17-nov: en ANDROID no hay
             // teclado). Una tecla física ahí es la pistola —su 1.er carácter, que LectorHid deja pasar mientras no la
             // conoce, se volvía cantidad— o un Enter que soltaría la casilla y picaría otro botón (Codex r1 #1, r2 #6).
@@ -110,6 +129,7 @@ class LectorHidBus @Inject constructor() {
                 true
             }
             is TeclaHid.Codigo -> {
+                if (decision.textoUs != decision.texto) synchronized(lecturasUs) { lecturasUs[decision.texto] = decision.textoUs }
                 _codigos.tryEmit(decision.texto)
                 consumidas += keyCode
                 true
