@@ -53,6 +53,11 @@ class ClassCheckoutSeed @Inject constructor() {
 
     fun hasPending(): Boolean = synchronized(this) { frescas.isNotEmpty() || _enEspera.value.isNotEmpty() }
 
+    /** D13 (Codex r3 #4): queda otra recién inscrita en la fila (no cuenta las pendientes, que ya no entran solas). */
+    fun hayFrescas(): Boolean = synchronized(this) { frescas.isNotEmpty() }
+
+    fun estaEnEspera(seed: Seed): Boolean = seed in _enEspera.value
+
     /** No pudo entrar: pasa a «Clase pendiente» (sin repetir la misma reserva). */
     fun esperar(seed: Seed) = synchronized(this) {
         val repetida = seed.reservationId != null && _enEspera.value.any { it.reservationId == seed.reservationId }

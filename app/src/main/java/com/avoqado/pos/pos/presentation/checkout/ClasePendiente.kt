@@ -12,6 +12,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
 import com.avoqado.pos.core.util.ConnectivityMonitor
 import com.avoqado.pos.designsystem.components.AvoqadoDialog
 import com.avoqado.pos.designsystem.components.PrimaryButton
@@ -20,6 +21,8 @@ import com.avoqado.pos.pos.presentation.cart.CartViewModel
 import com.avoqado.pos.reservations.data.ReservationRepository
 import com.avoqado.pos.reservations.data.model.ReservationStatus
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import javax.inject.Inject
@@ -28,8 +31,9 @@ import javax.inject.Inject
 internal fun yaNoSeCobraAqui(status: ReservationStatus, persona: String?): String? {
     val de = persona?.takeIf { it.isNotBlank() }?.let { " de $it" }.orEmpty()
     return when (status) {
-        ReservationStatus.PENDING, ReservationStatus.CONFIRMED -> null
-        ReservationStatus.CHECKED_IN -> "Recepción ya registró la llegada$de y abrió su cuenta: cóbrala desde Órdenes."
+        // Codex r3 #1: «llegó» no prueba que ya se cobró (el QR del kiosco la marca sin abrir cuenta). Se cobra aquí; si recepción
+        // ya abrió su cuenta, el servidor rechaza una segunda y la cajera lo ve al cobrar.
+        ReservationStatus.PENDING, ReservationStatus.CONFIRMED, ReservationStatus.CHECKED_IN -> null
         ReservationStatus.CANCELLED -> "La reserva$de se canceló: ya no se cobra aquí."
         ReservationStatus.NO_SHOW -> "La reserva$de quedó como «No se presentó»: ya no se cobra aquí."
         ReservationStatus.COMPLETED -> "La clase$de ya quedó completada: ya no se cobra aquí."
@@ -51,7 +55,10 @@ class ClasePendienteViewModel @Inject constructor(
     suspend fun revisar(seed: ClassCheckoutSeed.Seed): Revision {
         val id = seed.reservationId ?: return Revision.SeCobra
         if (!connectivity.isFullyConnected) return Revision.SinRevisar
-        val reserva = withTimeoutOrNull(5_000) { reservations.fetchOne(id, seed.venueId).getOrNull() } ?: return Revision.SinRevisar
+        // Codex r3 #2: la llamada bloquea su hilo y no se deja cancelar; se espera a su resultado sólo 5 s y, si no llega, se
+        // sigue sin ella (la llamada termina sola en segundo plano).
+        val consulta = viewModelScope.async(Dispatchers.IO) { reservations.fetchOne(id, seed.venueId).getOrNull() }
+        val reserva = withTimeoutOrNull(5_000) { consulta.await() } ?: return Revision.SinRevisar
         return yaNoSeCobraAqui(reserva.status, seed.persona)?.let(Revision::YaNo) ?: Revision.SeCobra
     }
 }

@@ -634,6 +634,9 @@ fun CheckoutScreen(
     fun resolveUpsell(accept: Boolean, desdeElCliente: Boolean = false) {
         // Del FLUJO, no de `upsellMoment` capturado: el toque pudo llegar de la
         // pantalla del cliente, fuera de esta recomposición.
+        // D13 (Codex r3 #5): si el carrito ya es otra venta (restauraron B y el efecto que cierra la tira de A no ha corrido),
+        // el toque de A no agrega nada a B: la tira se cierra aquí mismo, sin registrarse.
+        upsellViewModel.soltarMomentoSiEsOtraVenta(cartViewModel.cartState.value.identidadDeVenta)
         val moment = upsellViewModel.moment.value ?: return
         if (!accept) {
             upsellViewModel.finish(emptyList(), 0)

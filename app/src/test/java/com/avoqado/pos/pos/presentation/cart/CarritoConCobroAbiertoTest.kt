@@ -542,4 +542,34 @@ class CarritoConCobroAbiertoTest {
         assertEquals(listOf(fantasma), vm.clasesPendientesDeEsteNegocio())
         assertEquals("Esta clase ya no está en el catálogo de esta sucursal.", vm.agregarClasePendiente(fantasma))
     }
+
+    @Test
+    fun `D13 una respuesta tardia no agrega la clase que la cajera ya quito`() {
+        // Codex r3 #3: tocó «Agregar», y mientras se consultaba a recepción tocó «Ya no la cobro aquí».
+        val semilla = ClassCheckoutSeed().apply { put(bea()) }
+        val vm = carrito(semilla)
+        vm.abrirCobro()
+        vm.consumePendingClassSeed()
+        vm.cerrarCobro()
+        vm.quitarClasePendiente(bea())
+
+        assertEquals("Esta clase ya no está pendiente.", vm.agregarClasePendiente(bea()))
+        assertTrue(vm.cartState.value.isEmpty)
+    }
+
+    @Test
+    fun `D13 tras un choque la siguiente inscripcion de la fila tambien queda pendiente`() {
+        // Codex r3 #4: el carrito ya trae otra reserva y llegaron dos inscripciones antes de volver a Mostrador.
+        val ana = ClassCheckoutSeed.Seed(productId = "pan", quantity = 1, reservationId = "res-ana", persona = "Ana", venueId = "venue-1")
+        val ori = ClassCheckoutSeed.Seed(productId = "cafe", quantity = 1, reservationId = "res-ori", persona = "Ori", venueId = "venue-1")
+        val semilla = ClassCheckoutSeed().apply { put(ori) }
+        val vm = carrito(semilla)
+        vm.consumePendingClassSeed()                 // la de Ori ya está en el carrito
+        semilla.put(bea()); semilla.put(ana)
+
+        vm.consumePendingClassSeed()
+
+        assertEquals(listOf(bea(), ana), vm.clasesPendientesDeEsteNegocio())
+        assertFalse(semilla.hayFrescas())
+    }
 }

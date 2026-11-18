@@ -1586,6 +1586,8 @@ class CartViewModel @Inject constructor(
                 // «Clase pendiente», donde la cajera ve que no está en el catálogo o la quita.
                 Log.w("🛒", "Class seed product ${seed.productId} not in catalog — goes to pending")
                 classCheckoutSeed.esperar(seed)
+                // D13 (Codex r3 #4): la siguiente de la fila también se procesa (antes se quedaba escondida).
+                if (classCheckoutSeed.hayFrescas()) consumePendingClassSeed()
                 return@launch
             }
             // Don't clobber a different reservation already linked to the cart:
@@ -1596,6 +1598,7 @@ class CartViewModel @Inject constructor(
                 // D13: antes se perdía (con su lugar ya apartado en el servidor); ahora queda en «Clase pendiente».
                 Log.w("🛒", "Cart already linked to reservation $existingResId — seed ${seed.reservationId} goes to pending")
                 classCheckoutSeed.esperar(seed)
+                if (classCheckoutSeed.hayFrescas()) consumePendingClassSeed()
                 return@launch
             }
             addProductWithModifiers(product, quantity = seed.quantity, modifiers = emptyList())
@@ -1604,7 +1607,7 @@ class CartViewModel @Inject constructor(
             }
             Log.d("🛒", "Seeded class ${product.name} x${seed.quantity} from walk-in flow")
             // Otra recién inscrita en la fila (dos inscripciones antes de volver): su reserva choca con ésta y pasa a pendientes.
-            if (classCheckoutSeed.hasPending()) consumePendingClassSeed()
+            if (classCheckoutSeed.hayFrescas()) consumePendingClassSeed()
         }
     }
 
@@ -1620,6 +1623,8 @@ class CartViewModel @Inject constructor(
      * caiga en la venta ni con el cliente de otra persona (Codex D13 r1 #1). @return por qué no se pudo, o `null` si entró.
      */
     fun agregarClasePendiente(seed: com.avoqado.pos.pos.data.ClassCheckoutSeed.Seed): String? {
+        // D13 (Codex r3 #3): la cajera la quitó («Ya no la cobro aquí») mientras se consultaba a recepción.
+        if (!classCheckoutSeed.estaEnEspera(seed)) return "Esta clase ya no está pendiente."
         if (cobroLoImpide()) return AVISO_COBRO_ABIERTO
         if (hayVentaAMedias()) return "Termina la venta a medio cobrar antes de agregar la clase."
         if (!_cartState.value.isEmpty || _selectedCustomer.value != null) {

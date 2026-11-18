@@ -11,11 +11,12 @@ class ClasePendienteTest {
     @Test fun `la reserva que sigue confirmada se cobra aqui`() {
         assertNull(yaNoSeCobraAqui(ReservationStatus.CONFIRMED, "Bea"))
         assertNull(yaNoSeCobraAqui(ReservationStatus.PENDING, "Bea"))
+        // Codex r3 #1: el QR del kiosco la marca «llegó» sin abrir cuenta: se sigue cobrando aquí.
+        assertNull(yaNoSeCobraAqui(ReservationStatus.CHECKED_IN, "Bea"))
     }
 
-    @Test fun `la que ya registro recepcion o se cancelo ya no se cobra aqui`() {
+    @Test fun `la que se cancelo, no se presento o se completo ya no se cobra aqui`() {
         assertEquals("La reserva de Bea se canceló: ya no se cobra aquí.", yaNoSeCobraAqui(ReservationStatus.CANCELLED, "Bea"))
-        assertNotNull(yaNoSeCobraAqui(ReservationStatus.CHECKED_IN, "Bea"))
         assertNotNull(yaNoSeCobraAqui(ReservationStatus.NO_SHOW, null))
         assertNotNull(yaNoSeCobraAqui(ReservationStatus.COMPLETED, ""))
     }
