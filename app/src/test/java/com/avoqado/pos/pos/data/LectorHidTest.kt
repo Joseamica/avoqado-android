@@ -239,4 +239,34 @@ class LectorHidTest {
 
         assertEquals(TeclaHid.Codigo("CAFE'001", textoUs = "CAFE'001"), fin)
     }
+
+    @Test
+    fun `D14 una pausa a media etiqueta deja sin lectura en ingles al final del codigo`() {
+        // Codex r9: «KIT » y una pausa de más de 120 ms; luego llega «CAFE'001» (en inglés «CAFE-001», el código de otra pieza).
+        val lector = LectorHid()
+        var t = 1_000L
+        "KIT ".forEach { c -> lector.procesar(caracter = c, esTerminador = false, esFisico = true, deviceId = 7, ahoraMs = t); t += 10 }
+        t += 300
+        "CAFE'001".forEach { c ->
+            lector.procesar(caracter = c, esTerminador = false, esFisico = true, deviceId = 7, ahoraMs = t, caracterUs = if (c == '\'') '-' else c)
+            t += 10
+        }
+        val fin = lector.procesar(caracter = null, esTerminador = true, esFisico = true, deviceId = 7, ahoraMs = t)
+
+        assertEquals(TeclaHid.Codigo("CAFE'001", textoUs = "CAFE'001"), fin)
+    }
+
+    @Test
+    fun `D14 un acento al inicio deja sin lectura en ingles`() {
+        val lector = LectorHid()
+        var t = 1_000L
+        lector.procesar(caracter = null, esTerminador = false, esFisico = true, deviceId = 7, ahoraMs = t); t += 10
+        "CAFE'001".forEach { c ->
+            lector.procesar(caracter = c, esTerminador = false, esFisico = true, deviceId = 7, ahoraMs = t, caracterUs = if (c == '\'') '-' else c)
+            t += 10
+        }
+        val fin = lector.procesar(caracter = null, esTerminador = true, esFisico = true, deviceId = 7, ahoraMs = t)
+
+        assertEquals(TeclaHid.Codigo("CAFE'001", textoUs = "CAFE'001"), fin)
+    }
 }

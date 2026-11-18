@@ -120,7 +120,8 @@ class LectorHid(
         // Una tecla que no escribe nada parte la ráfaga: arrastrarla entregaría un
         // código cortado a la mitad, que no existe en ningún catálogo.
         if (caracter == null) {
-            if (teclasEnRafaga > 0) { partidaMs = ahoraMs; partidaAparato = deviceId }
+            // Codex r9: también un acento AL INICIO («[CAFE-001»): lo que sigue pegado es una lectura sin su principio.
+            partidaMs = ahoraMs; partidaAparato = deviceId
             limpiar()
             return TeclaHid.DejarPasar
         }
@@ -129,11 +130,14 @@ class LectorHid(
             deviceId == aparatoDeLaRafaga &&
             (ahoraMs - ultimaTeclaMs) <= maxIntervaloMs
         if (!continuaLaRafaga) {
+            // Codex r9: la pistola hizo una pausa a media etiqueta («KIT » y luego «CAFE-001»): la ráfaga anterior del mismo
+            // aparato se abandonó hace menos de 1 s, así que ésta es el FINAL de un código. Su segunda lectura no se ofrece.
+            val abandonada = teclasEnRafaga >= 2 && aparatoDeLaRafaga == deviceId && ahoraMs - ultimaTeclaMs <= PAUSA_DE_UNA_LECTURA_MS
             buffer.setLength(0)
             bufferUs.setLength(0)
             teclasEnRafaga = 0
             aparatoDeLaRafaga = deviceId
-            sinLecturaUs = deviceId == partidaAparato && ahoraMs - partidaMs <= maxIntervaloMs
+            sinLecturaUs = abandonada || (deviceId == partidaAparato && ahoraMs - partidaMs <= maxIntervaloMs)
         }
         buffer.append(caracter)
         bufferUs.append(caracterUs ?: caracter)
@@ -156,6 +160,8 @@ class LectorHid(
     }
 
     private companion object {
+        /** D14: una ráfaga abandonada hace menos de esto, del mismo aparato, era el principio de la que sigue. */
+        const val PAUSA_DE_UNA_LECTURA_MS = 1_000L
         const val SIN_APARATO = Int.MIN_VALUE
     }
 }
