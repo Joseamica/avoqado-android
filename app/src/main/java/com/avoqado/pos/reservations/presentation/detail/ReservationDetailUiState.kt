@@ -13,6 +13,8 @@ data class ReservationDetailUiState(
     val capability: ReservationsCapability = ReservationsCapability(false, false, false, false),
     val pendingAction: ReservationAction? = null,
     val error: String? = null,
+    /** na15bdb8: el `error` es falta de red (estado normal, no falla): se pinta neutro, nunca en rojo. */
+    val errorSinRed: Boolean = false,
     // Aviso de "se guardó, se enviará al reconectar". Separado de `error` a
     // propósito: pintarlo en rojo haría que el mesero reintente y duplique.
     val queuedMessage: String? = null,

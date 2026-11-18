@@ -110,6 +110,7 @@ class CartViewModelDescuentoDelClienteTest {
     private fun carrito(
         repo: SavedCartsRepository = SavedCartsRepository(PrefsDeDosCapas().context),
         vales: AreaTicketRepository = areaTicketRepository,
+        ajustes: com.avoqado.pos.tpvsettings.data.TpvSettingsRepository? = null,
     ): CartViewModel = CartViewModel(
         productsRepository = productsRepository,
         discountsRepository = discountsRepository,
@@ -130,6 +131,7 @@ class CartViewModelDescuentoDelClienteTest {
         connectivityMonitor = monitor,
         payLaterQueue = cola,
         managerOverrideCoordinator = coordinador,
+        tpvSettingsRepository = ajustes,
     )
 
     private val playera = Product(id = "playera", name = "Playera", priceValue = 100.0)
@@ -242,6 +244,17 @@ class CartViewModelDescuentoDelClienteTest {
         val aviso = vm.avisoDescuentoDelCliente.value!!
         assertNull(aviso.accion)
         assertNull(aviso.boton)
+    }
+
+    @Test
+    fun `na5c51e4 el carrito sigue el PIN vigente de los ajustes, no el guardado`() {
+        permisos = listOf("orders:read")
+        pinPrendido = false // lo guardado dice apagado; el refresco suave ya lo prendió
+        val ajustes = mockk<com.avoqado.pos.tpvsettings.data.TpvSettingsRepository>(relaxed = true)
+        every { ajustes.managerPinOverrideEnabled } returns MutableStateFlow(true)
+        val vm = carrito(ajustes = ajustes).conPlayeraYCecilia()
+
+        assertEquals(AvisoDescuentoDelCliente.Accion.PEDIR_AUTORIZACION, vm.avisoDescuentoDelCliente.value!!.accion)
     }
 
     @Test
