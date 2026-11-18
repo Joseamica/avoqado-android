@@ -148,6 +148,8 @@ class ComandaPrinter @Inject constructor(
          * Un plan SALTADO no entra: reintentar no le inventa una impresora.
          */
         val failedPlans: List<TicketPlan> = emptyList(),
+        /** D28: los planes SALTADOS (sin impresora), los mismos de [skippedStations] pero por plan y no por nombre. */
+        val skippedPlans: List<TicketPlan> = emptyList(),
         /**
          * Cuántas copias le faltan a cada estación que falló. El reintento lo devuelve tal cual
          * a [printComandas] para no volver a imprimir las que YA salieron — ver el parámetro
@@ -215,6 +217,7 @@ class ComandaPrinter @Inject constructor(
         var lastError: String? = null
         val failedStations = mutableListOf<String>()
         val skippedStations = mutableListOf<String>()
+        val skippedPlans = mutableListOf<TicketPlan>()
         val failedPlans = mutableListOf<TicketPlan>()
         val copiasQueFaltan = mutableMapOf<String?, Int>()
         for (plan in plans) {
@@ -236,6 +239,7 @@ class ComandaPrinter @Inject constructor(
                             "KITCHEN printer configured — comanda skipped",
                     )
                     skippedStations += stationLabel
+                    skippedPlans += plan
                     continue
                 }
                 // Las copias se cuentan UNA A UNA: si la tercera truena, el reintento tiene que
@@ -279,6 +283,7 @@ class ComandaPrinter @Inject constructor(
             failedStations = failedStations,
             skippedStations = skippedStations,
             failedPlans = failedPlans,
+            skippedPlans = skippedPlans,
             copiasPendientes = copiasQueFaltan,
             hojas = hojas,
         )

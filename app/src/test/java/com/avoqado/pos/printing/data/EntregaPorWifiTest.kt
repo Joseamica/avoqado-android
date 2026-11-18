@@ -270,6 +270,19 @@ class EntregaPorWifiTest {
         assertEquals(false, entrega.papelYaSalio(salio.copy(orderNumber = "9999")))
     }
 
+    /** D28 (Codex código r2 #7): la memoria guarda a lo más [EntregaPorWifi.TOPE_DE_PAPELES]; con el tope lleno sale la más vieja. */
+    @Test
+    fun `P1 D28 la memoria de lo que salio tiene tope y suelta lo mas viejo`() = runTest {
+        coEvery { dao.delVenue("venue-1") } throws IllegalStateException("disco ocupado") // así cada una se anota en memoria
+        fun deLaOrden(n: Int) = trabajo.copy(orderNumber = "ORD-$n", planes = listOf(TicketPlan("st_barra", false, listOf(ConsolidatedLine("Café", 1, emptyList(), null, listOf("oi_$n"))))))
+
+        for (n in 0..EntregaPorWifi.TOPE_DE_PAPELES) entrega.quitarPapel("venue-1", "ORD-$n", deLaOrden(n).planes)
+
+        assertEquals("la más vieja ya salió de la memoria", false, entrega.papelYaSalio(deLaOrden(0)))
+        assertTrue(entrega.papelYaSalio(deLaOrden(1)))
+        assertTrue(entrega.papelYaSalio(deLaOrden(EntregaPorWifi.TOPE_DE_PAPELES)))
+    }
+
     /** D28: el papel que sale después («Volver a imprimir», la libreta, «Ya la canté») no toca una fila que ya no lleva papel. */
     @Test
     fun `cerrarPorPapel no toca una fila sin papel`() = runTest {

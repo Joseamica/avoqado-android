@@ -651,18 +651,18 @@ class ComandaDispatcher @Inject constructor(
      *
      * D28 (18-nov): la hoja de una estación con impresora propia que salió deja SIN papel su fila pendiente
      * ([EntregaPorWifi.quitarPapel]); la fila sigue para la pantalla. Antes, el reloj del replay la imprimía otra vez como
-     * RESPALDO después de la libreta. Si algo se SALTÓ (sin impresora), ninguna fila pierde su papel: no se sabe con certeza
-     * qué salió, y la fila con su papel es el rescate (duplicado, nunca pérdida).
+     * RESPALDO después de la libreta. «Salió» es exacto, por plan: lo enviado menos lo que tronó y menos lo que se SALTÓ (sin
+     * impresora, [EstadoDeComanda.NoSalio.saltados]). Un plan saltado conserva su fila con papel: es el rescate.
      */
     private suspend fun cerrarPapelQueSalio(trabajo: TrabajoPendiente, estado: EstadoDeComanda) {
         val vId = trabajo.venueId ?: return
         val respaldo = trabajo.config.stations.filter { it.respaldoLocal }.map { it.id }.toSet()
-        val tronaron = (estado as? EstadoDeComanda.NoSalio)?.trabajo?.planes.orEmpty()
-        val salieron = trabajo.planes.filter { it !in tronaron }
+        val noSalio = estado as? EstadoDeComanda.NoSalio
+        val tronaron = noSalio?.trabajo?.planes.orEmpty()
+        val saltados = noSalio?.saltados.orEmpty()
+        val salieron = trabajo.planes.filter { it !in tronaron && it !in saltados }
         val deRespaldo = salieron.filter { it.stationId in respaldo }
         if (deRespaldo.isNotEmpty()) entregaPorWifi?.cerrarPorPapel(vId, trabajo.orderNumber, deRespaldo)
-        val seSalto = estado is EstadoDeComanda.NoSalio && estado.estaciones.size > tronaron.map { it.stationId }.distinct().size
-        if (estado !is EstadoDeComanda.Salio && (estado !is EstadoDeComanda.NoSalio || seSalto)) return
         val propias = salieron.filter { it.stationId !in respaldo }
         if (propias.isNotEmpty()) entregaPorWifi?.quitarPapel(vId, trabajo.orderNumber, propias)
     }

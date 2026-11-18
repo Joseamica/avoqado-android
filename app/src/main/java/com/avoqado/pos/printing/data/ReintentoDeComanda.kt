@@ -57,6 +57,15 @@ sealed interface EstadoDeComanda {
          */
         var llaveEnLaLibreta: String? = null
             internal set
+
+        /**
+         * D28 (18-nov): los planes que se SALTARON (sin impresora) en este despacho o reintento, sumando sus intentos. Con esto
+         * se sabe exactamente qué salió: los planes enviados, menos los que tronaron ([trabajo]) y menos éstos. Por plan, no
+         * por nombre: dos estaciones pueden llamarse igual («SIN ESTACIÓN»). Va en el cuerpo, como [llaveEnLaLibreta]: no
+         * cuenta para `equals` ni viaja en `copy`; sólo lo lee quien recibe el resultado.
+         */
+        var saltados: List<TicketPlan> = emptyList()
+            internal set
     }
 }
 
@@ -197,6 +206,8 @@ class ReintentoDeComanda @Inject constructor(
         // estación que nunca imprimió. Es el bug original volviendo por otra puerta (P1 #1 de la
         // auditoría de Codex, 2026-09-07).
         val saltadas = LinkedHashSet<String>(saltadasPrevias).apply { addAll(ultimo.skippedStations) }
+        // D28: lo mismo, por plan (sólo los de ESTE despacho: los de un ciclo anterior ya no van en `plans`).
+        val saltados = ultimo.skippedPlans.toMutableList()
         var intentos = 1
         // Las HOJAS que salieron en cualquier intento (no planes: uno que muere en la copia 2 de 2 ya dejó papel): el veredicto sólo ve el último, que lleva únicamente lo que tronó.
         var hojas = ultimo.hojas
@@ -217,6 +228,7 @@ class ReintentoDeComanda @Inject constructor(
                 pendientes, config, orderNumber, orderType, serverName, comboNames, copiasQueFaltan, encabezado,
             )
             saltadas += ultimo.skippedStations
+            saltados += ultimo.skippedPlans
             hojas += ultimo.hojas
             intentos++
         }
@@ -251,6 +263,7 @@ class ReintentoDeComanda @Inject constructor(
                     )
                 },
             ).let { if (it.trabajo == null && negocioSinCocina()) it.copy(sinImpresoraDeCocina = true) else it }
+                .also { it.saltados = saltados.toList() } // después del `copy`: el cuerpo no viaja en él
         }
         alCambiarEstado(estado)
         if (!(estado is EstadoDeComanda.NoSalio && estado.sinImpresoraDeCocina)) {

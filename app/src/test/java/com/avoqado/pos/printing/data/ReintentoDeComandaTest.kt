@@ -449,6 +449,27 @@ class ReintentoDeComandaRondaDeArregloTest {
     }
 
     /**
+     * D28 (Codex código r2 #1 y #2): el veredicto dice QUÉ planes se saltaron, sumando los intentos y por plan (no por nombre),
+     * para que la caja sepa con certeza qué salió. Barra se salta en el intento 1; el intento 2 sólo lleva Cocina, que sale.
+     */
+    @Test
+    fun `P1 D28 NoSalio dice que planes se saltaron, sumando los intentos`() = runTest {
+        val intento1 = ComandaPrinter.Result(
+            attempted = 2, printed = 0, skippedNoPrinter = 1, lastError = "timeout",
+            failedStations = listOf("Cocina"), skippedStations = listOf("Barra"),
+            failedPlans = listOf(planCocina), skippedPlans = listOf(planBarra),
+        )
+        val intento2 = ComandaPrinter.Result(attempted = 1, printed = 1, hojas = 1, skippedNoPrinter = 0, lastError = null)
+        val printer = ComandaPrinterFalso(listOf(intento1, intento2))
+        val sut = ReintentoDeComanda(printer.comandaPrinter, esperar = { }, reporteDeComandas = mockk(relaxed = true))
+
+        val estado = sut.insistir(planes, config, "ORD-1", "En tienda", null, emptyMap()) as EstadoDeComanda.NoSalio
+
+        assertEquals(listOf(planBarra), estado.saltados)
+        assertEquals("no cuenta para equals: el aviso sigue siendo el mismo", estado, estado.copy())
+    }
+
+    /**
      * P1 #2 de Codex. El aviso tiene que llevar EXACTAMENTE lo que faltó — nunca el lote
      * entero. Si Cocina imprimió y Barra no, reenviar todo le manda a Cocina un ticket
      * duplicado, y en una cocina eso es un platillo de más.

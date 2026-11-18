@@ -1409,6 +1409,8 @@ class ComandaDispatcherTest {
         var impresoraPrendida = false
         /** Estaciones cuya impresora «no existe» en este intento (la integrada desconectada): sus planes se SALTAN. */
         var sinImpresora: Set<String> = emptySet()
+        /** Estaciones cuya impresora TRUENA aunque la impresora en general esté prendida. */
+        var tronando: Set<String> = emptySet()
         var pantallaContesta = false
         val hojas = mutableListOf<Pair<String?, Boolean>>()
         private val wifi = EntregaPorWifi(
@@ -1435,18 +1437,27 @@ class ComandaDispatcherTest {
             coEvery { comandaPrinter.printComandas(any(), any(), any(), any(), any()) } answers {
                 val planes = firstArg<List<TicketPlan>>()
                 val cfg = secondArg<PrintConfig>()
-                fun nombre(p: TicketPlan) = cfg.stations.first { it.id == p.stationId }.name
+                fun estacion(p: TicketPlan) = cfg.stations.firstOrNull { it.id == p.stationId }
+                // Como `ComandaPrinter`: una estación que ya no existe se llama «SIN ESTACIÓN».
+                fun nombre(p: TicketPlan) = estacion(p)?.name ?: "SIN ESTACIÓN"
                 if (!impresoraPrendida) {
                     ComandaPrinter.Result(
                         attempted = planes.size, printed = 0, skippedNoPrinter = 0, lastError = "sin papel",
                         failedStations = planes.map(::nombre), failedPlans = planes,
                     )
                 } else {
-                    val (saltadas, salen) = planes.partition { it.stationId in sinImpresora }
-                    salen.forEach { p -> hojas += p.stationId to (cfg.stations.first { it.id == p.stationId }.respaldoLocal) }
+                    // Sin estación (la borraron) o sin impresora, y sin cocina local: se SALTA, como `ComandaPrinter`. La hoja de
+                    // RESPALDO no se salta: cae a la impresora de la caja (`ComandaPrinter`, «el ÚLTIMO papel que hay»).
+                    val (saltadas, resto) = planes.partition { p ->
+                        estacion(p) == null || (p.stationId in sinImpresora && estacion(p)?.respaldoLocal != true)
+                    }
+                    val (truenan, salen) = resto.partition { it.stationId in tronando }
+                    salen.forEach { p -> hojas += p.stationId to estacion(p)!!.respaldoLocal }
                     ComandaPrinter.Result(
-                        attempted = planes.size, printed = salen.size, skippedNoPrinter = saltadas.size, lastError = null,
-                        skippedStations = saltadas.map(::nombre), hojas = salen.size,
+                        attempted = planes.size, printed = salen.size, skippedNoPrinter = saltadas.size,
+                        lastError = if (truenan.isEmpty()) null else "sin papel",
+                        failedStations = truenan.map(::nombre), skippedStations = saltadas.map(::nombre),
+                        failedPlans = truenan, skippedPlans = saltadas, hojas = salen.size,
                     )
                 }
             }
@@ -1652,27 +1663,61 @@ class ComandaDispatcherTest {
         assertTrue("la tarjeta llegó a la pantalla", cocina.tabla.filas.isEmpty())
     }
 
-    /** Si el reintento de la libreta SALTA una estación (sin impresora), no se sabe con certeza qué salió: ninguna fila pierde su papel. */
+    private val pastelPorProducto = RoutableItem(orderItemId = "oi_3", productId = "prod_postre", categoryId = null, productName = "Pastel",
+        quantity = 1, serviceCourse = cafePorProducto.serviceCourse)
+
+    /**
+     * Codex código r2 #1: la libreta reintenta, Barra sale y Postres se SALTA (sin impresora). Barra pierde su papel, aunque
+     * corran más repartos con la pantalla apagada; Postres lo conserva y la fila lo rescata cuando vuelve su impresora.
+     */
     @Test
-    fun `P1 D28 una impresion parcial con una estacion saltada no le quita el papel a ninguna fila`() = runTest {
+    fun `P1 D28 la libreta saca Barra y salta Postres - UNA hoja de Barra aunque corran mas repartos, y Postres se rescata`() = runTest {
         every { transporteLan.pantallasDe("st_postres") } returns listOf(pantallaBarra)
         val config = barraConImpresoraYPantalla.copy(
             stations = barraConImpresoraYPantalla.stations +
                 StationInfo(id = "st_postres", name = "Postres", printerId = "pr_3", active = true, hasKitchenDisplay = true),
             productOverrides = barraConImpresoraYPantalla.productOverrides + ProductOverride(productId = "prod_postre", printStationId = "st_postres"),
         )
-        val pastel = RoutableItem(orderItemId = "oi_3", productId = "prod_postre", categoryId = null, productName = "Pastel", quantity = 1,
-            serviceCourse = cafePorProducto.serviceCourse)
         val cocina = CocinaDelEnsayo(config)
-        cocina.despachar(listOf(cafePorProducto, pastel))
+        cocina.despachar(listOf(cafePorProducto, pastelPorProducto))
         assertEquals(listOf(true, true), cocina.filasConPapel())
 
         cocina.impresoraPrendida = true
         cocina.sinImpresora = setOf("st_postres")
         cocina.laLibretaImprime() // Barra sale, Postres se salta
+        assertEquals("Barra sin papel, Postres con el suyo", listOf(false, true), cocina.filasConPapel())
+        repeat(3) { cocina.tic() }
 
-        assertEquals(listOf("st_barra" to false), cocina.hojas)
-        assertEquals("Barra y Postres conservan su papel", listOf(true, true), cocina.filasConPapel())
+        assertEquals(
+            "UNA hoja de Barra (la de la libreta) y Postres rescatado UNA vez en la de la caja",
+            listOf("st_barra" to false, "st_postres" to true), cocina.hojas,
+        )
+    }
+
+    /**
+     * Codex código r2 #2: queda pendiente una comanda de Barra y de otra estación que se llama «SIN ESTACIÓN». El gerente borra
+     * Barra: al reintentar, la caja la salta y también la llama «SIN ESTACIÓN»; la otra truena. No salió NADA: ninguna fila
+     * pierde su papel (contar nombres daba a Barra por impresa).
+     */
+    @Test
+    fun `P1 D28 si se salta una estacion borrada y truena otra que se llama igual, ninguna fila pierde su papel`() = runTest {
+        val sinEstacion = StationInfo(id = "st_otra", name = "SIN ESTACIÓN", printerId = "pr_3", active = true)
+        val config = barraConImpresoraYPantalla.copy(
+            stations = barraConImpresoraYPantalla.stations + sinEstacion,
+            productOverrides = barraConImpresoraYPantalla.productOverrides + ProductOverride(productId = "prod_postre", printStationId = "st_otra"),
+        )
+        val cocina = CocinaDelEnsayo(config)
+        cocina.despachar(listOf(cafePorProducto, pastelPorProducto))
+        assertEquals("sólo Barra tiene pantalla, y su fila lleva papel", listOf(true), cocina.filasConPapel())
+
+        every { printConfigRepository.getCurrentConfig() } returns config.copy(stations = listOf(sinEstacion)) // borraron Barra
+        cocina.impresoraPrendida = true
+        cocina.tronando = setOf("st_otra")
+        val estado = cocina.laLibretaImprime() as EstadoDeComanda.NoSalio
+
+        assertEquals(listOf("SIN ESTACIÓN"), estado.estaciones)
+        assertEquals("no salió ninguna hoja", emptyList<Pair<String?, Boolean>>(), cocina.hojas)
+        assertEquals("la fila de Barra conserva su papel", listOf(true), cocina.filasConPapel())
     }
 
     // MARK: - «No lleva comanda» (10-nov-2026): las ventas del POS no mandan ni avisan lo de una estación sin comanda
