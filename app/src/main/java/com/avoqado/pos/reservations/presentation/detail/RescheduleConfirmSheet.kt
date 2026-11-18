@@ -52,26 +52,13 @@ import com.avoqado.pos.designsystem.components.PrimaryButton
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.reservations.data.model.Reservation
 import com.avoqado.pos.reservations.data.model.RescheduleNotificationChannel
+import com.avoqado.pos.reservations.domain.CanalDeAviso
 import java.time.ZoneId
 import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
 import java.util.Locale
 
 private val SUCCESS_GREEN = Color(0xFF1F9D55)
-
-private data class ChannelOption(
-    val value: RescheduleNotificationChannel,
-    val label: String,
-    val enabled: Boolean,
-    val helper: String? = null,
-)
-
-private val CHANNEL_OPTIONS = listOf(
-    ChannelOption(RescheduleNotificationChannel.push, "Notificación push", enabled = true),
-    ChannelOption(RescheduleNotificationChannel.whatsapp, "WhatsApp", enabled = true),
-    ChannelOption(RescheduleNotificationChannel.email, "Correo electrónico", enabled = true),
-    ChannelOption(RescheduleNotificationChannel.none, "Sin notificación", enabled = true),
-)
 
 @Composable
 fun RescheduleConfirmSheet(
@@ -83,7 +70,8 @@ fun RescheduleConfirmSheet(
     onConfirm: (RescheduleNotificationChannel?, String?) -> Unit,
     onDismiss: () -> Unit,
 ) {
-    var selected by remember { mutableStateOf(RescheduleNotificationChannel.push) }
+    // nafc2b18: «push» ya avisa por WhatsApp o correo; sin teléfono ni correo viene marcado «Sin notificación».
+    var selected by remember { mutableStateOf(CanalDeAviso.porOmision(reservation)) }
     var message by remember { mutableStateOf("") }
     val customerName = reservation.displayName
     val phone = reservation.displayPhone
@@ -267,7 +255,7 @@ private fun ChannelSelector(
     onSelect: (RescheduleNotificationChannel) -> Unit,
 ) {
     var expanded by remember { mutableStateOf(false) }
-    val current = CHANNEL_OPTIONS.first { it.value == selected }
+    val current = CanalDeAviso.opcion(selected)
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Text(
             "Tipo de notificación",
@@ -286,7 +274,7 @@ private fun ChannelSelector(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
-                    current.label,
+                    current.texto,
                     style = MaterialTheme.typography.bodyLarge,
                     modifier = Modifier.weight(1f),
                 )
@@ -297,12 +285,12 @@ private fun ChannelSelector(
                 onDismissRequest = { expanded = false },
                 modifier = Modifier.width(360.dp),
             ) {
-                CHANNEL_OPTIONS.forEach { opt ->
+                CanalDeAviso.OPCIONES.forEach { opt ->
                     DropdownMenuItem(
                         text = {
                             Column {
-                                Text(opt.label, style = MaterialTheme.typography.bodyLarge)
-                                opt.helper?.let {
+                                Text(opt.texto, style = MaterialTheme.typography.bodyLarge)
+                                opt.ayuda?.let {
                                     Text(
                                         it,
                                         style = MaterialTheme.typography.labelSmall,
@@ -311,9 +299,8 @@ private fun ChannelSelector(
                                 }
                             }
                         },
-                        enabled = opt.enabled,
                         onClick = {
-                            onSelect(opt.value)
+                            onSelect(opt.valor)
                             expanded = false
                         },
                     )

@@ -315,6 +315,57 @@ class TpvSettingsRepositoryFiltroTest {
         assertEquals("se apagó en el DASHBOARD", false, r.managerPinOverrideEnabled.value)
     }
 
+    @Test
+    fun `P2 el PIN llega aunque la respuesta no traiga la terminal`() = runBlocking {
+        val sinTerminal = """{ "success": true, "data": { "managerPinOverrideEnabled": true } }"""
+        val r = repo(escalonado(ok(conPin(false)) to null, ok(sinTerminal) to null).client)
+        r.refreshSettingsForVenue(VENUE_ID)
+        val nav = r.terminalNavigation.value
+
+        r.refrescarFiltroDelAparato(VENUE_ID)
+
+        assertEquals(true, r.managerPinOverrideEnabled.value)
+        assertEquals("sin terminal el filtro no se toca", nav, r.terminalNavigation.value)
+    }
+
+    @Test
+    fun `P1 un servidor que no manda el campo o con la fila del negocio fallida no apaga el PIN`() = runBlocking {
+        val sinCampo = suave("[\"b\"]", "null") // no trae managerPinOverrideEnabled: el DTO lo rellenaría con false
+        val r = repo(escalonado(
+            ok(conPin(true)) to null,
+            ok(sinCampo) to null,
+            ok(conPin(false, panel = "failed")) to null,
+            ok("""{ "success": false, "data": { "managerPinOverrideEnabled": false } }""") to null,
+        ).client)
+        r.refreshSettingsForVenue(VENUE_ID)
+        assertEquals(true, r.managerPinOverrideEnabled.value)
+
+        r.refrescarFiltroDelAparato(VENUE_ID)
+        assertEquals("campo ausente", true, r.managerPinOverrideEnabled.value)
+        assertEquals("el filtro sí se aplicó", listOf("b"), r.terminalNavigation.value.visibleCategoryIds)
+        r.refrescarFiltroDelAparato(VENUE_ID)
+        assertEquals("fila fallida", true, r.managerPinOverrideEnabled.value)
+        assertEquals(true, r.exchangesEnabled.value)
+        r.refrescarFiltroDelAparato(VENUE_ID)
+        assertEquals("success:false", true, r.managerPinOverrideEnabled.value)
+    }
+
+    @Test
+    fun `P2 un PIN que llega tras un cambio de negocio se descarta`() = runBlocking {
+        val soltar = CountDownLatch(1)
+        val http = escalonado(ok(conPin(false)) to null, ok(conPin(true)) to soltar)
+        val r = repo(http.client)
+        r.refreshSettingsForVenue(VENUE_ID)
+
+        val s = async(Dispatchers.Default) { r.refrescarFiltroDelAparato(VENUE_ID) }
+        assertTrue(http.enVuelo[1].await(10, TimeUnit.SECONDS))
+        sesion = "venue-b"
+        soltar.countDown()
+        s.await()
+
+        assertEquals(false, r.managerPinOverrideEnabled.value)
+    }
+
     private companion object {
         const val VENUE_ID = "venue-a"
     }

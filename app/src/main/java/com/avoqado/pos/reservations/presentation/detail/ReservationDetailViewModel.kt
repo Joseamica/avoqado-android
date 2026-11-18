@@ -5,6 +5,7 @@ import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.avoqado.pos.core.data.local.SecureStorage
+import com.avoqado.pos.core.data.network.ServerErrorText
 import com.avoqado.pos.core.util.ConnectivityMonitor
 import com.avoqado.pos.pos.data.ProductsRepository
 import com.avoqado.pos.printing.data.ComandaPrinter
@@ -76,12 +77,22 @@ class ReservationDetailViewModel @Inject constructor(
     }
 
     fun reload() {
-        _state.update { it.copy(isLoading = true, error = null) }
+        _state.update { it.copy(isLoading = true, error = null, errorSinRed = false) }
         viewModelScope.launch {
             val r = repository.fetchOne(reservationId)
             _state.update {
-                if (r.isSuccess) it.copy(isLoading = false, reservation = r.getOrNull())
-                else it.copy(isLoading = false, error = r.exceptionOrNull()?.message ?: "Error cargando reserva")
+                if (r.isSuccess) {
+                    it.copy(isLoading = false, reservation = r.getOrNull())
+                } else {
+                    // na15bdb8: nunca el texto crudo del sistema («Failed to connect to /192.168…», en inglés).
+                    val e = r.exceptionOrNull()
+                    val sinRed = ServerErrorText.isOffline(e)
+                    it.copy(
+                        isLoading = false,
+                        errorSinRed = sinRed,
+                        error = if (sinRed) TEXTO_SIN_RED_AL_CARGAR else ServerErrorText.humanize(e, "No se pudo cargar la cita."),
+                    )
+                }
             }
         }
     }
@@ -102,7 +113,7 @@ class ReservationDetailViewModel @Inject constructor(
         // on the same reservation (e.g. confirm + no-show racing).
         if (_state.value.pendingAction != null) return
         val before = _state.value.reservation
-        _state.update { it.copy(pendingAction = action, error = null, queuedMessage = null, justCompletedAction = null) }
+        _state.update { it.copy(pendingAction = action, error = null, errorSinRed = false, queuedMessage = null, justCompletedAction = null) }
         viewModelScope.launch {
             val r = repository.runAction(reservationId, action, payload)
             val apiError = r.exceptionOrNull() as? ReservationApiException
@@ -132,10 +143,18 @@ class ReservationDetailViewModel @Inject constructor(
                         pendingAction = null,
                         queuedMessage = queued.message,
                     )
+                    // La red se cortó A MEDIA petición (el aparato aún creía tener red): pudo llegar o no. No se encola a
+                    // ciegas ni se dice «error»: se pide revisar antes de repetir (na15bdb8, Codex r1 #4).
+                    ServerErrorText.isOffline(r.exceptionOrNull()) -> current.copy(
+                        reservation = before,
+                        pendingAction = null,
+                        errorSinRed = true,
+                        error = TEXTO_SIN_CONFIRMAR,
+                    )
                     else -> current.copy(
                         reservation = before,
                         pendingAction = null,
-                        error = r.exceptionOrNull()?.message ?: "Error",
+                        error = ServerErrorText.humanize(r.exceptionOrNull(), "No se pudo completar la acción. Inténtalo de nuevo."),
                     )
                 }
             }
@@ -190,7 +209,7 @@ class ReservationDetailViewModel @Inject constructor(
         _overCapacityConfirmation.value = null
     }
 
-    fun consumeError() = _state.update { it.copy(error = null) }
+    fun consumeError() = _state.update { it.copy(error = null, errorSinRed = false) }
     fun consumeQueuedMessage() = _state.update { it.copy(queuedMessage = null) }
     fun consumeJustCompleted() = _state.update { it.copy(justCompletedAction = null) }
 
@@ -253,5 +272,11 @@ class ReservationDetailViewModel @Inject constructor(
 
     companion object {
         private const val TAG = "ReservationDetailVM"
+
+        /** Sin red al abrir: la cita no se puede leer. Reagendar pide verla con internet (no se escribe sobre una copia vieja). */
+        const val TEXTO_SIN_RED_AL_CARGAR = "Sin conexión: no se pudo abrir la cita. Ábrela de nuevo cuando vuelva el internet."
+
+        /** La red se cortó a media petición: el cambio pudo llegar o no. */
+        const val TEXTO_SIN_CONFIRMAR = "No pudimos confirmar el cambio. Revisa la cita antes de volver a intentarlo."
     }
 }

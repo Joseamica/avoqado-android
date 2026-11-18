@@ -753,15 +753,24 @@ class TpvSettingsRepository internal constructor(
                 client.newCall(request).execute().use { if (it.isSuccessful) it.body?.string() else null }
             } ?: return
             val result = json.decodeFromString<VenueSettingsResponse>(body)
-            val terminal = result.data?.deviceTerminal?.takeIf { result.success } ?: return
+            val data = result.data?.takeIf { result.success } ?: return
+            val terminal = data.deviceTerminal
+            // na5c51e4: el PIN de gerente (y el «Cambio», de la misma fila del negocio) también llegan aquí, aunque no venga la
+            // terminal. Sólo lo que el servidor MANDÓ de verdad: un servidor viejo que no trae el campo no lo apaga con el
+            // `false` de relleno, y si la lectura de esa fila falló (`promotionsPanel: failed`) se conserva lo que había.
+            val fila = venueRowSiVino(body, data)
             val aplicado = synchronized(ticketLock) {
                 if (completoGen != generacion || completosEnCurso > 0 || secureStorage.venueId != venueId || loadedVenueId != venueId) {
                     null
                 } else {
-                    _terminalNavigation.value.copy(
-                        visibleCategoryIds = terminal.visibleCategoryIds,
-                        visibleMenuIds = terminal.visibleMenuIds,
-                    ).also { _terminalNavigation.value = it; _generacionDelFiltro.update { g -> g + 1 } }
+                    fila.pin?.let { _managerPinOverrideEnabled.value = it; secureStorage.managerPinOverrideEnabled = it }
+                    fila.cambios?.let { _exchangesEnabled.value = it; secureStorage.exchangesEnabled = it }
+                    terminal?.let {
+                        _terminalNavigation.value.copy(
+                            visibleCategoryIds = it.visibleCategoryIds,
+                            visibleMenuIds = it.visibleMenuIds,
+                        ).also { nav -> _terminalNavigation.value = nav; _generacionDelFiltro.update { g -> g + 1 } }
+                    }
                 }
             } ?: return
             // ponytail: el disco no cabe en el candado; si un completo arranca justo aquí, su propia escritura llega después.
@@ -1071,6 +1080,23 @@ internal data class ComponentsStatusDto(
 
 @Serializable
 internal data class SettingsFingerprintsDto(val settings: String? = null)
+
+/** Lo de la fila del negocio que el refresco suave puede aplicar; `null` = no vino o no es de fiar (no se toca). */
+internal data class FilaDelNegocioSuave(val pin: Boolean?, val cambios: Boolean?)
+
+/**
+ * na5c51e4: qué trae DE VERDAD la respuesta. El DTO pone `false` donde falta un campo; aquí se mira el cuerpo crudo para no
+ * apagar el PIN con el relleno de un servidor viejo. Con la fila del negocio fallida (`promotionsPanel: failed`), nada.
+ */
+internal fun venueRowSiVino(body: String, data: VenueSettingsData): FilaDelNegocioSuave {
+    if (data.componentsStatus?.promotionsPanel == ComponentsStatusDto.FAILED) return FilaDelNegocioSuave(null, null)
+    val crudo = runCatching {
+        (Json.parseToJsonElement(body) as? kotlinx.serialization.json.JsonObject)?.get("data") as? kotlinx.serialization.json.JsonObject
+    }.getOrNull() ?: return FilaDelNegocioSuave(null, null)
+    fun booleano(llave: String): Boolean? =
+        (crudo[llave] as? kotlinx.serialization.json.JsonPrimitive)?.takeIf { !it.isString }?.content?.toBooleanStrictOrNull()
+    return FilaDelNegocioSuave(pin = booleano("managerPinOverrideEnabled"), cambios = booleano("exchangesEnabled"))
+}
 
 @Serializable
 internal data class DeviceTerminalSettingsDto(

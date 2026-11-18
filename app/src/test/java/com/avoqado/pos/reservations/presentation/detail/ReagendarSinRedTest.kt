@@ -67,5 +67,71 @@ class ReagendarSinRedTest {
         val error = v.state.value.error.orEmpty()
         assertFalse("texto crudo en pantalla: $error", error.contains("Failed to connect"))
         assertEquals(true, error.startsWith("Sin conexión"))
+        assertEquals("sin red no es una falla: va neutro", true, v.state.value.errorSinRed)
+    }
+
+    private fun cita() = com.avoqado.pos.reservations.data.model.Reservation(
+        id = "r1", venueId = "v", confirmationCode = "X", cancelSecret = "s",
+        status = com.avoqado.pos.reservations.data.model.ReservationStatus.CONFIRMED,
+        channel = com.avoqado.pos.reservations.data.model.ReservationChannel.DASHBOARD,
+        startsAt = "2026-11-20T16:00:00.000Z", endsAt = "2026-11-20T17:00:00.000Z",
+        duration = 60, createdAt = "...", updatedAt = "...",
+    )
+
+    private val reagendar = ReservationRepository.ActionPayload.Reschedule(
+        startsAt = "2026-11-21T16:00:00Z",
+        endsAt = "2026-11-21T17:00:00Z",
+    )
+
+    @Test
+    fun `la red se corta a media peticion - se pide revisar la cita y no se dice error crudo`() = runTest(dispatcher) {
+        val repo: ReservationRepository = mockk(relaxed = true)
+        every { repo.changes } returns MutableSharedFlow()
+        coEvery { repo.fetchOne("r1", any()) } returns Result.success(cita())
+        coEvery { repo.runAction("r1", com.avoqado.pos.reservations.domain.ReservationAction.RESCHEDULE, reagendar) } returns
+            Result.failure(java.net.SocketException("Connection reset"))
+
+        val v = vm(repo)
+        advanceUntilIdle()
+        v.runAction(com.avoqado.pos.reservations.domain.ReservationAction.RESCHEDULE, reagendar)
+        advanceUntilIdle()
+
+        assertEquals(ReservationDetailViewModel.TEXTO_SIN_CONFIRMAR, v.state.value.error)
+        assertEquals(true, v.state.value.errorSinRed)
+        assertEquals(null, v.state.value.queuedMessage)
+    }
+
+    @Test
+    fun `sin red el reagendar queda guardado y el aviso lo dice en espanol`() = runTest(dispatcher) {
+        val repo: ReservationRepository = mockk(relaxed = true)
+        every { repo.changes } returns MutableSharedFlow()
+        coEvery { repo.fetchOne("r1", any()) } returns Result.success(cita())
+        coEvery { repo.runAction("r1", com.avoqado.pos.reservations.domain.ReservationAction.RESCHEDULE, reagendar) } returns
+            Result.failure(ReservationRepository.OfflineEnqueuedException(com.avoqado.pos.reservations.domain.ReservationAction.RESCHEDULE))
+
+        val v = vm(repo)
+        advanceUntilIdle()
+        v.runAction(com.avoqado.pos.reservations.domain.ReservationAction.RESCHEDULE, reagendar)
+        advanceUntilIdle()
+
+        assertEquals("Sin conexión: se reagendará al volver el internet.", v.state.value.queuedMessage)
+        assertEquals(null, v.state.value.error)
+    }
+
+    @Test
+    fun `un rechazo del servidor sigue en rojo con su texto`() = runTest(dispatcher) {
+        val repo: ReservationRepository = mockk(relaxed = true)
+        every { repo.changes } returns MutableSharedFlow()
+        coEvery { repo.fetchOne("r1", any()) } returns Result.success(cita())
+        coEvery { repo.runAction("r1", com.avoqado.pos.reservations.domain.ReservationAction.RESCHEDULE, reagendar) } returns
+            Result.failure(com.avoqado.pos.reservations.data.ReservationApiException(409, "Ese horario ya está ocupado"))
+
+        val v = vm(repo)
+        advanceUntilIdle()
+        v.runAction(com.avoqado.pos.reservations.domain.ReservationAction.RESCHEDULE, reagendar)
+        advanceUntilIdle()
+
+        assertEquals("Ese horario ya está ocupado", v.state.value.error)
+        assertEquals(false, v.state.value.errorSinRed)
     }
 }

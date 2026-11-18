@@ -69,6 +69,13 @@ fun RescheduleSheet(
     LaunchedEffect(state.justCompletedAction) {
         if (state.justCompletedAction == ReservationAction.RESCHEDULE) onDismiss()
     }
+    // na15bdb8: sin red el cambio SÍ se guardó en el aparato (la cola lo manda al volver el internet). Se cierra la
+    // confirmación y el aviso se queda en esta hoja hasta «Entendido»: antes nadie lo pintaba en esta ruta (el aviso vivía
+    // en la pantalla de detalle, que es otro ViewModel) y la persona volvía a tocar «Reprogramar cita».
+    val guardadoSinRed = state.queuedMessage
+    LaunchedEffect(guardadoSinRed) {
+        if (guardadoSinRed != null) pendingConfirm = null
+    }
 
     if (showDatePicker) {
         val datePickerState = rememberDatePickerState(
@@ -168,60 +175,75 @@ fun RescheduleSheet(
         ) {
             Text("Reagendar reserva", style = MaterialTheme.typography.headlineSmall)
             // Failed reschedule was invisible (state.error set, never rendered).
+            // Sin red no es una falla: se dice neutro, nunca en rojo (na15bdb8).
             state.error?.let { err ->
                 Text(
                     err,
-                    color = MaterialTheme.colorScheme.error,
+                    color = if (state.errorSinRed) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error,
                     style = MaterialTheme.typography.bodySmall,
                     modifier = Modifier.padding(top = 8.dp),
                 )
             }
-            Spacer(Modifier.padding(8.dp))
-            OutlinedButton(
-                onClick = { showDatePicker = true },
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                Text("Fecha: ${date.format(DateTimeFormatter.ofPattern("EEE, dd MMM yyyy"))}")
-            }
-            Spacer(Modifier.padding(4.dp))
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                OutlinedButton(
-                    onClick = { pickingTime = TimeSlot.START },
-                    modifier = Modifier.weight(1f),
+            if (guardadoSinRed != null) {
+                Spacer(Modifier.padding(8.dp))
+                Text(guardadoSinRed, style = MaterialTheme.typography.bodyLarge)
+                Spacer(Modifier.padding(12.dp))
+                Button(
+                    onClick = { viewModel.consumeQueuedMessage(); onDismiss() },
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(50),
                 ) {
-                    Text("Inicio: ${startTime.format(DateTimeFormatter.ofPattern("HH:mm"))}")
+                    Text("Entendido")
                 }
+                Spacer(Modifier.padding(8.dp))
+            } else {
+                Spacer(Modifier.padding(8.dp))
                 OutlinedButton(
-                    onClick = { pickingTime = TimeSlot.END },
-                    modifier = Modifier.weight(1f),
+                    onClick = { showDatePicker = true },
+                    modifier = Modifier.fillMaxWidth(),
                 ) {
-                    Text("Fin: ${endTime.format(DateTimeFormatter.ofPattern("HH:mm"))}")
+                    Text("Fecha: ${date.format(DateTimeFormatter.ofPattern("EEE, dd MMM yyyy"))}")
                 }
-            }
-            if (!isValid) {
                 Spacer(Modifier.padding(4.dp))
-                Text(
-                    "La hora de fin debe ser posterior a la hora de inicio",
-                    color = MaterialTheme.colorScheme.error,
-                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    OutlinedButton(
+                        onClick = { pickingTime = TimeSlot.START },
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Text("Inicio: ${startTime.format(DateTimeFormatter.ofPattern("HH:mm"))}")
+                    }
+                    OutlinedButton(
+                        onClick = { pickingTime = TimeSlot.END },
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Text("Fin: ${endTime.format(DateTimeFormatter.ofPattern("HH:mm"))}")
+                    }
+                }
+                if (!isValid) {
+                    Spacer(Modifier.padding(4.dp))
+                    Text(
+                        "La hora de fin debe ser posterior a la hora de inicio",
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+                Spacer(Modifier.padding(12.dp))
+                Button(
+                    onClick = {
+                        val starts = VenueTimeZone.fromLocalDateTime(date.atTime(startTime), venueTimezone.id)
+                        val ends = VenueTimeZone.fromLocalDateTime(date.atTime(endTime), venueTimezone.id)
+                        pendingConfirm = starts to ends
+                    },
+                    enabled = isValid && state.pendingAction != ReservationAction.RESCHEDULE && reservation != null,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(50),
+                ) {
+                    Text("Continuar")
+                }
+                Spacer(Modifier.padding(8.dp))
             }
-            Spacer(Modifier.padding(12.dp))
-            Button(
-                onClick = {
-                    val starts = VenueTimeZone.fromLocalDateTime(date.atTime(startTime), venueTimezone.id)
-                    val ends = VenueTimeZone.fromLocalDateTime(date.atTime(endTime), venueTimezone.id)
-                    pendingConfirm = starts to ends
-                },
-                enabled = isValid && state.pendingAction != ReservationAction.RESCHEDULE && reservation != null,
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(50),
-            ) {
-                Text("Continuar")
-            }
-            Spacer(Modifier.padding(8.dp))
         }
     }
 }
