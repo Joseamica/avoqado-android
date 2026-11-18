@@ -1460,6 +1460,89 @@ class PaymentFlowViewModelTest {
         assertFalse(viewModel.valesNoCoincidian.value)
     }
 
+    // 🔴 hz:nube0000:nabcea1a (18-nov): un vale con descuento por producto. El SERVIDOR arma la venta con el neto (bruto − descuento);
+    // la caja mandaba a la terminal el bruto ($30 por una venta de $27). El renglón sale del mismo mapeo que usa el carrito.
+    @Test
+    fun `P1 un vale con descuento manda a la terminal el neto que cobra el servidor`() = runTest {
+        val linea = AreaTicketLine(
+            id = "l-cafe", clientLineId = "c-cafe", productNameSnapshot = "Café", quantity = "1",
+            unitPrice = "30.00", discountAmount = "3.00", total = "30.00",
+        )
+        val vale = valeDeArea("cafe", "30.00").copy(discountAmount = "3.00", total = "27.00", lines = listOf(linea))
+        val base = sesionDeVales("0.00", vale)
+        val sesion = base.copy(order = base.order?.copy(total = "27.00", remainingBalance = "27.00"))
+        every { areaTicketRepository.session.current() } returns sesion
+        coEvery { areaTicketRepository.materialize(any(), any(), any(), any(), any(), any(), any(), any()) } returns sesion
+        every { terminalPaymentService.pendienteDeLaVenta(any()) } returns null
+
+        viewModel.startPaymentFlow(CartState(items = listOf(com.avoqado.pos.pos.presentation.cart.renglonDelVale(vale, linea))))
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        viewModel.selectTerminalAndPay("t1")
+        advanceUntilIdle()
+
+        coVerify(exactly = 1) {
+            terminalPaymentService.sendPaymentToTerminal(
+                terminalId = "t1",
+                amountCents = 2700,
+                tipCents = 0,
+                rating = any(),
+                orderId = "order-vales",
+                processedByStaffId = any(),
+            )
+        }
+        assertFalse(viewModel.valesNoCoincidian.value)
+    }
+
+    // Codex r2: mismos vales y mismo bruto, pero el SERVIDOR dice otro descuento. Se cobraría otro neto: se detiene sin cobrar.
+    @Test
+    fun `P1 un vale con otro descuento que el del servidor detiene el cobro sin cobrar`() = runTest {
+        val linea = AreaTicketLine(
+            id = "l-cafe", clientLineId = "c-cafe", productNameSnapshot = "Café", quantity = "1.000",
+            unitPrice = "30.00", discountAmount = "3.00", total = "30.00",
+        )
+        val vale = valeDeArea("cafe", "30.00").copy(discountAmount = "3.00", total = "27.00", lines = listOf(linea))
+        val enElServidor = vale.copy(discountAmount = "6.00", total = "24.00", lines = listOf(linea.copy(discountAmount = "6.00")))
+        val sesion = sesionDeVales("0.00", enElServidor)
+        every { areaTicketRepository.session.current() } returns sesion
+        coEvery { areaTicketRepository.materialize(any(), any(), any(), any(), any(), any(), any(), any()) } returns sesion
+        coEvery { areaTicketRepository.refresh(any(), any()) } returns sesion
+        cobroDeEfectivoRegistrado()
+
+        viewModel.startPaymentFlow(CartState(items = listOf(com.avoqado.pos.pos.presentation.cart.renglonDelVale(vale, linea))))
+        viewModel.confirmCashCustom(2700)
+        advanceUntilIdle()
+
+        coVerify(exactly = 0) {
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any(), lineasDelTicket = any())
+        }
+        assertTrue(viewModel.valesNoCoincidian.value)
+    }
+
+    // Codex r1 #3 y r4 #1: el carrito trae el vale A, el SERVIDOR también tiene el B (la respuesta del escaneo se perdió) y entre armar
+    // la venta y releerla alguien registró un abono. El importe salió de los vales del carrito, no del saldo: no se cobra.
+    @Test
+    fun `P1 un abono que aparece al releer con vales en el carrito detiene el cobro sin cobrar`() = runTest {
+        val linea = AreaTicketLine(
+            id = "a", clientLineId = "c-a", productNameSnapshot = "Torta", quantity = "1.000",
+            unitPrice = "100.00", discountAmount = "20.00", total = "100.00",
+        )
+        val valeA = valeDeArea("a", "100.00").copy(discountAmount = "20.00", total = "80.00", lines = listOf(linea))
+        val armada = sesionDeVales("0.00", valeA, valeDeArea("b", "30.00"))
+        every { areaTicketRepository.session.current() } returns armada
+        coEvery { areaTicketRepository.materialize(any(), any(), any(), any(), any(), any(), any(), any()) } returns armada
+        coEvery { areaTicketRepository.refresh(any(), any()) } returns sesionDeVales("20.00", valeA, valeDeArea("b", "30.00"))
+        cobroDeEfectivoRegistrado()
+
+        viewModel.startPaymentFlow(CartState(items = listOf(com.avoqado.pos.pos.presentation.cart.renglonDelVale(valeA, linea))))
+        viewModel.confirmCashCustom(8000)
+        advanceUntilIdle()
+
+        coVerify(exactly = 0) {
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any(), lineasDelTicket = any())
+        }
+        assertTrue(viewModel.valesNoCoincidian.value)
+    }
+
     // Un split que continúa (ya hubo un abono): el carrito es «Saldo pendiente» y lo que falta lo dice el servidor. Nada que
     // comparar; sigue como siempre.
     @Test
