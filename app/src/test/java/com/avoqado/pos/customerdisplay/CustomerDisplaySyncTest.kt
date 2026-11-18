@@ -254,7 +254,13 @@ class CustomerDisplaySyncTest {
     }
 
     @Test
-    fun `logo en vuelo y luego 404 se queda en fabrica`() = runBlocking {
+    fun `logo en vuelo y luego 404 se queda en fabrica`() = logoEnVueloY404(discoLento = false)
+
+    /** La misma, con el disco del desligado lento (lo que pasa en un runner cargado): el resultado no puede depender del reloj. */
+    @Test
+    fun `logo en vuelo y luego 404 se queda en fabrica aunque el disco tarde`() = logoEnVueloY404(discoLento = true)
+
+    private fun logoEnVueloY404(discoLento: Boolean) = runBlocking {
         val retenida = CompletableDeferred<Unit>()
         val bajando = CountDownLatch(1)
         // Como OkHttp bloqueante: la descarga NO se entera de la cancelación y termina igual.
@@ -264,10 +270,14 @@ class CustomerDisplaySyncTest {
             bajar(firstArg())
         }
         fichaResponse = { ficha(HUELLA_A, logo = LOGO_ASSET_JSON) }
-        val sync = sync()
+        val lento = AtomicBoolean(false)
+        val espia = spyk(store())
+        every { espia.update(any()) } answers { if (lento.get()) Thread.sleep(600); callOriginal() }
+        val sync = sync(almacen = espia)
         sync.afterPoll(VENUE, TERMINAL, senales(HUELLA_A))
         assertTrue(bajando.await(5, TimeUnit.SECONDS))
 
+        lento.set(discoLento)
         sync.onDeviceUnbound(VENUE)
         retenida.complete(Unit)
         Thread.sleep(300)
@@ -1360,13 +1370,20 @@ class CustomerDisplaySyncTest {
     }
 
     @Test
-    fun `r6 2 - A logout A con la fila ocupada cancela la descarga de A y pasa por fabrica`() = runBlocking {
+    fun `r6 2 - A logout A con la fila ocupada cancela la descarga de A y pasa por fabrica`() = aLogoutA(hiloLento = false)
+
+    /** La misma, con el hilo que recibe la cancelación lento (runner cargado): el resultado no puede depender del reloj. */
+    @Test
+    fun `r6 2 - A logout A cancela la descarga de A aunque la cancelacion llegue tarde`() = aLogoutA(hiloLento = true)
+
+    private fun aLogoutA(hiloLento: Boolean) = runBlocking {
         val retenida = CompletableDeferred<Unit>()
         val cancelada = AtomicBoolean(false)
         coEvery { images.ensure(any(), any()) } coAnswers {
             try {
                 retenida.await()
             } catch (e: CancellationException) {
+                if (hiloLento) Thread.sleep(300)
                 cancelada.set(true)
                 throw e
             }
