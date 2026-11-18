@@ -90,6 +90,10 @@ internal object KdsLanSql {
     /** Ronda 2 (N2): el despacho vivo terminó sin papel para esta entrega; el reloj del replay ya la puede tomar. */
     const val SOLTAR_ENTREGA: String = "UPDATE entregas_kds_pendientes SET soltadaEnMillis = :ahora WHERE entregaId = :entregaId"
 
+    /** D28: lo mismo que [SOLTAR_ENTREGA], cambiando su trabajo (sin papel) en el mismo paso. `creadaEnMillis` no se toca. */
+    const val SOLTAR_CON_TRABAJO: String =
+        "UPDATE entregas_kds_pendientes SET trabajoJson = :trabajoJson, soltadaEnMillis = :ahora WHERE entregaId = :entregaId"
+
     const val TICKET_POR_FOLIO: String = "SELECT * FROM kds_tickets_locales WHERE sourceKey = :sourceKey"
 
     /** Pendientes Y listas: la mezcla por folio necesita las dos (D9). */
@@ -156,6 +160,9 @@ interface EntregasKdsPendientesDao {
 
     @Query(KdsLanSql.SOLTAR_ENTREGA)
     suspend fun soltar(entregaId: String, ahora: Long): Int
+
+    @Query(KdsLanSql.SOLTAR_CON_TRABAJO)
+    suspend fun soltarConTrabajo(entregaId: String, trabajoJson: String, ahora: Long): Int
 }
 
 @Dao

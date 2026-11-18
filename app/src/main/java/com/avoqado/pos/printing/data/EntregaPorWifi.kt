@@ -20,8 +20,12 @@ import javax.inject.Singleton
 
 private const val TAG = "EntregaPorWifi"
 
-/** Una entrega por WiFi: el mensaje y, si la estación es «sólo pantalla», el trabajo de papel que sale si nadie acusa. */
-data class EntregaKds(val mensaje: KdsComanda, val trabajoDeRespaldo: TrabajoPendiente?) {
+/**
+ * Una entrega por WiFi: el mensaje y, si la estación es «sólo pantalla» o lleva preparación por producto, el trabajo de papel
+ * que sale si nadie acusa. [papelPropio] (D28): la estación tiene impresora; si su papel no sale, la dueña de esa hoja es la
+ * libreta, no esta fila ([EntregaPorWifi.soltarSoloParaLaPantalla]).
+ */
+data class EntregaKds(val mensaje: KdsComanda, val trabajoDeRespaldo: TrabajoPendiente?, val papelPropio: Boolean = false) {
     /** La llave de su fila (ronda 2, N1), o `null` si no se guarda (impresora + pantalla: sin trabajo de respaldo). */
     val entregaId: String? get() = trabajoDeRespaldo?.let { if (mensaje.preparationVersion == 1)
         mensaje.sourceKey + "|" + mensaje.items.map { item -> item.id }.sorted().joinToString(",") else entregaIdDe(mensaje.sourceKey, it.planes) }
@@ -129,6 +133,20 @@ class EntregaPorWifi @Inject constructor(
         for (e in entregas) {
             val id = e.entregaId ?: continue
             sinTumbar("No se pudo soltar la entrega $id") { dao.soltar(id, ahora) }
+        }
+    }
+
+    /**
+     * D28: como [soltar], pero la fila se queda SIN papel (`planes` vacíos, en el mismo UPDATE; su hora de creación no cambia).
+     * Es la de una estación con impresora propia cuyo papel no salió: esa hoja ya va en la libreta, su única dueña. Con papel,
+     * el replay la imprimía otra vez como RESPALDO después de que la libreta la sacara. La fila sigue sólo para la pantalla.
+     */
+    suspend fun soltarSoloParaLaPantalla(entregas: List<EntregaKds>, ahora: Long = System.currentTimeMillis()) {
+        for (e in entregas) {
+            val trabajo = e.trabajoDeRespaldo ?: continue
+            val id = requireNotNull(e.entregaId)
+            val sinPapel = json.encodeToString(TrabajoPendiente.serializer(), trabajo.copy(planes = emptyList()))
+            sinTumbar("No se pudo soltar la entrega $id") { dao.soltarConTrabajo(id, sinPapel, ahora) }
         }
     }
 

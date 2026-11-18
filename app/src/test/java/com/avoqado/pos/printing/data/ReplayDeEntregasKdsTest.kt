@@ -1,6 +1,7 @@
 package com.avoqado.pos.printing.data
 
 import com.avoqado.pos.core.data.lan.KdsComanda
+import com.avoqado.pos.core.data.lan.KdsComandaItem
 import com.avoqado.pos.core.data.lan.KdsLanProtocol
 import com.avoqado.pos.core.data.lan.RachaSinAcuse
 import com.avoqado.pos.core.data.lan.TransporteLan
@@ -326,6 +327,29 @@ class ReplayDeEntregasKdsTest {
 
         replay.reproducirAlAbrir("venue-1", ahora = 20 * 60_000)
 
+        coVerify(exactly = 0) { despachador.reintentar(any(), any(), any()) }
+        coVerify(exactly = 0) { dao.borrar(any()) }
+    }
+
+    /**
+     * D28: la fila de una estación con impresora propia se suelta SIN papel (la libreta es la única dueña de su hoja). Aunque
+     * la libreta ya no la tenga (salió o se cantó) y la pantalla no conteste, el replay no la imprime: sólo espera a la pantalla.
+     */
+    @Test
+    fun `P1 D28 una fila de preparacion soltada sin papel no se imprime aunque la libreta ya no la tenga`() = runTest {
+        val folio = "sale:d28:st_barra"
+        val mensaje = KdsComanda(
+            venueId = "venue-1", deviceId = "tablet-1", sourceKey = folio, stationId = "st_barra", orderNumber = "1234",
+            orderType = "En tienda", createdAtMillis = 0, items = listOf(KdsComandaItem(id = "oi_2", productName = "Café", quantity = 1)),
+            preparationVersion = 1,
+        )
+        // El fixture `trabajo` ya trae planes vacíos: así queda la fila que el despacho soltó sin papel.
+        coEvery { dao.delVenue("venue-1") } returns listOf(fila(folio, 0, soltada = 5).copy(mensajeJson = KdsLanProtocol.encode(mensaje)))
+        coEvery { entregaPorWifi.empujar(any(), any()) } returns false
+
+        replay.reproducirAlAbrir("venue-1", ahora = 20 * 60_000)
+
+        coVerify(exactly = 1) { entregaPorWifi.empujar(any(), ReplayDeEntregasKds.ESPERA_PANTALLAS_MS) }
         coVerify(exactly = 0) { despachador.reintentar(any(), any(), any()) }
         coVerify(exactly = 0) { dao.borrar(any()) }
     }

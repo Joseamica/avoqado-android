@@ -1108,6 +1108,12 @@ class ComandaDispatcherTest {
             filas[entregaId] = fila.copy(soltadaEnMillis = ahora)
             return 1
         }
+        override suspend fun soltarConTrabajo(entregaId: String, trabajoJson: String, ahora: Long): Int {
+            currentCoroutineContext().ensureActive()
+            val fila = filas[entregaId] ?: return 0
+            filas[entregaId] = fila.copy(trabajoJson = trabajoJson, soltadaEnMillis = ahora)
+            return 1
+        }
     }
 
     private val pantallaBarra = LanPeer("cpad", "10.0.0.5", 9000, kdsStations = setOf("st_barra"))
@@ -1363,6 +1369,124 @@ class ComandaDispatcherTest {
         runBlocking { withTimeout(5_000) { ronda.join() } }
 
         assertEquals(listOf(listOf("st_a"), listOf("st_a")), planes.map { p -> p.map { it.stationId } })
+    }
+
+    // MARK: - D28 (18-nov-2026): la estación con impresora Y pantalla saca su comanda UNA sola vez
+
+    /** Preparación por producto (Pro): todo renglón lleva `preparationVersion = 1`; «Inmediato» sí sale en papel. */
+    private val cafePorProducto = cafe.copy(
+        serviceCourse = com.avoqado.pos.pos.data.model.ServiceCourseSnapshot("immediate", "Inmediato", "IMMEDIATE", preparationVersion = 1),
+    )
+    private val barraConImpresoraYPantalla = PrintConfig(
+        stations = listOf(StationInfo(id = "st_barra", name = "Barra", printerId = "pr_2", active = true, hasKitchenDisplay = true)),
+        productOverrides = listOf(ProductOverride(productId = "prod_cafe", printStationId = "st_barra")),
+        defaultStationId = "st_barra",
+    )
+
+    /**
+     * El ensayo del 17-nov, con la caja REAL (despachador, entrega por WiFi sobre la tabla en memoria y reloj del replay):
+     * la impresora sin papel y la pantalla sin contestar. [hojas] anota cada hoja que SÍ sale: su estación y si es de RESPALDO.
+     */
+    private inner class CocinaDelEnsayo(config: PrintConfig) {
+        var impresoraPrendida = false
+        var pantallaContesta = false
+        val hojas = mutableListOf<Pair<String?, Boolean>>()
+        val tabla = EntregasEnMemoria()
+        val libreta = MutableStateFlow<List<EstadoDeComanda.NoSalio>>(emptyList())
+        private val wifi = EntregaPorWifi(
+            transporteLan, tabla,
+            mockk<ClienteDeComandas> { coEvery { entregar(pantallaBarra, any(), any()) } answers { pantallaContesta } },
+        )
+        val despachador = despachadorConWifi(wifi)
+        private val replay = ReplayDeEntregasKds(
+            tabla, wifi, despachador, cola,
+            mockk<ComandasPendientesStore>(relaxed = true) {
+                every { pendiente } returns MutableStateFlow<EstadoDeComanda.NoSalio?>(null)
+                every { pendientes } returns libreta
+            },
+            mockk<SecureStorage>(relaxed = true) { every { venueId } returns "venue-1" },
+            transporteLan,
+        )
+
+        init {
+            every { printConfigRepository.getCurrentConfig() } returns config
+            coEvery { comandaPrinter.printComandas(any(), any(), any(), any(), any()) } answers {
+                val planes = firstArg<List<TicketPlan>>()
+                val cfg = secondArg<PrintConfig>()
+                if (!impresoraPrendida) {
+                    ComandaPrinter.Result(
+                        attempted = planes.size, printed = 0, skippedNoPrinter = 0, lastError = "sin papel",
+                        failedStations = planes.map { p -> cfg.stations.first { it.id == p.stationId }.name }, failedPlans = planes,
+                    )
+                } else {
+                    planes.forEach { p -> hojas += p.stationId to (cfg.stations.first { it.id == p.stationId }.respaldoLocal) }
+                    ComandaPrinter.Result(attempted = planes.size, printed = planes.size, skippedNoPrinter = 0, lastError = null, hojas = planes.size)
+                }
+            }
+        }
+
+        /** La venta: la impresora truena y la pantalla no acusa. El `NoSalio` va a la libreta, como lo guarda el llamador. */
+        suspend fun despachar(): EstadoDeComanda.NoSalio {
+            val estado = despachador.dispatch(
+                venueId = "venue-1", lines = listOf(cafePorProducto), orderNumber = "1234", orderType = "En tienda",
+                maxIntentos = 1, servidorLaTiene = true, origenDelFolio = "sale:ext-1",
+            ) as EstadoDeComanda.NoSalio
+            libreta.value = listOf(estado)
+            return estado
+        }
+
+        /** El reloj de la libreta (`ReplayDeComandasPendientes`): reimprime con `reintentar` y, si salió, la suelta. */
+        suspend fun laLibretaReimprime(estado: EstadoDeComanda.NoSalio) {
+            assertEquals(EstadoDeComanda.Salio, despachador.reintentar(estado.trabajo!!, refrescar = false))
+            libreta.value = emptyList()
+        }
+
+        /** Un tic del reloj del replay de entregas (cada minuto). */
+        suspend fun tic() = replay.reproducirAlAbrir("venue-1", arranqueDelProceso = 0L)
+    }
+
+    @Test
+    fun `P1 D28 impresora y pantalla - si la impresora falla y la pantalla no contesta sale UNA sola hoja y sin RESPALDO`() = runTest {
+        val cocina = CocinaDelEnsayo(barraConImpresoraYPantalla)
+        val estado = cocina.despachar()
+        cocina.tic() // la libreta la tiene: el replay espera
+
+        cocina.impresoraPrendida = true
+        cocina.laLibretaReimprime(estado)
+        cocina.tic()
+        cocina.tic()
+
+        assertEquals("una sola hoja de Barra, la de la libreta, sin encabezado de respaldo", listOf("st_barra" to false), cocina.hojas)
+        assertEquals("la fila sigue, sólo para la pantalla", 1, cocina.tabla.filas.size)
+    }
+
+    @Test
+    fun `P1 D28 impresora y pantalla - cuando la pantalla vuelve el replay le entrega la tarjeta y borra la fila sin papel`() = runTest {
+        val cocina = CocinaDelEnsayo(barraConImpresoraYPantalla)
+        val estado = cocina.despachar()
+        cocina.impresoraPrendida = true
+        cocina.laLibretaReimprime(estado)
+        cocina.tic() // la pantalla sigue apagada
+
+        cocina.pantallaContesta = true
+        cocina.tic()
+
+        assertEquals(listOf("st_barra" to false), cocina.hojas)
+        assertTrue("la tarjeta llegó a la pantalla: la fila se borra", cocina.tabla.filas.isEmpty())
+    }
+
+    /** D28 no toca «sólo pantalla»: su papel de respaldo vive en la fila, y el replay lo saca si la libreta no lo tiene. */
+    @Test
+    fun `P1 D28 una estacion solo pantalla sigue sacando su papel de RESPALDO desde la fila`() = runTest {
+        val cocina = CocinaDelEnsayo(conBarraSoloPantalla)
+        cocina.despachar()
+        cocina.libreta.value = emptyList() // la libreta no la tiene: la fila es la única dueña de su papel
+        cocina.impresoraPrendida = true
+        cocina.tic()
+        cocina.tic()
+
+        assertEquals("una hoja de RESPALDO de Barra", listOf("st_barra" to true), cocina.hojas)
+        assertTrue(cocina.tabla.filas.isEmpty())
     }
 
     // MARK: - «No lleva comanda» (10-nov-2026): las ventas del POS no mandan ni avisan lo de una estación sin comanda

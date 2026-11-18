@@ -494,16 +494,26 @@ class ComandaDispatcher @Inject constructor(
      * La que TRONÓ se queda: va en el `NoSalio` que el llamador guarda en la libreta, y la cierra el papel cuando por fin
      * sale ([reintentar] → [EntregaPorWifi.cerrarPorPapel]). Ronda 2 (N2): además se SUELTA, para que el reloj del
      * replay la retome en este mismo proceso si la libreta la pierde (su única ranura la pisa otra falla).
+     *
+     * D28 (18-nov): la que tronó en una estación con impresora propia se suelta SIN papel. Su hoja ya va en el `NoSalio` que
+     * el llamador guardó en la libreta (antes de que `insistir` regresara); con papel, el replay la imprimía otra vez como
+     * RESPALDO hasta un minuto después de que la libreta la sacara. Queda sólo para entregarle la tarjeta a la pantalla.
      */
     private suspend fun cerrarLasDecididas(entregas: List<EntregaKds>, acusadas: Set<String>, estado: EstadoDeComanda) {
         val tronaron = (estado as? EstadoDeComanda.NoSalio)?.trabajo?.planes.orEmpty()
         val guardadas = entregas.filter { e -> e.trabajoDeRespaldo != null && e.mensaje.stationId !in acusadas }
         val (retenidas, decididas) = guardadas.partition { e -> e.trabajoDeRespaldo!!.planes.any { it in tronaron } }
         if (decididas.isNotEmpty()) entregaPorWifi?.cerrar(decididas)
-        if (retenidas.isNotEmpty()) entregaPorWifi?.soltar(retenidas)
+        val (paraLaPantalla, conSuPapel) = retenidas.partition { it.papelPropio }
+        if (paraLaPantalla.isNotEmpty()) entregaPorWifi?.soltarSoloParaLaPantalla(paraLaPantalla)
+        if (conSuPapel.isNotEmpty()) entregaPorWifi?.soltar(conSuPapel)
     }
 
-    /** Una entrega por plan con pantalla (D6). Trabajo de respaldo SÓLO para «sólo pantalla»: impresora+pantalla imprime su papel de todos modos. */
+    /**
+     * Una entrega por plan con pantalla (D6). Trabajo de respaldo para «sólo pantalla» y para la preparación por producto. En
+     * una estación con impresora propia ese papel sólo sirve si el despacho muere antes de decidir; si su papel normal truena,
+     * la fila se suelta sin él (D28, [cerrarLasDecididas]).
+     */
     private fun entregasPorWifi(
         venueId: String,
         plans: List<TicketPlan>,
@@ -540,6 +550,7 @@ class ComandaDispatcher @Inject constructor(
                 } else {
                     null
                 },
+                papelPropio = !soloPantalla,
             )
         }
     }

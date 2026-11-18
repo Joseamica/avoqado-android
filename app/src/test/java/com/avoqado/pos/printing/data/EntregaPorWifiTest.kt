@@ -227,6 +227,37 @@ class EntregaPorWifiTest {
         coVerify(exactly = 1) { dao.soltar(any(), any()) }
     }
 
+    /** D28: la fila de una estación con impresora propia se suelta SIN papel; el resto de su trabajo se conserva. */
+    @Test
+    fun `P1 D28 soltar solo para la pantalla deja la fila sin papel y con su hora`() = runTest {
+        val plan = TicketPlan("st_barra", false, listOf(ConsolidatedLine("Café", 1, emptyList(), null, listOf("oi_2"))))
+        val conPapel = EntregaKds(mensaje("st_barra"), trabajo.copy(planes = listOf(plan)), papelPropio = true)
+        val trabajoJson = slot<String>()
+        coEvery { dao.soltarConTrabajo(any(), capture(trabajoJson), any()) } returns 1
+
+        entrega.soltarSoloParaLaPantalla(listOf(conPapel, EntregaKds(mensaje("st_postres"), null, papelPropio = true)), ahora = 99L)
+
+        coVerify(exactly = 1) { dao.soltarConTrabajo(requireNotNull(conPapel.entregaId), any(), 99L) }
+        coVerify(exactly = 0) { dao.soltar(any(), any()) }
+        assertEquals(trabajo, Json.decodeFromString(TrabajoPendiente.serializer(), trabajoJson.captured))
+    }
+
+    /** D28: el papel que sale después («Volver a imprimir», la libreta, «Ya la canté») no toca una fila que ya no lleva papel. */
+    @Test
+    fun `cerrarPorPapel no toca una fila sin papel`() = runTest {
+        val planBarra = TicketPlan("st_barra", false, listOf(ConsolidatedLine("Café", 1, emptyList(), null, listOf("oi_2"))))
+        coEvery { dao.delVenue("venue-1") } returns listOf(
+            EntregaKdsPendienteEntity(
+                entregaId = "sale:ext-1:st_barra|oi_2", sourceKey = "sale:ext-1:st_barra", venueId = "venue-1", stationId = "st_barra",
+                mensajeJson = "{}", trabajoJson = Json.encodeToString(TrabajoPendiente.serializer(), trabajo), creadaEnMillis = 1,
+            ),
+        )
+
+        entrega.cerrarPorPapel("venue-1", "1234", listOf(planBarra))
+
+        coVerify(exactly = 0) { dao.borrar(any()) }
+    }
+
     /** Ronda 1 (I2): el papel de respaldo que sale DESPUÉS («Volver a imprimir», el reloj de la libreta) cierra SU fila. */
     @Test
     fun `cerrarPorPapel borra solo las filas de esos planes y de esa orden`() = runTest {
