@@ -173,17 +173,24 @@ class SyncOutbox @Inject constructor(
     private val reintentoCortoPendiente = java.util.concurrent.atomic.AtomicBoolean(false)
     @Volatile private var esperaCortaMs = REINTENTO_CORTO_MIN_MS
 
+    /** Codex r2 R4: sube en cada [stop]; un reintento de una vida anterior (otra sucursal o sesión) ni corre ni libera el lugar. */
+    @Volatile private var vidaDelReintento = 0L
+
     private fun programarReintentoCorto(venueId: String) {
+        // Una corrida de la sucursal anterior que termina después de `stop()` no ocupa el único lugar de la nueva.
+        if (activeVenueId != venueId) return
         if (!reintentoCortoPendiente.compareAndSet(false, true)) return
+        val vida = vidaDelReintento
         val espera = esperaCortaMs
         esperaCortaMs = (espera * 2).coerceAtMost(REINTENTO_CORTO_MAX_MS)
         reintentoCorto = scope.launch {
             try {
                 delay(espera)
             } finally {
-                reintentoCortoPendiente.set(false) // ya puede programarse el siguiente (desde la corrida de abajo)
+                // Ya puede programarse el siguiente (desde la corrida de abajo). Si `stop()` ya pasó, el lugar es de la vida nueva.
+                if (vidaDelReintento == vida) reintentoCortoPendiente.set(false)
             }
-            if (activeVenueId == venueId) {
+            if (vidaDelReintento == vida && activeVenueId == venueId) {
                 Log.d(TAG, "🔁 Reintento corto del outbox tras un RETRY (${espera / 1000} s)")
                 replayNow(venueId)
             }
@@ -289,6 +296,7 @@ class SyncOutbox @Inject constructor(
         activeVenueId = null
         connectivityJob?.cancel()
         timerJob?.cancel()
+        vidaDelReintento++
         reintentoCorto?.cancel()
         reintentoCorto = null
         reintentoCortoPendiente.set(false)
@@ -606,6 +614,7 @@ class SyncOutbox @Inject constructor(
                     val batch = if(firstUnknown >= 0) antesDeCaja.take(firstUnknown) else antesDeCaja
                     if (batch.isEmpty()) {
                         Log.w(TAG, "⏸️ El outbox se detiene en el primer PAY_CASH: la caja aún no llega al servidor")
+                        huboReintenta = true // na31f0d7 (Codex r2 #5): cuando la caja llegue, lo de atrás no espera 5 min
                         break
                     }
 
@@ -701,6 +710,7 @@ class SyncOutbox @Inject constructor(
                         // El lote venía recortado por la barrera del cajón o por una ronda en vuelo. Volver al
                         // `while` lo re-leería en caliente.
                         Log.w(TAG, "⏸️ Quedan ${leidos.size - batch.size} intents esperando (caja o ronda en vuelo)")
+                        huboReintenta = true // na31f0d7 (Codex r2 #5): lo que quedó detrás de la barrera no espera al reloj de 5 min
                         break
                     }
                 }

@@ -38,12 +38,4 @@ object StorageModule {
     fun provideAlmacenDeComandasPendientes(@ApplicationContext context: Context): AlmacenDeTexto {
         return PrefsComoAlmacen(context)
     }
-
-    /** na13e014: la comanda de cada ronda de mesa hasta que se decide; su propio archivo, aparte de la libreta. */
-    @Provides
-    @Singleton
-    fun provideComandasDeRondaPorDecidir(@ApplicationContext context: Context): com.avoqado.pos.tables.data.ComandasDeRondaPorDecidir =
-        com.avoqado.pos.tables.data.ComandasDeRondaPorDecidir(
-            com.avoqado.pos.payment.data.AlmacenEnPreferencias(context, "comandas_de_ronda", "por_decidir"),
-        )
 }

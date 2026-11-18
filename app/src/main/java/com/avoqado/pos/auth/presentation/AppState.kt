@@ -100,10 +100,6 @@ class AppState @Inject constructor(
     @Inject
     lateinit var preparationDelivery: com.avoqado.pos.kds.data.PreparationDeliveryService
 
-    /** na13e014: la comanda de una ronda de mesa que un proceso anterior no alcanzó a decidir sale al abrir. */
-    @Inject
-    lateinit var replayDeRondasSinPapel: com.avoqado.pos.tables.data.ReplayDeRondasSinPapel
-
     /**
      * La marca del negocio en la pantalla del cliente (nombre y logo en reposo). Por miembro, como las de arriba; en Windows
      * Guice la inyecta igual. Se pone al día en cada cambio de sesión ([notifyDeviceSessionChanged]).
@@ -209,9 +205,6 @@ class AppState @Inject constructor(
             // sucursal sólo cambia a cuál apunta. Su lazo atrapa todo menos la cancelación (N6: al cerrar sesión no hay
             // «tropezó» falso).
             if (::replayDeEntregasKds.isInitialized) replayDeEntregasKds.iniciar(viewModelScope, venueId)
-            // na13e014: después de cargar la libreta (lo que no salga va ahí). Una vez por ronda en este proceso.
-            if (::replayDeRondasSinPapel.isInitialized) runCatching { replayDeRondasSinPapel.reproducirAlAbrir(venueId) }
-                .onFailure { android.util.Log.w("AppState", "La recuperación de comandas de ronda tropezó: ${it.message}") }
         }
     }
 

@@ -437,9 +437,14 @@ class ComandasPendientesStore @Inject constructor(
         return fondo.launch {
             var cerrado = false
             try {
-                cerrado = entregas.cerrarPorPapel(cierre.venueId!!, cierre.orderNumber, cierre.planes)
+                // Codex r2 #4: un tropiezo de la base no se queda así: se reintenta el borrado (nunca el papel).
+                for (espera in listOf(0L) + REINTENTOS_DEL_CIERRE_MS) {
+                    if (espera > 0) kotlinx.coroutines.delay(espera)
+                    cerrado = !entregas.cerrarPorPapel(cierre.venueId!!, cierre.orderNumber, cierre.planes) // `true` = tropezó
+                    if (cerrado) break
+                }
             } finally {
-                // Codex r1 #2: si la base no dejó borrar, la fila sobrevive; seguir anotada en memoria evita que el replay la
+                // Codex r1 #2: si la base nunca dejó borrar, la fila sobrevive; seguir anotada en memoria evita que el replay la
                 // imprima en este proceso (al reabrir la app saldría UNA vez: duplicado, nunca pérdida).
                 if (cerrado) cerrandose.remove(cierre)
             }
@@ -474,6 +479,8 @@ class ComandasPendientesStore @Inject constructor(
     }
 
     private companion object {
+        /** Codex r2 #4: reintentos del borrado de las entregas de «Ya la canté» si la base tropieza. */
+        val REINTENTOS_DEL_CIERRE_MS = listOf(1_000L, 5_000L, 30_000L)
         const val TAG = "ComandasPendientes"
         /** 8 horas: cubre un turno de mostrador y nunca llega al día siguiente. */
         const val VIGENCIA_MS = 8L * 60 * 60 * 1000

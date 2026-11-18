@@ -483,4 +483,17 @@ class ReplayDeEntregasKdsTest {
         coVerify(exactly = 0) { despachador.reintentar(any(), any(), any()) }
         coVerify(exactly = 0) { dao.borrar(any()) } // la borra el cierre de «Ya la canté», no el replay
     }
+
+    /** Codex r2 (R1): la consulta nueva a la tabla es una espera; si en ella cambia la sucursal, no se imprime con la config de la otra. */
+    @Test
+    fun `P1 si la sucursal cambia mientras se revisa la tabla no se reimprime`() = runTest {
+        coEvery { dao.delVenue("venue-1") } returns listOf(fila("sale:vieja:st_barra", 0))
+        coEvery { dao.existe(any()) } coAnswers { sucursalVigente = "venue-2"; true }
+        coEvery { despachador.reintentar(any(), any(), false) } returns EstadoDeComanda.Salio
+
+        replay.reproducirAlAbrir("venue-1", ahora = 20 * 60_000)
+
+        coVerify(exactly = 0) { despachador.reintentar(any(), any(), any()) }
+        coVerify(exactly = 0) { dao.borrar(any()) }
+    }
 }

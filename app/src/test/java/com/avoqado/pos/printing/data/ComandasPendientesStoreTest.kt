@@ -284,7 +284,7 @@ class ComandasPendientesStoreTest {
     fun `P1 ya la cante dice que se esta cerrando hasta que el borrado de sus filas termina`() = runBlocking {
         val entrega = mockk<EntregaPorWifi>(relaxed = true)
         val compuerta = kotlinx.coroutines.CompletableDeferred<Unit>()
-        coEvery { entrega.cerrarPorPapel(any(), any(), any()) } coAnswers { compuerta.await(); true }
+        coEvery { entrega.cerrarPorPapel(any(), any(), any()) } coAnswers { compuerta.await(); false } // false = cerró (true = la base tropezó)
         val conRespaldo = fallo.copy(
             trabajo = fallo.trabajo!!.copy(config = KitchenDeliveryPolicy.conRespaldo(config, listOf("st_barra"))),
         )
@@ -300,6 +300,27 @@ class ComandasPendientesStoreTest {
         assertTrue(store.seEstaCerrando(delReplay))
         assertFalse(store.seEstaCerrando(otraEstacion))
         compuerta.complete(Unit); cierre.join()
+        assertFalse(store.seEstaCerrando(delReplay))
+    }
+
+    /** Codex r2 #4: si la base tropieza al borrar, se reintenta el borrado y la marca sigue hasta que de verdad cierra. */
+    @Test
+    fun `P1 si el borrado de ya la cante tropieza se reintenta y la marca sigue hasta que cierra`() = runBlocking {
+        val entrega = mockk<EntregaPorWifi>(relaxed = true)
+        coEvery { entrega.cerrarPorPapel(any(), any(), any()) } returnsMany listOf(true, false) // tropieza, luego cierra
+        val conRespaldo = fallo.copy(
+            trabajo = fallo.trabajo!!.copy(config = KitchenDeliveryPolicy.conRespaldo(config, listOf("st_barra"))),
+        )
+        val store = ComandasPendientesStore(AlmacenFalso(), entrega)
+        store.cargar("venue-1", ahora)
+        assertTrue(store.guardar(conRespaldo, ahora))
+        val delReplay = conRespaldo.trabajo!!.copy(planes = listOf(plan))
+
+        val cierre = store.yaLaCante()!!
+        assertTrue(store.seEstaCerrando(delReplay))
+        cierre.join()
+
+        coVerify(exactly = 2) { entrega.cerrarPorPapel("venue-1", "ORD-42", listOf(plan)) }
         assertFalse(store.seEstaCerrando(delReplay))
     }
 

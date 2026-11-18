@@ -189,17 +189,19 @@ class ReplayDeEntregasKds @Inject constructor(
         }
         // A retained course is visible on KDS, but never becomes a preparation ticket on paper.
         if (preparation && trabajo.planes.isEmpty()) return
+        // nab17320 (nube, 17-nov): las filas se leyeron AL EMPEZAR la pasada, y empujar otra fila o refrescar la config tarda
+        // segundos. Si en ese rato alguien la resolvió —«Ya la canté» suelta la libreta y borra su fila; o su papel salió por
+        // otro camino—, esta copia ya es vieja: imprimirla sacaba una comanda que la cocina ya tiene. La tabla se consulta
+        // ANTES del refresco (es una espera); después, sin esperar nada, la marca de «Ya la canté» (que se pone antes de soltar
+        // la libreta) y la sucursal (Codex r2 R1: entre una espera y `reintentar` cabía un cambio de sucursal).
+        if (!sigueEnLaTabla(fila)) return
         // I1: la espera a la pantalla (hasta 3 s + el empuje) da tiempo a un cambio de sucursal, y el refresco de la config
         // (hasta 1.5 s) también. Se revalida ANTES — nunca se refresca la config de una sucursal que ya no es la vigente —
         // y DESPUÉS: la config en memoria podría ser ya la de la otra y el papel saldría en su cocina. Paridad con iOS.
         if (!sigueVigente(venueId)) return
         comandaDispatcher.refrescarConfig(venueId)
+        if (comandasPendientesStore.seEstaCerrando(trabajo) || laLibretaLoTiene(trabajo)) return
         if (!sigueVigente(venueId)) return
-        // nab17320 (nube, 17-nov): las filas se leyeron AL EMPEZAR la pasada, y empujar otra fila o refrescar la config tarda
-        // segundos. Si en ese rato alguien la resolvió —«Ya la canté» suelta la libreta y borra su fila; o su papel salió por
-        // otro camino—, esta copia ya es vieja: imprimirla sacaba una comanda que la cocina ya tiene. Se vuelve a mirar justo
-        // antes del papel (el último punto antes de imprimir; después ya no hay espera de este lado).
-        if (comandasPendientesStore.seEstaCerrando(trabajo) || laLibretaLoTiene(trabajo) || !sigueEnLaTabla(fila)) return
         when (val estado = comandaDispatcher.reintentar(trabajo, refrescar = false)) {
             is EstadoDeComanda.Salio -> {
                 // Codex 3.6 (#1): una fila de RONDA no sabe si su folio tenía otros tiempos (uno ya en la pantalla, sin
