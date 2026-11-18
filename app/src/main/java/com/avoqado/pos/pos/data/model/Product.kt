@@ -147,18 +147,16 @@ fun List<Product>.parecidoACodigo(codigo: String): Product? {
 }
 
 /**
- * D14 (pasada de la familia, Codex r3–r4): la pistola en inglés con el aparato en español manda las MISMAS teclas para
- * «AB-123» y para «AB'123». Con dos lecturas, todos los productos que CUALQUIERA de las dos podría ser, por los mismos caminos
- * que la búsqueda normal (exacto, o sin mayúsculas si no es tarjeta), en SKU, código de barras y GTIN. Dos o más ⇒ no se adivina.
+ * D14 (rediseño tras Codex r6): los productos que la lectura EN INGLÉS de la pistola puede ser, por los caminos de producto de
+ * la búsqueda normal: los exactos (SKU, código de barras, GTIN) o, si no hay, los que coinciden sin mayúsculas cuando no es
+ * tarjeta (como `parecidoACodigo`). Sólo productos: nada de vales, báscula, tarjetas ni servidor.
  */
-fun List<Product>.candidatosDeDosLecturas(delAparato: String, enIngles: String): List<Product> {
-    val lecturas = listOf(delAparato.trim(), enIngles.trim())
-    // Codex r5 #2: si CUALQUIERA de las dos es tarjeta, sólo cuentan las coincidencias exactas (como la búsqueda «parecida»,
-    // que tampoco compara una tarjeta sin mayúsculas): la tarjeta se reconoce como siempre.
-    val soloExacto = lecturas.any { ReconocedorDeTarjeta.reconocer(it) != null || pareceTarjetaDeCliente(it) }
-    fun coincide(campo: String, lectura: String) = campo == lectura || (!soloExacto && campo.equals(lectura, ignoreCase = true))
-    return filter { p -> listOfNotNull(p.sku, p.barcode, p.gtin).any { campo -> lecturas.any { coincide(campo, it) } } }
-        .distinctBy { it.id }
+fun List<Product>.coincidenciasDeLaLectura(codigo: String): List<Product> {
+    val c = codigo.trim()
+    val campos = { p: Product -> listOfNotNull(p.sku, p.barcode, p.gtin) }
+    val exactas = filter { p -> campos(p).any { it == c } }.distinctBy { it.id }
+    if (exactas.isNotEmpty() || ReconocedorDeTarjeta.reconocer(c) != null || pareceTarjetaDeCliente(c)) return exactas
+    return filter { p -> campos(p).any { it.equals(c, ignoreCase = true) } }.distinctBy { it.id }
 }
 
 fun precioConUnidad(precio: Double, porPeso: Boolean): String = formatMoney(precio) + if (porPeso) "/kg" else ""

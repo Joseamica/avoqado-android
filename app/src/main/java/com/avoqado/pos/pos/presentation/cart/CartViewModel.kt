@@ -33,7 +33,7 @@ import com.avoqado.pos.pos.data.model.Discount
 import com.avoqado.pos.pos.data.model.aplicarCambiosDePrecio
 import com.avoqado.pos.pos.data.model.avisoDeCambioDePrecio
 import com.avoqado.pos.pos.data.model.parecidoACodigo
-import com.avoqado.pos.pos.data.model.candidatosDeDosLecturas
+import com.avoqado.pos.pos.data.model.coincidenciasDeLaLectura
 import com.avoqado.pos.pos.data.model.Product
 import com.avoqado.pos.pos.data.model.Promotion
 import com.avoqado.pos.pos.data.model.SavedCart
@@ -2560,23 +2560,26 @@ class CartViewModel @Inject constructor(
         if (cobroAbierto) return ScannedBarcodeResult.Error("Se abrió el cobro: vuelve a escanear al terminar.")
         consultasDeCodigo.update { it + 1 }
         try {
-            // D14 (Codex r3): las teclas de «AB-123» con la pistola en inglés y de «AB'123» con la pistola en español son LAS
-            // MISMAS. Si el catálogo tiene los dos, no hay forma de saber cuál es la etiqueta: se avisa y no se agrega ninguno
-            // (como el PLU de báscula repetido). Sólo se mira el catálogo del aparato: nada de vales ni servidor.
-            if (lecturaUs != null && products.value.candidatosDeDosLecturas(rawCode, lecturaUs).size > 1) {
-                return ScannedBarcodeResult.CodigoDoble(avisoDeCodigoDoble(rawCode.trim(), lecturaUs.trim()))
-            }
+            // D14 (rediseño tras Codex r6): primero la lectura del aparato, EXACTAMENTE como antes (vales, báscula, tarjetas,
+            // productos). La de EE. UU. sólo entra después y sólo para productos o una tarjeta en su formato impreso.
             val resultado = resolverCodigo(rawCode)
-            // D14: la pistola en inglés con el teclado del aparato en español («PIZZAS'003»). Sólo si la lectura del aparato no
-            // encontró nada; si tampoco la de EE. UU. encuentra, se avisa con la del aparato, como siempre.
-            if (resultado is ScannedBarcodeResult.Unknown) {
-                lecturaUs?.let { resolverCodigo(it) }
-                    ?.takeIf { it !is ScannedBarcodeResult.Unknown }
-                    // Codex r5 #3: un SKU desconocido con guiones no se vuelve consulta de tarjeta; sólo un código del servidor.
-                    ?.takeIf { it !is ScannedBarcodeResult.GiftCardFound || com.avoqado.pos.giftcards.domain.ReconocedorDeTarjeta.esDelServidor(lecturaUs) }
-                    ?.let { return it }
+            if (lecturaUs == null) return resultado
+            // Las teclas de «AB-123» con la pistola en inglés y de «AB'123» con la pistola en español son LAS MISMAS: si cada
+            // lectura es un producto distinto, no se adivina (como el PLU de báscula repetido).
+            val enIngles = products.value.coincidenciasDeLaLectura(lecturaUs)
+            val doble = ScannedBarcodeResult.CodigoDoble(avisoDeCodigoDoble(rawCode.trim(), lecturaUs.trim()))
+            return when (resultado) {
+                is ScannedBarcodeResult.ProductFound -> if (enIngles.any { it.id != resultado.product.id }) doble else resultado
+                is ScannedBarcodeResult.Unknown -> when {
+                    enIngles.size > 1 -> doble
+                    enIngles.size == 1 -> ScannedBarcodeResult.ProductFound(enIngles.single())
+                    com.avoqado.pos.giftcards.domain.ReconocedorDeTarjeta.esTarjetaImpresa(lecturaUs) ->
+                        com.avoqado.pos.giftcards.domain.ReconocedorDeTarjeta.reconocer(lecturaUs)
+                            ?.let { ScannedBarcodeResult.GiftCardFound(it) } ?: resultado
+                    else -> resultado
+                }
+                else -> resultado
             }
-            return resultado
         } finally {
             consultasDeCodigo.update { it - 1 }
         }

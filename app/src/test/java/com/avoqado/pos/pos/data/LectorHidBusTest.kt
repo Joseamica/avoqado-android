@@ -265,12 +265,12 @@ class LectorHidBusTest {
     }
 
     @Test
-    fun `D14 si en ingles son solo numeros esa es la etiqueta y la del aparato se descarta`() = runTest {
-        // Codex r5 #1: teclado francés AZERTY, etiqueta de báscula. Ningún código de sólo números trae un «'» de verdad.
+    fun `D14 la lectura del aparato nunca se descarta aunque en ingles sean numeros`() = runTest {
+        // Codex r6 #4: con aparato y pistola en francés, «&&'(» es la etiqueta de verdad; en inglés sería «1145».
         val bus = LectorHidBus()
         bus.leidos.test {
-            bus.leer(delAparato = "é&&&'(&", enIngles = "2000123")
-            assertEquals(CodigoLeido("2000123"), awaitItem())
+            bus.leer(delAparato = "&&'(", enIngles = "1145")
+            assertEquals(CodigoLeido("&&'(", lecturaUs = "1145"), awaitItem())
         }
     }
 }

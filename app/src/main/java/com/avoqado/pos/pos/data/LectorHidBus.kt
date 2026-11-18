@@ -136,11 +136,7 @@ class LectorHidBus @Inject constructor() {
                 val lecturaUs = decision.textoUs.takeIf { us ->
                     us != decision.texto && decision.texto.any { it in RAROS } && us.none { it in RAROS }
                 }
-                // D14 (Codex r5 #1, pasada de la familia): si en inglés son SÓLO números (báscula, código de barras, vales), ésa es
-                // la etiqueta: ningún código de sólo números trae un «'» de verdad, así que la del aparato es la distribución del
-                // teclado (p. ej. francés AZERTY) y se descarta. Una sola lectura: nada que comparar después.
-                if (lecturaUs != null && lecturaUs.isNotEmpty() && lecturaUs.all(Char::isDigit)) _leidos.tryEmit(CodigoLeido(lecturaUs))
-                else _leidos.tryEmit(CodigoLeido(decision.texto, lecturaUs))
+                _leidos.tryEmit(CodigoLeido(decision.texto, lecturaUs))
                 consumidas += keyCode
                 true
             }

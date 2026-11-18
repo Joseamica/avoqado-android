@@ -350,4 +350,23 @@ class CartViewModelTarjetaEscaneadaTest {
         val r = vm.resolveScannedBarcode("ABCD'EFGH'JKMN'PQRS'K", lecturaUs = "ABCD-EFGH-JKMN-PQRS-K")
         assertTrue("$r", r is ScannedBarcodeResult.GiftCardFound)
     }
+
+    @Test fun `D14 un producto encontrado sin mayusculas por el aparato no gana al exacto de la otra lectura`() = runTest {
+        // Codex r6 #1: A tiene el SKU exacto; B guarda «cafe'regular'000001» en GTIN.
+        val a = Product(id = "a", name = "A", priceValue = 10.0, sku = "CAFE-REGULAR-000001")
+        val b = Product(id = "b", name = "B", priceValue = 20.0, gtin = "cafe'regular'000001")
+        every { productsRepository.products } returns MutableStateFlow(listOf(a, b))
+        val vm = createViewModel()
+        assertTrue(vm.resolveScannedBarcode("CAFE'REGULAR'000001", lecturaUs = "CAFE-REGULAR-000001") is ScannedBarcodeResult.CodigoDoble)
+    }
+
+    @Test fun `D14 un SKU desconocido con forma de codigo valido pero sin el formato impreso no abre la tarjeta`() = runTest {
+        // Codex r6 #3: pasa el alfabeto y el control del servidor, pero no es XXXX-XXXX-XXXX-XXXX-X.
+        every { productsRepository.products } returns MutableStateFlow(emptyList())
+        val vm = createViewModel()
+        assertEquals(
+            ScannedBarcodeResult.Unknown("CAFE'VERDE'00000399"),
+            vm.resolveScannedBarcode("CAFE'VERDE'00000399", lecturaUs = "CAFE-VERDE-00000399"),
+        )
+    }
 }

@@ -28,6 +28,14 @@ object ReconocedorDeTarjeta {
         return caracterDeControl(limpio.substring(0, 16)) == limpio[16]
     }
 
+    private val impresa = Regex("^[0-9A-Za-z]{4}-[0-9A-Za-z]{4}-[0-9A-Za-z]{4}-[0-9A-Za-z]{4}-[0-9A-Za-z]$")
+
+    /**
+     * D14 (Codex r6 #3): la segunda lectura de la pistola sólo cuenta como tarjeta en su formato IMPRESO
+     * (`XXXX-XXXX-XXXX-XXXX-X`, `formatGiftCardCode` del servidor) y si [esDelServidor]. Un SKU con otros guiones no.
+     */
+    fun esTarjetaImpresa(crudo: String): Boolean = impresa.matches(crudo.trim()) && esDelServidor(crudo)
+
     /** Luhn mod 32 sobre el alfabeto Crockford (`caracterDeControl` de `giftCardCode.ts`). */
     private fun caracterDeControl(payload: String): Char {
         val n = ALFABETO.length

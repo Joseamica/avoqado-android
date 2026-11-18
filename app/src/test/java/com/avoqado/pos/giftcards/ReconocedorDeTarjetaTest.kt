@@ -59,4 +59,10 @@ class ReconocedorDeTarjetaTest {
         org.junit.Assert.assertFalse("U no es del alfabeto", ReconocedorDeTarjeta.esDelServidor("CAFE-REGULAR-000001"))
         org.junit.Assert.assertFalse(ReconocedorDeTarjeta.esDelServidor("PIZZAS-003"))
     }
+
+    @Test fun `D14 esTarjetaImpresa pide el formato impreso del servidor`() {
+        org.junit.Assert.assertTrue(ReconocedorDeTarjeta.esTarjetaImpresa("ABCD-EFGH-JKMN-PQRS-K"))
+        org.junit.Assert.assertFalse("sin guiones", ReconocedorDeTarjeta.esTarjetaImpresa("ABCDEFGHJKMNPQRSK"))
+        org.junit.Assert.assertFalse("otros guiones", ReconocedorDeTarjeta.esTarjetaImpresa("CAFE-VERDE-00000399"))
+    }
 }
