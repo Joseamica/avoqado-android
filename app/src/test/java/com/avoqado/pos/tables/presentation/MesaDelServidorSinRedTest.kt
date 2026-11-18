@@ -1133,11 +1133,15 @@ class MesaDelServidorSinRedTest {
         subject.viewModelScope.cancel()
     }
 
-    @Test fun `nac50984 la ronda de otra pantalla o una cuenta aparte igual a la actual no mueven nada`() = runTest {
+    @Test fun `nac50984 una cuenta aparte igual a la cuenta en pantalla no avisa nada ni cambia de cuenta`() = runTest {
         val subject = mesaConFoto()
-        acks.emit(ackCuentaAparte("ronda-de-otra-caja"))
+        subject.consumeActionMessage()
+        acks.emit(SyncAck("ronda-x", "ACKED", result = kotlinx.serialization.json.buildJsonObject {
+            put("orderId", kotlinx.serialization.json.JsonPrimitive("order-F"))
+            put("cuentaAparte", kotlinx.serialization.json.buildJsonObject { put("orderId", kotlinx.serialization.json.JsonPrimitive("order-F")) })
+        }, contextoDeSesion = session.contextoActual()))
         advanceUntilIdle()
-        assertEquals(1, subject.queued.value.size)
+        assertNull(subject.actionMessage.value)
         assertEquals("order-F", session.current()?.orderId)
         subject.viewModelScope.cancel()
     }
