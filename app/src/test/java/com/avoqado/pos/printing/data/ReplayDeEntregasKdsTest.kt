@@ -39,7 +39,8 @@ class ReplayDeEntregasKdsTest {
 
     /** nab17320: el replay pregunta si la fila sigue antes de imprimir; por omisión sigue (las pruebas no la borran por fuera). */
     private val dao = mockk<EntregasKdsPendientesDao>(relaxed = true) { coEvery { existe(any()) } returns true }
-    private val entregaPorWifi = mockk<EntregaPorWifi>()
+    /** D28: por omisión ninguna hoja salió por la libreta en este proceso (`papelYaSalio`); las pruebas que lo necesitan lo re-stubbean. */
+    private val entregaPorWifi = mockk<EntregaPorWifi> { every { papelYaSalio(any()) } returns false }
     /**
      * Estricto: el replay refresca la config POR SU CUENTA (`refrescarConfig`, para revalidar la sucursal antes y después)
      * y le pide a `reintentar` que NO refresque otra vez (`refrescar = false`): una llamada con `true` no tiene respuesta.
@@ -350,6 +351,26 @@ class ReplayDeEntregasKdsTest {
         replay.reproducirAlAbrir("venue-1", ahora = 20 * 60_000)
 
         coVerify(exactly = 1) { entregaPorWifi.empujar(any(), ReplayDeEntregasKds.ESPERA_PANTALLAS_MS) }
+        coVerify(exactly = 0) { despachador.reintentar(any(), any(), any()) }
+        coVerify(exactly = 0) { dao.borrar(any()) }
+    }
+
+    /**
+     * D28: la pasada leyó la fila con su papel al empezar; mientras procesaba otras, la libreta imprimió esa hoja (y la soltó).
+     * Justo antes de imprimir, el replay pregunta otra vez y ya no la saca.
+     */
+    @Test
+    fun `P1 D28 si la hoja salio por la libreta mientras la pasada avanzaba, el replay no la imprime`() = runTest {
+        val plan = TicketPlan("st_barra", false, listOf(ConsolidatedLine("Café", 1, emptyList(), null, listOf("oi_2"))))
+        val conPlan = trabajo.copy(planes = listOf(plan))
+        coEvery { dao.delVenue("venue-1") } returns listOf(
+            fila("sale:vieja:st_barra", 0).copy(trabajoJson = Json.encodeToString(TrabajoPendiente.serializer(), conPlan)),
+        )
+        coEvery { entregaPorWifi.empujar(any(), any()) } returns false
+        every { entregaPorWifi.papelYaSalio(any()) } returnsMany listOf(false, true)
+
+        replay.reproducirAlAbrir("venue-1", ahora = 20 * 60_000)
+
         coVerify(exactly = 0) { despachador.reintentar(any(), any(), any()) }
         coVerify(exactly = 0) { dao.borrar(any()) }
     }

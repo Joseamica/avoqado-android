@@ -271,8 +271,10 @@ class ComandasPendientesStoreTest {
         store.yaLaCante()?.join()
 
         assertNull(store.pendiente.value)
-        // Sólo el plan de la estación de RESPALDO: las demás nunca tuvieron fila.
+        // Sólo el plan de la estación de RESPALDO se borra.
         coVerify(exactly = 1) { entrega.cerrarPorPapel("venue-1", "ORD-42", listOf(plan)) }
+        // D28: la de estación con impresora propia sólo pierde su papel (su pantalla aún puede esperarla).
+        coVerify(exactly = 1) { entrega.quitarPapel("venue-1", "ORD-42", listOf(planCocina)) }
     }
 
     /**

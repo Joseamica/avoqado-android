@@ -23,9 +23,11 @@
 ### Fixed
 - **La comanda ya no sale dos veces cuando la impresora de cocina falla y la pantalla no contesta (D28).** En una estación
   con impresora Y pantalla de cocina, con la preparación por producto, la comanda que no salió la imprimía la libreta y, hasta
-  un minuto después, otra vez como «RESPALDO». Ahora sale una sola hoja, la de la libreta (o la que se canta con «Ya la
-  canté»), y la tarjeta le sigue llegando a la pantalla cuando ésta vuelva. Las estaciones «sólo pantalla» no cambian. Si la
-  app se cierra a media venta, el papel de respaldo sigue rescatando la hoja como hoy. iOS: no se tocó (iOS va después).
+  un minuto después, otra vez como «RESPALDO». Ahora, cuando la libreta imprime la hoja (o la cajera toca «Ya la canté»), la
+  copia de la pantalla se queda sin papel: sale una sola hoja y la tarjeta le sigue llegando a la pantalla cuando ésta vuelva.
+  Mientras la libreta no la imprima (no pudo guardarla, la estación se quedó sin impresora, o la descartó por la hora), esa
+  copia conserva su papel y rescata la hoja como hoy: nunca cero hojas. Las estaciones «sólo pantalla» no cambian. iOS: no se
+  tocó (iOS va después).
 - **Cupones al cobrar (D5).** Todo cupón válido salía «Cupon no valido» porque la app leía otra forma de la respuesta. Ahora se lee la real, el cupón baja el total, viaja con la venta (`couponCode`) y cuenta su uso al quedar pagada; cada rechazo dice su razón y sin red dice «Sin conexión…» y no se encola, como el premio de sellos. Requiere el SERVIDOR con `couponCode`.
 - **«Por revisar» con la terminal ya libre (D19).** Una cancelación pendiente seguía diciendo «La venta se cancelará sola en cuanto conste que no se cobró» aunque la terminal ya se hubiera soltado, y sólo ofrecía «Volver a consultar». Ahora la fila dice «La terminal ya está libre, pero no consta si esta venta se cobró…» y trae «No se cobró», con la misma confirmación y la misma declaración del cobro; el mesero sin permiso teclea ahí el PIN de un gerente. Si el SERVIDOR libera, se vuelve a consultar aunque haya otra consulta en vuelo, y la orden se cancela con su barrera de siempre. La marca se guarda en la intención (lo guardado por versiones anteriores se lee igual). iOS: ficha «Terminal trabada…» en `docs/proyectos/ios-por-hacer.md`.
 - **2.25.5 · POS de Windows: atajos de teclado en el cobro (pedido de un cliente de retail).** F12 Cobrar, F3 Buscar (Esc la cierra), F5 Efectivo (abre «Monto recibido» con el total: F5 otra vez cobra exacto; si tecleas lo que te dieron, F5 cobra con su cambio), F4 Cobrar con terminal (F4 otra vez = la primera terminal), Esc regresa y en «Venta terminada» es «Venta nueva»; en «¿Cómo fue tu experiencia?» F12 = Omitir. La tecla se ve en chiquito junto a su botón. En el cobro sólo las teclas F y el mouse cobran: Enter y Espacio no, porque la pistola de códigos termina cada código con Enter. Con una hoja o un aviso encima las teclas no hacen nada. Sólo Windows; Android y iPad sin cambios.

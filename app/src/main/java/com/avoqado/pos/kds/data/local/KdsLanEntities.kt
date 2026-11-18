@@ -90,7 +90,10 @@ internal object KdsLanSql {
     /** Ronda 2 (N2): el despacho vivo terminó sin papel para esta entrega; el reloj del replay ya la puede tomar. */
     const val SOLTAR_ENTREGA: String = "UPDATE entregas_kds_pendientes SET soltadaEnMillis = :ahora WHERE entregaId = :entregaId"
 
-    /** D28: lo mismo que [SOLTAR_ENTREGA], cambiando su trabajo (sin papel) en el mismo paso. `creadaEnMillis` no se toca. */
+    /**
+     * D28: la hoja ya salió por la libreta (o se cantó): la fila se suelta y cambia su trabajo por uno sin papel, en el mismo
+     * paso. `creadaEnMillis` no se toca.
+     */
     const val SOLTAR_CON_TRABAJO: String =
         "UPDATE entregas_kds_pendientes SET trabajoJson = :trabajoJson, soltadaEnMillis = :ahora WHERE entregaId = :entregaId"
 

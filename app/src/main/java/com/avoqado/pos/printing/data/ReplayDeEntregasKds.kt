@@ -169,12 +169,14 @@ class ReplayDeEntregasKds @Inject constructor(
             return
         }
         val mensaje = KdsLanProtocol.decodeComanda(fila.mensajeJson)
-        val trabajo = runCatching { json.decodeFromString(TrabajoPendiente.serializer(), fila.trabajoJson) }.getOrNull()
-        if (mensaje == null || trabajo == null) {
+        val guardado = runCatching { json.decodeFromString(TrabajoPendiente.serializer(), fila.trabajoJson) }.getOrNull()
+        if (mensaje == null || guardado == null) {
             Log.w(TAG, "Entrega ilegible ${fila.entregaId}: se descarta")
             dao.borrar(fila.entregaId)
             return
         }
+        // D28: su hoja ya salió (o se cantó) en este proceso aunque la base no lo diga (la escritura falló): sólo la pantalla.
+        val trabajo = if (entregaPorWifi.papelYaSalio(guardado)) guardado.copy(planes = emptyList()) else guardado
         // La libreta ya tiene ESTE papel (se guardó cuando no salió): su reloj lo imprime y cierra la fila. Imprimirlo
         // aquí también saldría dos veces. La fila espera: si la libreta lo suelta, el siguiente tic lo toma.
         if (laLibretaLoTiene(trabajo)) {
@@ -202,14 +204,15 @@ class ReplayDeEntregasKds @Inject constructor(
     /** Con el turno de [CandadoDeCierres] tomado: revisa que la fila siga viva y sea de la sucursal vigente, y decide su papel. */
     private suspend fun decidirPapel(fila: EntregaKdsPendienteEntity, venueId: String, trabajo: TrabajoPendiente) {
         if (!sigueEnLaTabla(fila)) return
-        if (comandasPendientesStore.seEstaCerrando(trabajo) || laLibretaLoTiene(trabajo)) return
+        // D28: esta fila se leyó al empezar la pasada; si en ese rato la libreta imprimió su hoja, ya no lleva papel.
+        if (comandasPendientesStore.seEstaCerrando(trabajo) || laLibretaLoTiene(trabajo) || entregaPorWifi.papelYaSalio(trabajo)) return
         // I1: la espera a la pantalla (hasta 3 s + el empuje) da tiempo a un cambio de sucursal, y el refresco de la config
         // (hasta 1.5 s) también. Se revalida ANTES — nunca se refresca la config de una sucursal que ya no es la vigente —
         // y DESPUÉS: la config en memoria podría ser ya la de la otra y el papel saldría en su cocina. Paridad con iOS.
         // (Codex r4 #3: la consulta a la tabla va ANTES del refresco; entre el refresco y el papel no hay otra espera.)
         if (!sigueVigente(venueId)) return
         comandaDispatcher.refrescarConfig(venueId)
-        if (comandasPendientesStore.seEstaCerrando(trabajo) || laLibretaLoTiene(trabajo)) return
+        if (comandasPendientesStore.seEstaCerrando(trabajo) || laLibretaLoTiene(trabajo) || entregaPorWifi.papelYaSalio(trabajo)) return
         if (!sigueVigente(venueId)) return
         when (val estado = comandaDispatcher.reintentar(trabajo, refrescar = false)) {
             is EstadoDeComanda.Salio -> {

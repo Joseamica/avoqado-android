@@ -494,25 +494,19 @@ class ComandaDispatcher @Inject constructor(
      * La que TRONÓ se queda: va en el `NoSalio` que el llamador guarda en la libreta, y la cierra el papel cuando por fin
      * sale ([reintentar] → [EntregaPorWifi.cerrarPorPapel]). Ronda 2 (N2): además se SUELTA, para que el reloj del
      * replay la retome en este mismo proceso si la libreta la pierde (su única ranura la pisa otra falla).
-     *
-     * D28 (18-nov): la que tronó en una estación con impresora propia se suelta SIN papel. Su hoja ya va en el `NoSalio` que
-     * el llamador guardó en la libreta (antes de que `insistir` regresara); con papel, el replay la imprimía otra vez como
-     * RESPALDO hasta un minuto después de que la libreta la sacara. Queda sólo para entregarle la tarjeta a la pantalla.
      */
     private suspend fun cerrarLasDecididas(entregas: List<EntregaKds>, acusadas: Set<String>, estado: EstadoDeComanda) {
         val tronaron = (estado as? EstadoDeComanda.NoSalio)?.trabajo?.planes.orEmpty()
         val guardadas = entregas.filter { e -> e.trabajoDeRespaldo != null && e.mensaje.stationId !in acusadas }
         val (retenidas, decididas) = guardadas.partition { e -> e.trabajoDeRespaldo!!.planes.any { it in tronaron } }
         if (decididas.isNotEmpty()) entregaPorWifi?.cerrar(decididas)
-        val (paraLaPantalla, conSuPapel) = retenidas.partition { it.papelPropio }
-        if (paraLaPantalla.isNotEmpty()) entregaPorWifi?.soltarSoloParaLaPantalla(paraLaPantalla)
-        if (conSuPapel.isNotEmpty()) entregaPorWifi?.soltar(conSuPapel)
+        if (retenidas.isNotEmpty()) entregaPorWifi?.soltar(retenidas)
     }
 
     /**
      * Una entrega por plan con pantalla (D6). Trabajo de respaldo para «sólo pantalla» y para la preparación por producto. En
-     * una estación con impresora propia ese papel sólo sirve si el despacho muere antes de decidir; si su papel normal truena,
-     * la fila se suelta sin él (D28, [cerrarLasDecididas]).
+     * una estación con impresora propia ese papel rescata la hoja si la libreta no llega a imprimirla; cuando la imprime, la
+     * fila se queda sin papel (D28, [cerrarPapelQueSalio]).
      */
     private fun entregasPorWifi(
         venueId: String,
@@ -550,7 +544,6 @@ class ComandaDispatcher @Inject constructor(
                 } else {
                     null
                 },
-                papelPropio = !soloPantalla,
             )
         }
     }
@@ -654,15 +647,24 @@ class ComandaDispatcher @Inject constructor(
     /**
      * Etapa 3 del KDS (3.5), ronda 1 (I2): el papel de RESPALDO que por fin salió («Volver a imprimir», el reloj de la
      * libreta, el replay) cierra su entrega pendiente; si no, la próxima apertura lo imprimiría otra vez. Sólo mira las
-     * estaciones que el trabajo lleva marcadas de respaldo: un trabajo sin respaldo no toca la base.
+     * estaciones que el trabajo lleva marcadas de respaldo.
+     *
+     * D28 (18-nov): la hoja de una estación con impresora propia que salió deja SIN papel su fila pendiente
+     * ([EntregaPorWifi.quitarPapel]); la fila sigue para la pantalla. Antes, el reloj del replay la imprimía otra vez como
+     * RESPALDO después de la libreta. Si algo se SALTÓ (sin impresora), ninguna fila pierde su papel: no se sabe con certeza
+     * qué salió, y la fila con su papel es el rescate (duplicado, nunca pérdida).
      */
     private suspend fun cerrarPapelQueSalio(trabajo: TrabajoPendiente, estado: EstadoDeComanda) {
         val vId = trabajo.venueId ?: return
         val respaldo = trabajo.config.stations.filter { it.respaldoLocal }.map { it.id }.toSet()
-        if (respaldo.isEmpty()) return
         val tronaron = (estado as? EstadoDeComanda.NoSalio)?.trabajo?.planes.orEmpty()
-        val salieron = trabajo.planes.filter { it.stationId in respaldo && it !in tronaron }
-        if (salieron.isNotEmpty()) entregaPorWifi?.cerrarPorPapel(vId, trabajo.orderNumber, salieron)
+        val salieron = trabajo.planes.filter { it !in tronaron }
+        val deRespaldo = salieron.filter { it.stationId in respaldo }
+        if (deRespaldo.isNotEmpty()) entregaPorWifi?.cerrarPorPapel(vId, trabajo.orderNumber, deRespaldo)
+        val seSalto = estado is EstadoDeComanda.NoSalio && estado.estaciones.size > tronaron.map { it.stationId }.distinct().size
+        if (estado !is EstadoDeComanda.Salio && (estado !is EstadoDeComanda.NoSalio || seSalto)) return
+        val propias = salieron.filter { it.stationId !in respaldo }
+        if (propias.isNotEmpty()) entregaPorWifi?.quitarPapel(vId, trabajo.orderNumber, propias)
     }
 
     suspend fun dispatchAreaComanda(

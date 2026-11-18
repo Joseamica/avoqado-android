@@ -20,12 +20,8 @@ import javax.inject.Singleton
 
 private const val TAG = "EntregaPorWifi"
 
-/**
- * Una entrega por WiFi: el mensaje y, si la estación es «sólo pantalla» o lleva preparación por producto, el trabajo de papel
- * que sale si nadie acusa. [papelPropio] (D28): la estación tiene impresora; si su papel no sale, la dueña de esa hoja es la
- * libreta, no esta fila ([EntregaPorWifi.soltarSoloParaLaPantalla]).
- */
-data class EntregaKds(val mensaje: KdsComanda, val trabajoDeRespaldo: TrabajoPendiente?, val papelPropio: Boolean = false) {
+/** Una entrega por WiFi: el mensaje y, si la estación es «sólo pantalla», el trabajo de papel que sale si nadie acusa. */
+data class EntregaKds(val mensaje: KdsComanda, val trabajoDeRespaldo: TrabajoPendiente?) {
     /** La llave de su fila (ronda 2, N1), o `null` si no se guarda (impresora + pantalla: sin trabajo de respaldo). */
     val entregaId: String? get() = trabajoDeRespaldo?.let { if (mensaje.preparationVersion == 1)
         mensaje.sourceKey + "|" + mensaje.items.map { item -> item.id }.sorted().joinToString(",") else entregaIdDe(mensaje.sourceKey, it.planes) }
@@ -136,20 +132,6 @@ class EntregaPorWifi @Inject constructor(
         }
     }
 
-    /**
-     * D28: como [soltar], pero la fila se queda SIN papel (`planes` vacíos, en el mismo UPDATE; su hora de creación no cambia).
-     * Es la de una estación con impresora propia cuyo papel no salió: esa hoja ya va en la libreta, su única dueña. Con papel,
-     * el replay la imprimía otra vez como RESPALDO después de que la libreta la sacara. La fila sigue sólo para la pantalla.
-     */
-    suspend fun soltarSoloParaLaPantalla(entregas: List<EntregaKds>, ahora: Long = System.currentTimeMillis()) {
-        for (e in entregas) {
-            val trabajo = e.trabajoDeRespaldo ?: continue
-            val id = requireNotNull(e.entregaId)
-            val sinPapel = json.encodeToString(TrabajoPendiente.serializer(), trabajo.copy(planes = emptyList()))
-            sinTumbar("No se pudo soltar la entrega $id") { dao.soltarConTrabajo(id, sinPapel, ahora) }
-        }
-    }
-
     private suspend fun borrar(e: EntregaKds) {
         val id = e.entregaId ?: return // sin trabajo de respaldo nunca se guardó
         sinTumbar("No se pudo borrar la entrega $id") { dao.borrar(id) }
@@ -177,6 +159,54 @@ class EntregaPorWifi @Inject constructor(
             cerrado = true
         }
         return !cerrado
+    }
+
+    /**
+     * D28: la hoja de una estación con impresora propia ya SALIÓ (la libreta, «Volver a imprimir») o una persona la cantó
+     * («Ya la canté»): sus filas pendientes se quedan SIN papel (`planes` vacíos; su hora de creación no cambia), sólo para
+     * entregarle la tarjeta a la pantalla. Hasta entonces la fila conserva su papel, que rescata la hoja si la libreta no llega a
+     * imprimirla. Una fila pierde su papel sólo si TODOS sus renglones están entre los que salieron en su estación.
+     *
+     * Se anota también en memoria ([papelYaSalio]) ANTES de escribir: cubre al replay que leyó la fila antes de este cambio y a
+     * una escritura que falla. ponytail: en memoria y sin podar (una por comanda que no salió); si la app muere sin que la base
+     * se escribiera, al abrir sale UNA vez más (duplicado, nunca pérdida).
+     *
+     * @return `true` si la base tropezó, como [cerrarPorPapel].
+     */
+    suspend fun quitarPapel(venueId: String, orderNumber: String, salieron: List<TicketPlan>): Boolean {
+        val papel = PapelQueSalio(
+            venueId, orderNumber,
+            salieron.filter { it.stationId != null }.groupBy { it.stationId!! }
+                .mapValues { (_, planes) -> planes.flatMap { p -> p.lines.flatMap { it.orderItemIds } }.toSet() },
+        )
+        if (papel.porEstacion.isEmpty()) return false
+        var hecho = false
+        sinTumbar("No se pudo quitar el papel de las entregas de $orderNumber") {
+            for (fila in dao.delVenue(venueId)) {
+                val trabajo = runCatching { json.decodeFromString(TrabajoPendiente.serializer(), fila.trabajoJson) }.getOrNull() ?: continue
+                if (!papel.cubre(trabajo)) continue
+                papelesQueSalieron += papel
+                val sinPapel = json.encodeToString(TrabajoPendiente.serializer(), trabajo.copy(planes = emptyList()))
+                dao.soltarConTrabajo(fila.entregaId, sinPapel, System.currentTimeMillis())
+            }
+            hecho = true
+        }
+        if (!hecho) papelesQueSalieron += papel // la base no dejó leer: no se sabe qué filas, la memoria las cubre
+        return !hecho
+    }
+
+    /** D28: ¿la hoja de este trabajo ya salió (o se cantó) en este proceso? El replay lo trata como fila sin papel. */
+    fun papelYaSalio(trabajo: TrabajoPendiente): Boolean = papelesQueSalieron.any { it.cubre(trabajo) }
+
+    private val papelesQueSalieron: MutableSet<PapelQueSalio> = java.util.concurrent.ConcurrentHashMap.newKeySet()
+
+    /** Lo que salió de una orden, por estación (sus `orderItemIds`). */
+    private data class PapelQueSalio(val venueId: String, val orderNumber: String, val porEstacion: Map<String, Set<String>>) {
+        fun cubre(t: TrabajoPendiente): Boolean = t.venueId == venueId && t.orderNumber == orderNumber && t.planes.isNotEmpty() &&
+            t.planes.all { p ->
+                val ids = p.stationId?.let(porEstacion::get) ?: return@all false
+                p.lines.all { l -> l.orderItemIds.all { it in ids } }
+            }
     }
 
     /** M6 de la revisión: `runCatching` se tragaba la cancelación de las llamadas suspendidas a la base. */
