@@ -438,4 +438,24 @@ class TransactionReprintReceiptTest {
         assertEquals(listOf(1000, 1000), listOf(devolucion.subtotal, devolucion.total))
         assertNull(devolucion.discountAmount)
     }
+
+    /**
+     * Codex r5 #2 de D41: dos renglones de $12,000,000 dados de cortesía y un artículo de $100. El papel guarda centavos en Int (~$21
+     * millones): sumar la cortesía se desbordaba e imprimía un subtotal negativo. Si la suma no cabe, no se suma: sale como antes, cuadrada.
+     */
+    @Test
+    fun `D41 r5 - una cortesia que no cabe en el papel no se suma ni desborda - sale como antes, cuadrada`() {
+        val json = Json { ignoreUnknownKeys = true }
+        val r = json.decodeFromString<Transaction>(
+            """{"id":"p","method":"CASH","amount":100,"cortesiaDelTicket":24000000,
+                "ticketTotals":{"kind":"COBRO","desglosado":true,"subtotal":100,"serviceCharge":0,"addedTax":0,"tip":0,"total":100},
+                "items":[{"productName":"A","total":0,"totalEnElTicket":12000000},{"productName":"B","total":0,"totalEnElTicket":12000000},
+                         {"productName":"C","total":100,"totalEnElTicket":100}]}""",
+        ).toReceiptData(venueName = "T", reprintedAt = cuando)
+        assertEquals(listOf(10000, 10000), listOf(r.subtotal, r.total))
+        assertNull(r.discountAmount)
+        assertEquals(listOf(0, 0, 10000), r.items.map { it.totalPrice })
+        assertTrue(r.subtotal > 0)
+        assertEquals(true, cuadra(r))
+    }
 }
