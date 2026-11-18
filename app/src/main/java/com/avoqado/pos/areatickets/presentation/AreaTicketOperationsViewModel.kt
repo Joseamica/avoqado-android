@@ -12,6 +12,8 @@ import com.avoqado.pos.areatickets.data.IssueAreaTicketLineRequest
 import com.avoqado.pos.areatickets.data.PendingAreaTicketPrintRecord
 import com.avoqado.pos.areatickets.data.RenglonDeComandaDeVale
 import com.avoqado.pos.areatickets.data.SETTLEMENT_ROUTE_EXTERNAL
+import com.avoqado.pos.areatickets.data.comentarioQueViaja
+import com.avoqado.pos.areatickets.data.motivoQueViaja
 import com.avoqado.pos.areatickets.data.toAreaTicketData
 import com.avoqado.pos.areatickets.data.ValeSinConfirmar
 import com.avoqado.pos.core.data.local.LlaveDeEmisionDeVales
@@ -1006,6 +1008,8 @@ internal fun intentoDeVale(cart: CartState, ahora: Long = System.currentTimeMill
             notes = item.itemNote,
             modifierIds = item.selectedModifiers.map { it.modifierId },
             discountId = item.itemDiscountId,
+            discountReason = item.motivoQueViaja(),
+            discountReasonComment = item.comentarioQueViaja(),
         )
     },
     comanda = cart.items.map { item ->
