@@ -727,13 +727,13 @@ private fun TableCheckSheet(
                 modifier = Modifier.weight(1f),
             )
             Text(
-                text = when {
-                    table.isOccupied -> "Ocupada"
-                    table.isReserved -> "Reservada"
-                    else -> "Libre"
-                },
+                text = textoEstadoDeMesa(table, actionState),
                 style = MaterialTheme.typography.bodyMedium,
-                color = statusColor(table, isSystemInDarkTheme()),
+                color = if (!table.isOccupied && actionState is TableActionState.OcupadaEnOtraCaja) {
+                    tableColors(occupied = true, dark = isSystemInDarkTheme()).fill
+                } else {
+                    statusColor(table, isSystemInDarkTheme())
+                },
                 fontWeight = FontWeight.SemiBold,
             )
         }
@@ -745,6 +745,7 @@ private fun TableCheckSheet(
 
         when (val state = actionState) {
             is TableActionState.Error -> StatusLine(state.message, MaterialTheme.colorScheme.error)
+            is TableActionState.OcupadaEnOtraCaja -> StatusLine(state.message, MaterialTheme.colorScheme.error)
             is TableActionState.Success -> StatusLine(state.message, Success)
             else -> {}
         }
@@ -766,14 +767,14 @@ private fun TableCheckSheet(
                 PrimaryButton(
                     text = textoAbrirMesa(actionState, revisandoConCajas),
                     onClick = { viewModel.openTableAndStartOrdering(table, covers, onReady = onOpenTableOrder) },
-                    enabled = actionState !is TableActionState.Working,
+                    enabled = puedeAbrirMesa(actionState),
                     fullWidth = true,
                 )
                 // Escape de Square: abrir sin contar comensales (barra, para
                 // llevar). Sin conteo no hay asientos ni propina por grupo.
                 TextButton(
                     onClick = { viewModel.openTableAndStartOrdering(table, 0, onReady = onOpenTableOrder) },
-                    enabled = actionState !is TableActionState.Working,
+                    enabled = puedeAbrirMesa(actionState),
                     modifier = Modifier.fillMaxWidth(),
                 ) { Text("Sin comensales") }
             }
@@ -1055,6 +1056,18 @@ private fun StatusLine(message: String, color: Color) {
 }
 
 internal fun textoCuentaEnPlano(check:com.avoqado.pos.tables.data.OpenCheckSummary):String = if(check.isProvisional) "Por sincronizar" else check.totalDisplay
+
+/** D48: lo que dice la hoja junto al número. Si el Hub contestó que otra caja la tiene, ya no es «Libre». */
+internal fun textoEstadoDeMesa(table: DiningTable, estado: TableActionState): String = when {
+    table.isOccupied -> "Ocupada"
+    estado is TableActionState.OcupadaEnOtraCaja -> "Ocupada en otra caja"
+    table.isReserved -> "Reservada"
+    else -> "Libre"
+}
+
+/** D48: abrir una mesa libre no se ofrece mientras abre ni cuando el Hub dijo que otra caja la tiene. */
+internal fun puedeAbrirMesa(estado: TableActionState): Boolean =
+    estado !is TableActionState.Working && estado !is TableActionState.OcupadaEnOtraCaja
 
 /** El botón de una mesa libre. Hub D3: mientras el árbitro pide esperar, «Revisando con las otras cajas…». */
 internal fun textoAbrirMesa(estado: TableActionState, revisandoConCajas: Boolean): String = when {

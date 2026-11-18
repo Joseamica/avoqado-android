@@ -542,7 +542,25 @@ class AperturaDeMesaConElHubTest {
         val subject = vm()
         try {
             subject.openTableAndStartOrdering(mesaB, 2) {}; advanceUntilIdle()
-            assertEquals(TableActionState.Error("Ana está atendiendo esta mesa en otro dispositivo"), subject.actionState.value)
+            assertEquals(TableActionState.OcupadaEnOtraCaja("Ana"), subject.actionState.value)
+            assertEquals("Ana está atendiendo esta mesa en otro dispositivo", (subject.actionState.value as TableActionState.OcupadaEnOtraCaja).message)
+        } finally { subject.viewModelScope.cancel() }
+    }
+
+    // D48 (18-nov, N86): la hoja decía «Libre» en verde y dejaba «Abrir mesa y ordenar» activo junto al aviso rojo.
+    @Test fun `p_taken la hoja dice Ocupada en otra caja y no deja abrir - al cerrarla y volver se puede intentar otra vez`() = runTest {
+        esperar = { _, _, _ -> LeaseOutcome.Taken("Ana") }
+        val subject = vm()
+        try {
+            subject.selectTable(mesaB.id)
+            subject.openTableAndStartOrdering(mesaB, 2) {}; advanceUntilIdle()
+            val estado = subject.actionState.value
+            assertEquals("Ocupada en otra caja", textoEstadoDeMesa(mesaB, estado))
+            assertEquals(false, puedeAbrirMesa(estado))
+
+            subject.selectTable(null); subject.selectTable(mesaB.id)
+            assertEquals("Libre", textoEstadoDeMesa(mesaB, subject.actionState.value))
+            assertEquals(true, puedeAbrirMesa(subject.actionState.value))
         } finally { subject.viewModelScope.cancel() }
     }
 
@@ -621,7 +639,7 @@ class AperturaDeMesaConElHubTest {
             assertEquals("m13", a.sesion.current()?.tableId)
 
             vmC.openTableAndStartOrdering(m13Libre, 2) {}; runCurrent()
-            assertEquals(TableActionState.Error("Ana está atendiendo esta mesa en otro dispositivo"), vmC.actionState.value)
+            assertEquals(TableActionState.OcupadaEnOtraCaja("Ana"), vmC.actionState.value)
             assertNull(c.sesion.current())
 
             a.red.retener = Red.Retener.NADA; a.red.soltarTodo(); runCurrent()
