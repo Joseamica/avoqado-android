@@ -25,6 +25,8 @@ import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.NonCancellable
@@ -263,8 +265,11 @@ class CustomerDisplaySyncTest {
     private fun logoEnVueloY404(discoLento: Boolean) = runBlocking {
         val retenida = CompletableDeferred<Unit>()
         val bajando = CountDownLatch(1)
+        // El trabajo de la descarga (la corrutina que llama a `ensure` y después pide su turno en la fila).
+        val descarga = AtomicReference<Job?>(null)
         // Como OkHttp bloqueante: la descarga NO se entera de la cancelación y termina igual.
         coEvery { images.ensure(any(), any()) } coAnswers {
+            descarga.set(currentCoroutineContext()[Job])
             bajando.countDown()
             withContext(NonCancellable) { retenida.await() }
             bajar(firstArg())
@@ -280,7 +285,12 @@ class CustomerDisplaySyncTest {
         lento.set(discoLento)
         sync.onDeviceUnbound(VENUE)
         retenida.complete(Unit)
-        Thread.sleep(300)
+        // Sin reloj (antes: `Thread.sleep(300)`, rojo con el runner cargado, CI 43808201290). Se espera a que el trabajo de la
+        // descarga TERMINE (cancelado, o después de su unidad en la fila: lo que publicaría tarde ya pasó) y luego la fila: el
+        // desligado se formó ANTES (`launchUnit` toma su lugar en la misma llamada) y el `Mutex` es justo, así que al volver de
+        // `vaciarLaFila` ya corrió completo.
+        withTimeout(5_000) { descarga.get()!!.join() }
+        vaciarLaFila(sync)
 
         assertNull(state.design.value)
         assertTrue(store().load().manifests.isEmpty())
@@ -1378,13 +1388,15 @@ class CustomerDisplaySyncTest {
 
     private fun aLogoutA(hiloLento: Boolean) = runBlocking {
         val retenida = CompletableDeferred<Unit>()
-        val cancelada = AtomicBoolean(false)
+        // La cancelación despierta el `catch` en un hilo de IO, en su turno: se ESPERA (antes se leía al instante, rojo con el
+        // runner cargado, CI 43741324345).
+        val cancelada = CountDownLatch(1)
         coEvery { images.ensure(any(), any()) } coAnswers {
             try {
                 retenida.await()
             } catch (e: CancellationException) {
                 if (hiloLento) Thread.sleep(300)
-                cancelada.set(true)
+                cancelada.countDown()
                 throw e
             }
             bajar(firstArg())
@@ -1407,7 +1419,7 @@ class CustomerDisplaySyncTest {
         vaciarLaFila(sync)
         mirando.cancel()
 
-        assertTrue("la descarga de la sesión cerrada siguió viva", cancelada.get())
+        assertTrue("la descarga de la sesión cerrada siguió viva", cancelada.await(5, TimeUnit.SECONDS))
         assertTrue("el logout no retiró el diseño: $vistos", null in vistos)
         assertEquals(HUELLA_A, state.design.value!!.ficha.fingerprint)   // lo guardado de A, otra vez publicado
     }
