@@ -132,7 +132,8 @@ class LectorHid(
         if (!continuaLaRafaga) {
             // Codex r9: la pistola hizo una pausa a media etiqueta («KIT » y luego «CAFE-001»): la ráfaga anterior del mismo
             // aparato se abandonó hace menos de 1 s, así que ésta es el FINAL de un código. Su segunda lectura no se ofrece.
-            val abandonada = teclasEnRafaga >= 2 && aparatoDeLaRafaga == deviceId && ahoraMs - ultimaTeclaMs <= PAUSA_DE_UNA_LECTURA_MS
+            // Codex r10: también con UN carácter suelto antes («P» y pausa, luego «CAFE-001»).
+            val abandonada = teclasEnRafaga >= 1 && aparatoDeLaRafaga == deviceId && ahoraMs - ultimaTeclaMs <= PAUSA_DE_UNA_LECTURA_MS
             buffer.setLength(0)
             bufferUs.setLength(0)
             teclasEnRafaga = 0
@@ -160,8 +161,11 @@ class LectorHid(
     }
 
     private companion object {
-        /** D14: una ráfaga abandonada hace menos de esto, del mismo aparato, era el principio de la que sigue. */
-        const val PAUSA_DE_UNA_LECTURA_MS = 1_000L
+        /**
+         * D14: una ráfaga abandonada hace menos de esto, del mismo aparato, era el principio de la que sigue. Las pistolas que
+         * programan una pausa a media etiqueta la dejan en pocos segundos; más allá, igual que hoy con un código sin guion.
+         */
+        const val PAUSA_DE_UNA_LECTURA_MS = 5_000L
         const val SIN_APARATO = Int.MIN_VALUE
     }
 }

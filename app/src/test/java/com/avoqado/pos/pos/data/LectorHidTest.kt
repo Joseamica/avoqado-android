@@ -269,4 +269,19 @@ class LectorHidTest {
 
         assertEquals(TeclaHid.Codigo("CAFE'001", textoUs = "CAFE'001"), fin)
     }
+
+    @Test
+    fun `D14 una pausa tras un solo caracter tambien deja sin lectura en ingles`() {
+        // Codex r10: «P», pausa de 2 s, luego «CAFE'001».
+        val lector = LectorHid()
+        var t = 1_000L
+        lector.procesar(caracter = 'P', esTerminador = false, esFisico = true, deviceId = 7, ahoraMs = t); t += 2_000
+        "CAFE'001".forEach { c ->
+            lector.procesar(caracter = c, esTerminador = false, esFisico = true, deviceId = 7, ahoraMs = t, caracterUs = if (c == '\'') '-' else c)
+            t += 10
+        }
+        val fin = lector.procesar(caracter = null, esTerminador = true, esFisico = true, deviceId = 7, ahoraMs = t)
+
+        assertEquals(TeclaHid.Codigo("CAFE'001", textoUs = "CAFE'001"), fin)
+    }
 }
