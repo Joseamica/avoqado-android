@@ -97,15 +97,31 @@ class F1FolioDelCarritoModeloTest {
         /** Qué contesta el próximo envío a la terminal (null = la tarjeta queda en duda). */
         var proximoEnvio: ((folio: String?, requestId: String) -> TerminalPaymentResult)? = null
 
+        /** Lo que contesta `GET …/orders/:id` por folio (estado, pago y saldo). Ausente = sin respuesta. */
+        val saldos = mutableMapOf<String, OrderRepository.SaldoDeLaOrden>()
+
         val orderRepository = mockk<OrderRepository>(relaxed = true).also { repo ->
             coEvery { repo.createOrder(any(), any(), any(), any(), any(), any(), capturedVenueId = any()) } answers {
                 val folio = "order-${'a' + ordenesCreadas.size}"
                 ordenesCreadas += folio to thirdArg<String?>()
                 Result.success(CreateOrderResponse(success = true, data = OrderData(id = folio)))
             }
+            coEvery { repo.saldoDeLaOrden(any()) } answers { saldos[firstArg()] }
         }
 
-        fun terminalPaymentService(): TerminalPaymentService = mockk<TerminalPaymentService>(relaxed = true).also { t ->
+        /** La cancelación durable (vive fuera de las pantallas): la terminal y el borrado de la orden los contesta [transporte]. */
+        val transporte = CancelacionTransportFalso()
+        val coordinador = CancelacionDeCobroCoordinator(
+            store = CancelacionesDeCobroEnTexto(AlmacenQuePuedeFallar()),
+            transporte = transporte,
+            conectado = MutableStateFlow(true),
+            servidorAlcanzable = MutableStateFlow(true),
+            scope = CoroutineScope(SupervisorJob() + Dispatchers.Main),
+            reloj = { 0L },
+            esperasDeSondeo = listOf(1_000L, 2_000L),
+        )
+
+        val terminal: TerminalPaymentService = mockk<TerminalPaymentService>(relaxed = true).also { t ->
             coEvery { t.fetchOnlineTerminals(any()) } returns
                 TerminalListResult.Success(listOf(OnlineTerminal(terminalId = "t1", name = "Terminal 1")))
             every { t.pendienteDeLaVenta(any()) } answers { firstArg<String?>()?.let { pendientesLocales[it] } }
@@ -127,7 +143,7 @@ class F1FolioDelCarritoModeloTest {
     /** Lo que guarda el aparato en disco (carritos guardados). [reiniciar] = la app muere y vuelve a abrir. */
     private var disco = PrefsDeDosCapas()
 
-    private fun crearCarrito(guardados: SavedCartsRepository): CartViewModel {
+    private fun crearCarrito(guardados: SavedCartsRepository, servidor: Servidor): CartViewModel {
         val productsRepository = mockk<ProductsRepository>(relaxed = true)
         val discountsRepository = mockk<DiscountsRepository>(relaxed = true)
         val authRepository = mockk<AuthRepository>(relaxed = true)
@@ -147,7 +163,7 @@ class F1FolioDelCarritoModeloTest {
             authRepository = authRepository,
             secureStorage = secureStorage,
             activeCartState = mockk<ActiveCartState>(relaxed = true),
-            orderRepository = mockk<OrderRepository>(relaxed = true),
+            orderRepository = servidor.orderRepository,
             staffRepository = staffRepository,
             classCheckoutSeed = mockk<ClassCheckoutSeed>(relaxed = true).also { every { it.consume() } returns null },
             validateReferralUseCase = mockk(relaxed = true),
@@ -157,6 +173,8 @@ class F1FolioDelCarritoModeloTest {
             customerDisplay = com.avoqado.pos.customerdisplay.CustomerDisplayState(),
             areaTicketRepository = mockk(relaxed = true),
             walletScanRepository = mockk(relaxed = true),
+            cancelacionDeCobro = servidor.coordinador,
+            terminalPaymentService = servidor.terminal,
         )
     }
 
@@ -181,22 +199,13 @@ class F1FolioDelCarritoModeloTest {
         coEvery { kdsRepository.createOrder(any(), any(), any(), any()) } returns Result.success(Unit)
         val cashDrawerRepository = mockk<CashDrawerRepository>(relaxed = true)
         coEvery { cashDrawerRepository.addCashSale(any(), any(), any(), any(), any(), llaveDelCobro = any()) } returns null
-        val coordinador = CancelacionDeCobroCoordinator(
-            store = CancelacionesDeCobroEnTexto(AlmacenQuePuedeFallar()),
-            transporte = CancelacionTransportFalso(),
-            conectado = MutableStateFlow(true),
-            servidorAlcanzable = MutableStateFlow(true),
-            scope = CoroutineScope(SupervisorJob() + Dispatchers.Main),
-            reloj = { 0L },
-            esperasDeSondeo = listOf(1_000L, 2_000L),
-        )
         return PaymentFlowViewModel(
             tableSession = TableSession(),
             syncOutbox = mockk(relaxed = true),
             orderRepository = servidor.orderRepository,
             cashPaymentRepository = cashPaymentRepository,
             tenderTypeRepository = mockk(relaxed = true),
-            terminalPaymentService = servidor.terminalPaymentService(),
+            terminalPaymentService = servidor.terminal,
             tpvSettingsRepository = tpvSettingsRepository,
             paymentSyncService = mockk<PaymentSyncService>(relaxed = true),
             cashDrawerRepository = cashDrawerRepository,
@@ -213,7 +222,7 @@ class F1FolioDelCarritoModeloTest {
             replayDeComandas = mockk(relaxed = true),
             customerDisplay = com.avoqado.pos.customerdisplay.CustomerDisplayState(),
             areaTicketRepository = areaTicketRepository,
-            cancelacionDeCobro = coordinador,
+            cancelacionDeCobro = servidor.coordinador,
             savedStateHandle = androidx.lifecycle.SavedStateHandle(),
         )
     }
@@ -224,7 +233,7 @@ class F1FolioDelCarritoModeloTest {
      */
     private inner class Caja(val servidor: Servidor) {
         val guardados = SavedCartsRepository(disco.context)
-        val carrito = crearCarrito(guardados)
+        val carrito = crearCarrito(guardados, servidor)
         val cobro = crearCobro(servidor)
 
         /** «Cobrar»: las puertas de `proceedToPayment` que tocan el folio, y el cobro abierto con la orden congelada. */
@@ -372,5 +381,106 @@ class F1FolioDelCarritoModeloTest {
         caja.tarjeta()
         advanceUntilIdle()
         assertEquals(listOf("order-a" to "cli-ana", "order-b" to "cli-beto"), servidor.ordenesCreadas)
+    }
+
+    // MARK: - Fila 3: A se resuelve con B abierto
+
+    /** A en duda → la cajera pide cancelar → [Seguir] → Guardar → llega B (mismos artículos, otro cliente). */
+    private fun TestScope.aGuardadaConBEnPantalla(caja: Caja): CartStateDeB {
+        tarjetaDeAEnDuda(caja)
+        caja.cobro.cancelarVenta()
+        advanceUntilIdle()
+        caja.seguir()
+        assertTrue("montaje: A se guarda con su folio", caja.guardar())
+        assertEquals("order-a", caja.guardados.savedCarts.value.single().folio?.orderId)
+        caja.armar("cli-beto", "Beto")
+        return CartStateDeB(caja.carrito.cartState.value, caja.carrito.selectedCustomer.value?.id)
+    }
+
+    private data class CartStateDeB(val carrito: com.avoqado.pos.pos.presentation.cart.CartState, val cliente: String?)
+
+    /** En segundo plano la terminal confirma que no hubo cargo y el coordinador cierra la cancelación de A. */
+    private fun TestScope.terminaLaCancelacionDeA(servidor: Servidor, estadoDeA: OrderRepository.SaldoDeLaOrden, borrado: com.avoqado.pos.payment.domain.ResultadoDeCancelarOrden) {
+        servidor.pendientesLocales.remove("order-a")
+        servidor.saldos["order-a"] = estadoDeA
+        servidor.transporte.programarEstados(com.avoqado.pos.payment.domain.ChargeStatusProbe.Known("CANCELLED", inProgress = false, cancelDisposition = "ACCEPTED"))
+        servidor.transporte.programarBorrados(borrado)
+        servidor.coordinador.procesarAhora(servidor.coordinador.pendientes.value.single().id)
+        advanceUntilIdle()
+        assertTrue("montaje: la cancelación de A terminó", servidor.coordinador.pendientes.value.isEmpty())
+    }
+
+    private fun assertBIntacta(caja: Caja, b: CartStateDeB) {
+        assertEquals("B no se toca", b.carrito, caja.carrito.cartState.value)
+        assertEquals(b.cliente, caja.carrito.selectedCustomer.value?.id)
+    }
+
+    @Test
+    fun cancelacionEnFondo_sueltaSoloASinDinero() = runTest {
+        val servidor = Servidor()
+        val caja = Caja(servidor)
+        val b = aGuardadaConBEnPantalla(caja)
+        val identidadDeA = caja.guardados.savedCarts.value.single().folio!!.identidadDeVenta
+
+        terminaLaCancelacionDeA(servidor, OrderRepository.SaldoDeLaOrden(18_000, "PENDING", "CANCELLED"),
+            com.avoqado.pos.payment.domain.ResultadoDeCancelarOrden.Cancelada)
+
+        assertBIntacta(caja, b)
+        val copia = caja.guardados.savedCarts.value.single()
+        assertNull("A se canceló sin dinero: su copia ya no lleva folio", copia.folio)
+        assertEquals("los artículos se conservan como borrador", 2, copia.items.size)
+
+        // Repetir (reinicio, que relee): nada cambia. Retomar da un borrador editable con identidad nueva y sin folio.
+        val despues = reiniciar(servidor)
+        assertEquals(copia, despues.guardados.savedCarts.value.single())
+        assertEquals(Restauracion.Hecha, despues.retomar())
+        assertNotEquals(identidadDeA, despues.carrito.cartState.value.identidadDeVenta)
+        despues.carrito.setSelectedCustomer("cli-ana", "Ana")
+        despues.carrito.addProduct(refresco)
+        assertEquals("ya se edita", 2, despues.carrito.cartState.value.items.size)
+        assertEquals(3, despues.carrito.cartState.value.items.sumOf { it.quantity })
+        assertTrue(despues.cobrar())
+        assertNull("y se cobra en un folio nuevo", despues.carrito.chargingAgainstOrderId)
+    }
+
+    @Test
+    fun aSeResuelveConBAbierto_losCuatroDesenlaces() = runTest {
+        val conDinero = com.avoqado.pos.payment.domain.ResultadoDeCancelarOrden.RechazoDeNegocio(400, null, "La cuenta tiene pagos")
+        data class Caso(val nombre: String, val estado: OrderRepository.SaldoDeLaOrden, val borrado: com.avoqado.pos.payment.domain.ResultadoDeCancelarOrden)
+        val casos = listOf(
+            Caso("cancelada sin dinero", OrderRepository.SaldoDeLaOrden(18_000, "PENDING", "CANCELLED"), com.avoqado.pos.payment.domain.ResultadoDeCancelarOrden.Cancelada),
+            Caso("negativo con A abierta", OrderRepository.SaldoDeLaOrden(18_000, "PENDING", "PENDING"), conDinero),
+            Caso("con abono", OrderRepository.SaldoDeLaOrden(6_000, "PARTIAL", "PENDING"), conDinero),
+            Caso("pagada completa", OrderRepository.SaldoDeLaOrden(0, "PAID", "COMPLETED"), conDinero),
+        )
+        for (caso in casos) {
+            disco = PrefsDeDosCapas()
+            val servidor = Servidor()
+            val caja = Caja(servidor)
+            val b = aGuardadaConBEnPantalla(caja)
+            terminaLaCancelacionDeA(servidor, caso.estado, caso.borrado)
+            assertBIntacta(caja, b)
+            val copias = caja.guardados.savedCarts.value
+            when (caso.nombre) {
+                "cancelada sin dinero" -> assertNull(caso.nombre, copias.single().folio)
+                "negativo con A abierta" -> {
+                    assertEquals(caso.nombre, false, copias.single().folio?.enDuda)
+                    assertEquals(2, copias.single().items.size)
+                }
+                "con abono" -> {
+                    assertEquals(caso.nombre, listOf("Saldo pendiente" to 6_000), copias.single().items.map { it.name to it.unitPrice })
+                    assertEquals(false, copias.single().folio?.enDuda)
+                }
+                "pagada completa" -> assertTrue("sólo A sale", copias.isEmpty())
+            }
+            // Repetir el resultado (reinicio que relee): igual.
+            val despues = reiniciar(servidor)
+            assertEquals(caso.nombre, copias, despues.guardados.savedCarts.value)
+            if (caso.nombre == "negativo con A abierta" || caso.nombre == "con abono") {
+                assertEquals(Restauracion.Hecha, despues.retomar())
+                assertTrue(despues.cobrar())
+                assertEquals("${caso.nombre}: se cobra otra vez sobre A", "order-a", despues.carrito.chargingAgainstOrderId)
+            }
+        }
     }
 }

@@ -15,3 +15,6 @@ data class FolioEnDuda(
 ) {
     enum class Origen { LOCAL, OTRA_CAJA }
 }
+
+/** F1 bloque 2: el intento de un folio terminó en algún lado (ver `CancelacionDeCobroCoordinator.folios`): hay que releer el folio. */
+data class DesenlaceDeFolio(val venueId: String, val orderId: String, val requestId: String?)

@@ -60,6 +60,8 @@ data class FolioGuardado(
     val origen: String? = null,
     /** La llave de una creación de orden cuya respuesta se perdió: se recupera con el MISMO `externalId`. */
     val creacionIncierta: String? = null,
+    /** F1 bloque 2: false = el intento ya se resolvió y la cuenta sigue abierta en su folio (se cobra el resto sobre A). */
+    val enDuda: Boolean = true,
 )
 
 @Serializable

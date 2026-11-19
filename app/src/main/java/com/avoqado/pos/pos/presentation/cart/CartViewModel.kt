@@ -648,6 +648,10 @@ class CartViewModel @Inject constructor(
      * sin él se lee lo guardado, como antes.
      */
     private val tpvSettingsRepository: com.avoqado.pos.tpvsettings.data.TpvSettingsRepository? = null,
+    /** F1 bloque 2: anuncia cuándo termina la cancelación de un cobro para releer su folio. Sin él (pruebas), no se escucha. */
+    private val cancelacionDeCobro: com.avoqado.pos.payment.data.CancelacionDeCobroCoordinator? = null,
+    /** F1 bloque 2: la lista durable de tarjetas en duda (¿el intento de este folio sigue sin desenlace?). */
+    private val terminalPaymentService: com.avoqado.pos.payment.data.TerminalPaymentService? = null,
 ) : ViewModel() {
 
     private val _cartState = MutableStateFlow(defaultCartState())
@@ -772,6 +776,90 @@ class CartViewModel @Inject constructor(
         if (_pendingSplitOrder.value?.duda == null) return false
         _avisoDeVales.value = CUENTA_LIGADA_GUARDALA
         return true
+    }
+
+    /** F1 bloque 2 (r2 #5): qué le pasó al folio A según el SERVIDOR, una vez que su tarjeta dejó de estar en duda. */
+    internal enum class DesenlaceDelFolio {
+        /** A se canceló sin dinero: los artículos vuelven como borrador editable, con identidad nueva. */
+        LIBERAR,
+        /** El intento fue negativo y A sigue abierta: se cobra otra vez sobre A, a su saldo. */
+        OTRA_VEZ_SOBRE_A,
+        /** A tiene un abono: se conserva A y queda su resto. */
+        CON_ABONO,
+        /** A quedó pagada completa: sólo A sale (la venta de B no se toca). */
+        RETIRAR,
+    }
+
+    internal companion object {
+        /** null = nada que hacer todavía (la duda sigue, o un estado que no se entiende). */
+        fun decidirFolio(saldo: OrderRepository.SaldoDeLaOrden, sigueEnDuda: Boolean): DesenlaceDelFolio? {
+            val conDinero = saldo.paymentStatus == "PAID" || saldo.paymentStatus == "PARTIAL"
+            if (saldo.status == "CANCELLED" || saldo.status == "DELETED") return if (conDinero) null else DesenlaceDelFolio.LIBERAR
+            if (saldo.remainingCents <= 0 && saldo.paymentStatus == "PAID") return DesenlaceDelFolio.RETIRAR
+            if (sigueEnDuda) return null
+            return if (saldo.paymentStatus == "PARTIAL") DesenlaceDelFolio.CON_ABONO else DesenlaceDelFolio.OTRA_VEZ_SOBRE_A
+        }
+    }
+
+    /**
+     * 🔴 F1 bloque 2 (r2 #5). Relee el folio [orderId] en el SERVIDOR y aplica su desenlace a la cuenta en pantalla que sigue ligada
+     * a él y a su copia guardada (con B en pantalla, sólo la copia). Se llama al terminar una cancelación en segundo plano, al
+     * retomar y al abrir la app. Sin respuesta (sin red, 404) no decide nada: la duda se conserva. Releer es idempotente: el
+     * desenlace sale del estado de A, nunca de restar otra vez.
+     */
+    private suspend fun releerFolio(venueId: String, orderId: String) {
+        if (venueId != secureStorage.venueId) return
+        val saldo = orderRepository.saldoDeLaOrden(orderId) ?: return
+        val copia = savedCartsRepository.savedCarts.value.firstOrNull { it.folio?.orderId == orderId && it.folio.enDuda }
+        val visible = _pendingSplitOrder.value?.takeIf { it.orderId == orderId && it.duda != null }
+        val origen = visible?.duda?.origen?.name ?: copia?.folio?.origen
+        // La duda de OTRA caja no está en la lista de esta tablet: sólo un estado final de A la resuelve. Sin la lista, tampoco.
+        val sigueEnDuda = origen == com.avoqado.pos.payment.data.FolioEnDuda.Origen.OTRA_CAJA.name ||
+            terminalPaymentService?.pendienteDeLaVenta(orderId) != null || terminalPaymentService == null
+        val desenlace = decidirFolio(saldo, sigueEnDuda) ?: return
+        Log.i("🛒", "Folio $orderId: $desenlace (pantalla=${visible != null}, copia=${copia?.id})")
+        if (visible != null) aplicarAlCarrito(desenlace, saldo.remainingCents, orderId)
+        copia?.let { aplicarALaCopia(it, desenlace, saldo.remainingCents) }
+    }
+
+    private fun aplicarAlCarrito(desenlace: DesenlaceDelFolio, saldoCents: Int, orderId: String) {
+        when (desenlace) {
+            DesenlaceDelFolio.LIBERAR -> {
+                _pendingSplitOrder.value = null
+                _cartState.update { it.copy(identidadDeVenta = UUID.randomUUID().toString(), creacionIncierta = null) }
+            }
+            DesenlaceDelFolio.OTRA_VEZ_SOBRE_A -> _pendingSplitOrder.update { it?.copy(duda = null) }
+            DesenlaceDelFolio.CON_ABONO -> {
+                val identidad = _cartState.value.identidadDeVenta
+                val guardada = _cartState.value.carritoGuardadoId
+                clearCart()
+                _cartState.update { it.copy(identidadDeVenta = identidad, carritoGuardadoId = guardada, vinoDeCarritoGuardado = guardada != null) }
+                addCustomAmount(name = "Saldo pendiente", amountCents = saldoCents)
+                markPendingSplitOrder(orderId)
+            }
+            DesenlaceDelFolio.RETIRAR -> {
+                _pendingSplitOrder.value = null
+                _cartState.value.carritoGuardadoId?.let { savedCartsRepository.deleteCart(it) }
+                finalizarVenta()
+            }
+        }
+    }
+
+    private fun aplicarALaCopia(copia: com.avoqado.pos.pos.data.model.SavedCart, desenlace: DesenlaceDelFolio, saldoCents: Int) {
+        val folio = copia.folio ?: return
+        val escrito = when (desenlace) {
+            DesenlaceDelFolio.LIBERAR -> savedCartsRepository.saveCart(copia.copy(folio = null))
+            DesenlaceDelFolio.OTRA_VEZ_SOBRE_A -> savedCartsRepository.saveCart(copia.copy(folio = folio.copy(enDuda = false)))
+            DesenlaceDelFolio.CON_ABONO -> savedCartsRepository.saveCart(
+                copia.copy(
+                    items = listOf(com.avoqado.pos.pos.data.model.SavedCartItem(productId = null, name = "Saldo pendiente", unitPrice = saldoCents, quantity = 1)),
+                    orderDiscount = null, orderDiscountReason = null, orderDiscountReasonComment = null,
+                    folio = folio.copy(enDuda = false),
+                ),
+            )
+            DesenlaceDelFolio.RETIRAR -> savedCartsRepository.deleteCart(copia.id)
+        }
+        if (!escrito) Log.w("🛒", "La copia ${copia.id} del folio ${folio.orderId} no se pudo actualizar ($desenlace): se relee después")
     }
 
     /** F1 bloque 2: la duda que traía la venta mientras se aplica un cobro confirmado; vuelve al re-marcar su mismo folio. */
@@ -1293,6 +1381,16 @@ class CartViewModel @Inject constructor(
 
     private val _referralValidation = MutableStateFlow<ReferralCaptureUiState>(ReferralCaptureUiState.Idle)
     val referralValidation: StateFlow<ReferralCaptureUiState> = _referralValidation.asStateFlow()
+
+    init {
+        // 🔴 F1 bloque 2 (r2 #5): la cancelación que termina en segundo plano y las copias con folio al abrir la app releen A.
+        cancelacionDeCobro?.let { coordinador ->
+            viewModelScope.launch { coordinador.folios.collect { releerFolio(it.venueId, it.orderId) } }
+        }
+        viewModelScope.launch {
+            savedCartsRepository.savedCarts.value.mapNotNull { it.folio?.takeIf { f -> f.enDuda } }.forEach { releerFolio(it.venueId, it.orderId) }
+        }
+    }
 
     init {
         // 🔴 DINERO (D1, 20-oct). Los renglones de vale son la copia del apartado del servidor: cuando el apartado se suelta
@@ -3400,13 +3498,17 @@ class CartViewModel @Inject constructor(
             PendingSplitOrder(
                 orderId = f.orderId, itemIds = cart.items.map { it.id }.toSet(), totalCents = cart.totalCents,
                 renglones = cart.items, descuentoDeCuenta = cart.orderDiscount,
-                duda = com.avoqado.pos.payment.data.FolioEnDuda(
-                    venueId = f.venueId, identidadDeVenta = f.identidadDeVenta, orderId = f.orderId, requestId = f.requestId,
-                    origen = com.avoqado.pos.payment.data.FolioEnDuda.Origen.entries.firstOrNull { it.name == f.origen }
-                        ?: com.avoqado.pos.payment.data.FolioEnDuda.Origen.LOCAL,
-                ),
+                duda = f.takeIf { it.enDuda }?.let {
+                    com.avoqado.pos.payment.data.FolioEnDuda(
+                        venueId = f.venueId, identidadDeVenta = f.identidadDeVenta, orderId = f.orderId, requestId = f.requestId,
+                        origen = com.avoqado.pos.payment.data.FolioEnDuda.Origen.entries.firstOrNull { it.name == f.origen }
+                            ?: com.avoqado.pos.payment.data.FolioEnDuda.Origen.LOCAL,
+                    )
+                },
             )
         }
+        // F1 bloque 2: al retomar se relee A (pudo cancelarse, cobrarse o abonarse mientras estaba guardada).
+        folio?.takeIf { it.enDuda }?.let { f -> viewModelScope.launch { releerFolio(f.venueId, f.orderId) } }
         // El carrito guardado persiste el id del cliente, no su nombre: se cae a
         // "Cliente" (ver [setSelectedCustomer]) para que el encabezado NO diga
         // "Agregar cliente" sobre una venta que sí lo lleva — y para que ese

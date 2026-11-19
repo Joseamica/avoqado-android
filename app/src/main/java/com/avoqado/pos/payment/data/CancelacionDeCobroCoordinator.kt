@@ -101,6 +101,19 @@ class CancelacionDeCobroCoordinator internal constructor(
         saldoPendiente = { venue, order -> com.avoqado.pos.giftcards.domain.SolicitudesDeTarjeta.cuentaTrabada(secureStorage.giftCardRequestsJson, venue, order) },
     )
 
+    /**
+     * 🔴 F1 bloque 2 (r2 #5): la cancelación de un cobro TERMINÓ (sin dinero, o con dinero entregado). Se anuncia con sucursal,
+     * folio e intento; el carrito relee ese folio en el SERVIDOR y decide (la cuenta visible o su copia guardada). Sólo avisa:
+     * el desenlace lo da la relectura, así repetirlo no cambia nada.
+     */
+    private val _folios = kotlinx.coroutines.flow.MutableSharedFlow<DesenlaceDeFolio>(extraBufferCapacity = 16)
+    val folios: kotlinx.coroutines.flow.SharedFlow<DesenlaceDeFolio> = _folios
+
+    private fun anunciarFolio(intencion: IntencionDeCancelarCobro) {
+        val orderId = intencion.orderId ?: return
+        _folios.tryEmit(DesenlaceDeFolio(intencion.venueId, orderId, intencion.requestId))
+    }
+
     private val _pendientes = MutableStateFlow(store.todas())
 
     /** Lo que queda por cancelar, para el banner de Cobrar y la hoja de pendientes. */
@@ -355,12 +368,14 @@ class CancelacionDeCobroCoordinator internal constructor(
         }
         store.quitar(intencion.id)
         refrescarPendientes()
+        anunciarFolio(intencion)
         return EstadoDeCancelacion.SeCobro(paymentId)
     }
 
     private fun cerrar(intencion: IntencionDeCancelarCobro): EstadoDeCancelacion {
         store.quitar(intencion.id)
         refrescarPendientes()
+        anunciarFolio(intencion)
         return EstadoDeCancelacion.Cerrada
     }
 

@@ -1594,7 +1594,12 @@ class OrderRepository @Inject constructor(
         }
 
     /** Lo que la orden debe según el SERVIDOR (`preBillBalance`) y su estado de pago, de la MISMA respuesta. */
-    data class SaldoDeLaOrden(val remainingCents: Int, val paymentStatus: String?)
+    data class SaldoDeLaOrden(
+        val remainingCents: Int,
+        val paymentStatus: String?,
+        /** F1 bloque 2: el estado de la orden (`CANCELLED`…); null en respuestas que no lo traen. */
+        val status: String? = null,
+    )
 
     /**
      * D7 (dividir por producto, fase 1, 27-oct): tras cobrar con TARJETA una parte de una venta partida, la terminal no dice
@@ -1619,7 +1624,11 @@ class OrderRepository @Inject constructor(
             val order = Json.parseToJsonElement(body).jsonObject["order"]?.jsonObject ?: return null
             val saldo = order["preBillBalance"]?.jsonObject?.get("remainingBalanceCents")?.jsonPrimitive?.contentOrNull
                 ?.toDoubleOrNull()?.let { Math.round(it).toInt() } ?: return null
-            SaldoDeLaOrden(remainingCents = saldo, paymentStatus = order["paymentStatus"]?.jsonPrimitive?.contentOrNull?.uppercase())
+            SaldoDeLaOrden(
+                remainingCents = saldo,
+                paymentStatus = order["paymentStatus"]?.jsonPrimitive?.contentOrNull?.uppercase(),
+                status = order["status"]?.jsonPrimitive?.contentOrNull?.uppercase(),
+            )
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (e: Exception) {
