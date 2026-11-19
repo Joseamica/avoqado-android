@@ -30,13 +30,6 @@ class CapturaDePesoTest {
         assertFalse(etiquetaEsDeLaCaptura(alLeer = CapturaDePeso(jamon, 3), ahora = null, productoDeLaEtiqueta = "jamon"))
     }
 
-    @Test fun `cualquier codigo de 13 numeros hace esperar a Agregar`() {
-        assertTrue(puedeSerEtiquetaDeBascula("2000123004358"))
-        assertTrue("con los ajustes viejos de la pantalla también (r2 #1)", puedeSerEtiquetaDeBascula("7501000000012"))
-        assertFalse("SKU", puedeSerEtiquetaDeBascula("PIZZAS-003"))
-        assertFalse("12 números", puedeSerEtiquetaDeBascula("750100000001"))
-    }
-
     @Test fun `el aviso dice que entro y cuanto peso`() {
         org.junit.Assert.assertEquals("Ya entró Queso Oaxaca 0.435 kg por su etiqueta", avisoDeEtiqueta("Queso Oaxaca", 0.435))
     }

@@ -354,10 +354,6 @@ fun CheckoutScreen(
         capturaDePeso = if (abierta?.product?.id == nuevo.id) abierta.copy(product = nuevo)
         else CapturaDePeso(nuevo, aperturasDePeso.incrementAndGet())
     }
-    // D7 (Codex D7 r1 #1): etiquetas de báscula que se están leyendo con una apertura abierta (lectura → apertura): su
-    // «Agregar» espera, a lo más 3 s (Codex D7 r3 #2: con WiFi sin internet la consulta podía tardar 30 s).
-    val etiquetasEnCamino = remember { androidx.compose.runtime.mutableStateMapOf<Long, Long>() }
-    val lecturasDeEtiqueta = remember { java.util.concurrent.atomic.AtomicLong() }
     // Cómo se ve el mostrador en ESTE aparato: densidad de la cuadrícula y orden
     // de las pestañas. Es estado y no una lectura suelta porque la pestaña
     // "Configurar" lo cambia sin salir de la pantalla — el cajero tiene que ver
@@ -1216,13 +1212,12 @@ fun CheckoutScreen(
             product = product,
             isTablet = isTablet,
             scaleState = scaleState,
-            leyendoEtiqueta = { etiquetasEnCamino.containsValue(captura.apertura) },
             avisoDeEtiqueta = captura.avisoDeEtiqueta,
             onRetryScale = scaleCaptureViewModel::retry,
             onAdd = { weightKg ->
                 // D8 (Codex r2): con el cobro abierto (su F12 en WINDOWS, o un toque que le ganó al «No, gracias») el peso no
                 // entra al carrito ya fotografiado; la captura se cierra como siempre y se pesa otra vez al terminar.
-                // D7 (Codex D7 r2 #2): ni desde una captura que su etiqueta ya cerró (el panel viejo sigue un cuadro en pantalla).
+                // D7 (Codex D7 r2 #2): sólo la captura que sigue abierta (el panel de una apertura vieja sigue un cuadro en pantalla).
                 if (!cartViewModel.cobroAbierto && capturaDePeso?.apertura == captura.apertura) {
                     cartViewModel.addProductByWeight(product, weightKg)
                 }
@@ -1578,26 +1573,11 @@ fun CheckoutScreen(
             // El cliente de ANTES de la consulta: si el cajero lo quitó o eligió otro mientras respondía, su toque gana
             // y la tarjeta escaneada no se vuelve a ligar (Codex, cliente en cobrar r3 #1).
             val clienteAlEscanear = cartViewModel.selectedCustomer.value?.id
-            // D7: la captura de peso abierta AL LEER; sólo ella puede cerrarse con su etiqueta. Mientras una posible etiqueta se
-            // resuelve, su «Agregar» espera (si no, la misma pesada entraba dos veces).
+            // D7: la captura de peso abierta AL LEER; sólo en ella avisa su etiqueta. «Agregar» no espera a la lectura (Codex D7
+            // r5 #1: esperar descartaba el toque y la porción se perdía al pasar al siguiente producto): si la cajera lo toca antes
+            // de que la etiqueta de esa misma pieza termine de leerse, entran las dos, como en develop.
             val capturaAlLeer = capturaDePeso
-            val esperaLaCaptura = capturaAlLeer?.takeIf { puedeSerEtiquetaDeBascula(barcode) }?.apertura
-            val lectura = lecturasDeEtiqueta.incrementAndGet()
-            esperaLaCaptura?.let { apertura ->
-                // Codex D7 r4 #2: un solo tope de 3 s por captura, contado desde la primera lectura pendiente: dos lecturas
-                // seguidas no lo alargan.
-                val yaEspera = etiquetasEnCamino.containsValue(apertura)
-                etiquetasEnCamino[lectura] = apertura
-                if (!yaEspera) checkoutScope.launch {
-                    kotlinx.coroutines.delay(3_000)
-                    etiquetasEnCamino.entries.removeAll { it.value == apertura }
-                }
-            }
-            val result = try {
-                cartViewModel.resolveScannedBarcode(barcode)
-            } finally {
-                etiquetasEnCamino.remove(lectura)
-            }
+            val result = cartViewModel.resolveScannedBarcode(barcode)
             // La consulta pudo tardar (red): si mientras tanto se abrió el cobro, no se aplica (pendientes, Codex r1 #2).
             if (!entra() || com.avoqado.pos.giftcards.domain.LectorParaTarjetas.abierta.value) return@launch
             // Una hoja abierta (la ficha cuando es hoja —teléfono o ventana angosta— y la de tallas) va encima de toda la caja:
