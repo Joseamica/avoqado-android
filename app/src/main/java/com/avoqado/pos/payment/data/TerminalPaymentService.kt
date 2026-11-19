@@ -679,6 +679,12 @@ class TerminalPaymentService @Inject constructor(
          * el SERVIDOR contesta 412 `ORDER_BALANCE_CHANGED` sin tocar la terminal. null = cualquier otro cobro (el cuerpo sale igual).
          */
         expectedBalanceBeforeCents: Int? = null,
+        /**
+         * 🔴 hz:bdd815fd:D5: lo que faltaba de la cuenta según la pantalla que abrió este cobro («Pedidos → Cobrar»,
+         * `preBillBalance.remainingBalanceCents`). El SERVIDOR lo compara con lo que falta calculado con la MISMA cuenta; si un abono
+         * entró en medio, contesta 412 `ORDER_BALANCE_CHANGED` sin tocar la terminal. null = cualquier otro cobro (el cuerpo sale igual).
+         */
+        expectedRemainingCents: Int? = null,
     ): TerminalPaymentResult {
         val antesDeEnviar = antesDelProximoEnvio
         antesDelProximoEnvio = null
@@ -737,6 +743,7 @@ class TerminalPaymentService @Inject constructor(
                     // quede idéntico al de una venta anónima.
                     customerId = customerId?.trim()?.takeIf { it.isNotEmpty() },
                     expectedBalanceBeforeCents = expectedBalanceBeforeCents,
+                    expectedRemainingCents = expectedRemainingCents,
                 ),
             ).toRequestBody("application/json".toMediaType())
 
@@ -1610,6 +1617,8 @@ private data class TerminalPaymentRequest(
     val customerId: String? = null,
     /** D53: sólo en el cobro de vales; con `explicitNulls = false` la llave no aparece en los demás. */
     val expectedBalanceBeforeCents: Int? = null,
+    /** hz:bdd815fd:D5: sólo en «Pedidos → Cobrar» de una cuenta abierta; con `explicitNulls = false` la llave no aparece en los demás. */
+    val expectedRemainingCents: Int? = null,
 )
 
 @Serializable
