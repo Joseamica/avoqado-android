@@ -16,6 +16,8 @@ import com.avoqado.pos.areatickets.data.AreaTicketRepository
 import com.avoqado.pos.areatickets.data.tieneAbono
 import com.avoqado.pos.areatickets.data.NormalCheckoutItem
 import com.avoqado.pos.areatickets.data.moneyToCents
+import com.avoqado.pos.areatickets.data.comentarioDelSuelto
+import com.avoqado.pos.areatickets.data.motivoDelSuelto
 import com.avoqado.pos.cashdrawer.data.CashDrawerRepository
 import com.avoqado.pos.kds.data.KDSRepository
 import com.avoqado.pos.kds.domain.KDSOrderBus
@@ -163,11 +165,14 @@ const val MENSAJE_EFECTIVO_SIN_GUARDAR = "No se pudo guardar el cobro en el apar
 
 /**
  * 🔴 DINERO. ¿El carrito trae exactamente los vales de la sesión del servidor? Renglón por renglón y en centavos, como los pone
- * `CartViewModel.replaceAreaTicketLines`. Lo usa `PaymentFlowViewModel.valesNoCoinciden` antes de cobrar.
+ * `CartViewModel.replaceAreaTicketLines`. Lo usa `PaymentFlowViewModel.valesNoCoinciden` antes de cobrar. Compara el bruto Y el
+ * descuento de cada renglón (`total` y `discountAmount`): con el mismo bruto y otro descuento se cobraría otro neto.
  */
 internal fun cobraLosValesDeLaSesion(items: List<CartItem>, checkout: AreaTicketCheckout): Boolean =
-    items.mapNotNull { item -> item.areaTicketLineId?.let { it to item.unitPrice * item.quantity } }.sortedBy { it.first } ==
-        checkout.tickets.flatMap { it.lines }.map { it.id to it.total.moneyToCents() }.sortedBy { it.first }
+    items.mapNotNull { item -> item.areaTicketLineId?.let { Triple(it, item.unitPrice * item.quantity, item.itemDiscountCents) } }
+        .sortedBy { it.first } ==
+        checkout.tickets.flatMap { it.lines }.map { Triple(it.id, it.total.moneyToCents(), it.discountAmount.moneyToCents()) }
+            .sortedBy { it.first }
 
 /**
  * D12 (final fix, I-2): lo que la copia de «Pedidos» debe saber de un cobro de ESTE aparato. Uno encolado no la toca: su marca local
@@ -6837,6 +6842,8 @@ class PaymentFlowViewModel @Inject constructor(
                             quantity = item.quantity,
                             notes = item.itemNote,
                             discountId = item.itemDiscountId,
+                            discountReason = item.motivoDelSuelto(),
+                            discountReasonComment = item.comentarioDelSuelto(),
                         )
                     }
                     val productId = (item.type as? CartItemType.ProductItem)?.productId ?: return@mapNotNull null
@@ -6847,6 +6854,8 @@ class PaymentFlowViewModel @Inject constructor(
                         modifierIds = item.selectedModifiers.map { it.modifierId },
                         discountId = item.itemDiscountId,
                         weightQuantity = item.weightKg,
+                        discountReason = item.motivoDelSuelto(),
+                        discountReasonComment = item.comentarioDelSuelto(),
                     )
                 }
             val checkout = areaTicketRepository.materialize(
@@ -6939,7 +6948,10 @@ class PaymentFlowViewModel @Inject constructor(
         if (cobraLosValesDeLaSesion(cart.items, checkout)) return false
         // Codex r14 B2: se relee ESE checkout, no la sesión vigente.
         val alDia = areaTicketRepository.refresh(objetivo = checkout, negocio = venue.takeIf { it.isNotBlank() }) ?: return true
-        if ((alDia.order?.paidAmount?.moneyToCents() ?: 0) > 0) return false
+        // Con un abono la venta sigue por el saldo del SERVIDOR sólo si el carrito ES ese saldo (no trae vales). Si trae vales, su
+        // importe salió de ellos: un abono que apareció entre armar la venta y releerla (lo registró otro) detiene el cobro, y al
+        // volver a cobrar sale «cobra su saldo pendiente» (Codex r1 #3 y r4 #1, hz:nube0000:nabcea1a).
+        if ((alDia.order?.paidAmount?.moneyToCents() ?: 0) > 0) return cart.items.any { it.areaTicketLineId != null }
         return !cobraLosValesDeLaSesion(cart.items, alDia)
     }
 

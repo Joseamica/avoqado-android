@@ -43,4 +43,12 @@ class ClassCheckoutSeed @Inject constructor() {
     }
 
     fun hasPending(): Boolean = pending != null
+
+    /**
+     * D9: la que se sacó y no pudo entrar (el cobro se abrió mientras cargaba el catálogo) regresa, salvo que ya haya otra
+     * más nueva: una sola casilla, como siempre.
+     */
+    fun devolver(seed: Seed) {
+        if (pending == null) pending = seed
+    }
 }

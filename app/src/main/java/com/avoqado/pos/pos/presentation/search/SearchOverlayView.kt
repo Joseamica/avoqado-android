@@ -67,6 +67,8 @@ fun SearchOverlayView(
     onProductTap: (Product) -> Unit,
     onCreateProduct: ((String) -> Unit)? = null,
     onDismiss: () -> Unit,
+    /** El lector de la pistola para la hoja de tallas (otra ventana); sólo el cobro lo pasa (D6). */
+    teclasDeLaHoja: ((android.view.KeyEvent) -> Boolean)? = null,
 ) {
     val query by viewModel.searchQuery.collectAsState()
     // La búsqueda se calcula fuera del hilo principal: puede ir un paso atrás del campo (ver `Busqueda`).
@@ -75,6 +77,7 @@ fun SearchOverlayView(
     val consultaPintada = query   // la consulta de ESTA lista, congelada al pintarla
     val focusRequester = remember { FocusRequester() }
     var abierta by remember { mutableStateOf<String?>(null) }
+    var cierresAlAbrir by remember { mutableIntStateOf(0) }   // D6: los cierres que ya había al tocarla
     // Windows: el renglón marcado con las flechas. Cada letra nueva (también la pistola) la quita: Enter sin marca sigue su camino.
     var marcada by remember(query) { mutableIntStateOf(-1) }
     val marcadaVigente = marcada.takeIf { it in results.indices } ?: -1
@@ -83,7 +86,7 @@ fun SearchOverlayView(
         when (resultado) {
             is ResultadoDeBusqueda.DeProducto -> onProductTap(resultado.producto)
             // La familia abre la misma hoja que su botón en la cuadrícula; lo elegido sigue por `onProductTap`.
-            is ResultadoDeBusqueda.DeFamilia -> abierta = resultado.familia.groupId
+            is ResultadoDeBusqueda.DeFamilia -> { cierresAlAbrir = viewModel.cierresDeHojas.value; abierta = resultado.familia.groupId }
         }
     }
     // Que el marcado se vea: la lista se recorre lo justo (o salta a él si quedó lejos).
@@ -215,7 +218,7 @@ fun SearchOverlayView(
         }
     }
 
-    HojaDeLaFamiliaAbierta(viewModel, abierta, onCerrar = { abierta = null }, onElegir = onProductTap)
+    HojaDeLaFamiliaAbierta(viewModel, abierta, onCerrar = { abierta = null }, onElegir = onProductTap, teclasDeLaHoja = teclasDeLaHoja, cierresAlAbrir = cierresAlAbrir)
 }
 
 @Composable

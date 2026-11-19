@@ -199,5 +199,22 @@ class CartValesRespuestaViejaTest {
         assertEquals(listOf("a2"), vm.valesEnElCarrito())
     }
 
+    @Test
+    fun `D9 mientras el servidor quita un vale el cobro espera, como con la pistola`() = runTest {
+        val vm = carrito()
+        session.update(VENUE, sesion("sesion-A", "a1", "a2")); vm.traerValesDeLaSesion()
+        val respuesta = CompletableDeferred<AreaTicketEnvelope<CheckoutData>>()
+        coEvery { api.removeAreaTicketFromCheckout(VENUE, "sesion-A", "a1", any()) } coAnswers { respuesta.await() }
+
+        vm.removeItem("area-ticket:a1:l-a1")
+        runCurrent()
+        org.junit.Assert.assertTrue("el cobro no se abre con la baja en vuelo", vm.hayConsultasDeCodigo)
+
+        respuesta.complete(responde(sesion("sesion-A", "a2")))
+        runCurrent()
+        org.junit.Assert.assertFalse(vm.hayConsultasDeCodigo)
+        assertEquals(listOf("a2"), vm.valesEnElCarrito())
+    }
+
     private companion object { const val VENUE = "venue-vales" }
 }

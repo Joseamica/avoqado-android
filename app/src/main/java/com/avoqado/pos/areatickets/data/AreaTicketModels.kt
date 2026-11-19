@@ -1,5 +1,6 @@
 package com.avoqado.pos.areatickets.data
 
+import com.avoqado.pos.pos.data.model.CartItem
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonObject
 
@@ -234,6 +235,9 @@ data class NormalCheckoutItem(
     val weightQuantity: Double? = null,
     val name: String? = null,
     val unitPrice: Int? = null,
+    /** D4 (18-nov): el motivo del descuento de la línea y su comentario, como en Mostrador ([motivoQueViaja]). */
+    val discountReason: String? = null,
+    val discountReasonComment: String? = null,
 )
 
 @Serializable
@@ -254,6 +258,9 @@ data class IssueAreaTicketLineRequest(
     val notes: String? = null,
     val modifierIds: List<String> = emptyList(),
     val discountId: String? = null,
+    /** D4 (18-nov): el SERVIDOR los congela en el renglón del vale y la fila espejo los copia al cobrar («Descuentos»). */
+    val discountReason: String? = null,
+    val discountReasonComment: String? = null,
 )
 
 @Serializable
@@ -296,7 +303,23 @@ data class IntentoDeVale(
 }
 
 private fun mercancia(lineas: List<IssueAreaTicketLineRequest>) =
-    lineas.map { it.copy(clientLineId = "", modifierIds = it.modifierIds.sorted()) }.sortedBy { it.toString() }
+    // D4: el motivo no cambia la mercancía (la copia guardada del carrito no lo trae).
+    lineas.map { it.copy(clientLineId = "", modifierIds = it.modifierIds.sorted(), discountReason = null, discountReasonComment = null) }
+        .sortedBy { it.toString() }
+
+/** D4 (18-nov): el motivo del descuento que viaja con la línea, con la regla de Mostrador (`OrderRepository`): nunca en cortesía ni en blanco. */
+internal fun CartItem.motivoQueViaja(): String? = discountReason?.takeIf { !isCortesia && it.isNotBlank() }
+
+/** D4: su comentario, sólo si viaja el motivo. */
+internal fun CartItem.comentarioQueViaja(): String? = discountReasonComment?.takeIf { motivoQueViaja() != null && it.isNotBlank() }
+
+/**
+ * D4 (Codex r4 #3): el producto SUELTO del cobro de vales no manda su «Ajuste de precio» (deuda aparte, es dinero); si trae uno, el motivo
+ * podría explicar esa rebaja y caer en la fila del descuento del catálogo: no viaja. Sin ajuste, la misma regla que Mostrador.
+ */
+internal fun CartItem.motivoDelSuelto(): String? = motivoQueViaja()?.takeIf { priceAdjustment == null }
+
+internal fun CartItem.comentarioDelSuelto(): String? = comentarioQueViaja()?.takeIf { priceAdjustment == null }
 
 /** 🔴 D5: un vale pedido en una vez anterior de la app cuya respuesta nunca llegó. Se queda su llave: «Recuperar» la reusa. */
 @Serializable
