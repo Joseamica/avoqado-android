@@ -51,6 +51,13 @@ fun ExchangeScreen(viewModel: ExchangeViewModel, onClose: () -> Unit,
     LaunchedEffect(state.transaction?.id) { state.transaction?.let { payments.open(it) } }
     LaunchedEffect(send.locked, ready, busy, draft) { viewModel.lockSubmission(send.locked || !ready || busy || draft != null) }
     LaunchedEffect(send.calculation) { send.calculation?.let(viewModel::applyServerCalculation) }
+    // 🔴 F1 bloque 4 (Codex android r1 #10, r2 #11–#13): la diferencia con su tarjeta en duda es la pantalla ORDINARIA de la duda,
+    // entera y antes del encabezado de Cambio: el importe ENVIADO y una sola acción, [Seguir] (Atrás/Esc también). La consulta es
+    // automática; el desenlace completa o cancela este Cambio. Lo que quede, lo firma el gerente en «Operaciones por revisar».
+    if (send.phase == ExchangeSendPhase.UNCERTAIN && send.result?.status == "PENDING_PAYMENT") {
+        CambioConTarjetaEnDuda(send.result?.amountToChargeCents, enLinea = online, onConsultar = payments::consultarDiferencia, onSeguir = onClose)
+        return
+    }
     var successMessage by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(send.phase) { if (send.phase == ExchangeSendPhase.COMPLETED) successMessage = TextosCambio.CAMBIO_HECHO }
     LaunchedEffect(message) { if (message == TextosCambio.TICKET_IMPRESO) successMessage = message }
@@ -76,12 +83,6 @@ fun ExchangeScreen(viewModel: ExchangeViewModel, onClose: () -> Unit,
                         send.phase == ExchangeSendPhase.CANCELLED -> PaymentErrorView(
                             message = message ?: send.message.orEmpty(), onRetry = onStartAgain, onCancel = onClose,
                             retryLabel = TextosCambio.PROBAR_OTRA_VEZ, cancelLabel = TextosCambio.CERRAR, titleLabel = TextosCambio.CANCELADO)
-                        // 🔴 F1 (Codex android r1 #10): la diferencia con tarjeta en duda es la misma pantalla de duda — su importe y sólo
-                        // [Seguir]. El cambio queda guardado; al volver a abrirlo se recupera, y la tarjeta en duda la ve el gerente en
-                        // «Operaciones por revisar».
-                        send.phase == ExchangeSendPhase.UNCERTAIN && send.result != null -> TarjetaPorConfirmarView(
-                            montoDelCobro = exchangeMoney(state.calculation.differenceCents), confirmando = false, sinRed = false,
-                            onSeguir = onClose)
                         else -> Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(AvoqadoTheme.spacing.lg),
                             verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.md)) {
                             Text(message ?: send.message.orEmpty(), style = MaterialTheme.typography.titleMedium)
@@ -223,5 +224,24 @@ fun ExchangeRecoveryNotice(transaction: com.avoqado.pos.transactions.data.model.
             Text(send.message.orEmpty(), style = MaterialTheme.typography.bodyMedium)
             PrimaryButton(TextosCambio.CONFIRMAR_ESTADO, onResume, fullWidth = true)
         }
+    }
+}
+
+/**
+ * 🔴 F1 bloque 4: la escena de un Cambio cuya diferencia con tarjeta quedó en duda. [diferenciaCents] es lo que SE MANDÓ a la
+ * terminal (`amountToChargeCents`), nunca la del formulario recién abierto. Consulta al entrar, al reconectar ([enLinea]) y cada
+ * 5 s mientras se vea; sin red no consulta y lo dice. Una sola acción: [Seguir].
+ */
+@Composable
+fun CambioConTarjetaEnDuda(diferenciaCents: Long?, enLinea: Boolean, onConsultar: () -> Unit, onSeguir: () -> Unit) {
+    LaunchedEffect(enLinea) {
+        while (enLinea) {
+            onConsultar()
+            kotlinx.coroutines.delay(5_000)
+        }
+    }
+    Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface)) {
+        TarjetaPorConfirmarView(montoDelCobro = diferenciaCents?.let(::exchangeMoney), confirmando = false, sinRed = !enLinea,
+            onSeguir = onSeguir)
     }
 }

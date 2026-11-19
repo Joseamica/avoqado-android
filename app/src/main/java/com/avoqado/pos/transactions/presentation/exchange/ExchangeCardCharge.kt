@@ -11,6 +11,16 @@ import kotlinx.serialization.json.*
 class ExchangeCardCharge(private val terminal: TerminalPaymentService, private val submission: ExchangeSubmission) {
     private val mutex = Mutex()
 
+    /**
+     * 🔴 F1 bloque 4 (r2 #12): la consulta de la diferencia en duda — al entrar, al reconectar y cada 5 s mientras se vea; una en
+     * vuelo (el candado de [run]). Sólo si la tarjeta YA salió: así nunca manda otra. El desenlace va a `finishCard`.
+     */
+    suspend fun consultar() {
+        val p = submission.pending ?: return
+        if (!p.cardStarted || p.result?.status != "PENDING_PAYMENT") return
+        run()
+    }
+
     suspend fun run() {
         if (!mutex.tryLock()) return
         try {
@@ -19,7 +29,8 @@ class ExchangeCardCharge(private val terminal: TerminalPaymentService, private v
             val existing = p.cardRequestId ?: terminal.pendienteDeLaVenta(result.newOrderId)
             val outcome = when {
                 existing != null -> {
-                    submission.markCardStarted(existing)
+                    // F1 bloque 4: el sondeo de una duda ya guardada no la vuelve «Cobrando…» cada 5 s (la escena de la duda se queda).
+                    if (!p.cardStarted || p.cardRequestId != existing) submission.markCardStarted(existing)
                     terminal.resolveOutcome(existing)
                 }
                 p.cardStarted -> { submission.finishCard(ExchangeCardEvidence.STARTED); return }

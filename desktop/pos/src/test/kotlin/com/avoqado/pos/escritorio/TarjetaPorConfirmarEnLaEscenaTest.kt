@@ -106,6 +106,29 @@ class TarjetaPorConfirmarEnLaEscenaTest {
         sinDecisionesDePiso()
     }
 
+    /**
+     * F1 bloque 4 (Codex android r1 #10, r2 #11–#13): el Cambio reabierto con su diferencia en duda es TODA la escena: el importe
+     * ENVIADO y una sola acción contando el encabezado (sin «Cerrar» ni «Confirmar estado»); Esc es Seguir, una vez.
+     */
+    @Test fun `cambio con la diferencia en duda - una sola accion en toda la escena, con el importe enviado`() = runComposeUiTest {
+        var seguir = 0
+        var consultas = 0
+        escena {
+            com.avoqado.pos.transactions.presentation.exchange.CambioConTarjetaEnDuda(
+                diferenciaCents = 12_500, enLinea = false, onConsultar = { consultas++ }, onSeguir = { seguir++ },
+            )
+        }
+
+        onNodeWithText("Tarjeta \$125.00 por confirmar. No la repitas. Avisa al gerente.").assertExists()
+        assertEquals(1, onAllNodes(hasClickAction()).fetchSemanticsNodes().size, "una sola acción en la escena: Seguir")
+        listOf("Cerrar", "Confirmar estado").forEach { assertEquals(0, onAllNodesWithText(it).fetchSemanticsNodes().size, "sin «$it»") }
+        sinDecisionesDePiso()
+        assertEquals(0, consultas, "sin red no consulta")
+        runOnIdle { AtajosDeTeclado.atender(Key.Escape); AtajosDeTeclado.atender(Key.Escape) }
+        waitForIdle()
+        assertEquals(1, seguir)
+    }
+
     /** F1 (un paso, Codex código r1 #10): el teclado del gerente ya dice qué firma, su botón es [Firmar] y un 403 se dice ahí mismo. */
     @Test fun `el teclado del gerente dice que firma, Firmar manda una vez y un PIN sin permiso se dice en el mismo teclado`() = runComposeUiTest {
         val enviados = mutableListOf<String>()

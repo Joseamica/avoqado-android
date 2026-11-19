@@ -82,6 +82,35 @@ class ExchangeCardChargeTest {
         server.enqueue(MockResponse().setResponseCode(409).setBody("""{"code":"EXCHANGE_CHARGE_UNRESOLVED","message":"unknown"}"""))
         card.run(); assertTrue(flow.state.value.locked); assertNotNull(flow.pending)
     }
+    /** F1 bloque 4 (r2 #11 y #13): la diferencia salió y quedó en duda; el POS se reinicia y se reabre el Cambio. */
+    private suspend fun reabiertoConLaDiferenciaEnDuda(): ExchangeSubmission {
+        reserve()
+        coEvery { terminal.sendPaymentToTerminal(any(),any(),any(),any(),any(),any(),any()) } returns TerminalPaymentResult.Undetermined("unknown","request")
+        coEvery { terminal.resolveOutcome("request") } returns TerminalPaymentResult.Undetermined("unknown","request")
+        card.run()
+        val reabierto=ExchangeSubmission(repo,store); card=ExchangeCardCharge(terminal,reabierto)
+        reabierto.open("venue","payment")
+        return reabierto
+    }
+    @Test fun `cambioReabierto_muestraLaDiferenciaEnviada`()=runBlocking {
+        val reabierto=reabiertoConLaDiferenciaEnDuda()
+        assertEquals("la pantalla de la duda",ExchangeSendPhase.UNCERTAIN,reabierto.state.value.phase)
+        assertEquals("con el resultado restaurado",125L,reabierto.state.value.result?.amountToChargeCents)
+        assertEquals("new",reabierto.state.value.result?.newOrderId)
+        assertEquals("request",reabierto.pending?.cardRequestId)
+    }
+    @Test fun `cambioReabierto_unSeguir_yAprobacionEnSondeoPosterior`()=runBlocking {
+        val reabierto=reabiertoConLaDiferenciaEnDuda()
+        card.consultar() // al entrar: sigue en duda
+        assertEquals(ExchangeSendPhase.UNCERTAIN,reabierto.state.value.phase)
+        coEvery { terminal.resolveOutcome("request") } returns TerminalPaymentResult.Success(paymentId="pay",requestId="request")
+        enqueue("COMPLETED")
+        card.consultar() // el sondeo de 5 s siguiente: el banco ya contestó
+        assertTrue(server.takeRequest().path!!.endsWith("/complete"))
+        assertEquals("el desenlace completa ESTE Cambio",ExchangeSendPhase.COMPLETED,reabierto.state.value.phase)
+        card.consultar() // terminado: ya no consulta
+        coVerify(exactly=1) { terminal.sendPaymentToTerminal(any(),any(),any(),any(),any(),any(),any()) }
+    }
     @Test fun `reopening after card start never sends a second authorization without a local request`()=runBlocking {
         reserve(); flow.markCardStarted(); flow.open("venue","payment")
         enqueue("NEEDS_REVIEW"); card.run()

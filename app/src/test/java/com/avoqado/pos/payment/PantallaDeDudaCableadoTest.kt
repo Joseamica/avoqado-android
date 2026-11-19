@@ -39,9 +39,14 @@ class PantallaDeDudaCableadoTest {
 
     @Test fun `el Cambio con la diferencia en duda es la misma pantalla de duda, sin Confirmar estado ni Salir`() {
         val cambio = fuente("app/src/main/java/com/avoqado/pos/transactions/presentation/exchange/ExchangeScreen.kt")
-        val duda = rama(cambio, "ExchangeSendPhase.UNCERTAIN && send.result != null ->", "else ->")
-        assertTrue(duda, duda.contains("TarjetaPorConfirmarView("))
-        assertFalse(duda, duda.contains("CONFIRMAR_ESTADO"))
-        assertFalse(duda, duda.contains("PaymentUndeterminedView("))
+        // F1 bloque 4 (r2 #11): la escena de la duda va ANTES del encabezado de Cambio (sin su «Cerrar») y sale de la pantalla.
+        val duda = rama(cambio, "if (send.phase == ExchangeSendPhase.UNCERTAIN && send.result?.status == \"PENDING_PAYMENT\")", "return")
+        assertTrue(duda, duda.contains("CambioConTarjetaEnDuda("))
+        assertTrue("antes del encabezado", cambio.indexOf("CambioConTarjetaEnDuda(send.result") < cambio.indexOf("AvoqadoFullscreenHeader("))
+        val escena = cambio.substringAfter("fun CambioConTarjetaEnDuda(")
+        assertTrue(escena, escena.contains("TarjetaPorConfirmarView("))
+        assertFalse(escena, escena.contains("CONFIRMAR_ESTADO"))
+        assertFalse(escena, escena.contains("PaymentUndeterminedView("))
+        assertFalse("la diferencia es la enviada, no la del formulario", escena.contains("calculation"))
     }
 }

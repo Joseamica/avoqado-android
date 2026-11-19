@@ -240,6 +240,12 @@ class ExchangePaymentViewModel @Inject constructor(repository: ExchangeRepositor
         if (state.value.phase == ExchangeSendPhase.READY_CARD && allowed()) card.run()
     }
 
+    /** F1 bloque 4: la consulta automática de la diferencia en duda (nunca manda la tarjeta; ver [ExchangeCardCharge.consultar]). */
+    fun consultarDiferencia() {
+        if (!_ready.value || !allowed()) return
+        viewModelScope.launch { card.consultar() }
+    }
+
     fun retry() {
         if (!_ready.value || !allowed()) return
         perform {

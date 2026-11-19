@@ -30,6 +30,14 @@ class ExchangeSubmission(private val repository: ExchangeRepository, private val
         val loaded = store.load(venue, payment)
         if (!isCurrent()) return@withLock
         pending = loaded
+        // 🔴 F1 bloque 4 (Codex android r2 #11 y #13): la diferencia ya salió a la terminal y quedó en duda. Al reabrir se restaura
+        // el resultado (con `newOrderId` y la diferencia ENVIADA) y la pantalla es la de la duda; nunca se vuelve a mandar.
+        val diferenciaEnDuda = loaded?.takeIf { it.cardStarted && it.result?.status == "PENDING_PAYMENT" }
+        if (diferenciaEnDuda != null) {
+            _state.value = ExchangeSendState(ExchangeSendPhase.UNCERTAIN, TextosCambio.COBRO_EN_REVISION, TextosCambio.CONFIRMAR_ESTADO,
+                true, result = diferenciaEnDuda.result)
+            return@withLock
+        }
         _state.value = pending?.let { ExchangeSendState(ExchangeSendPhase.UNCERTAIN,
             TextosCambio.CAMBIO_SIN_CONFIRMAR.replace("{folio}", it.originalOrderNumber),
             if (it.result?.status == "PENDING_PAYMENT" && !it.cardStarted) TextosCambio.COBRAR_DIFERENCIA
