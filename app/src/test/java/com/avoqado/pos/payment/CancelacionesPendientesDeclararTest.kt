@@ -35,15 +35,24 @@ class CancelacionesPendientesDeclararTest {
     @get:Rule val main = MainDispatcherRule()
 
     private val cancelaciones = MutableStateFlow<List<IntencionDeCancelarCobro>>(emptyList())
+    /** F1 bloque 5: lo que el coordinador lee de su disco bajo el candado de la intención (puede ir por delante de [cancelaciones]). */
+    private val disco = mutableMapOf<String, IntencionDeCancelarCobro?>()
     private val coordinador = mockk<CancelacionDeCobroCoordinator>(relaxed = true).also {
         every { it.pendientes } returns cancelaciones
+        coEvery { it.conLaFilaFresca<Any?>(any(), any()) } coAnswers {
+            val id = firstArg<String>()
+            val fresca = if (disco.containsKey(id)) disco[id] else cancelaciones.value.firstOrNull { c -> c.id == id }
+            secondArg<suspend (IntencionDeCancelarCobro?) -> Any?>().invoke(fresca)
+        }
     }
     private val servicio = mockk<TerminalPaymentService>(relaxed = true).also {
         every { it.intentoEnVuelo() } returns null
         // La fila A está en la lista durable (la sucursal ya la filtra el servicio, `TerminalPaymentServiceHttpTest`).
         every { it.pendientesDeOtrasVentas(null) } returns listOf(pendiente("req-a", 35_000))
     }
-    private val intencion = IntencionDeCancelarCobro(id = "req-1", requestId = "req-1", venueId = "venue-1", montoCents = 35_000, creadaEn = 1, terminalLibre = true)
+    // La señal de terminal libre sólo nace esperando el desenlace (`CancelacionDeCobroCoordinator.quedarPendiente`).
+    private val intencion = IntencionDeCancelarCobro(id = "req-1", requestId = "req-1", venueId = "venue-1", montoCents = 35_000, creadaEn = 1,
+        terminalLibre = true, fase = com.avoqado.pos.payment.data.FaseDeCancelacion.ESPERAR_DESENLACE.name)
     private val a = CobroPorConfirmar(requestId = "req-a", venueId = "venue-1", montoCents = 35_000, desdeMillis = 1)
 
     private var sucursal: String? = "venue-1"
@@ -74,6 +83,78 @@ class CancelacionesPendientesDeclararTest {
         assertEquals(PasoDelGerente.Cerrado, vm.paso.value)
         coVerify(exactly = 1) { servicio.declararNoCobrado("req-a", "venue-1", "4321") }
         coVerify(exactly = 0) { servicio.declararNoCobrado(any(), any(), null) }
+    }
+
+    /** F1 bloque 4 (Codex android r2 #14): el teclado abierto sigue el importe de SU fila sin volverse otro teclado. */
+    @Test
+    fun pinAbierto_recibeImporteSinPerderDigitos() = runTest {
+        val importe = CompletableDeferred<Int?>()
+        every { servicio.pendientesDeOtrasVentas(null) } returns listOf(pendiente("req-vieja", null))
+        every { servicio.importeDelIntento(any(), any()) } returns null
+        coEvery { servicio.importeDelCobro("req-vieja", "venue-1") } coAnswers { importe.await() }
+        val vm = vm()
+        vm.refrescar(recuperarImportes = true)
+        vm.revisar(vm.cobrosPorConfirmar.value.single())
+        val teclado = vm.paso.value as PasoDelGerente.Firmar
+        assertEquals("montaje: sin importe todavía", null, teclado.cobro.montoCents)
+
+        importe.complete(12_000)
+        kotlinx.coroutines.yield()
+        testScheduler.advanceUntilIdle()
+
+        val ahora = vm.paso.value as PasoDelGerente.Firmar
+        assertEquals("el MISMO teclado (los dígitos viven con su id)", teclado.id, ahora.id)
+        assertEquals("y ya dice el importe", 12_000, ahora.cobro.montoCents)
+        assertEquals("de la misma fila", "req-vieja", ahora.cobro.requestId)
+
+        // Y firma sobre esa fila.
+        coEvery { servicio.declararNoCobrado("req-vieja", "venue-1", "4321") } returns ResultadoDeDeclaracion.Liberada
+        assertEquals(firmado, vm.firmar("4321"))
+        assertEquals(PasoDelGerente.Cerrado, vm.paso.value)
+    }
+
+    /** F1 bloque 5 (Codex android r2 #10): la condición se revalida DENTRO del envío, con la fila recién leída: cero declaraciones. */
+    @Test
+    fun faseCambiadaEntreToqueYEnvio_ceroPost() = runTest {
+        val casos = mapOf(
+            "pasó a BORRAR_ORDEN" to intencion.copy(fase = com.avoqado.pos.payment.data.FaseDeCancelacion.BORRAR_ORDEN.name),
+            "pasó a SE_COBRO" to intencion.copy(fase = com.avoqado.pos.payment.data.FaseDeCancelacion.SE_COBRO.name),
+            "desapareció" to null,
+            "otro intento" to intencion.copy(requestId = "req-otro"),
+            "otra sucursal" to intencion.copy(venueId = "venue-2"),
+            "sin señal de terminal libre" to intencion.copy(terminalLibre = false),
+        )
+        for ((caso, fresca) in casos) {
+            cancelaciones.value = listOf(intencion)
+            disco.clear()
+            val vm = vm()
+            vm.revisar(vm.filaDe(intencion)!!)
+            assertTrue("$caso: montaje, el teclado está abierto", vm.paso.value is PasoDelGerente.Firmar)
+
+            disco["req-1"] = fresca // el coordinador avanzó en disco; la pantalla todavía no se entera
+            assertEquals(caso, firmado, vm.firmar("4321"))
+
+            coVerify(exactly = 0) { servicio.declararNoCobrado(any(), any(), any()) }
+            assertEquals("$caso: el teclado se cierra", PasoDelGerente.Cerrado, vm.paso.value)
+            assertTrue("$caso: y se dice cómo quedó", vm.resultado.value != null)
+        }
+    }
+
+    /** F1 bloque 5 (contrato TPV §6): el segundo gerente ve la firma que ya estaba guardada, nunca «quedó tu firma». */
+    @Test
+    fun dos_gerentes_el_segundo_ve_el_acuse_del_primero() = runTest {
+        coEvery { servicio.declararNoCobrado("req-a", "venue-1", "9999") } returns
+            ResultadoDeDeclaracion.YaEstabaDeclarada(aceptadaEn = "2026-11-18T19:02:11.481Z", staffId = "staff-primer-gerente")
+        val vm = vm()
+        vm.revisar(a)
+
+        assertEquals(firmado, vm.firmar("9999"))
+
+        assertEquals(PasoDelGerente.Cerrado, vm.paso.value)
+        val dicho = vm.resultado.value!!
+        assertTrue(dicho, dicho.startsWith("Avoqado ya tenía guardada la firma de este cobro de las "))
+        assertTrue(dicho, dicho.endsWith("No se agregó otra."))
+        assertTrue(dicho, !dicho.contains("tu firma"))
     }
 
     @Test

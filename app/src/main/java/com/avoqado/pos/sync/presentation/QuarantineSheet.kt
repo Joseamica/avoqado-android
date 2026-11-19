@@ -327,7 +327,7 @@ fun QuarantineSheet(
                             var abierto by rememberSaveable("por-confirmar-${cobro.requestId}") { mutableStateOf(false) }
                             Column(Modifier.fillMaxWidth().padding(vertical = AvoqadoTheme.spacing.md), verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
                                 Text(com.avoqado.pos.payment.domain.CancelacionDeCobro.TITULO_TARJETA_POR_CONFIRMAR, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
-                                Text(importeDeLaFila(cobro.montoCents), style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold)
+                                Text(importeDeLaFila(cobro.montoCents, cobro.antesDePropina), style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold)
                                 ReferenciaDeRevision("Folio ${cobro.requestId.take(8)}", cobro.desdeMillis?.let { formatTime(it) }.orEmpty(), abierto, { abierto = !abierto })
                                 avisosDeCancelacion[cobro.requestId]?.let { Text(it, style = MaterialTheme.typography.bodyMedium, color = Warning) }
                                 AccionDeRevision(text = com.avoqado.pos.payment.domain.CancelacionDeCobro.BOTON_REVISAR,
@@ -345,7 +345,7 @@ fun QuarantineSheet(
                                 // Codex android r1 #11: el importe de SU solicitud; si no consta, «Importe por confirmar» mientras se recupera.
                                 val fila = cancelacionesViewModel.filaDe(cancelacion)
                                 val importe = fila?.montoCents ?: cancelacion.montoCents ?: cancelacion.requestId?.let { importesRecuperados[it] }
-                                Text(importeDeLaFila(importe), style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold)
+                                Text(importeDeLaFila(importe, fila?.montoCents != null && fila.antesDePropina), style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold)
                                 ReferenciaDeRevision("Folio ${cancelacion.id.take(8)}", formatTime(cancelacion.creadaEn), abierto, { abierto = !abierto })
                                 // D19 (4-nov): con la terminal ya suelta ya no «se cancela sola»; se dice y se deja declarar.
                                 if (!esAvisoDeCobro) Text(com.avoqado.pos.payment.domain.CancelacionDeCobro.cuerpoDeLaFila(cancelacion.sinRed, cancelacion.terminalLibre, cancelacion.sinFila), style = MaterialTheme.typography.bodyMedium)
@@ -354,7 +354,8 @@ fun QuarantineSheet(
                                 cancelacion.requestId?.let { avisosDeCancelacion[it] }?.let { Text(it, style = MaterialTheme.typography.bodyMedium, color = Warning) }
                                 // F1 (tarea 6): «Revisar» = la revisión del gerente (PIN primero), incluso si la solicitud nunca llegó (404,
                                 // Codex android r1 #6).
-                                if (fila != null && com.avoqado.pos.payment.domain.CancelacionDeCobro.filaPuedeDeclarar(cancelacion.terminalLibre, cancelacion.sinRed, cancelacion.requestId, esAvisoDeCobro, cancelacion.sinFila)) {
+                                // F1 bloque 5: la MISMA condición que mantiene el teclado y que se revalida al mandar (`esFirmable`).
+                                if (fila != null && cancelacionesViewModel.esFirmable(fila, cancelacion)) {
                                     AccionDeRevision(text = com.avoqado.pos.payment.domain.CancelacionDeCobro.BOTON_REVISAR,
                                         onClick = { cancelacionesViewModel.revisar(fila) }, enabled = !consultando, principal = true)
                                 }
@@ -600,7 +601,9 @@ private fun formatMoney(cents: Int): String =
     NumberFormat.getCurrencyInstance(Locale("es", "MX")).format(cents / 100.0)
 
 /** F1: el importe de una fila; sin importe guardado (fila antigua, se está preguntando), «Importe por confirmar». Nunca otro número. */
-private fun importeDeLaFila(cents: Int?): String = cents?.let(::formatMoney) ?: com.avoqado.pos.payment.domain.CancelacionDeCobro.IMPORTE_POR_CONFIRMAR
+private fun importeDeLaFila(cents: Int?, antesDePropina: Boolean = false): String =
+    cents?.let { com.avoqado.pos.payment.data.ImporteDelIntento(it, if (antesDePropina) null else 0).texto(::formatMoney) }
+        ?: com.avoqado.pos.payment.domain.CancelacionDeCobro.IMPORTE_POR_CONFIRMAR
 
 /** F1: la hora del NEGOCIO (HH:mm) de una fila, para el título del teclado del gerente. */
 private fun formatHora(epochMs: Long): String =
@@ -631,7 +634,7 @@ internal fun RevisionDelGerente(
         ),
         onSubmit = onFirmar,
         onDismiss = onCerrar,
-        title = textos.pinParaFirmar(cobro.montoCents?.let(::formatMoney), cobro.desdeMillis?.let(::formatHora)),
+        title = textos.pinParaFirmar(cobro.montoCents?.let { importeDeLaFila(it, cobro.antesDePropina) }, cobro.desdeMillis?.let(::formatHora)),
         description = textos.detalleDeLaFirma(cobro.requestId.take(8)),
         actionText = textos.BOTON_FIRMAR,
     )

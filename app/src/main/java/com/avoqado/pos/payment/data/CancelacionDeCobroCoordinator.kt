@@ -23,6 +23,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -451,6 +452,14 @@ class CancelacionDeCobroCoordinator internal constructor(
     }
 
     private fun candadoDe(id: String): Mutex = candados.getOrPut(id) { Mutex() }
+
+    /**
+     * 🔴 F1 bloque 5 (Codex android r2 #10): corre [bloque] con el candado de ESTA intención y su fila recién leída del disco (`null` =
+     * ya no existe). Mientras corre, la corrida del coordinador no avanza su fase (su `tryLock` cede y la retoma
+     * [procesarTrasDeclarar]), así que lo que [bloque] decide sobre la fila sigue siendo verdad al mandar la firma.
+     */
+    suspend fun <T> conLaFilaFresca(id: String, bloque: suspend (IntencionDeCancelarCobro?) -> T): T =
+        candadoDe(id).withLock { bloque(store.leer(id)) }
 
     /** Espera creciente entre intentos: insistir cada 30 s a una terminal muda sólo hace ruido. */
     private fun espera(intentos: Int): Long {

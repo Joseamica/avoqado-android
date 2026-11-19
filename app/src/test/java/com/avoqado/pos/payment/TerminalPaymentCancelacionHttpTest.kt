@@ -399,6 +399,24 @@ class TerminalPaymentCancelacionHttpTest {
         assertEquals(listOf("req-otro", "req-1"), idsPendientes())
     }
 
+    /** F1 bloque 5 (contrato TPV §6): el `/release` trae el comprobante; con `alreadyStored` la firma de ahora no se agregó. */
+    @Test
+    fun `F1 el comprobante de la declaracion distingue la firma nueva de la que ya estaba guardada`() = runBlocking {
+        pendientes = PendientesDeTarjeta.agregar(null, "req-1", "order-1", """{"requestId":"req-1","orderId":"order-1"}""")
+        server.enqueue(MockResponse().setBody("""{"released":true,"declarationReceipt":{"id":"r1","kind":"UNCHARGED_VERIFIED","by":"SUPERVISOR_PIN","staffId":"staff-ana","acceptedAt":"2026-11-18T19:02:11.481Z","scope":"REQUEST","requestId":"req-1","humanSignature":true,"alreadyStored":true}}"""))
+        assertEquals(ResultadoDeDeclaracion.YaEstabaDeclarada("2026-11-18T19:02:11.481Z", "staff-ana"), service.declararNoCobrado("req-1"))
+        assertTrue("libera igual: la declaración consta", idsPendientes().isEmpty())
+
+        pendientes = PendientesDeTarjeta.agregar(null, "req-2", "order-2", """{"requestId":"req-2","orderId":"order-2"}""")
+        server.enqueue(MockResponse().setBody("""{"released":true,"declarationReceipt":{"staffId":"staff-ana","acceptedAt":"2026-11-18T19:05:00Z","alreadyStored":false}}"""))
+        assertEquals(ResultadoDeDeclaracion.Liberada, service.declararNoCobrado("req-2"))
+        // Un comprobante sin `released: true` no libera nada.
+        pendientes = PendientesDeTarjeta.agregar(null, "req-3", "order-3", """{"requestId":"req-3","orderId":"order-3"}""")
+        server.enqueue(MockResponse().setBody("""{"released":false,"code":"TERMINAL_CONFIRMATION_PENDING","message":"Esperando","declarationReceipt":{"alreadyStored":true}}"""))
+        assertTrue(service.declararNoCobrado("req-3") is ResultadoDeDeclaracion.Rechazada)
+        assertEquals(listOf("req-3"), idsPendientes())
+    }
+
     @Test
     fun `P1 el cobro PROBADO de una cancelacion vuelve a la lista aunque el cajero lo hubiera declarado`() = runBlocking {
         // 🔴 Revisión de B2 (Minor 3), hermano del éxito tardío: `armarLlave` salta un cobro declarado «no se cobró», así

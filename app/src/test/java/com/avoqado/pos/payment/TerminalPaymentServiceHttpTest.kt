@@ -3,6 +3,7 @@ package com.avoqado.pos.payment
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.data.network.ForbiddenInterceptor
 import com.avoqado.pos.payment.data.BloqueadorDeCobro
+import com.avoqado.pos.payment.data.ImporteDelIntento
 import com.avoqado.pos.payment.data.ResultadoDeDeclaracion
 import com.avoqado.pos.payment.data.TerminalListResult
 import com.avoqado.pos.payment.data.TerminalPaymentResult
@@ -374,6 +375,54 @@ class TerminalPaymentServiceHttpTest {
         assertTrue(cuerpoCon, cuerpoCon.contains("\"expectedRemainingCents\":6000"))
         assertFalse("se consume en un solo envío; sin él, el cuerpo de siempre", cuerpoSin.contains("expectedRemainingCents"))
         assertEquals(sin, con.let { (it as TerminalPaymentResult.Error).copy(requestId = (sin as TerminalPaymentResult.Error).requestId) })
+    }
+
+    // MARK: - F1 bloque 4: el importe del intento, por (sucursal, solicitud)
+
+    private fun pesos(cents: Int) = String.format(java.util.Locale.US, "\$%.2f", cents / 100.0)
+
+    private fun busyConPropina(blockerId: String, propina: String?): String {
+        val tip = propina?.let { ""","tipCents":$it""" }.orEmpty()
+        val bloqueador = """{"requestId":"$blockerId","amountCents":4000$tip,"senderDevice":"Caja 2","ageSeconds":37}"""
+        return """{"success":false,"status":"failed","code":"TERMINAL_BUSY","message":"ocupada","blockingRequest":$bloqueador,"details":{"blockingRequest":$bloqueador,"scope":"TERMINAL"}}"""
+    }
+
+    @Test
+    fun revisar409SinRed_conservaImporte() = runBlocking {
+        enqueue(409, busyConPropina("A-1", "500"))
+        charge()
+        // Sin red al abrir «Revisar ese cobro»: la consulta no contesta y el importe que ya entregó el 409 se queda.
+        enqueue(503)
+        service.importeDelCobro("A-1", "venue-1")
+        assertEquals(ImporteDelIntento(4_000, 500), service.importeDelIntento("venue-1", "A-1"))
+        assertEquals("\$45.00", service.importeDelIntento("venue-1", "A-1")!!.texto { pesos(it) })
+
+        // Un bloqueador de un servidor anterior (sin propina) dice «antes de propina»; propina 0 explícita es exacto.
+        enqueue(409, busyConPropina("A-2", null))
+        charge()
+        assertEquals("\$40.00 antes de propina", service.importeDelIntento("venue-1", "A-2")!!.texto { pesos(it) })
+        enqueue(409, busyConPropina("A-3", "0"))
+        charge()
+        assertEquals(4_000, service.importeDelIntento("venue-1", "A-3")!!.totalCents)
+        // Un dato incompleto nunca borra uno completo; y es por sucursal.
+        enqueue(409, busyConPropina("A-1", null))
+        charge()
+        assertEquals(ImporteDelIntento(4_000, 500), service.importeDelIntento("venue-1", "A-1"))
+        assertNull(service.importeDelIntento("venue-2", "A-1"))
+    }
+
+    @Test
+    fun reconexion_recuperaImporteSinReabrir() = runBlocking {
+        enqueue(409, busyConPropina("A-9", null)) // sólo la base
+        charge()
+        repeat(3) { enqueue(503) } // la consulta (3 intentos), sin red
+        service.resolveOutcome("A-9", enSegundoPlano = true, ajeno = true)
+        assertEquals(false, service.importeDelIntento("venue-1", "A-9")!!.completo)
+        // Vuelve la red: la consulta automática (la misma de cada 5 s) trae importe y propina, y completa el dato sin reabrir nada.
+        repeat(3) { enqueue(200, """{"status":"PENDING","inProgress":true,"amount":40.0,"tip":5.0}""") }
+        service.resolveOutcome("A-9", enSegundoPlano = true, ajeno = true)
+        assertEquals(ImporteDelIntento(4_000, 500), service.importeDelIntento("venue-1", "A-9"))
+        assertEquals(4_500, service.importes.value["venue-1" to "A-9"]?.totalCents)
     }
 
     // MARK: - C1 (22-oct): «Terminal ocupada» con salida — el id del cobro que ocupa viaja hasta la pantalla

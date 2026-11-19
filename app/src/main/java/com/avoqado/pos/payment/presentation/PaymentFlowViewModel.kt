@@ -31,6 +31,7 @@ import com.avoqado.pos.payment.data.TerminalListResult
 import com.avoqado.pos.payment.data.TerminalPaymentResult
 import com.avoqado.pos.payment.domain.CancelacionDeCobro
 import com.avoqado.pos.payment.data.TerminalPaymentService
+import com.avoqado.pos.payment.data.conocido
 import com.avoqado.pos.payment.data.model.ColaDelCobro
 import com.avoqado.pos.payment.data.model.CreateOrderRequest
 import com.avoqado.pos.payment.data.model.CreateOrderResponse
@@ -1734,7 +1735,7 @@ class PaymentFlowViewModel @Inject constructor(
     private var avisoDeLaRevision: AvisoDeOtroCobro? = null
 
     private fun avisarRevisionQueSiPaso(requestId: String) {
-        avisoDeLaRevision = AvisoDeOtroCobro(requestId, textoCobroQueSiPaso(null), yaCobrado = true)
+        avisoDeLaRevision = AvisoDeOtroCobro(requestId, textoCobroQueSiPaso(terminalPaymentService.importeDelIntento(secureStorage.venueId, requestId).conocido()?.totalCents?.toLong()), yaCobrado = true)
         publicarAviso(terminalPaymentService.pendientesDeOtrasVentas(ordenEnCurso()))
     }
 
@@ -5236,7 +5237,19 @@ class PaymentFlowViewModel @Inject constructor(
         val requestId = cobroSinConfirmarEnPantalla() ?: return null
         val contexto = terminalPaymentService.contextoDe(requestId)
         val monto = contexto?.amountCents?.let { it + (contexto.tipCents ?: 0) }
+            ?: terminalPaymentService.importeDelIntento(contexto?.venueId, requestId).conocido()?.totalCents
         return ObjetivoDeLaDeclaracion(requestId = requestId, venueId = contexto?.venueId, montoCentavos = monto)
+    }
+
+    /** F1 bloque 4: el importe que se sabe del intento (de [importesDeIntentos]): la pantalla lo observa y se repinta al llegar. */
+    val importesDeIntentos: kotlinx.coroutines.flow.StateFlow<Map<Pair<String, String>, com.avoqado.pos.payment.data.ImporteDelIntento>>
+        get() = terminalPaymentService.importes
+
+    /** F1 bloque 4: «$45.00», «$40.00 antes de propina» o null («Importe por confirmar») del intento de [objetivo]. */
+    fun textoDelImporte(objetivo: ObjetivoDeLaDeclaracion?, formato: (Int) -> String): String? {
+        objetivo ?: return null
+        objetivo.montoCentavos?.let { return formato(it) }
+        return terminalPaymentService.importeDelIntento(objetivo.venueId, objetivo.requestId).conocido()?.texto(formato)
     }
 
     /**
@@ -5266,6 +5279,7 @@ class PaymentFlowViewModel @Inject constructor(
         val requestId = intencion.requestId?.takeIf { it.isNotBlank() } ?: return null
         val contexto = terminalPaymentService.contextoDe(requestId)
         val monto = contexto?.amountCents?.let { it + (contexto.tipCents ?: 0) } ?: intencion.montoCents
+            ?: terminalPaymentService.importeDelIntento(intencion.venueId, requestId).conocido()?.totalCents
         return ObjetivoDeLaDeclaracion(requestId = requestId, venueId = intencion.venueId.takeIf { it.isNotBlank() }, montoCentavos = monto)
     }
 

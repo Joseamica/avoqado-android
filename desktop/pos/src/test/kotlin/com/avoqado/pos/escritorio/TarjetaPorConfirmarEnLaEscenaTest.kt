@@ -129,6 +129,35 @@ class TarjetaPorConfirmarEnLaEscenaTest {
         assertEquals(1, seguir)
     }
 
+    /** F1 bloque 4 (Codex android r2 #14): el importe llega con el teclado abierto: el título lo dice y los dígitos tecleados se quedan. */
+    @Test fun `pinAbierto_recibeImporteSinPerderDigitos`() = runComposeUiTest {
+        val enviados = mutableListOf<String>()
+        val sinImporte = com.avoqado.pos.payment.presentation.CobroPorConfirmar(
+            requestId = "req-vieja", venueId = "venue-1", montoCents = null, desdeMillis = null,
+        )
+        val paso = androidx.compose.runtime.mutableStateOf<com.avoqado.pos.payment.presentation.PasoDelGerente>(
+            com.avoqado.pos.payment.presentation.PasoDelGerente.Firmar(sinImporte, id = 7),
+        )
+        escena {
+            com.avoqado.pos.sync.presentation.RevisionDelGerente(
+                paso = paso.value,
+                onFirmar = { pin -> enviados += pin; com.avoqado.pos.core.data.network.OverrideResult.Granted(token = "", authorizedByName = "") },
+                onCerrar = {},
+            )
+        }
+        onNodeWithText("para marcar este cobro", substring = true).assertExists()
+        listOf("4", "3").forEach { onNodeWithText(it).performClick() }
+
+        runOnUiThread { paso.value = com.avoqado.pos.payment.presentation.PasoDelGerente.Firmar(sinImporte.copy(montoCents = 12_000), id = 7) }
+        waitForIdle()
+        onNodeWithText("para marcar \$120.00", substring = true).assertExists()
+
+        listOf("2", "1").forEach { onNodeWithText(it).performClick() }
+        onNodeWithText(CancelacionDeCobro.BOTON_FIRMAR).performClick()
+        waitForIdle()
+        assertEquals(listOf("4321"), enviados, "los dígitos de antes del importe siguen ahí")
+    }
+
     /** F1 (un paso, Codex código r1 #10): el teclado del gerente ya dice qué firma, su botón es [Firmar] y un 403 se dice ahí mismo. */
     @Test fun `el teclado del gerente dice que firma, Firmar manda una vez y un PIN sin permiso se dice en el mismo teclado`() = runComposeUiTest {
         val enviados = mutableListOf<String>()

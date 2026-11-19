@@ -7,6 +7,7 @@ import com.avoqado.pos.payment.data.FaseDeCancelacion
 import com.avoqado.pos.payment.data.IntencionDeCancelarCobro
 import com.avoqado.pos.payment.data.ResultadoDeDeclaracion
 import com.avoqado.pos.payment.data.TerminalPaymentService
+import com.avoqado.pos.payment.data.conocido
 import com.avoqado.pos.payment.domain.CancelacionDeCobro
 import com.avoqado.pos.core.data.network.OverrideResult
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -31,6 +32,8 @@ data class CobroPorConfirmar(
     val montoCents: Int?,
     val desdeMillis: Long?,
     val cancelacionId: String? = null,
+    /** F1 bloque 4: [montoCents] es sólo la base (el bloqueador de un servidor anterior no dijo la propina): «$X antes de propina». */
+    val antesDePropina: Boolean = false,
 )
 
 /**
@@ -128,15 +131,16 @@ class CancelacionesPendientesViewModel @Inject constructor(
         val filas = terminalPaymentService.pendientesDeOtrasVentas(null)
             .filter { !it.cobrado && it.requestId != enVuelo && it.requestId !in cancelados }
             .map {
-                CobroPorConfirmar(
+                conImporte(CobroPorConfirmar(
                     requestId = it.requestId,
                     venueId = it.venueId,
                     montoCents = it.amountCents?.let { monto -> monto + (it.tipCents ?: 0) } ?: _importes.value[it.requestId],
                     desdeMillis = it.desdeMillis,
-                )
+                ))
             }
         _cobros.value = filas
         revisarQueSigueVigente()
+        seguirElImporteEnElTeclado()
         if (recuperarImportes) {
             (filas + _pendientes.value.mapNotNull(::filaDe)).filter { it.montoCents == null }.forEach(::recuperarImporte)
         }
@@ -148,7 +152,8 @@ class CancelacionesPendientesViewModel @Inject constructor(
             try {
                 val importe = terminalPaymentService.importeDelCobro(cobro.requestId, cobro.venueId) ?: return@launch
                 _importes.update { it + (cobro.requestId to importe) }
-                _cobros.update { filas -> filas.map { if (it.requestId == cobro.requestId) it.copy(montoCents = importe) else it } }
+                _cobros.update { filas -> filas.map { if (it.requestId == cobro.requestId) it.copy(montoCents = importe, antesDePropina = false) else it } }
+                seguirElImporteEnElTeclado()
             } finally {
                 preguntandoImporte -= cobro.requestId
             }
@@ -163,19 +168,57 @@ class CancelacionesPendientesViewModel @Inject constructor(
     fun filaDe(intencion: IntencionDeCancelarCobro): CobroPorConfirmar? {
         val requestId = intencion.requestId?.takeIf { it.isNotBlank() } ?: return null
         val contexto = terminalPaymentService.contextoDe(requestId)
-        return CobroPorConfirmar(
+        return conImporte(CobroPorConfirmar(
             requestId = requestId,
             venueId = intencion.venueId.takeIf { it.isNotBlank() },
             montoCents = contexto?.amountCents?.let { it + (contexto.tipCents ?: 0) } ?: intencion.montoCents ?: _importes.value[requestId],
             desdeMillis = intencion.creadaEn,
             cancelacionId = intencion.id,
-        )
+        ))
     }
 
-    /** ¿La fila sigue en duda? Una cancelación, mientras su intención siga viva; un cobro, mientras siga en la lista durable. */
+    /**
+     * 🔴 F1 bloque 4 (r1 #11, r2 #14): una fila sin importe toma el que sabe el servicio del intento (envío, bloqueador del 409, cada
+     * consulta); si sólo sabe la base, «antes de propina». Un dato incompleto nunca pisa uno completo.
+     */
+    private fun conImporte(fila: CobroPorConfirmar): CobroPorConfirmar {
+        if (fila.montoCents != null) return fila
+        val importe = terminalPaymentService.importeDelIntento(fila.venueId, fila.requestId).conocido() ?: return fila
+        return fila.copy(montoCents = importe.totalCents ?: importe.baseCents, antesDePropina = !importe.completo)
+    }
+
+    /**
+     * 🔴 F1 bloque 4 (Codex android r2 #14): el teclado abierto guarda la CLAVE de su fila (`requestId` y cancelación) y sigue su importe:
+     * al llegar, se repinta su título con el MISMO teclado ([PasoDelGerente.Firmar.id] igual), sin perder los dígitos ya tecleados.
+     */
+    private fun seguirElImporteEnElTeclado() {
+        val abierto = _paso.value as? PasoDelGerente.Firmar ?: return
+        val fila = (_cobros.value + _pendientes.value.mapNotNull(::filaDe)).firstOrNull {
+            it.requestId == abierto.cobro.requestId && it.cancelacionId == abierto.cobro.cancelacionId
+        } ?: return
+        if (fila.montoCents == null || (fila.montoCents == abierto.cobro.montoCents && fila.antesDePropina == abierto.cobro.antesDePropina)) return
+        if (abierto.cobro.montoCents != null && !abierto.cobro.antesDePropina && fila.antesDePropina) return
+        _paso.value = abierto.copy(cobro = abierto.cobro.copy(montoCents = fila.montoCents, antesDePropina = fila.antesDePropina))
+    }
+
+    /** ¿La fila sigue firmable? (lo que se ve: la intención en memoria, o la lista leída). Ver [esFirmable]. */
     private fun sigueVigente(cobro: CobroPorConfirmar): Boolean =
-        if (cobro.cancelacionId != null) cancelacionDeCobro.pendientes.value.any { it.id == cobro.cancelacionId }
+        if (cobro.cancelacionId != null) esFirmable(cobro, cancelacionDeCobro.pendientes.value.firstOrNull { it.id == cobro.cancelacionId })
         else _cobros.value.any { it.requestId == cobro.requestId }
+
+    /**
+     * 🔴 F1 bloque 5 (`plan-android.md` «Vigencia de la firma», Codex android r2 #10): LA condición de la firma de una cancelación —
+     * si se ofrece «Revisar», si su teclado sigue abierto y si sale la declaración—. La misma cancelación, el mismo intento, la
+     * sucursal activa (o una fila vieja sin sucursal, r1 #9), la fase ESPERAR_DESENLACE y una señal admisible (terminal libre o 404
+     * autenticado). Si la fila desapareció o pasó a BORRAR_ORDEN o SE_COBRO, no se firma nada.
+     */
+    fun esFirmable(cobro: CobroPorConfirmar, intencion: IntencionDeCancelarCobro?): Boolean {
+        val i = intencion ?: return false
+        return i.id == cobro.cancelacionId && i.requestId == cobro.requestId &&
+            (i.venueId.isBlank() || i.venueId == secureStorage.venueId) &&
+            i.faseActual == FaseDeCancelacion.ESPERAR_DESENLACE &&
+            CancelacionDeCobro.filaPuedeDeclarar(i.terminalLibre, i.sinRed, i.requestId, esAvisoDeCobro = false, sinFila = i.sinFila)
+    }
 
     /**
      * 🔴 Codex android r1 #7 (la prueba retirada de C4): si la fila que revisa el gerente se resolvió sola (la terminal confirmó, la
@@ -225,12 +268,36 @@ class CancelacionesPendientesViewModel @Inject constructor(
         val paso = _paso.value as? PasoDelGerente.Firmar ?: return TECLADO_CERRADO
         val cobro = paso.cobro
         val nuevo = viewModelScope.async {
-            val r = terminalPaymentService.declararNoCobrado(cobro.requestId, cobro.venueId, supervisorPin = pin)
-            fun cerrarEsteTeclado() { if (_paso.value === paso) _paso.value = PasoDelGerente.Cerrado }
+            fun cerrarEsteTeclado() { if ((_paso.value as? PasoDelGerente.Firmar)?.id == paso.id) _paso.value = PasoDelGerente.Cerrado }
+            // 🔴 F1 bloque 5: la condición se evalúa AQUÍ, dentro de la corrutina que manda, con la fila recién leída del disco y bajo
+            // el candado de su intención: entre el toque y el envío la fase pudo cambiar. Si ya no es firmable: cero declaraciones.
+            val cancelacionId = cobro.cancelacionId
+            val r = if (cancelacionId != null) {
+                cancelacionDeCobro.conLaFilaFresca(cancelacionId) { fresca ->
+                    if (esFirmable(cobro, fresca)) terminalPaymentService.declararNoCobrado(cobro.requestId, cobro.venueId, supervisorPin = pin)
+                    else null
+                }
+            } else {
+                terminalPaymentService.declararNoCobrado(cobro.requestId, cobro.venueId, supervisorPin = pin)
+            }
             when (r) {
+                null -> {
+                    cerrarEsteTeclado()
+                    _resultado.value = comoQuedo(cobro)
+                    refrescar()
+                    TECLADO_CERRADO
+                }
                 ResultadoDeDeclaracion.Liberada -> {
                     cerrarEsteTeclado()
                     cobro.cancelacionId?.let(cancelacionDeCobro::procesarTrasDeclarar)
+                    refrescar()
+                    TECLADO_CERRADO
+                }
+                // F1 bloque 5 (contrato TPV §6): Avoqado ya la tenía guardada; se dice la que consta, nunca «quedó tu firma».
+                is ResultadoDeDeclaracion.YaEstabaDeclarada -> {
+                    cerrarEsteTeclado()
+                    cobro.cancelacionId?.let(cancelacionDeCobro::procesarTrasDeclarar)
+                    _resultado.value = CancelacionDeCobro.yaEstabaDeclarada(r.aceptadaEn)
                     refrescar()
                     TECLADO_CERRADO
                 }

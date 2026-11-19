@@ -289,6 +289,16 @@ object CancelacionDeCobro {
     /** Codex android r1 #7: la fila que revisaba el gerente se resolvió sola (y no consta que haya cobrado): ya no se firma. */
     const val YA_SE_RESOLVIO = "Ese cobro ya se resolvió: ya no hace falta firmar."
 
+    /**
+     * F1 bloque 5 (contrato TPV §6, `alreadyStored`): otra firma ya estaba guardada en Avoqado (otro gerente, o una respuesta que se
+     * perdió). La hora es la del comprobante, en la del negocio; la de ahora no se agregó. Mismo texto en iOS.
+     */
+    fun yaEstabaDeclarada(aceptadaEnIso: String?): String {
+        val hora = aceptadaEnIso?.let { runCatching { java.time.Instant.parse(it) }.getOrNull() }
+            ?.let { com.avoqado.pos.core.util.VenueTimeZone.at(it, null).format(java.time.format.DateTimeFormatter.ofPattern("HH:mm")) }
+        return "Avoqado ya tenía guardada la firma de este cobro${hora?.let { " de las $it" }.orEmpty()}. No se agregó otra."
+    }
+
     /** La firma no salió por falta de red: la fila sigue pendiente, nada se encola. */
     const val FIRMA_SIN_RED = "Sin conexión: la firma necesita internet. El cobro sigue por confirmar."
 

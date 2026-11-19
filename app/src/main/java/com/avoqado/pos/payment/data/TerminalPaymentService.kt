@@ -294,6 +294,37 @@ class TerminalPaymentService @Inject constructor(
      */
     private val reconocidos = mutableSetOf<String>()
 
+    /**
+     * 🔴 F1 cierre bloque 4 (`plan-android.md` «Importe del intento», r1 #11, r2 #13–#15): lo que se sabe del importe de cada intento,
+     * por (sucursal, solicitud). Lo alimentan el envío, el bloqueador del 409 y cada consulta de estado del mismo intento; un dato
+     * incompleto (sin propina) nunca borra uno completo. Lista, aviso, Cambio, «Revisar ese cobro» y el teclado del gerente leen
+     * ESTE dato ([importeDelIntento]). Sólo para mostrar: no decide nada del cobro.
+     */
+    private val _importes = kotlinx.coroutines.flow.MutableStateFlow<Map<Pair<String, String>, ImporteDelIntento>>(emptyMap())
+    val importes: kotlinx.coroutines.flow.StateFlow<Map<Pair<String, String>, ImporteDelIntento>> = _importes
+
+    /** Anota lo que se supo del importe de [requestId]. Base ≤ 0 o sin base no es un importe (nunca un «$0.00» inventado). */
+    fun anotarImporte(venueId: String?, requestId: String?, baseCents: Int?, propinaCents: Int?) {
+        val venue = venueId?.takeIf { it.isNotBlank() } ?: return
+        val id = requestId?.trim()?.takeIf { it.isNotEmpty() && it != BloqueadorDeCobro.SIN_ID } ?: return
+        val nuevo = ImporteDelIntento(baseCents?.takeIf { it > 0 } ?: return, propinaCents?.takeIf { it >= 0 })
+        synchronized(_importes) {
+            val previo = _importes.value[venue to id]
+            if (previo != null && previo.completo && !nuevo.completo) return
+            _importes.value = _importes.value + ((venue to id) to nuevo)
+        }
+    }
+
+    /** El importe de [requestId] en [venueId] (o la sucursal activa): el envío guardado si lo tiene completo; si no, lo anotado. */
+    fun importeDelIntento(venueId: String?, requestId: String): ImporteDelIntento? {
+        val venue = venueId?.takeIf { it.isNotBlank() } ?: secureStorage.venueId
+        val anotado = venue?.let { _importes.value[it to requestId] }
+        if (anotado?.completo == true) return anotado
+        val delEnvio = contextoDe(requestId)?.takeIf { it.venueId == null || it.venueId == venue }
+            ?.let { ctx -> ctx.amountCents?.takeIf { it > 0 }?.let { ImporteDelIntento(it, ctx.tipCents ?: 0) } }
+        return delEnvio ?: anotado
+    }
+
     /** N4 (Codex r2): marcas «SÍ pasó» que el disco no aceptó. Siguen a la vista (en memoria) y la lectura siguiente las reintenta. */
     private val marcasSinGuardar = mutableMapOf<String, CobroPendiente>()
 
@@ -754,6 +785,7 @@ class TerminalPaymentService @Inject constructor(
             currentTerminalId = terminalId
             intentoVivo = IntentoDeCobroEnVuelo(requestId, terminalId, venueId)
         }
+        anotarImporte(venueId, requestId, amountCents, tipCents) // F1 bloque 4: lo enviado, base y propina
         // Cobro nuevo, carrera nueva: el cancel del anterior no gobierna a éste.
         cancelRequestedFor = null
         // El watchdog corre en OTRO hilo: un `var` local capturado no garantiza visibilidad.
@@ -904,6 +936,9 @@ class TerminalPaymentService @Inject constructor(
                     }
                     if (busyByAnother != null) {
                         Log.w("💳", "🔒 Terminal ocupada por OTRA solicitud (${busyByAnother.blockingRequestId}): este intento nunca se creó — se libera la llave")
+                        // F1 bloque 4 (r2 #15): el importe del bloqueador se conserva (sin propina conocida = «antes de propina»).
+                        anotarImporte(venueId, busyByAnother.blockingRequestId, rejectionDto?.blockingRequest?.amountCents,
+                            rejectionDto?.blockingRequest?.tipCents)
                         clearMatching(requestId)
                         return TerminalPaymentResult.Error(
                             CardChargeDecision.busyMessage(busyByAnother, errorMsg),
@@ -1041,6 +1076,8 @@ class TerminalPaymentService @Inject constructor(
                     val dto = json.decodeFromString(TerminalPaymentStatusDto.serializer(), body)
                     Log.d("💳", "Payment status $requestId → ${dto.status} (inProgress=${dto.inProgress}, outcome=${dto.outcome})")
                     importeCents = dto.importeCents()
+                    // F1 bloque 4 (r1 #11): cada consulta de estado alimenta el importe del intento (también la automática de 5 s).
+                    dto.amount?.let { anotarImporte(venue, requestId, Math.round(it * 100).toInt(), Math.round((dto.tip ?: 0.0) * 100).toInt()) }
                     dto.aProbe()
                 }
                 responseCode == 404 -> {
@@ -1352,7 +1389,9 @@ class TerminalPaymentService @Inject constructor(
                     if (!yaCobrado(requestId)) declaradosSinCobro.add(requestId)
                     clearMatching(requestId)
                 }
-                ResultadoDeDeclaracion.Liberada
+                dto.declarationReceipt?.takeIf { it.alreadyStored == true }
+                    ?.let { ResultadoDeDeclaracion.YaEstabaDeclarada(it.acceptedAt, it.staffId) }
+                    ?: ResultadoDeDeclaracion.Liberada
             } else {
                 ResultadoDeDeclaracion.Rechazada(
                     mensaje = dto?.message?.takeIf { it.isNotBlank() } ?: CancelacionDeCobro.DECLARACION_RECHAZO_GENERICO,
@@ -1615,6 +1654,12 @@ sealed class ResultadoDeDeclaracion {
     /** El servidor liberó la venta y la ranura: se puede volver a cobrar. */
     object Liberada : ResultadoDeDeclaracion()
 
+    /**
+     * F1 bloque 5 (contrato TPV §6, `declarationReceipt.alreadyStored`): liberada, pero Avoqado YA tenía guardada una declaración
+     * de este cobro (otro gerente, o la respuesta perdida de ésta). La firma de ahora no se agregó: se dice la de [aceptadaEn].
+     */
+    data class YaEstabaDeclarada(val aceptadaEn: String?, val staffId: String?) : ResultadoDeDeclaracion()
+
     /** El servidor la RECHAZÓ. [mensaje] viene de él, nunca de aquí. */
     data class Rechazada(val mensaje: String, val code: String?) : ResultadoDeDeclaracion()
 
@@ -1647,6 +1692,15 @@ private data class RespuestaDeDeclaracionDto(
     val released: Boolean? = null,
     val code: String? = null,
     val message: String? = null,
+    /** F1 bloque 5: el comprobante de la declaración (contrato TPV §6). Ausente en un servidor anterior. */
+    val declarationReceipt: ComprobanteDeDeclaracionDto? = null,
+)
+
+@Serializable
+private data class ComprobanteDeDeclaracionDto(
+    val staffId: String? = null,
+    val acceptedAt: String? = null,
+    val alreadyStored: Boolean? = null,
 )
 
 sealed class TerminalListResult {
@@ -1811,6 +1865,8 @@ data class RejectionDetailsDto(
 data class BlockingRequestDto(
     val requestId: String? = null,
     val amountCents: Int? = null,
+    /** F1 bloque 4 (contrato §2): la propina del bloqueador. 0 = sin propina; ausente = no se sabe («$X antes de propina»). */
+    val tipCents: Int? = null,
     val senderDevice: String? = null,
     val ageSeconds: Int? = null,
 )
@@ -1893,6 +1949,18 @@ data class OnlineTerminal(
     val isOnline: Boolean = true,
     val hasSocket: Boolean = false,
 )
+
+/** F1 bloque 4: el importe de un intento. [propinaCents] `null` = no se sabe (un bloqueador de un servidor anterior). */
+data class ImporteDelIntento(val baseCents: Int, val propinaCents: Int?) {
+    val completo: Boolean get() = propinaCents != null
+    val totalCents: Int? get() = propinaCents?.let { baseCents + it }
+
+    /** «$45.00»; con sólo la base, «$40.00 antes de propina». */
+    fun texto(formato: (Int) -> String): String = totalCents?.let(formato) ?: "${formato(baseCents)} antes de propina"
+}
+
+/** F1 bloque 4: un importe de verdad (base positiva). Un doble de prueba relajado devuelve ceros: eso no es un importe. */
+fun ImporteDelIntento?.conocido(): ImporteDelIntento? = this?.takeIf { it.baseCents > 0 }
 
 /** F1 bloque 2 (contrato del SERVIDOR): el envío no cuadra con el saldo que la caja dijo ver (`expectedRemainingCents`). */
 const val SALDO_DISTINTO_AL_ESPERADO = "REMAINING_BALANCE_MISMATCH"

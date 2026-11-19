@@ -823,8 +823,14 @@ private fun DudaDeTarjeta(
     LaunchedEffect(objetivo?.requestId) {
         if (objetivo != null && objetivo.montoCentavos == null) recuperado = viewModel.esperarImporteDelCobro(objetivo.requestId, objetivo.venueId)
     }
+    // F1 bloque 4 (r1 #11, r2 #15): el importe del intento es UNO (envío, bloqueador del 409, cada consulta de estado); al llegar por
+    // cualquiera, esta pantalla se repinta sin reabrirse. Sin propina conocida: «$X antes de propina».
+    val importes by viewModel.importesDeIntentos.collectAsState()
+    val texto = remember(importes, objetivo, recuperado) {
+        viewModel.textoDelImporte(objetivo) { formatMoneyFromCents(it) } ?: recuperado?.let { formatMoneyFromCents(it) }
+    }
     TarjetaPorConfirmarView(
-        montoDelCobro = (objetivo?.montoCentavos ?: recuperado)?.let { formatMoneyFromCents(it) },
+        montoDelCobro = texto,
         confirmando = confirmando,
         sinRed = sinRed,
         onSeguir = onSeguir,

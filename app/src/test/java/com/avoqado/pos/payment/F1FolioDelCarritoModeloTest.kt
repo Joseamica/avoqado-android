@@ -59,6 +59,7 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
@@ -119,16 +120,21 @@ class F1FolioDelCarritoModeloTest {
         /** Bloque 3: lo que contesta la consulta de un intento (null = «no se sabe»). */
         val desenlaces = mutableMapOf<String, TerminalPaymentResult>()
 
+        /** Bloque 3: la creación de la orden y la lectura del saldo se quedan colgadas hasta que la prueba las suelta. */
+        var creacionColgada: kotlinx.coroutines.CompletableDeferred<Unit>? = null
+        var saldoColgado: kotlinx.coroutines.CompletableDeferred<Unit>? = null
+
         /** Lo que contesta `GET …/orders/:id` por folio (estado, pago y saldo). Ausente = sin respuesta. */
         val saldos = mutableMapOf<String, OrderRepository.SaldoDeLaOrden>()
 
         val orderRepository = mockk<OrderRepository>(relaxed = true).also { repo ->
-            coEvery { repo.createOrder(any(), any(), any(), any(), any(), any(), capturedVenueId = any()) } answers {
+            coEvery { repo.createOrder(any(), any(), any(), any(), any(), any(), capturedVenueId = any()) } coAnswers {
+                creacionColgada?.await()
                 val folio = "order-${'a' + ordenesCreadas.size}"
                 ordenesCreadas += folio to thirdArg<String?>()
                 Result.success(CreateOrderResponse(success = true, data = OrderData(id = folio, total = totalAlCrear, priceChanges = cambiosAlCrear)))
             }
-            coEvery { repo.saldoDeLaOrden(any()) } answers { saldos[firstArg()] }
+            coEvery { repo.saldoDeLaOrden(any()) } coAnswers { saldoColgado?.await(); saldos[firstArg()] }
         }
 
         /** La cancelación durable (vive fuera de las pantallas): la terminal y el borrado de la orden los contesta [transporte]. */
@@ -802,6 +808,76 @@ class F1FolioDelCarritoModeloTest {
 
             assertEquals("$llamada $nombre: B conserva su selector, su parte y su lector", b, caja.selectorDeB())
         }
+
+        // Creación de la orden de A: la cajera sale mientras se crea; la orden nace tarde con B en su selector.
+        run {
+            disco = PrefsDeDosCapas()
+            val servidor = Servidor()
+            val caja = Caja(servidor)
+            val creacion = kotlinx.coroutines.CompletableDeferred<Unit>().also { servidor.creacionColgada = it }
+            caja.armar("cli-ana", "Ana")
+            assertTrue(caja.cobrar())
+            caja.tarjeta()
+            runCurrent()
+            caja.salir()
+            servidor.creacionColgada = null
+            val b = bAbreSuSelector(caja)
+
+            creacion.complete(Unit)
+            advanceUntilIdle()
+            assertEquals("creación tardía de A: B intacta", b, caja.selectorDeB())
+            assertTrue("y A no viaja a la terminal", servidor.envios.isEmpty())
+        }
+
+        // Lectura del saldo tras la tarjeta de A (abono parcial aprobado): la cajera sale y empieza B antes de que conteste.
+        run {
+            disco = PrefsDeDosCapas()
+            val servidor = Servidor()
+            servidor.proximoEnvio = { _, requestId -> TerminalPaymentResult.Success(paymentId = "pay-a", requestId = requestId) }
+            val caja = Caja(servidor)
+            val saldo = kotlinx.coroutines.CompletableDeferred<Unit>().also { servidor.saldoColgado = it }
+            servidor.saldos["order-a"] = OrderRepository.SaldoDeLaOrden(9_000, "PARTIAL", "PENDING")
+            caja.armar("cli-ana", "Ana")
+            assertTrue(caja.cobrar(parteCents = 9_000))
+            caja.tarjeta()
+            runCurrent()
+            caja.salir()
+            if (caja.cobro.state.value !is PaymentFlowState.SelectingPaymentMethod) caja.seguir()
+            servidor.saldoColgado = null
+            val b = bAbreSuSelector(caja, avanzar = false)
+
+            saldo.complete(Unit)
+            runCurrent()
+            assertEquals("saldo tardío de A: B intacta", b, caja.selectorDeB())
+            assertTrue("cero éxito atribuido a B", caja.cobro.state.value !is PaymentFlowState.Success)
+        }
+
+        // Cancelación de A: termina en segundo plano con B dividida en su selector.
+        run {
+            disco = PrefsDeDosCapas()
+            val servidor = Servidor()
+            val caja = Caja(servidor)
+            aGuardadaConBEnPantalla(caja)
+            assertTrue(caja.cobrar(parteCents = 9_000))
+            caja.cobro.selectPaymentMethod(PaymentMethod.CARD)
+            advanceUntilIdle()
+            val b = caja.selectorDeB()
+
+            terminaLaCancelacionDeA(servidor, OrderRepository.SaldoDeLaOrden(18_000, "PENDING", "CANCELLED"),
+                com.avoqado.pos.payment.domain.ResultadoDeCancelarOrden.Cancelada)
+            assertEquals("cancelación de A: B intacta", b, caja.selectorDeB())
+        }
+    }
+
+    /** Tras salir de A: carrito nuevo de B (mismos artículos, otro cliente), su parte y su selector. Devuelve lo que B ve. */
+    private fun TestScope.bAbreSuSelector(caja: Caja, avanzar: Boolean = true): List<Any?> {
+        caja.carrito.vaciar()
+        caja.armar("cli-beto", "Beto")
+        assertTrue("montaje: B abre su cobro", caja.cobrar(parteCents = 7_000))
+        caja.cobro.selectPaymentMethod(PaymentMethod.CARD)
+        if (avanzar) advanceUntilIdle() else runCurrent()
+        assertEquals("montaje: B en su selector", 7_000, (caja.cobro.state.value as? PaymentFlowState.SelectingTerminal)?.totalAmount)
+        return caja.selectorDeB()
     }
 
     @Test
