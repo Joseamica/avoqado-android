@@ -696,7 +696,8 @@ class OnlineOrdersViewModel internal constructor(
         val estaLectura = ++lecturasIniciadas
         val venueDeLaLectura = venueActual()
         val primera = try {
-            repositorio.inbox("all", comoBandeja, null)
+            // D662: «se ve» se lee en CADA consulta (la ventana pudo minimizarse mientras se esperaba el candado).
+            repositorio.inbox("all", comoBandeja && ventanaALaVista.value, null)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -709,7 +710,7 @@ class OnlineOrdersViewModel internal constructor(
             var completa = true
             while (pagina < paginasExtra && cursor != null) {
                 val siguiente = try {
-                    repositorio.inbox("active", comoBandeja, cursor)
+                    repositorio.inbox("active", comoBandeja && ventanaALaVista.value, cursor)
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
