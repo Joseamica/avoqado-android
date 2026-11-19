@@ -1309,7 +1309,13 @@ fun CheckoutScreen(
         }
     }
     com.avoqado.pos.giftcards.presentation.VentaPorRecuperar(cartViewModel)
-    ClasePendiente(cartViewModel, enCobro = showPaymentFlow)
+    // Codex r9: también los cobros de pantalla completa que no usan el carrito (la hoja de tarjetas de regalo, vender o
+    // consultar una, cobrar una cuenta con saldo): el aviso de la clase no sale encima de ninguno.
+    ClasePendiente(
+        cartViewModel,
+        enCobro = showPaymentFlow || mostrarHojaDeTarjetas || ventaDeTarjetas != null || consultaDeTarjeta != null ||
+            cuentaConSaldoVisible != null,
+    )
     cuentaConSaldoVisible?.let { id ->
         com.avoqado.pos.payment.presentation.CobroDeCuentaScreen(id, onSalir = { cuentaConSaldoVisible = null })
     }
