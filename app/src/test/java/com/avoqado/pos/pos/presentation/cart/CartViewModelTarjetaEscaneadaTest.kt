@@ -209,10 +209,10 @@ class CartViewModelTarjetaEscaneadaTest {
         every { dialogo.setOnKeyListener(any()) } answers { listener = firstArg() }
         var procesados = 0
         val receptor = backgroundScope.launch(kotlinx.coroutines.test.UnconfinedTestDispatcher(testScheduler)) {
-            cart.codigosEscaneados.collect { codigo ->
+            cart.codigosEscaneados.collect { leido ->
                 // Misma guardia de CheckoutScreen.manejarCodigo; se invoca el carrito real sólo si está libre.
                 if (!com.avoqado.pos.giftcards.domain.LectorParaTarjetas.abierta.value) {
-                    procesados++; cart.resolveScannedBarcode(codigo)
+                    procesados++; cart.resolveScannedBarcode(leido.texto, leido.lecturaUs)
                 }
             }
         }
@@ -259,5 +259,132 @@ class CartViewModelTarjetaEscaneadaTest {
         every { dialogo.setOnKeyListener(any()) } answers { listener=firstArg() }
         val soltar = com.avoqado.pos.giftcards.presentation.escucharLectorEnDialogo(dialogo) { false }
         assertNotNull(listener);soltar();assertNull(listener)
+    }
+
+    @Test fun `D14 pistola en ingles con el aparato en espanol encuentra el producto`() = runTest {
+        val product = Product(id = "p", name = "Pizza", priceValue = 169.0, sku = "PIZZAS-003")
+        every { productsRepository.products } returns MutableStateFlow(listOf(product))
+        val vm = createViewModel()
+        assertEquals(ScannedBarcodeResult.ProductFound(product), vm.resolveScannedBarcode("PIZZAS'003", lecturaUs = "PIZZAS-003"))
+    }
+
+    @Test fun `D14 la lectura del aparato gana si la de EE UU no existe`() = runTest {
+        val delAparato = Product(id = "a", name = "Etiqueta rara", priceValue = 10.0, sku = "PIZZAS'003")
+        every { productsRepository.products } returns MutableStateFlow(listOf(delAparato))
+        val vm = createViewModel()
+        assertEquals(ScannedBarcodeResult.ProductFound(delAparato), vm.resolveScannedBarcode("PIZZAS'003", lecturaUs = "PIZZAS-003"))
+    }
+
+    @Test fun `D14 si las dos lecturas son productos distintos no se agrega ninguno`() = runTest {
+        // Codex r3: con la pistola en inglés «AB-123» y con la pistola en español «AB'123» son las MISMAS teclas.
+        val conApostrofo = Product(id = "a", name = "Etiqueta rara", priceValue = 10.0, sku = "PIZZAS'003")
+        val conGuion = Product(id = "b", name = "Pizza", priceValue = 169.0, sku = "PIZZAS-003")
+        every { productsRepository.products } returns MutableStateFlow(listOf(conApostrofo, conGuion))
+        val vm = createViewModel()
+        assertEquals(
+            ScannedBarcodeResult.CodigoDoble(avisoDeCodigoDoble("PIZZAS'003", "PIZZAS-003")),
+            vm.resolveScannedBarcode("PIZZAS'003", lecturaUs = "PIZZAS-003"),
+        )
+    }
+
+    @Test fun `D14 un codigo que difiere solo en mayusculas tambien cuenta como el otro producto`() = runTest {
+        // Codex r4 #1: B tiene «pizzas'003» (búsqueda sin mayúsculas) y A «PIZZAS-003» exacto.
+        val conGuion = Product(id = "a", name = "Pizza", priceValue = 169.0, sku = "PIZZAS-003")
+        val minusculas = Product(id = "b", name = "Etiqueta rara", priceValue = 10.0, barcode = "pizzas'003")
+        every { productsRepository.products } returns MutableStateFlow(listOf(minusculas, conGuion))
+        val vm = createViewModel()
+        assertEquals(
+            ScannedBarcodeResult.CodigoDoble(avisoDeCodigoDoble("PIZZAS'003", "PIZZAS-003")),
+            vm.resolveScannedBarcode("PIZZAS'003", lecturaUs = "PIZZAS-003"),
+        )
+    }
+
+    @Test fun `D14 un producto con las dos lecturas no esconde al otro que tiene una`() = runTest {
+        // Codex r4 #2: A tiene SKU «AB-123» y GTIN «AB'123»; B tiene GTIN «AB-123».
+        val a = Product(id = "a", name = "A", priceValue = 10.0, sku = "AB-123", gtin = "AB'123")
+        val b = Product(id = "b", name = "B", priceValue = 20.0, gtin = "AB-123")
+        every { productsRepository.products } returns MutableStateFlow(listOf(a, b))
+        val vm = createViewModel()
+        assertEquals(
+            ScannedBarcodeResult.CodigoDoble(avisoDeCodigoDoble("AB'123", "AB-123")),
+            vm.resolveScannedBarcode("AB'123", lecturaUs = "AB-123"),
+        )
+    }
+
+    @Test fun `D14 un solo producto con las dos lecturas entra normal`() = runTest {
+        val a = Product(id = "a", name = "A", priceValue = 10.0, sku = "AB-123", gtin = "AB'123")
+        every { productsRepository.products } returns MutableStateFlow(listOf(a))
+        val vm = createViewModel()
+        assertEquals(ScannedBarcodeResult.ProductFound(a), vm.resolveScannedBarcode("AB'123", lecturaUs = "AB-123"))
+    }
+
+    @Test fun `D14 si ninguna de las dos lecturas existe se avisa con la del aparato`() = runTest {
+        every { productsRepository.products } returns MutableStateFlow(emptyList())
+        val vm = createViewModel()
+        assertEquals(ScannedBarcodeResult.Unknown("ZZZ'9"), vm.resolveScannedBarcode("ZZZ'9", lecturaUs = "ZZZ-9"))
+    }
+
+    @Test fun `D14 la camara sin lectura en ingles se queda como hoy`() = runTest {
+        val product = Product(id = "p", name = "Pizza", priceValue = 169.0, sku = "PIZZAS-003")
+        every { productsRepository.products } returns MutableStateFlow(listOf(product))
+        val vm = createViewModel()
+        assertEquals(ScannedBarcodeResult.Unknown("PIZZAS'003"), vm.resolveScannedBarcode("PIZZAS'003"))
+    }
+
+    @Test fun `D14 un SKU desconocido con guiones no se vuelve consulta de tarjeta`() = runTest {
+        // Codex r5 #3: 17 letras y números al quitar los guiones, pero con U y L, que el servidor nunca emite.
+        every { productsRepository.products } returns MutableStateFlow(emptyList())
+        val vm = createViewModel()
+        assertEquals(
+            ScannedBarcodeResult.Unknown("CAFE'REGULAR'000001"),
+            vm.resolveScannedBarcode("CAFE'REGULAR'000001", lecturaUs = "CAFE-REGULAR-000001"),
+        )
+    }
+
+    @Test fun `D14 en MOSTRADOR la segunda lectura no adivina tarjetas de regalo`() = runTest {
+        // Codex r7 #1: con el teclado en español la tarjeta se lee en su hoja (su propio lector), como en develop.
+        every { productsRepository.products } returns MutableStateFlow(emptyList())
+        val vm = createViewModel()
+        assertEquals(
+            ScannedBarcodeResult.Unknown("CAFE'VERD'E000'0039'9"),
+            vm.resolveScannedBarcode("CAFE'VERD'E000'0039'9", lecturaUs = "CAFE-VERD-E000-0039-9"),
+        )
+    }
+
+    @Test fun `D14 un SKU guardado en minusculas se encuentra con la etiqueta en mayusculas`() = runTest {
+        // Codex r6 #2 y r7 #2: 17 letras y números, pero con U y L no es tarjeta: sí se compara sin mayúsculas.
+        val p = Product(id = "p", name = "Café", priceValue = 50.0, sku = "cafe-regular-000001")
+        every { productsRepository.products } returns MutableStateFlow(listOf(p))
+        val vm = createViewModel()
+        assertEquals(ScannedBarcodeResult.ProductFound(p), vm.resolveScannedBarcode("CAFE'REGULAR'000001", lecturaUs = "CAFE-REGULAR-000001"))
+    }
+
+    @Test fun `D14 un producto encontrado sin mayusculas por el aparato no gana al exacto de la otra lectura`() = runTest {
+        // Codex r6 #1: A tiene el SKU exacto; B guarda «cafe'regular'000001» en GTIN.
+        val a = Product(id = "a", name = "A", priceValue = 10.0, sku = "CAFE-REGULAR-000001")
+        val b = Product(id = "b", name = "B", priceValue = 20.0, gtin = "cafe'regular'000001")
+        every { productsRepository.products } returns MutableStateFlow(listOf(a, b))
+        val vm = createViewModel()
+        assertTrue(vm.resolveScannedBarcode("CAFE'REGULAR'000001", lecturaUs = "CAFE-REGULAR-000001") is ScannedBarcodeResult.CodigoDoble)
+    }
+
+    @Test fun `D14 un SKU desconocido con forma de codigo valido pero sin el formato impreso no abre la tarjeta`() = runTest {
+        // Codex r6 #3: pasa el alfabeto y el control del servidor, pero no es XXXX-XXXX-XXXX-XXXX-X.
+        every { productsRepository.products } returns MutableStateFlow(emptyList())
+        val vm = createViewModel()
+        assertEquals(
+            ScannedBarcodeResult.Unknown("CAFE'VERDE'00000399"),
+            vm.resolveScannedBarcode("CAFE'VERDE'00000399", lecturaUs = "CAFE-VERDE-00000399"),
+        )
+    }
+
+    @Test fun `D14 si la lectura del aparato empato entre productos no se elige uno de la otra lectura`() = runTest {
+        // Codex r8 #2: pistola en español que de verdad leyó «PIZZAS'003»; dos productos empatan sin mayúsculas.
+        val a = Product(id = "a", name = "A", priceValue = 10.0, barcode = "pizzas'003")
+        val b = Product(id = "b", name = "B", priceValue = 20.0, barcode = "Pizzas'003")
+        val c = Product(id = "c", name = "C", priceValue = 30.0, sku = "PIZZAS-003")
+        every { productsRepository.products } returns MutableStateFlow(listOf(a, b, c))
+        val vm = createViewModel()
+        assertEquals(ScannedBarcodeResult.Unknown("PIZZAS'003"), vm.resolveScannedBarcode("PIZZAS'003", lecturaUs = "PIZZAS-003"))
     }
 }

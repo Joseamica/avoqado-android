@@ -13,8 +13,12 @@ sealed interface TeclaHid {
     /** Parte de una ráfaga ya demostrada: se come para que no ensucie el campo con foco. */
     data object Consumir : TeclaHid
 
-    /** La ráfaga terminó: esto es un código escaneado. */
-    data class Codigo(val texto: String) : TeclaHid
+    /**
+     * La ráfaga terminó: esto es un código escaneado. [textoUs] es la misma ráfaga leída con el teclado de EE. UU. (D14):
+     * con el teclado del aparato en español, el «-» de una pistola en inglés llega como «'»; quien busca el código prueba
+     * [texto] y, si no encuentra nada, [textoUs].
+     */
+    data class Codigo(val texto: String, val textoUs: String = texto) : TeclaHid
 }
 
 /**
@@ -53,9 +57,25 @@ class LectorHid(
     private val largoMinimo: Int = 4,
 ) {
     private val buffer = StringBuilder()
+    private val bufferUs = StringBuilder()
     private var ultimaTeclaMs: Long = 0
     private var teclasEnRafaga: Int = 0
     private var aparatoDeLaRafaga: Int = SIN_APARATO
+
+    /**
+     * D14 (Codex r8 #1): una tecla que no escribe (un acento del teclado en español, «[») partió una ráfaga. La que sigue pegada,
+     * del mismo aparato, es el resto de ese código: su lectura en inglés también está cortada y no se ofrece.
+     */
+    private var partidaMs: Long = Long.MIN_VALUE
+    private var partidaAparato: Int = SIN_APARATO
+    private var sinLecturaUs = false
+
+    /** Codex r11: cuándo se quedó a medias la última ráfaga de CADA aparato (otra tecla de otro teclado puede cortarla). */
+    private val abandonos = mutableMapOf<Int, Long>()
+
+    private fun abandonarRafaga() {
+        if (teclasEnRafaga >= 1 && aparatoDeLaRafaga != SIN_APARATO) abandonos[aparatoDeLaRafaga] = ultimaTeclaMs
+    }
 
     /** Aparatos que ya completaron una ráfaga: de ésos sí se consume desde la primera tecla. */
     private val lectoresConocidos = mutableSetOf<Int>()
@@ -74,15 +94,18 @@ class LectorHid(
         esFisico: Boolean,
         deviceId: Int,
         ahoraMs: Long,
+        caracterUs: Char? = caracter,
     ): TeclaHid {
         // El teclado en pantalla nunca es un lector, por rápido que alguien escriba.
         if (!esFisico) {
+            abandonarRafaga()
             limpiar()
             return TeclaHid.DejarPasar
         }
 
         if (esTerminador) {
             val codigo = buffer.toString().trim()
+            val codigoUs = bufferUs.toString().trim()
             // `teclasEnRafaga >= 2` es lo que distingue una ráfaga de una tecla suelta:
             // sin eso, el Enter de "aceptar" de cualquier diálogo se leería como el
             // cierre de un escaneo. Y el Enter tiene que venir PEGADO a la ráfaga y del
@@ -91,10 +114,15 @@ class LectorHid(
             val huboRafaga = teclasEnRafaga >= 2 &&
                 deviceId == aparatoDeLaRafaga &&
                 (ahoraMs - ultimaTeclaMs) <= maxIntervaloMs
+            // Codex r12: un Enter o Tab que NO cierra esta ráfaga (de otro teclado, o tardío) la tira a medias, igual que las
+            // otras tres salidas de arriba y abajo: queda la marca de cortada para lo que siga del mismo aparato.
+            if (!(huboRafaga && codigo.length >= largoMinimo)) abandonarRafaga()
             limpiar()
+            val cortada = sinLecturaUs
+            sinLecturaUs = false
             return if (huboRafaga && codigo.length >= largoMinimo) {
                 lectoresConocidos += deviceId
-                TeclaHid.Codigo(codigo)
+                TeclaHid.Codigo(codigo, if (cortada) codigo else codigoUs)
             } else {
                 TeclaHid.DejarPasar
             }
@@ -103,6 +131,9 @@ class LectorHid(
         // Una tecla que no escribe nada parte la ráfaga: arrastrarla entregaría un
         // código cortado a la mitad, que no existe en ningún catálogo.
         if (caracter == null) {
+            // Codex r9: también un acento AL INICIO («[CAFE-001»): lo que sigue pegado es una lectura sin su principio.
+            partidaMs = ahoraMs; partidaAparato = deviceId
+            abandonarRafaga()
             limpiar()
             return TeclaHid.DejarPasar
         }
@@ -111,11 +142,20 @@ class LectorHid(
             deviceId == aparatoDeLaRafaga &&
             (ahoraMs - ultimaTeclaMs) <= maxIntervaloMs
         if (!continuaLaRafaga) {
+            // Codex r9: la pistola hizo una pausa a media etiqueta («KIT » y luego «CAFE-001»): la ráfaga anterior del mismo
+            // aparato se abandonó hace menos de 1 s, así que ésta es el FINAL de un código. Su segunda lectura no se ofrece.
+            // Codex r10: también con UN carácter suelto antes («P» y pausa, luego «CAFE-001»). Codex r11: y si la cortó una tecla
+            // de OTRO teclado: cada aparato recuerda cuándo se le quedó a medias su última ráfaga.
+            abandonarRafaga()
+            val abandonada = abandonos[deviceId]?.let { ahoraMs - it <= PAUSA_DE_UNA_LECTURA_MS } == true
             buffer.setLength(0)
+            bufferUs.setLength(0)
             teclasEnRafaga = 0
             aparatoDeLaRafaga = deviceId
+            sinLecturaUs = abandonada || (deviceId == partidaAparato && ahoraMs - partidaMs <= maxIntervaloMs)
         }
         buffer.append(caracter)
+        bufferUs.append(caracterUs ?: caracter)
         teclasEnRafaga++
         ultimaTeclaMs = ahoraMs
 
@@ -128,12 +168,18 @@ class LectorHid(
 
     private fun limpiar() {
         buffer.setLength(0)
+        bufferUs.setLength(0)
         teclasEnRafaga = 0
         aparatoDeLaRafaga = SIN_APARATO
         ultimaTeclaMs = 0
     }
 
     private companion object {
+        /**
+         * D14: una ráfaga abandonada hace menos de esto, del mismo aparato, era el principio de la que sigue. Las pistolas que
+         * programan una pausa a media etiqueta la dejan en pocos segundos; más allá, igual que hoy con un código sin guion.
+         */
+        const val PAUSA_DE_UNA_LECTURA_MS = 5_000L
         const val SIN_APARATO = Int.MIN_VALUE
     }
 }

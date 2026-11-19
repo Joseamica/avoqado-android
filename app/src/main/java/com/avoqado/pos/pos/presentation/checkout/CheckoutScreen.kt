@@ -42,6 +42,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -312,38 +313,19 @@ fun CheckoutScreen(
     LaunchedEffect(tableSessionActive?.orderId, tableSessionActive?.mode) {
         cartViewModel.consumePendingTableCobrar()
     }
-    // Class-seed conflict: the walk-in class wasn't added because the cart
-    // already links a different reservation — tell the cashier instead of
-    // silently dropping it.
-    val seedConflict by cartViewModel.seedConflict.collectAsState()
-    var seedConflictDialog by remember { mutableStateOf(false) }
-    val seedCtx = androidx.compose.ui.platform.LocalContext.current
-    LaunchedEffect(seedConflict) {
-        if (seedConflict) {
-            // En diálogo, no en Toast: el mesero acaba de intentar inscribir una
-            // clase y no pasó nada. Necesita entender que el carrito ya está ligado
-            // a otra reserva y qué hacer — un aviso que se desvanece (y que en la
-            // Sunmi puede ni salir en esta pantalla) lo deja atorado.
-            seedConflictDialog = true
-            cartViewModel.clearSeedConflict()
-        }
-    }
-
-    if (seedConflictDialog) {
-        AvoqadoDialog(
-            title = "El carrito ya tiene una reserva",
-            description = "Este carrito está ligado a otra reserva. Cóbralo o vacíalo " +
-                "antes de inscribir otra clase.",
-            onDismiss = { seedConflictDialog = false },
-            actionButton = {
-                PrimaryButton(text = "Entendido", onClick = { seedConflictDialog = false })
-            },
-            content = {},
-        )
-    }
+    // D13: el choque con otra reserva ya no tira la clase: queda en «Clase pendiente» (`ClasePendiente`).
     var selectedProduct by remember { mutableStateOf<Product?>(null) }
     // Venta por peso (báscula): producto por peso pendiente de capturar peso.
-    var weightProduct by remember { mutableStateOf<Product?>(null) }
+    // D7: cada apertura de la captura de peso lleva su número ([CapturaDePeso]).
+    var capturaDePeso by remember { mutableStateOf<CapturaDePeso?>(null) }
+    val aperturasDePeso = remember { java.util.concurrent.atomic.AtomicLong() }
+    // Codex D7 r2 #3: volver a leer el producto que ya se está pesando no es otra apertura (no borra su peso tecleado).
+    val abrirCapturaDePeso: (Product) -> Unit = { nuevo ->
+        val abierta = capturaDePeso
+        // Codex D7 r3 #3: el mismo producto toma su ficha vigente (su precio nuevo) sin cambiar de apertura, como develop.
+        capturaDePeso = if (abierta?.product?.id == nuevo.id) abierta.copy(product = nuevo)
+        else CapturaDePeso(nuevo, aperturasDePeso.incrementAndGet())
+    }
     // Cómo se ve el mostrador en ESTE aparato: densidad de la cuadrícula y orden
     // de las pestañas. Es estado y no una lectura suelta porque la pestaña
     // "Configurar" lo cambia sin salir de la pantalla — el cajero tiene que ver
@@ -456,6 +438,7 @@ fun CheckoutScreen(
     var createProductInitialGtin by remember { mutableStateOf("") }
     var unknownBarcode by remember { mutableStateOf<String?>(null) }
     var barcodeError by remember { mutableStateOf<String?>(null) }
+    var codigoDoble by remember { mutableStateOf<String?>(null) }
     var areaTicketAddedCount by remember { mutableStateOf<Int?>(null) }
     // La tarjeta digital que el cajero acaba de escanear, si escaneó una.
     var scannedCustomerCard by remember { mutableStateOf<com.avoqado.pos.loyalty.data.WalletScanResponse?>(null) }
@@ -632,9 +615,12 @@ fun CheckoutScreen(
         if (!isTablet) selectedProduct = null
         promocionEnEleccion = null
         // D9 (Codex r1, ajeno de D8 r3): la captura de peso tampoco se queda abierta debajo; en WINDOWS retenía F4 y F5 del cobro.
-        weightProduct = null
+        capturaDePeso = null
         // D9: «¿Algo más?» no se queda montado encima del cobro (lo abrió «Dividir» con la tira minimizada, Codex D8 r3 #3): se
         // cierra como un «No, gracias», que el spec manda registrar.
+        // D13: una tira que quedó viva de OTRA venta (restauraron B encima de A y la cobran con Tab + Enter) se cierra sin
+        // registrarse; sólo la de esta venta se cierra como «No, gracias».
+        upsellViewModel.soltarMomentoSiEsOtraVenta(cart.identidadDeVenta)
         if (upsellViewModel.moment.value != null) upsellViewModel.finish(emptyList(), 0)
         // D9 (pasada de la familia «a qué venta se le cuenta la sugerencia», Codex r6–r7): se decide AQUÍ, al fotografiar, por
         // donde pasan todos los caminos al cobro (botón, F12, «Dividir», la vuelta del motivo). La sugerencia pendiente de otra
@@ -659,6 +645,10 @@ fun CheckoutScreen(
     fun resolveUpsell(accept: Boolean, desdeElCliente: Boolean = false) {
         // Del FLUJO, no de `upsellMoment` capturado: el toque pudo llegar de la
         // pantalla del cliente, fuera de esta recomposición.
+        // D13 (Codex r3 #5): si el carrito ya es otra venta (restauraron B y el efecto que cierra la tira de A no ha corrido),
+        // el toque de A no agrega nada a B: la tira se cierra aquí mismo, sin registrarse.
+        val ventaAlTocar = cartViewModel.cartState.value.identidadDeVenta
+        upsellViewModel.soltarMomentoSiEsOtraVenta(ventaAlTocar)
         val moment = upsellViewModel.moment.value ?: return
         if (!accept) {
             upsellViewModel.finish(emptyList(), 0)
@@ -666,6 +656,12 @@ fun CheckoutScreen(
             return
         }
         checkoutScope.launch {
+            // D13 (Codex r4 #3): entre el toque y este trabajo pudieron restaurar otra venta. Se vuelve a mirar justo antes de
+            // agregar (el acomodador agrega todo sin pausas): si ya es otra, la tira se cierra sin registrarse.
+            if (cartViewModel.cartState.value.identidadDeVenta != ventaAlTocar) {
+                upsellViewModel.soltarMomento()
+                return@launch
+            }
             // 🔴 El acomodador re-valida contra el catálogo VIVO y DEVUELVE el
             // carrito resultante. De ahí sale el snapshot, de ningún otro lado:
             // leer `cartState` aquí daría el carrito de ANTES de agregar.
@@ -776,7 +772,7 @@ fun CheckoutScreen(
                             viewModel = cartViewModel,
                             teclasDeLaHoja = cartViewModel::procesarTecla,   // la hoja de tallas es otra ventana (D6)
                             onProductTap = { product ->
-                                handleProductTap(product, cartViewModel, { selectedProduct = it }, { weightProduct = it })
+                                handleProductTap(product, cartViewModel, { selectedProduct = it }, abrirCapturaDePeso)
                                 showSearch = false
                             },
                             onCreateProduct = if (roleManager?.canCreateProducts != false) {
@@ -836,7 +832,7 @@ fun CheckoutScreen(
                                         onConfirmPayLater = ::confirmPayLaterOrder,
                                         onCreateItem = { showCreateProduct = true },
                                         onProductTap = { product ->
-                                            handleProductTap(product, cartViewModel, { selectedProduct = it }, { weightProduct = it })
+                                            handleProductTap(product, cartViewModel, { selectedProduct = it }, abrirCapturaDePeso)
                                         },
                                         canCreateProducts = roleManager?.canCreateProducts ?: true,
                                         onTarjetaDeRegalo = abrirTarjetas,
@@ -851,7 +847,7 @@ fun CheckoutScreen(
                                                 product,
                                                 cartViewModel,
                                                 { selectedProduct = it },
-                                                { weightProduct = it },
+                                                abrirCapturaDePeso,
                                             )
                                         },
                                         onPackTap = if (roleManager?.canReadCreditPacks == true) {
@@ -1029,7 +1025,7 @@ fun CheckoutScreen(
                         viewModel = cartViewModel,
                         teclasDeLaHoja = cartViewModel::procesarTecla,   // la hoja de tallas es otra ventana (D6)
                         onProductTap = { product ->
-                            handleProductTap(product, cartViewModel, { selectedProduct = it }, { weightProduct = it })
+                            handleProductTap(product, cartViewModel, { selectedProduct = it }, abrirCapturaDePeso)
                             showSearch = false
                         },
                         onCreateProduct = if (roleManager?.canCreateProducts != false) {
@@ -1089,7 +1085,7 @@ fun CheckoutScreen(
                                     onConfirmPayLater = ::confirmPayLaterOrder,
                                     onCreateItem = { showCreateProduct = true },
                                     onProductTap = { product ->
-                                        handleProductTap(product, cartViewModel, { selectedProduct = it }, { weightProduct = it })
+                                        handleProductTap(product, cartViewModel, { selectedProduct = it }, abrirCapturaDePeso)
                                     },
                                     canCreateProducts = roleManager?.canCreateProducts ?: true,
                                     onTarjetaDeRegalo = abrirTarjetas,
@@ -1104,7 +1100,7 @@ fun CheckoutScreen(
                                             product,
                                             cartViewModel,
                                             { selectedProduct = it },
-                                            { weightProduct = it },
+                                            abrirCapturaDePeso,
                                         )
                                     },
                                     onPackTap = { cartViewModel.addCreditPack(it) },
@@ -1190,27 +1186,37 @@ fun CheckoutScreen(
     }
 
     // Venta por peso: panel de captura de peso (báscula/manual) para productos soldByWeight.
-    weightProduct?.let { product ->
+    capturaDePeso?.let { captura -> key(captura.apertura) {
+        val product = captura.product
         // La barrera la pone el propio panel (HojaConAtajo): F12 ahí es «Agregar», no Cobrar.
-        LaunchedEffect(product.id, areaOperationsState.settings?.scaleIntegration) {
+        // D7 (Codex D7 r1 #3): por APERTURA, no por producto: reabrir el mismo producto en el mismo cuadro vuelve a arrancar la
+        // báscula (y `key` deja vacíos su peso tecleado y su «ya agregado»).
+        LaunchedEffect(captura.apertura, areaOperationsState.settings?.scaleIntegration) {
             scaleCaptureViewModel.start(areaOperationsState.settings?.scaleIntegration)
         }
         WeightCapturePanel(
             product = product,
             isTablet = isTablet,
             scaleState = scaleState,
+            avisoDeEtiqueta = captura.avisoDeEtiqueta,
             onRetryScale = scaleCaptureViewModel::retry,
             onAdd = { weightKg ->
                 // D8 (Codex r2): con el cobro abierto (su F12 en WINDOWS, o un toque que le ganó al «No, gracias») el peso no
                 // entra al carrito ya fotografiado; la captura se cierra como siempre y se pesa otra vez al terminar.
-                if (!cartViewModel.cobroAbierto) cartViewModel.addProductByWeight(product, weightKg)
+                // D7 (Codex D7 r2 #2): sólo la captura que sigue abierta (el panel de una apertura vieja sigue un cuadro en pantalla).
+                if (!cartViewModel.cobroAbierto && capturaDePeso?.apertura == captura.apertura) {
+                    cartViewModel.addProductByWeight(product, weightKg)
+                }
             },
             onDismiss = {
-                scaleCaptureViewModel.stop()
-                weightProduct = null
+                // Sólo la captura que sigue abierta: la X de un panel viejo no cierra la siguiente.
+                if (capturaDePeso?.apertura == captura.apertura) {
+                    scaleCaptureViewModel.stop()
+                    capturaDePeso = null
+                }
             },
         )
-    }
+    } }
 
     // Promociones: hoja de elección, aviso al quitar y celebración al agregar.
     promocionEnEleccion?.let { promo ->
@@ -1324,6 +1330,13 @@ fun CheckoutScreen(
         }
     }
     com.avoqado.pos.giftcards.presentation.VentaPorRecuperar(cartViewModel)
+    // Codex r9: también los cobros de pantalla completa que no usan el carrito (la hoja de tarjetas de regalo, vender o
+    // consultar una, cobrar una cuenta con saldo): el aviso de la clase no sale encima de ninguno.
+    ClasePendiente(
+        cartViewModel,
+        enCobro = showPaymentFlow || mostrarHojaDeTarjetas || ventaDeTarjetas != null || consultaDeTarjeta != null ||
+            cuentaConSaldoVisible != null,
+    )
     cuentaConSaldoVisible?.let { id ->
         com.avoqado.pos.payment.presentation.CobroDeCuentaScreen(id, onSalir = { cuentaConSaldoVisible = null })
     }
@@ -1542,7 +1555,7 @@ fun CheckoutScreen(
     // 🔴 UN solo manejador para la cámara y para el lector de pistola: el `when` sobre
     // `ScannedBarcodeResult` vive aquí una vez. Duplicarlo por canal de entrada es
     // exactamente el defecto que tuvo el servidor con los sellos (tarjeta sí, efectivo no).
-    val manejarCodigo: (String) -> Unit = manejar@{ barcode ->
+    val manejarLectura: (String, String?) -> Unit = manejar@{ barcode, lecturaUs ->
         if (com.avoqado.pos.giftcards.domain.LectorParaTarjetas.abierta.value) return@manejar
         if (!codigoEntraALaVenta(cobroAbierto = showPaymentFlow || cartViewModel.cobroAbierto || aperturaDeTarjetas != null, emitiendoVale = areaOperationsState.issuing)) return@manejar
         showBarcodeScanner = false
@@ -1553,7 +1566,11 @@ fun CheckoutScreen(
             // El cliente de ANTES de la consulta: si el cajero lo quitó o eligió otro mientras respondía, su toque gana
             // y la tarjeta escaneada no se vuelve a ligar (Codex, cliente en cobrar r3 #1).
             val clienteAlEscanear = cartViewModel.selectedCustomer.value?.id
-            val result = cartViewModel.resolveScannedBarcode(barcode)
+            // D7: la captura de peso abierta AL LEER; sólo en ella avisa su etiqueta. «Agregar» no espera a la lectura (Codex D7
+            // r5 #1: esperar descartaba el toque y la porción se perdía al pasar al siguiente producto): si la cajera lo toca antes
+            // de que la etiqueta de esa misma pieza termine de leerse, entran las dos, como en develop.
+            val capturaAlLeer = capturaDePeso
+            val result = cartViewModel.resolveScannedBarcode(barcode, lecturaUs)
             // La consulta pudo tardar (red): si mientras tanto se abrió el cobro, no se aplica (pendientes, Codex r1 #2).
             if (!entra() || com.avoqado.pos.giftcards.domain.LectorParaTarjetas.abierta.value) return@launch
             // Una hoja abierta (la ficha cuando es hoja —teléfono o ventana angosta— y la de tallas) va encima de toda la caja:
@@ -1585,10 +1602,17 @@ fun CheckoutScreen(
                         result.product,
                         cartViewModel,
                         { selectedProduct = it },
-                        { weightProduct = it },
+                        abrirCapturaDePeso,
                     )
-                is ScannedBarcodeResult.WeightedProductFound ->
+                is ScannedBarcodeResult.WeightedProductFound -> {
+                    // D7 (founder, 18-nov: «A′», tras ver cómo lo hacen Square y Lightspeed): la etiqueta del producto que se está
+                    // pesando entra y la captura SIGUE abierta con «Ya entró … por su etiqueta». Sin pasos ni botones nuevos: si era
+                    // la misma pieza, la cajera la cierra con la X; si era otra, toca «Agregar» como siempre.
+                    if (etiquetaEsDeLaCaptura(capturaAlLeer, capturaDePeso, result.product.id)) {
+                        capturaDePeso = capturaDePeso?.copy(avisoDeEtiqueta = avisoDeEtiqueta(result.product.name, result.weightKg))
+                    }
                     cartViewModel.addProductByWeight(result.product, result.weightKg)
+                }
                 is ScannedBarcodeResult.AreaTicketsAdded ->
                     areaTicketAddedCount = result.ticketCount
                 is ScannedBarcodeResult.CustomerCardFound -> if (cartViewModel.selectedCustomer.value?.id == clienteAlEscanear) {
@@ -1608,16 +1632,20 @@ fun CheckoutScreen(
                 }
                 is ScannedBarcodeResult.Unknown ->
                     unknownBarcode = result.code
+                is ScannedBarcodeResult.CodigoDoble ->
+                    codigoDoble = result.aviso
                 is ScannedBarcodeResult.Error ->
                     barcodeError = result.message
             }
         }
     }
+    // La cámara no trae lectura en inglés (D14): sólo la pistola.
+    val manejarCodigo: (String) -> Unit = { manejarLectura(it, null) }
 
     // Lector de pistola (USB/Bluetooth): teclea el código y cierra con Enter. Llega por
     // `LectorHidBus` desde la Activity y entra por el MISMO camino que la cámara.
     LaunchedEffect(Unit) {
-        cartViewModel.codigosEscaneados.collect { manejarCodigo(it) }
+        cartViewModel.codigosEscaneados.collect { manejarLectura(it.texto, it.lecturaUs) }
     }
     // El carrito sigue a esta pantalla: un cobro restaurado (girar la tablet, volver a la pestaña) sigue abierto para él, y
     // una pantalla que vuelve SIN cobro suelta una marca vieja, para que la pistola nunca se quede ignorada para siempre.
@@ -1633,7 +1661,17 @@ fun CheckoutScreen(
     // D9 (Codex r5 #2): desde que el cliente sólo contesta, la sugerencia puede quedar pendiente sin cobro. Si el carrito queda
     // vacío sin cobrar (quitó todo, «Vaciar»), la venta que sigue es otra: ni se le cuenta ni se le deja de ofrecer.
     LaunchedEffect(cartState.isEmpty, showPaymentFlow) {
-        if (cartState.isEmpty && !showPaymentFlow) upsellViewModel.cancelPendingConversion()
+        if (cartState.isEmpty && !showPaymentFlow) {
+            upsellViewModel.cancelPendingConversion()
+            // D13 (Codex r1 #5): un carrito vacío ya no tiene a quién sugerirle: la tira de la venta anterior se cierra sin
+            // registrarse (quitar todo y armar otra venta conserva la identidad del carrito).
+            upsellViewModel.soltarMomento()
+        }
+    }
+    // D13: al cambiar de venta (restaurar un carrito guardado encima) la tira de «¿Algo más?» de la anterior se cierra sin
+    // registrarse: aceptarla metía el extra de A en la venta de B, y su registro podía caer en el folio de B.
+    LaunchedEffect(cartState.identidadDeVenta) {
+        upsellViewModel.soltarMomentoSiEsOtraVenta(cartState.identidadDeVenta)
     }
 
     // Barcode scanner overlay
@@ -1679,7 +1717,7 @@ fun CheckoutScreen(
                     showCreateProduct = false
                     createProductInitialName = ""
                     createProductInitialGtin = ""
-                    handleProductTap(product, cartViewModel, { selectedProduct = it }, { weightProduct = it })
+                    handleProductTap(product, cartViewModel, { selectedProduct = it }, abrirCapturaDePeso)
                 },
                 onDismiss = {
                     showCreateProduct = false
@@ -1765,6 +1803,15 @@ fun CheckoutScreen(
                     fullWidth = true,
                 )
             },
+        ) {}
+    }
+
+    codigoDoble?.let { aviso ->
+        AvoqadoDialog(
+            title = "Dos productos con esta etiqueta",
+            description = aviso,
+            onDismiss = { codigoDoble = null },
+            actionButton = { PrimaryButton(text = "Entendido", onClick = { codigoDoble = null }, fullWidth = true) },
         ) {}
     }
 

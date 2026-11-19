@@ -17,6 +17,7 @@ import com.avoqado.pos.onlineorders.presentation.numeroDeSeccion
 import com.avoqado.pos.onlineorders.presentation.cobradosConTarjetaEnLaLista
 import com.avoqado.pos.payment.data.CashPaymentRepository
 import java.io.IOException
+import java.util.concurrent.atomic.AtomicBoolean
 import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -48,8 +49,10 @@ private const val TAG = "🛎 PedidosEnLinea-Vigilante"
  *   venza. Sin permiso no hay ni una consulta (sólo vuelve a mirar el permiso cada [INTERVALO_MS]).
  * - Cadencia: [INTERVALO_MS] normal; [INTERVALO_TIENDA_APAGADA_MS] si la tienda nunca se encendió y no hay pendientes; y
  *   [INTERVALO_SIN_PLAN_MS] sin plan y sin pedidos abiertos (pendientes + activos, de los conteos del último sondeo bueno).
- * - Nunca manda la cabecera de bandeja (sólo la pantalla visible mantiene abierta la tienda, R13); la de fondo la pone el repositorio
- *   siempre, así un 403 no abre el PIN del gerente cada 10 s.
+ * - D662 (founder, 18-nov): su compás manda la cabecera de bandeja mientras la ventana SE VE ([seVe]): con Avoqado a la vista en
+ *   CUALQUIER pantalla, la tienda de «Mi equipo» sigue abierta (el SERVIDOR sólo lo cuenta con `orders:update`). En ANDROID el
+ *   vigilante ya sólo corre con la app al frente; en WINDOWS, minimizada no late. El «sondear ya» nunca late (puede salir después
+ *   de `onStop`). La cabecera de fondo la pone el repositorio siempre, así un 403 no abre el PIN del gerente cada 10 s.
  * - Sin red es un estado normal: [sinConexion] se enciende, la última lista se conserva (y sigue sonando) y se reintenta.
  * - En segundo plano ([onStop]) se detiene todo: no hay promesa de avisar con la app dormida.
  * - El sonido usa sólo `RingtoneManager...play()`, lo único que el adaptador de WINDOWS tiene.
@@ -77,6 +80,8 @@ class VigilanteDePedidosEnLinea internal constructor(
      */
     private val foliosConTarjeta: (venueId: String?) -> List<FolioCobradoConTarjeta> = { emptyList() },
     private val positivosConTarjeta: (venueId: String?) -> Map<String, Long> = { emptyMap() },
+    /** D662: ¿la ventana se ve? ANDROID siempre (el ciclo ya para en segundo plano); WINDOWS minimizada = no. */
+    private val seVe: () -> Boolean = { VentanaALaVista.aLaVista.value },
 ) : DefaultLifecycleObserver {
 
     @Inject
@@ -213,7 +218,7 @@ class VigilanteDePedidosEnLinea internal constructor(
         ciclo = scope.launch {
             while (isActive) {
                 sondearUnaVez()
-                delay(proximoIntervalo())
+                esperarAlSiguiente()
             }
         }
         // Los folios van a su propio compás (`pollSeconds` del servidor: 30 s con la tienda híbrida encendida, 10 min si no).
@@ -226,8 +231,25 @@ class VigilanteDePedidosEnLinea internal constructor(
     /** Un sondeo ya (la bandeja aceptó o rechazó): el sonido para en esta petición y no en el siguiente compás. */
     fun sondearYa() {
         if (ciclo == null) return // sin ciclo vivo (app en segundo plano) no se consulta nada
-        scope.launch { sondearUnaVez() }
+        // D662: este sondeo rápido nunca late: puede salir después de `onStop`. La Bandeja visible late por su cuenta.
+        // D662 (Codex p1-r2 #4): a lo más UNO en fila. Varios «aceptar» seguidos no forman fila delante del latido del compás; el que
+        // se pide mientras otro corre sí sale después (su resultado no se pierde).
+        if (!sondeoYaEnFila.compareAndSet(false, true)) return
+        scope.launch {
+            var tomado = false
+            try {
+                turnoDeSondeo.withLock {
+                    tomado = true
+                    sondeoYaEnFila.set(false)
+                    sondeo(conLatido = false)
+                }
+            } finally {
+                if (!tomado) sondeoYaEnFila.set(false)
+            }
+        }
     }
+
+    private val sondeoYaEnFila = AtomicBoolean(false)
 
     /** Detiene la consulta y el sonido. La última lista queda tal cual para la insignia al volver. */
     @Synchronized
@@ -240,9 +262,9 @@ class VigilanteDePedidosEnLinea internal constructor(
     /** Un sondeo a la vez: el del compás y el de [sondearYa] no se pisan. */
     private val turnoDeSondeo = Mutex()
 
-    private suspend fun sondearUnaVez() = turnoDeSondeo.withLock { sondeo() }
+    private suspend fun sondearUnaVez(conLatido: Boolean = true) = turnoDeSondeo.withLock { sondeo(conLatido) }
 
-    private suspend fun sondeo() {
+    private suspend fun sondeo(conLatido: Boolean) {
         if (!puedeLeer()) {
             // Sin sesión o sin orders:read: no se consulta NADA y no queda nada colgado (ni lista, ni sonido, ni aviso).
             olvidarDatos()
@@ -251,8 +273,12 @@ class VigilanteDePedidosEnLinea internal constructor(
         val venue = venueActual()
         // Cambió la sucursal desde el último sondeo bueno: lo de la anterior no se queda ni un instante (aunque este sondeo falle).
         if (venueDeLosDatos != null && venueDeLosDatos != venue) olvidarDatos()
+        // D662: late sólo el compás del ciclo vivo, con la ventana a la vista y con la tienda encendida según la última lectura
+        // (Codex p1 #4: con la tienda apagada el latido sólo le costaría una escritura al SERVIDOR).
+        val latiria = conLatido && seVe() && ciclo != null
+        val callaPorApagada = latiria && ultimosConteos?.storeOff == true
         val resultado = try {
-            consultar("pending", false)
+            consultar("pending", latiria && !callaPorApagada)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -280,6 +306,10 @@ class VigilanteDePedidosEnLinea internal constructor(
             Log.d(TAG, "Sondeo sin respuesta: ${it.message}")
             if (it is IOException) _sinConexion.value = true
         }
+        // D662 (Codex p1-r2 #1): la acaban de prender en el panel y esta consulta salió callada por la lectura vieja: la caja late YA,
+        // sin esperar otra vuelta (ahora `ultimosConteos` dice encendida, así que esto pasa a lo más una vez). Sólo si la caja SIGUE
+        // a la vista (Codex p1-r3 #1): una consulta extra sin latido sólo retrasaría al compás.
+        if (callaPorApagada && resultado.getOrNull()?.storeOff == false && seVe() && ciclo != null) sondeo(conLatido)
     }
 
     /** Hubo una lectura (buena o la guardada) de folios en esta sucursal: la guardada no vuelve a pisar un «no disponible». */
@@ -354,10 +384,32 @@ class VigilanteDePedidosEnLinea internal constructor(
         actualizarAbiertos()
     }
 
+    /**
+     * D662 (Codex p1 #3): la espera larga (sin plan, o con la tienda apagada) se corta si cambia la sucursal o vuelve el plan; se revisa
+     * en el aparato cada [INTERVALO_MS], sin tocar la red. Así una caja a la vista no deja «fuera de línea» la tienda de la sucursal a
+     * la que acaba de cambiar.
+     */
+    private suspend fun esperarAlSiguiente() {
+        // Codex p1-r2 #3: sucursal y plan se anotan ANTES de calcular la espera; un cambio entre las dos lecturas corta la espera.
+        val venue = venueActual()
+        val conPlan = tienePlan()
+        val espera = proximoIntervalo()
+        if (espera <= INTERVALO_MS) return delay(espera)
+        var resto = espera
+        while (resto > 0) {
+            val paso = minOf(resto, INTERVALO_MS)
+            delay(paso)
+            resto -= paso
+            if (venueActual() != venue || tienePlan() != conPlan) return
+        }
+    }
+
     private fun proximoIntervalo(): Long {
         val ultimo = ultimosConteos
         if (!puedeLeer()) return INTERVALO_MS
-        if (!tienePlan() && !_hayPedidosAbiertos.value) return INTERVALO_SIN_PLAN_MS
+        // D662: los 5 min sin plan sólo con la tienda APAGADA leída. Encendida, su latido no puede esperar 5 min: si el plan vuelve desde
+        // otro equipo, la tienda no se queda «fuera de línea» con la caja a la vista (un primer sondeo fallido tampoco la activa).
+        if (!tienePlan() && !_hayPedidosAbiertos.value && ultimo?.storeOff == true) return INTERVALO_SIN_PLAN_MS
         if (ultimo != null && ultimo.storeOff && ultimo.pending == 0) return INTERVALO_TIENDA_APAGADA_MS
         return INTERVALO_MS
     }

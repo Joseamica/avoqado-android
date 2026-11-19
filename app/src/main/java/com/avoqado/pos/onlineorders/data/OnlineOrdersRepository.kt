@@ -154,8 +154,8 @@ class OnlineOrdersRepository @Inject constructor(
     // MARK: - Bandeja
 
     /**
-     * [status]: `pending` | `active` | `done` | `all`. [comoBandeja] = sólo la pantalla de bandeja visible (manda la cabecera que
-     * mantiene abierta la tienda, R13); el vigilante pasa `false`. La cabecera de fondo va SIEMPRE: un 403 no abre el PIN cada 10 s.
+     * [status]: `pending` | `active` | `done` | `all`. [comoBandeja] = la app a la vista (manda la cabecera que mantiene abierta
+     * la tienda, R13): la Bandeja visible y, desde D662, el compás del vigilante en cualquier pantalla; nunca WINDOWS minimizada. La cabecera de fondo va SIEMPRE: un 403 no abre el PIN cada 10 s.
      * `pending` y `active` salen de los conteos exactos que el servidor manda en toda respuesta.
      */
     suspend fun inbox(status: String, comoBandeja: Boolean, cursor: String? = null): Result<Inbox> {

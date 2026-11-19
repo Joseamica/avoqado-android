@@ -134,7 +134,7 @@ class AreaTicketOperationsViewModel @Inject constructor(
     private val cambiosDelPapel: CambiosDelPapel = CambiosDelPapel(),
 ) : ViewModel() {
     /** Códigos de la pistola o del lector integrado: la entrega los escucha con su escáner abierto. */
-    val codigosEscaneados: kotlinx.coroutines.flow.SharedFlow<String>
+    val codigosEscaneados: kotlinx.coroutines.flow.Flow<String>
         get() = lectorHidBus.codigos
 
     /**

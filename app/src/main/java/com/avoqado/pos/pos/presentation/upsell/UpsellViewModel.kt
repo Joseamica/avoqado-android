@@ -76,6 +76,9 @@ class UpsellViewModel @Inject constructor(
      */
     private var pendingConversionId: String? = null
 
+    /** D13 (Codex r2 #7): la venta del registro pendiente, aparte de la tira: cerrar la tira de B no puede dejar sin dueño el de A. */
+    private var ventaDeLaConversion: String? = null
+
     /**
      * D9 (founder, 18-nov: «A», como Toast): la respuesta del cliente en SU pantalla sólo contesta «¿Algo más?» y el cobro lo
      * abre la cajera con «Cobrar». Por eso la sugerencia sale UNA vez por venta: al volver a tocar «Cobrar» ya no se ofrece
@@ -123,6 +126,8 @@ class UpsellViewModel @Inject constructor(
      * del reporte sería sólo el total de lo aceptado, que siempre se ve bien.
      */
     fun offer(cart: CartState, context: UpsellContext): Moment? = runCatching {
+        // D13: una tira viva de otra venta se suelta antes de decidir nada de ésta (el grupo de control de B la pisaba).
+        soltarMomentoSiEsOtraVenta(cart.identidadDeVenta)
         if (cart.items.isEmpty()) return null
         if (!isSurfaceEnabled(context)) return null
         if (cart.identidadDeVenta == ventaYaOfrecida) return null
@@ -146,6 +151,7 @@ class UpsellViewModel @Inject constructor(
             // Sin esto su ticket promedio sale de un conjunto vacío = 0, y el
             // "aumento real" del reporte se vuelve el ticket ENTERO del otro grupo.
             pendingConversionId = impressionId
+            ventaDeLaConversion = cart.identidadDeVenta
             ventaDelMomento = cart.identidadDeVenta
             ventaYaOfrecida = cart.identidadDeVenta
             return null
@@ -217,6 +223,7 @@ class UpsellViewModel @Inject constructor(
         // aceptó dejaría el promedio "con tarjetas" hecho puro de compradores, que
         // por construcción gastan más: el reporte mediría su propio sesgo.
         pendingConversionId = moment.impressionId
+        ventaDeLaConversion = ventaDelMomento
     }
 
     /**
@@ -229,6 +236,7 @@ class UpsellViewModel @Inject constructor(
     fun onOrderPaid(orderId: String) {
         val impressionId = pendingConversionId ?: return
         pendingConversionId = null
+        ventaDeLaConversion = null
         viewModelScope.launch { repository.convertImpression(impressionId, orderId) }
     }
 
@@ -238,6 +246,7 @@ class UpsellViewModel @Inject constructor(
      */
     fun cancelPendingConversion() {
         pendingConversionId = null
+        ventaDeLaConversion = null
         ventaYaOfrecida = null
     }
 
@@ -246,7 +255,29 @@ class UpsellViewModel @Inject constructor(
      * sugerencia pendiente era de la anterior y se suelta. La llama `proceedToPayment` con la venta que va a fotografiar.
      */
     fun soltarSiEsOtraVenta(venta: String) {
-        if (pendingConversionId != null && ventaDelMomento != null && venta != ventaDelMomento) cancelPendingConversion()
+        // Sin venta conocida (no debería pasar: se fija junto con el id) también se suelta: nunca se le cuenta a una venta a ciegas.
+        if (pendingConversionId != null && venta != ventaDeLaConversion) cancelPendingConversion()
+    }
+
+    /**
+     * D13 (18-nov): la tira (o el momento) es de UNA venta. Si la venta en pantalla ya es otra (restauraron un carrito guardado
+     * encima), se cierra SIN registrarse: aceptarla metía el extra de A en B, y su «No, gracias» podía caer en el folio de B.
+     * La venta nueva puede recibir su propia sugerencia.
+     */
+    fun soltarMomentoSiEsOtraVenta(venta: String) {
+        if (_moment.value == null || ventaDelMomento == null || venta == ventaDelMomento) return
+        soltarMomento()
+    }
+
+    /** D13: cierra la tira sin registrarla (el carrito quedó vacío o la venta ya es otra). */
+    fun soltarMomento() {
+        if (_moment.value == null) return
+        _moment.value = null
+        ventaDelMomento = null
+        ventaYaOfrecida = null
+        customerDisplay.onUpsellToggled = null
+        customerDisplay.onUpsellConfirmed = null
+        customerDisplay.onUpsellDismissed = null
     }
 
     private fun isSurfaceEnabled(context: UpsellContext) = when (context) {

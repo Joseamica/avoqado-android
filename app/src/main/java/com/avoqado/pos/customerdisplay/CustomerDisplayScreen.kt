@@ -718,6 +718,20 @@ private fun UpsellPrompt(
     onToggle: (String) -> Unit,
     onConfirm: () -> Unit,
     onDismiss: () -> Unit,
+) = BoxWithConstraints(Modifier.fillMaxSize()) {
+    // D12 (18-nov): en una pantalla baja (la de la D3: 1280×800, ~533 dp) los dos botones apilados no cabían y «No, gracias»
+    // quedaba fuera, sin verse. Ahí van lado a lado.
+    UpsellPromptContenido(c, canInteract, onToggle, onConfirm, onDismiss, botonesEnFila = maxHeight < 640.dp)
+}
+
+@Composable
+private fun UpsellPromptContenido(
+    c: CustomerContent.Upsell,
+    canInteract: Boolean,
+    onToggle: (String) -> Unit,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+    botonesEnFila: Boolean,
 ) {
     val upsellAccent = acento() ?: UpsellAccent
     Column(
@@ -771,30 +785,45 @@ private fun UpsellPrompt(
 
         if (canInteract) {
             val hasSelection = c.selectedRuleIds.isNotEmpty()
-            Button(
-                onClick = onConfirm,
-                enabled = hasSelection,
-                modifier = Modifier.fillMaxWidth().height(96.dp),
-                shape = RoundedCornerShape(AvoqadoTheme.cornerRadius.lg),
-            ) {
-                Text(
-                    text = if (hasSelection) "Agregar · ${money(c.selectedDeltaCents)}" else "Agregar",
-                    fontSize = CdActionMain,
-                    fontWeight = FontWeight.Bold,
-                )
+            val agregar: @Composable (Modifier) -> Unit = { modifier ->
+                Button(
+                    onClick = onConfirm,
+                    enabled = hasSelection,
+                    modifier = modifier.height(96.dp),
+                    shape = RoundedCornerShape(AvoqadoTheme.cornerRadius.lg),
+                ) {
+                    Text(
+                        // Codex r11: lado a lado en una pantalla angosta, «Agregar · $12,499.00» no cabe en una línea; el importe ya se
+                        // ve arriba, así que en fila el botón dice sólo «Agregar».
+                        text = if (hasSelection && !botonesEnFila) "Agregar · ${money(c.selectedDeltaCents)}" else "Agregar",
+                        fontSize = CdActionMain,
+                        fontWeight = FontWeight.Bold,
+                    )
+                }
             }
-            Spacer(Modifier.height(AvoqadoTheme.spacing.md))
             // "No, gracias" es una salida legítima, no letra chica gris — la misma
             // postura que ya tomó "Sin propina" más abajo en este archivo.
-            OutlinedButton(
-                onClick = onDismiss,
-                modifier = Modifier.fillMaxWidth().height(74.dp),
-                shape = RoundedCornerShape(50),
-                colors = ButtonDefaults.outlinedButtonColors(
-                    contentColor = LocalPrimarioSinAcento.current.takeOrElse { MaterialTheme.colorScheme.primary },
-                ),
-            ) {
-                Text("No, gracias", fontSize = CdBody, fontWeight = FontWeight.Bold)
+            val noGracias: @Composable (Modifier) -> Unit = { modifier ->
+                OutlinedButton(
+                    onClick = onDismiss,
+                    modifier = modifier,
+                    shape = RoundedCornerShape(50),
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        contentColor = LocalPrimarioSinAcento.current.takeOrElse { MaterialTheme.colorScheme.primary },
+                    ),
+                ) {
+                    Text("No, gracias", fontSize = CdBody, fontWeight = FontWeight.Bold)
+                }
+            }
+            if (botonesEnFila) {
+                Row(horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.md)) {
+                    noGracias(Modifier.weight(1f).height(96.dp))
+                    agregar(Modifier.weight(1.4f))
+                }
+            } else {
+                agregar(Modifier.fillMaxWidth())
+                Spacer(Modifier.height(AvoqadoTheme.spacing.md))
+                noGracias(Modifier.fillMaxWidth().height(74.dp))
             }
         } else {
             Box(
