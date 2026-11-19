@@ -3,6 +3,12 @@
 ## [Unreleased]
 
 ### Added
+- **Mesas · el «Quitar» de una rebaja fija del cobro de vales sale en gris con su razón (D15, tarjeta hz:e82938e1:D15).** En el
+  diálogo «Descuentos» de una mesa, la rebaja del vale y la del producto suelto de esa venta se siguen viendo con su monto, pero
+  «Quitar» sale apagado con «Fija: viene del cobro de vales», y tocar la fila dice por qué («Esta rebaja quedó fija al cobrar los
+  vales y no se quita desde la caja. Si hay que cambiarla, avisa a un encargado»). Antes se veía activo y el SERVIDOR contestaba un
+  aviso al tocarlo. Las demás rebajas no cambian. Necesita el SERVIDOR con D15 (`congeladoPorVales`); con uno viejo queda como
+  antes. La copia sin red guarda la marca. iOS: ficha en `docs/proyectos/ios-por-hacer.md`.
 - **Descuento que «requiere aprobación» (D4, founder «B», 12-nov).** Un % o fijo del catálogo con «Requiere aprobación» lo
   aplica directo quien tiene «Aplicar descuentos en TPV» (de fábrica gerente, admin y dueño). A quien no, le sale el teclado del
   PIN de un gerente sin cambiar de sesión: en Mesas al aplicarlo, en Mostrador al cobrar (antes de crear la venta y de apartar el
