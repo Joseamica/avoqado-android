@@ -19,7 +19,8 @@ sealed interface OverrideResult {
     data object WrongPin : OverrideResult
     data object Insufficient : OverrideResult
     data object TooManyAttempts : OverrideResult
-    data class Failed(val message: String) : OverrideResult
+    /** [validacion]: 400 sin código = el esquema del SERVIDOR rechazó la forma del pedido (p. ej. una `operationKey` que aún no conoce). */
+    data class Failed(val message: String, val validacion: Boolean = false) : OverrideResult
 }
 
 @Serializable
@@ -132,6 +133,10 @@ open class PermissionOverrideRepository internal constructor(
                             }
                         }
                         429 -> OverrideResult.TooManyAttempts
+                        400 -> OverrideResult.Failed(
+                            ServerErrorText.fromResponseBody(raw, "No se pudo autorizar."),
+                            validacion = runCatching { json.decodeFromString<OverrideErrorBody>(raw) }.getOrNull()?.code == null,
+                        )
                         else -> OverrideResult.Failed(
                             ServerErrorText.fromResponseBody(raw, "No se pudo autorizar."),
                         )

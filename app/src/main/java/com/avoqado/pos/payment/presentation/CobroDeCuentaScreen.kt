@@ -342,8 +342,16 @@ class CobroDeCuentaViewModel @Inject constructor(
         // Codex android r1 #5: si el intento que vio el gerente ya no es el vigente, se dice cómo quedó y no se libera nada.
         dueno.estadoDe(venue, orderId).let { if (it?.intento != intento) return OverrideResult.Failed(comoQuedo(it)) }
         // F1 bloque 6: el PIN se ata a ESTA liberación; si alguna parte no cabe en la forma del servidor, se firma como antes (sin asiento).
-        val operacion = com.avoqado.pos.core.data.lan.DuenoDeCuentas.operacionDeLiberacion(orderId, dueno.deviceId, intento)
-        return when (val r = validador.requestToken(venue, pin, CancelacionDeCobro.PERMISO_DECLARAR_NO_COBRADO, operacion)) {
+        var operacion = com.avoqado.pos.core.data.lan.DuenoDeCuentas.operacionDeLiberacion(orderId, dueno.deviceId, intento)
+        var respuesta = validador.requestToken(venue, pin, CancelacionDeCobro.PERMISO_DECLARAR_NO_COBRADO, operacion)
+        // F1 (pendiente conocido): el SERVIDOR de producción aún no conoce la llave `liberacion-lan:` y contesta 400 de validación (antes de
+        // mirar el PIN). Se pide UNA vez sin ella: firma como hoy, sin asiento ni acuse pendiente. Cualquier otro error, como hoy.
+        // ponytail: se quita cuando el SERVIDOR de F1 esté en producción.
+        if (operacion != null && (respuesta as? OverrideResult.Failed)?.validacion == true) {
+            operacion = null
+            respuesta = validador.requestToken(venue, pin, CancelacionDeCobro.PERMISO_DECLARAR_NO_COBRADO, null)
+        }
+        return when (val r = respuesta) {
             // El registro anota al GERENTE que firmó (el nombre que contestó el servidor), y sólo sobre ESE intento. El token queda en la
             // MISMA escritura que la liberación y su acuse le dice al servidor qué cuenta se liberó (un asiento con el gerente en la Bitácora).
             is OverrideResult.Granted -> {
