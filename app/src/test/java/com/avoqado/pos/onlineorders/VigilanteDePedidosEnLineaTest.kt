@@ -60,6 +60,7 @@ class VigilanteDePedidosEnLineaTest {
     ) {
         var sonidos = 0
         var venue: String? = "v1"
+        var seVe = true
         lateinit var vigilante: VigilanteDePedidosEnLinea
     }
 
@@ -76,12 +77,13 @@ class VigilanteDePedidosEnLineaTest {
             sonar = { f.sonidos++ },
             scope = backgroundScope,
             venueActual = { f.venue },
+            seVe = { f.seVe },
         )
         return f
     }
 
     @Test
-    fun `polls every 10s with background header and no tray header`() = runTest {
+    fun `polls every 10s and with the window in view sends the tray header (D662)`() = runTest {
         val f = armar(Result.success(inbox()))
         f.vigilante.onStart(owner)
         runCurrent()
@@ -92,8 +94,44 @@ class VigilanteDePedidosEnLineaTest {
         assertEquals(2, f.falso.llamadas.size)
         advanceTimeBy(10_000); runCurrent()
         assertEquals(3, f.falso.llamadas.size)
-        // El vigilante nunca manda la cabecera de bandeja (comoBandeja = false); la de fondo la pone el repositorio siempre.
-        assertTrue(f.falso.llamadas.all { it == "pending" to false })
+        // D662: con la app a la vista en CUALQUIER pantalla manda la cabecera de bandeja (la tienda de «Mi equipo» sigue abierta).
+        assertTrue(f.falso.llamadas.all { it == "pending" to true })
+        f.vigilante.onStop(owner)
+    }
+
+    @Test
+    fun `D662 a minimized window keeps watching but does not keep the store open`() = runTest {
+        val f = armar(Result.success(inbox()))
+        f.seVe = false
+        f.vigilante.onStart(owner)
+        runCurrent()
+        assertEquals("pending" to false, f.falso.llamadas.last())
+        f.seVe = true
+        advanceTimeBy(10_000); runCurrent()
+        assertEquals("al volver a verse, el siguiente sondeo ya late", "pending" to true, f.falso.llamadas.last())
+        f.vigilante.onStop(owner)
+    }
+
+    @Test
+    fun `D662 a poll-now never sends the heartbeat`() = runTest {
+        val f = armar(Result.success(inbox()))
+        f.vigilante.onStart(owner)
+        runCurrent()
+        val n = f.falso.llamadas.size
+        f.vigilante.sondearYa() // la Bandeja aceptó y pidió un sondeo ya: puede salir después de onStop
+        runCurrent()
+        assertEquals("pending" to false, f.falso.llamadas[n])
+        f.vigilante.onStop(owner)
+    }
+
+    @Test
+    fun `D662 without plan but with the store ON it keeps the 10 s heartbeat`() = runTest {
+        val f = armar(Result.success(inbox(storeOff = false)), tienePlan = false)
+        f.vigilante.onStart(owner)
+        runCurrent()
+        val n = f.falso.llamadas.size
+        advanceTimeBy(10_000); runCurrent()
+        assertEquals("con la tienda encendida no baja a 5 min: el plan puede volver desde otro equipo", n + 1, f.falso.llamadas.size)
         f.vigilante.onStop(owner)
     }
 
@@ -304,8 +342,8 @@ class VigilanteDePedidosEnLineaTest {
         advanceTimeBy(10_000); runCurrent()
         assertEquals("sin plan pero con pedidos abiertos sondea cada 10 s", 2, f.falso.llamadas.size)
 
-        // Se cierran todos: sin plan y sin pedidos abiertos baja a cada 5 min.
-        f.falso.respuesta = Result.success(inbox())
+        // Se cierran todos: sin plan, sin pedidos abiertos y con la tienda apagada baja a cada 5 min.
+        f.falso.respuesta = Result.success(inbox(storeOff = true))
         advanceTimeBy(10_000); runCurrent()
         assertFalse(f.vigilante.hayPedidosAbiertos.value)
         val n = f.falso.llamadas.size
