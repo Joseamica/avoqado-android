@@ -98,7 +98,9 @@ class ReservationRepository @Inject constructor(
         api.calendar(dateFrom, dateTo, background = background, rafaga = rafaga)
 
     /** [venueId]: la sucursal de un aviso de la franja (null = la de la sesión). */
-    suspend fun fetchOne(id: String, venueId: String? = null): Result<Reservation> = api.get(id, venueId)
+    /** [background]: sin el aviso de permisos ni el PIN de gerente en un 403 (D13: la consulta de la clase pendiente es opcional). */
+    suspend fun fetchOne(id: String, venueId: String? = null, background: Boolean = false): Result<Reservation> =
+        api.get(id, venueId, background)
 
     suspend fun runAction(
         reservationId: String,

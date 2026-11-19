@@ -58,7 +58,8 @@ class ClasePendienteViewModel @Inject constructor(
         if (!connectivity.isFullyConnected) return Revision.SinRevisar(sinRed = true)
         // Codex r3 #2: la llamada bloquea su hilo y no se deja cancelar; se espera a su resultado sólo 5 s y, si no llega, se
         // sigue sin ella (la llamada termina sola en segundo plano).
-        val consulta = viewModelScope.async(Dispatchers.IO) { reservations.fetchOne(id, seed.venueId).getOrNull() }
+        // Codex r7 #2: «de fondo»: sin permiso de agenda, un 403 no abre «No tienes permiso» ni el PIN de gerente a media caja.
+        val consulta = viewModelScope.async(Dispatchers.IO) { reservations.fetchOne(id, seed.venueId, background = true).getOrNull() }
         val reserva = withTimeoutOrNull(5_000) { consulta.await() } ?: return Revision.SinRevisar(sinRed = false)
         return yaNoSeCobraAqui(reserva.status, seed.persona)?.let(Revision::YaNo) ?: Revision.SeCobra
     }
@@ -80,6 +81,9 @@ fun ClasePendiente(cart: CartViewModel, vm: ClasePendienteViewModel = hiltViewMo
     var vistas by remember { mutableStateOf(setOf<ClassCheckoutSeed.Seed>()) }
     // Codex r2 #6: vuelve a avisar en cuanto la caja queda libre (también al quitar al cliente con el carrito ya vacío).
     LaunchedEffect(libre) { if (libre) vistas = emptySet() }
+    // Codex r7 #1: cerrado con la X o «La agrego después» con la caja ya libre, vuelve a salir a los 2 minutos si sigue
+    // pendiente: una clase sin cobrar no se queda escondida hasta la siguiente venta.
+    LaunchedEffect(vistas) { if (vistas.isNotEmpty()) { kotlinx.coroutines.delay(120_000); vistas = emptySet() } }
     var aviso by remember { mutableStateOf<String?>(null) }
     // Codex r6 #2: tras quitar una, la siguiente sale con el botón en el mismo lugar; un doble toque no la quita también.
     var ignorarHasta by remember { mutableStateOf(0L) }
