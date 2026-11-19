@@ -20,11 +20,18 @@ import androidx.compose.ui.text.font.FontWeight
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.onlineorders.data.VigilanteDePedidosEnLinea
 
-/** Texto del banner: el folio del pedido más reciente por aceptar. PURA. */
-internal fun textoDelBanner(folios: List<String>): String = when (folios.size) {
-    0 -> ""
-    1 -> "Nuevo pedido en línea #${folios.first()}"
-    else -> "Nuevo pedido en línea #${folios.last()} (${folios.size} por aceptar)"
+/**
+ * Texto del banner: el folio del pedido más reciente por aceptar. D662: con la pausa sola, la pausa va PRIMERO, también con pedidos
+ * por aceptar (Codex r2 #7: un tercer pedido no puede tapar que la tienda ya no recibe). PURA.
+ */
+internal fun textoDelBanner(folios: List<String>, pausadaSola: Boolean = false): String {
+    val pedidos = when (folios.size) {
+        0 -> ""
+        1 -> "Nuevo pedido en línea #${folios.first()}"
+        else -> "Nuevo pedido en línea #${folios.last()} (${folios.size} por aceptar)"
+    }
+    if (!pausadaSola) return pedidos
+    return if (folios.isEmpty()) TextosPedidosEnLinea.PAUSADA_SOLA_BANNER else "${TextosPedidosEnLinea.PAUSADA_SOLA_BANNER} · #${folios.last()} por aceptar"
 }
 
 /**
@@ -35,8 +42,9 @@ internal fun textoDelBanner(folios: List<String>): String = when (folios.size) {
 @Composable
 fun BannerDePedidoEnLinea(vigilante: VigilanteDePedidosEnLinea, modifier: Modifier = Modifier) {
     val pendientes by vigilante.pendientes.collectAsState()
+    val pausadaSola by vigilante.pausadaSola.collectAsState()
     AnimatedVisibility(
-        visible = pendientes.isNotEmpty(),
+        visible = pendientes.isNotEmpty() || pausadaSola,
         enter = slideInVertically { -it },
         exit = slideOutVertically { -it },
         modifier = modifier,
@@ -50,7 +58,7 @@ fun BannerDePedidoEnLinea(vigilante: VigilanteDePedidosEnLinea, modifier: Modifi
             horizontalArrangement = Arrangement.SpaceBetween,
         ) {
             Text(
-                text = textoDelBanner(pendientes.map { it.orderNumber }),
+                text = textoDelBanner(pendientes.map { it.orderNumber }, pausadaSola),
                 color = MaterialTheme.colorScheme.onPrimaryContainer,
                 style = MaterialTheme.typography.labelLarge,
                 fontWeight = FontWeight.SemiBold,

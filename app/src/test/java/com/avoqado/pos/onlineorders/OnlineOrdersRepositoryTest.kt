@@ -147,6 +147,16 @@ class OnlineOrdersRepositoryTest {
     }
 
     @Test
+    fun `D662 autoPaused comes from store autoPausedAt and an old server without it is not paused`() = runTest {
+        server.enqueue(MockResponse().setBody(bandeja(store = """{"status":"PAUSED","reason":"MANUAL_PAUSE","autoPausedAt":"2026-11-18T20:00:00.000Z"}""")))
+        assertTrue(repo.inbox("pending", true).getOrThrow().autoPaused)
+        server.enqueue(MockResponse().setBody(bandeja(store = """{"status":"PAUSED","reason":"MANUAL_PAUSE","autoPausedAt":null}""")))
+        assertFalse(repo.inbox("pending", true).getOrThrow().autoPaused)
+        server.enqueue(MockResponse().setBody(bandeja(store = """{"status":"OPEN"}""")))
+        assertFalse(repo.inbox("pending", true).getOrThrow().autoPaused)
+    }
+
+    @Test
     fun `storeOff is true only when the store is disabled`() = runTest {
         server.enqueue(MockResponse().setBody(bandeja(store = """{"status":"DISABLED","reason":"NOT_ENABLED"}""")))
         assertTrue(repo.inbox("pending", false).getOrThrow().storeOff)

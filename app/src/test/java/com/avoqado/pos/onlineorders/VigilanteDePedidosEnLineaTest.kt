@@ -8,6 +8,7 @@ import com.avoqado.pos.onlineorders.domain.Inbox
 import com.avoqado.pos.onlineorders.domain.ListaPorPagar
 import com.avoqado.pos.onlineorders.domain.OnlineOrder
 import com.avoqado.pos.onlineorders.domain.OnlineOrderStatus
+import com.avoqado.pos.onlineorders.presentation.textoDelBanner
 import io.mockk.mockk
 import java.io.IOException
 import java.time.Instant
@@ -37,9 +38,11 @@ class VigilanteDePedidosEnLineaTest {
         totalCents = 10000, remainingCents = 10000, needsPrint = false, items = emptyList(),
     )
 
-    private fun inbox(pendientes: List<OnlineOrder> = emptyList(), active: Int = 0, storeOff: Boolean = false) = Inbox(
+    private fun inbox(
+        pendientes: List<OnlineOrder> = emptyList(), active: Int = 0, storeOff: Boolean = false, autoPaused: Boolean = false,
+    ) = Inbox(
         serverTime = Instant.parse("2026-10-22T10:00:00Z"), pending = pendientes.size, active = active, done = 0,
-        orders = pendientes, storeOff = storeOff, truncated = false, nextCursor = null,
+        orders = pendientes, storeOff = storeOff, truncated = false, nextCursor = null, autoPaused = autoPaused,
     )
 
     /** El repositorio falso: cada llamada se anota (estado, comoBandeja) y responde lo que diga [respuesta]. */
@@ -60,6 +63,7 @@ class VigilanteDePedidosEnLineaTest {
     ) {
         var sonidos = 0
         var venue: String? = "v1"
+        var seVe = true
         lateinit var vigilante: VigilanteDePedidosEnLinea
     }
 
@@ -76,12 +80,13 @@ class VigilanteDePedidosEnLineaTest {
             sonar = { f.sonidos++ },
             scope = backgroundScope,
             venueActual = { f.venue },
+            seVe = { f.seVe },
         )
         return f
     }
 
     @Test
-    fun `polls every 10s with background header and no tray header`() = runTest {
+    fun `polls every 10s and with the window in view sends the tray header (D662)`() = runTest {
         val f = armar(Result.success(inbox()))
         f.vigilante.onStart(owner)
         runCurrent()
@@ -92,8 +97,36 @@ class VigilanteDePedidosEnLineaTest {
         assertEquals(2, f.falso.llamadas.size)
         advanceTimeBy(10_000); runCurrent()
         assertEquals(3, f.falso.llamadas.size)
-        // El vigilante nunca manda la cabecera de bandeja (comoBandeja = false); la de fondo la pone el repositorio siempre.
-        assertTrue(f.falso.llamadas.all { it == "pending" to false })
+        // D662: con la app a la vista en CUALQUIER pantalla manda la cabecera de bandeja (la tienda de «Mi equipo» sigue abierta).
+        assertTrue(f.falso.llamadas.all { it == "pending" to true })
+        f.vigilante.onStop(owner)
+    }
+
+    @Test
+    fun `D662 a minimized window keeps watching but does not keep the store open`() = runTest {
+        val f = armar(Result.success(inbox()))
+        f.seVe = false
+        f.vigilante.onStart(owner)
+        runCurrent()
+        assertEquals("pending" to false, f.falso.llamadas.last())
+        f.seVe = true
+        advanceTimeBy(10_000); runCurrent()
+        assertEquals("al volver a verse, el siguiente sondeo ya late", "pending" to true, f.falso.llamadas.last())
+        f.vigilante.onStop(owner)
+    }
+
+    @Test
+    fun `D662 pausadaSola follows the store and survives a network failure`() = runTest {
+        val f = armar(Result.success(inbox(autoPaused = true)))
+        f.vigilante.onStart(owner)
+        runCurrent()
+        assertTrue(f.vigilante.pausadaSola.value)
+        f.falso.respuesta = Result.failure(IOException("sin red"))
+        advanceTimeBy(10_000); runCurrent()
+        assertTrue("sin red se conserva lo último que dijo el servidor", f.vigilante.pausadaSola.value)
+        f.falso.respuesta = Result.success(inbox())
+        advanceTimeBy(10_000); runCurrent()
+        assertFalse("alguien reanudó", f.vigilante.pausadaSola.value)
         f.vigilante.onStop(owner)
     }
 
@@ -304,8 +337,8 @@ class VigilanteDePedidosEnLineaTest {
         advanceTimeBy(10_000); runCurrent()
         assertEquals("sin plan pero con pedidos abiertos sondea cada 10 s", 2, f.falso.llamadas.size)
 
-        // Se cierran todos: sin plan y sin pedidos abiertos baja a cada 5 min.
-        f.falso.respuesta = Result.success(inbox())
+        // Se cierran todos: sin plan, sin pedidos abiertos y con la tienda apagada baja a cada 5 min.
+        f.falso.respuesta = Result.success(inbox(storeOff = true))
         advanceTimeBy(10_000); runCurrent()
         assertFalse(f.vigilante.hayPedidosAbiertos.value)
         val n = f.falso.llamadas.size
@@ -314,6 +347,28 @@ class VigilanteDePedidosEnLineaTest {
         advanceTimeBy(1); runCurrent()
         assertEquals(n + 1, f.falso.llamadas.size)
         f.vigilante.onStop(owner)
+    }
+
+    @Test
+    fun `D662 without plan but with the store ON it keeps the 10 s heartbeat`() = runTest {
+        val f = armar(Result.success(inbox(storeOff = false)), tienePlan = false)
+        f.vigilante.onStart(owner)
+        runCurrent()
+        val n = f.falso.llamadas.size
+        advanceTimeBy(10_000); runCurrent()
+        assertEquals("con la tienda encendida no baja a 5 min: el plan puede volver desde otro equipo", n + 1, f.falso.llamadas.size)
+        f.vigilante.onStop(owner)
+    }
+
+    @Test
+    fun `D662 banner says the store paused itself first, also with orders waiting`() {
+        assertEquals("Pedidos en línea en pausa: 2 pedidos seguidos sin aceptar", textoDelBanner(emptyList(), pausadaSola = true))
+        assertEquals(
+            "Pedidos en línea en pausa: 2 pedidos seguidos sin aceptar · #W3 por aceptar",
+            textoDelBanner(listOf("W2", "W3"), pausadaSola = true),
+        )
+        assertEquals("Nuevo pedido en línea #W3 (2 por aceptar)", textoDelBanner(listOf("W2", "W3")))
+        assertEquals("", textoDelBanner(emptyList()))
     }
 
     @Test

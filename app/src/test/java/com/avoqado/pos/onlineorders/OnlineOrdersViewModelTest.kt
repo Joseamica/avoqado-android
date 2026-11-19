@@ -349,6 +349,19 @@ class OnlineOrdersViewModelTest {
     }
 
     @Test
+    fun `D662 the auto pause notice comes from the tray read and Reanudar clears it and nudges the global banner`() = runTest(dispatcher) {
+        coEvery { repo.inbox("all", any(), any()) } returns Result.success(bandeja().copy(autoPaused = true))
+        coEvery { repo.pause(null) } returns AccionResultado.Hecho
+        val vm = armar()
+        vm.refrescar()
+        assertTrue(vm.pausadaSola.value)
+        coEvery { repo.inbox("all", any(), any()) } returns Result.success(bandeja())
+        vm.pausar(null); runCurrent()
+        assertFalse("la relectura de después de «Reanudar» ya no la trae", vm.pausadaSola.value)
+        assertEquals("el banner de las otras pantallas relee ya", 1, sondeosYa)
+    }
+
+    @Test
     fun `a failed pause shows the server message`() = runTest(dispatcher) {
         coEvery { repo.inbox("all", any(), any()) } returns Result.success(bandeja())
         coEvery { repo.pause(15) } returns AccionResultado.Error("No tienes permiso")
