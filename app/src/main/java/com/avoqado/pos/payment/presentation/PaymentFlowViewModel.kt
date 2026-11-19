@@ -184,6 +184,10 @@ internal fun evidenciaDelCobro(c: PaymentCompletion, encolado: Boolean): com.avo
  */
 data class AvisoDeOtroCobro(val requestId: String, val texto: String, val yaCobrado: Boolean)
 
+
+/** F1 bloque 2 (paso 3): la copia de la cuenta no entró al aparato; la tarjeta no se manda. */
+const val NO_SE_GUARDO_LA_CUENTA = "No se pudo guardar la cuenta en este aparato. No se envió el cobro. Intenta de nuevo."
+
 @HiltViewModel
 class PaymentFlowViewModel @Inject constructor(
     private val tableSession: com.avoqado.pos.tables.data.TableSession,
@@ -2558,6 +2562,11 @@ class PaymentFlowViewModel @Inject constructor(
     }
 
     private var onCreacionIncierta: (String, String) -> Unit = { _, _ -> }
+    /**
+     * 🔴 F1 bloque 2 (paso 3): la copia durable de esta compra con su folio, ANTES de mandar la tarjeta (y al saber que otra caja ya
+     * la tiene, con su bloqueador). `false` = el aparato no la guardó: la tarjeta no sale.
+     */
+    private var antesDeLaTarjeta: (com.avoqado.pos.payment.data.FolioEnDuda) -> Boolean = { true }
     private var onCreacionResuelta: (String) -> Unit = {}
 
     fun startPaymentFlow(
@@ -2569,6 +2578,7 @@ class PaymentFlowViewModel @Inject constructor(
         cuentaDeTarjetas: Boolean = false,
         onCreacionIncierta: (String, String) -> Unit = { _, _ -> },
         onCreacionResuelta: (String) -> Unit = {},
+        antesDeLaTarjeta: (com.avoqado.pos.payment.data.FolioEnDuda) -> Boolean = { true },
         origen: com.avoqado.pos.payment.domain.OrigenDelCobro = com.avoqado.pos.payment.domain.OrigenDelCobro.NORMAL,
         /**
          * Tienda híbrida (A3, decisión 16): el cobro es de un folio. Si el SERVIDOR rechaza el efectivo EN VIVO porque la cuenta ya
@@ -2611,6 +2621,7 @@ class PaymentFlowViewModel @Inject constructor(
         aperturaInvalidadaPorFoto = false
         this.onCreacionIncierta = onCreacionIncierta
         this.onCreacionResuelta = onCreacionResuelta
+        this.antesDeLaTarjeta = antesDeLaTarjeta
         this.cuentaDeTarjetas.value = cuentaDeTarjetas
         origenDelCobro = origen
         siLaCuentaSeCancelo = textoSiLaCuentaSeCancelo
@@ -3614,6 +3625,14 @@ class PaymentFlowViewModel @Inject constructor(
                     return
                 }
                 if (bloqueoDelSaldoActual()) { isProcessingPayment = false; return }
+                // 🔴 F1 bloque 2 (paso 3): la cuenta queda en disco con su folio ANTES de que la tarjeta pueda cobrarse.
+                folioDeEstaCompra(requestId = null, origen = com.avoqado.pos.payment.data.FolioEnDuda.Origen.LOCAL)?.let { folio ->
+                    if (!antesDeLaTarjeta(folio)) {
+                        isProcessingPayment = false
+                        _state.value = PaymentFlowState.Error(NO_SE_GUARDO_LA_CUENTA, PaymentErrorSource.TERMINAL)
+                        return
+                    }
+                }
                 _state.value = PaymentFlowState.SentToTerminal(total)
                 val generation = paymentGeneration
                 // D4: sin suspender de por medio, así el `requestId` que se anota es el de ESTE envío.
@@ -3656,6 +3675,11 @@ class PaymentFlowViewModel @Inject constructor(
                 when (terminalResult) {
                     is TerminalPaymentResult.Success -> applyCardCharged(terminalResult, total)
                     is TerminalPaymentResult.Error -> {
+                        // 🔴 F1 bloque 2 (paso 3): otra caja ya tiene una tarjeta en duda sobre ESTA cuenta (409 ORDER): su bloqueador
+                        // queda en la copia durable de la compra, para que tras reiniciar A siga con su folio.
+                        terminalResult.bloqueador?.takeIf { it.scope == CardChargeDecision.SCOPE_ORDER }?.let { ajeno ->
+                            folioDeEstaCompra(ajeno.revisable, com.avoqado.pos.payment.data.FolioEnDuda.Origen.OTRA_CAJA)?.let(antesDeLaTarjeta)
+                        }
                         // Consta que no se cobró: reintentar vuelve a ser seguro.
                         undeterminedRequestId = null
                         bloqueadorEnPantalla = terminalResult.bloqueador
@@ -5261,6 +5285,13 @@ class PaymentFlowViewModel @Inject constructor(
                 salirDelFlujo()
             }
         }
+    }
+
+    private fun folioDeEstaCompra(requestId: String?, origen: com.avoqado.pos.payment.data.FolioEnDuda.Origen): com.avoqado.pos.payment.data.FolioEnDuda? {
+        val orden = createdOrderId?.takeIf { it.isNotBlank() } ?: return null
+        val venueId = secureStorage.venueId ?: return null
+        val venta = cartState?.identidadDeVenta ?: return null
+        return com.avoqado.pos.payment.data.FolioEnDuda(venueId, venta, orden, requestId, origen, cambiosDeEstaVenta)
     }
 
     private fun folioEnDudaDeEstaCompra(): com.avoqado.pos.payment.data.FolioEnDuda? {

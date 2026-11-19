@@ -256,6 +256,7 @@ class F1FolioDelCarritoModeloTest {
             cobro.startPaymentFlow(
                 carrito.getCartForPayment(), customerId = cliente?.id, customerName = cliente?.name,
                 resumeOrderId = carrito.chargingAgainstOrderId, apertura = UUID.randomUUID().toString(),
+                antesDeLaTarjeta = carrito::guardarFolioAntesDeLaTarjeta,
             )
             propinaCents?.let(cobro::submitTip)
             return true
@@ -549,5 +550,66 @@ class F1FolioDelCarritoModeloTest {
         assertTrue(caja.cobrar())
         assertEquals("el resto se cobra sobre A", "order-a", caja.carrito.chargingAgainstOrderId)
         assertEquals(listOf("order-a"), servidor.ordenesCreadas.map { it.first })
+    }
+
+    // MARK: - Paso 3: la copia durable ANTES de la tarjeta
+
+    @Test
+    fun muereTrasSeguirSinGuardar_alAbrirAEstaConSuFolio() = runTest {
+        val servidor = Servidor()
+        val caja = Caja(servidor)
+        tarjetaDeAEnDuda(caja)
+        val identidadDeA = caja.carrito.cartState.value.identidadDeVenta
+        caja.seguir()
+        // La app muere aquí, sin «Guardar».
+
+        val despues = reiniciar(servidor)
+        assertEquals("A está en «Carritos guardados» con su folio", "order-a", despues.guardados.savedCarts.value.single().folio?.orderId)
+        assertEquals(Restauracion.Hecha, despues.retomar())
+        assertEquals("cli-ana", despues.carrito.selectedCustomer.value?.id)
+        assertEquals(identidadDeA, despues.carrito.cartState.value.identidadDeVenta)
+        assertTrue(despues.cobrar())
+        assertEquals("order-a", despues.carrito.chargingAgainstOrderId)
+        assertEquals(listOf("order-a"), servidor.ordenesCreadas.map { it.first })
+    }
+
+    @Test
+    fun bloqueadorDeOtraCaja_muereSinSeguir_alAbrirAEstaConSuFolio() = runTest {
+        val servidor = Servidor()
+        servidor.proximoEnvio = { _, requestId ->
+            TerminalPaymentResult.Error("Esta venta ya tiene un cobro pendiente", requestId = requestId, noSeCreo = true,
+                bloqueador = BloqueadorDeCobro("req-otra-caja", "ORDER"))
+        }
+        val caja = Caja(servidor)
+        caja.armar("cli-ana", "Ana")
+        assertTrue(caja.cobrar())
+        caja.tarjeta()
+        advanceUntilIdle()
+        // La app muere con «Terminal ocupada» en pantalla.
+
+        val despues = reiniciar(servidor)
+        val folio = despues.guardados.savedCarts.value.single().folio
+        assertEquals("order-a", folio?.orderId)
+        assertEquals("req-otra-caja", folio?.requestId)
+        assertEquals("OTRA_CAJA", folio?.origen)
+        assertTrue("sin pendiente local fabricado", servidor.pendientesLocales.isEmpty())
+        assertEquals(Restauracion.Hecha, despues.retomar())
+        assertTrue(despues.cobrar())
+        assertEquals("order-a", despues.carrito.chargingAgainstOrderId)
+    }
+
+    @Test
+    fun sinDuda_cancelarElCobro_noDejaCopia() = runTest {
+        val servidor = Servidor()
+        servidor.proximoEnvio = { _, requestId -> TerminalPaymentResult.Error("Tarjeta rechazada", requestId = requestId) }
+        val caja = Caja(servidor)
+        caja.armar("cli-ana", "Ana")
+        assertTrue(caja.cobrar())
+        caja.tarjeta()
+        advanceUntilIdle()
+        caja.carrito.cerrarCobro()
+        caja.carrito.releaseChargingOrder()
+
+        assertTrue("una tarjeta rechazada no deja una cuenta fantasma", caja.guardados.savedCarts.value.isEmpty())
     }
 }

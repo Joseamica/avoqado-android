@@ -81,6 +81,8 @@ fun PaymentFlowScreen(
     viewModel: PaymentFlowViewModel = hiltViewModel(),
     cuentaDeTarjetas: Boolean = false,
     onCreacionIncierta: (String, String) -> Unit = { _, _ -> },
+    /** F1 bloque 2 (paso 3): la copia durable de la cuenta con su folio antes de mandar la tarjeta; false = no sale. */
+    antesDeLaTarjeta: (com.avoqado.pos.payment.data.FolioEnDuda) -> Boolean = { true },
     onCreacionResuelta: (String) -> Unit = {},
     ventaViva: () -> CartState = { cartState },
     fotoDeLaVenta: (() -> FotoDeLaVenta)? = null,
@@ -213,6 +215,7 @@ fun PaymentFlowScreen(
             apertura = aperturaDelCobro,
             cuentaDeTarjetas = cuentaDeTarjetas,
             onCreacionIncierta = onCreacionIncierta,
+            antesDeLaTarjeta = antesDeLaTarjeta,
             onCreacionResuelta = onCreacionResuelta,
             origen = origen,
             textoSiLaCuentaSeCancelo = textoSiLaCuentaSeCancelo,

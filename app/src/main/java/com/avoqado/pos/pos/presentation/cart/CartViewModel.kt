@@ -676,6 +676,8 @@ class CartViewModel @Inject constructor(
     fun abrirCobro() { cobroAbierto = true }
     fun cerrarCobro() {
         cobroAbierto = false
+        // F1 bloque 2 (paso 3): sin tarjeta en duda, la copia de antes del envío ya no protege nada.
+        if (_pendingSplitOrder.value?.duda == null) soltarCopiaAntesDelEnvio()
         // D4: lo que la venta intentó cobrar ya no está en pantalla: desde ahora lo decide su evidencia (también su duda).
         pendingGrantQueue?.soltarVenta()
     }
@@ -771,7 +773,49 @@ class CartViewModel @Inject constructor(
             orderId = folio.orderId, itemIds = cart.items.map { it.id }.toSet(), totalCents = cart.totalCents,
             renglones = cart.items, descuentoDeCuenta = cart.orderDiscount,
         )).copy(duda = folio)
+        // Paso 3: la copia durable queda con el intento y el precio del servidor; «Guardar» reusa SU id.
+        if (guardarFolioAntesDeLaTarjeta(folio)) copiaAntesDelEnvio?.let { id -> _cartState.update { it.copy(carritoGuardadoId = id) } }
         Log.d("🛒", "Tarjeta en duda: este carrito sigue contra el folio ${folio.orderId}")
+    }
+
+    /** F1 bloque 2 (paso 3): la copia que se escribió antes de mandar la tarjeta, y si ya existía (un carrito retomado). */
+    private var copiaAntesDelEnvio: String? = null
+    private var copiaYaExistia = false
+
+    /**
+     * 🔴 F1 bloque 2 (paso 3). La copia durable de ESTA compra con su folio, antes de mandar la tarjeta (o al saber que otra caja
+     * ya tiene una sobre la cuenta): vínculo, cliente y renglones con el precio del SERVIDOR. Si la app muere tras [Seguir] sin
+     * «Guardar», al abrir A está en «Carritos guardados» con su folio. `false` = no se pudo escribir: la tarjeta no debe salir.
+     * Un folio de OTRA venta no es de este carrito y no frena nada.
+     */
+    fun guardarFolioAntesDeLaTarjeta(folio: com.avoqado.pos.payment.data.FolioEnDuda): Boolean {
+        val state = _cartState.value
+        if (state.isEmpty || state.identidadDeVenta != folio.identidadDeVenta || folio.venueId != secureStorage.venueId) return true
+        val corregido = if (folio.cambiosDePrecio.isNotEmpty()) state.conPreciosDelServidor(folio.cambiosDePrecio, congelar = true) else state
+        val id = copiaAntesDelEnvio ?: state.carritoGuardadoId ?: UUID.randomUUID().toString()
+        val previa = savedCartsRepository.savedCarts.value.firstOrNull { it.id == id }
+        val copia = comoCarritoGuardado(corregido.copy(carritoGuardadoId = id), previa?.name ?: "Cuenta en cobro", _selectedCustomer.value).copy(
+            venueId = folio.venueId,
+            folio = com.avoqado.pos.pos.data.model.FolioGuardado(
+                orderId = folio.orderId, venueId = folio.venueId, identidadDeVenta = state.identidadDeVenta,
+                requestId = folio.requestId ?: previa?.folio?.requestId, origen = folio.origen.name, creacionIncierta = state.creacionIncierta,
+            ),
+        )
+        if (!savedCartsRepository.saveCart(copia)) return false
+        if (copiaAntesDelEnvio == null) copiaYaExistia = previa != null
+        copiaAntesDelEnvio = id
+        return true
+    }
+
+    /** La copia de antes del envío ya no hace falta: la nueva se borra; la de un carrito retomado vuelve a ser como era (sin folio). */
+    private fun soltarCopiaAntesDelEnvio() {
+        val id = copiaAntesDelEnvio ?: return
+        copiaAntesDelEnvio = null
+        if (copiaYaExistia) {
+            savedCartsRepository.savedCarts.value.firstOrNull { it.id == id }?.let { savedCartsRepository.saveCart(it.copy(folio = null)) }
+        } else {
+            savedCartsRepository.deleteCart(id)
+        }
     }
 
     /** F1 bloque 2: la cuenta ligada a su folio con la tarjeta en duda no se edita; se guarda para atender a otro cliente. */
@@ -2207,6 +2251,7 @@ class CartViewModel @Inject constructor(
         // Sólo con la escritura confirmada se suelta A y la caja queda libre para B.
         if (!savedCartsRepository.saveCart(copia)) return false
         if (ligada != null) _pendingSplitOrder.value = null
+        copiaAntesDelEnvio = null
         // El cliente se fue CON el carrito guardado (`attachedCustomerId` arriba), así
         // que aquí la venta terminó: si no se suelta, se queda en el encabezado y la
         // venta siguiente nace con él.
@@ -2453,6 +2498,7 @@ class CartViewModel @Inject constructor(
         // F1 bloque 2: lo que confirmó el servidor sí cambia la cuenta ligada (descuenta lo pagado); la duda vuelve al re-marcarla.
         dudaQueSigue = _pendingSplitOrder.value?.duda
         _pendingSplitOrder.update { it?.copy(duda = null) }
+        if (dudaQueSigue == null) soltarCopiaAntesDelEnvio()
         _cartState.update { it.copy(carritoGuardadoId = null) }
         // 🔴 «Se cobra el precio que vio el cliente»: el carrito de ESTA venta queda con el precio de la orden, y su descuento de
         // cuenta como quedó en ella. ANTES de quitar lo pagado: la huella es de la venta completa, y lo que quede es un subconjunto.

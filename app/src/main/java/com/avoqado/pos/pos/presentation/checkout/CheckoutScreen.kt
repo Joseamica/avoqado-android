@@ -2023,6 +2023,8 @@ fun CheckoutScreen(
                     cuentaConSaldoVisible = id
                 },
                 onCreacionIncierta = cartViewModel::marcarCreacionIncierta,
+                // F1 bloque 2 (paso 3): la cuenta queda en disco con su folio antes de la tarjeta (en mesa manda la sesión).
+                antesDeLaTarjeta = { folio -> isTablePaying || cartViewModel.guardarFolioAntesDeLaTarjeta(folio) },
                 onCreacionResuelta = cartViewModel::limpiarCreacionIncierta,
                 // El cliente del encabezado del carrito se lleva al cobro: la
                 // orden nace con `customerId` y la pantalla de recibo ya lo
