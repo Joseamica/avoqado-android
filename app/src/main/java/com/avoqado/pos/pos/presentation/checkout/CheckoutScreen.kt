@@ -1970,6 +1970,8 @@ fun CheckoutScreen(
         // otra pantalla lo toque con el cobro abierto, esto lo absorbe en vez de
         // reiniciar el flujo encima del recibo.
         val resumeOrderId = remember(showPaymentFlow) { cartViewModel.chargingAgainstOrderId }
+        // F1 bloque 2: el saldo de esa cuenta según el SERVIDOR, congelado igual que la orden.
+        val saldoDelFolio = remember(showPaymentFlow) { cartViewModel.saldoDelFolioConocido() }
         // 🔴 DINERO. El cliente del cobro se CONGELA igual que la orden de arriba, y
         // por una razón que ya costó un P0: `preselectedCustomerId` es LLAVE del
         // `LaunchedEffect` de `PaymentFlowScreen`. Al cerrarse la venta se suelta al
@@ -2025,6 +2027,8 @@ fun CheckoutScreen(
                 onCreacionIncierta = cartViewModel::marcarCreacionIncierta,
                 // F1 bloque 2 (paso 3): la cuenta queda en disco con su folio antes de la tarjeta (en mesa manda la sesión).
                 antesDeLaTarjeta = { folio -> isTablePaying || cartViewModel.guardarFolioAntesDeLaTarjeta(folio) },
+                onSaldoVigente = { if (!isTablePaying) cartViewModel.tomarSaldoVigente(it) },
+                saldoDelFolio = saldoDelFolio,
                 onCreacionResuelta = cartViewModel::limpiarCreacionIncierta,
                 // El cliente del encabezado del carrito se lleva al cobro: la
                 // orden nace con `customerId` y la pantalla de recibo ya lo

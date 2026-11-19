@@ -98,6 +98,7 @@ class AvisoDuraderoDeOtrasVentasTest {
     private val estados = mutableMapOf<String, String>()
     private val consultados = mutableListOf<String>()
     private val postsEnviados = mutableListOf<String>()
+    private val cuerposEnviados = mutableListOf<JSONObject>()
     private var respuestaDelPost = """{"status":"unknown"}"""
     private var codigoDelPost = 200
 
@@ -119,7 +120,8 @@ class AvisoDuraderoDeOtrasVentasTest {
             peticion.method == "POST" && ruta.endsWith("/terminal-payment") -> {
                 val enviado = okio.Buffer().also { peticion.body!!.writeTo(it) }.readUtf8()
                 postsEnviados += JSONObject(enviado).getString("requestId")
-                codigoDelPost to respuestaDelPost
+                cuerposEnviados += JSONObject(enviado)
+                codigoDelPost to respuestaDelPost.replace("{requestId}", JSONObject(enviado).getString("requestId"))
             }
             peticion.method == "GET" && ruta.contains("/terminal-payment/") -> {
                 val id = ruta.substringAfterLast('/')
@@ -328,6 +330,33 @@ class AvisoDuraderoDeOtrasVentasTest {
         assertEquals("sale UNA tarjeta nueva por el resto", 1, postsEnviados.size)
         assertFalse("no es la de la parte 1", "r-parte-1" in postsEnviados)
         assertTrue("ni se volvió a preguntar por la parte 1", "r-parte-1" !in consultados)
+    }
+
+    /**
+     * F1 bloque 2 (412 `REMAINING_BALANCE_MISMATCH`): la caja vio que faltaban $60 y otra caja ya abonó. El SERVIDOR rechaza ESTE
+     * envío sin tocar el lector y dice cuánto falta. La pantalla lo dice, la venta toma ese saldo y nada se reenvía solo; la
+     * solicitud rechazada no queda como duda.
+     */
+    @Test
+    fun saldoCambio_412_muestraElSaldoVigenteYNoReenvia() = runTest {
+        codigoDelPost = 412
+        respuestaDelPost = """{"success":false,"status":"failed","code":"REMAINING_BALANCE_MISMATCH",""" +
+            """"message":"El cobro no cuadra con lo que falta de la cuenta 1234: falta ${'$'}30.00. Revisa el reparto y vuelve a intentar.",""" +
+            """"details":{"requestId":"{requestId}","remainingBalanceCents":3000,"expectedRemainingCents":6000}}"""
+        val vm = nuevaVenta()
+        val venta = cuenta(6_000)
+
+        vm.startPaymentFlow(venta, resumeOrderId = "orden-mostrador", saldoDelFolio = 6_000)
+        vm.selectPaymentMethod(PaymentMethod.CARD)
+        advanceUntilIdle()
+        vm.selectTerminalAndPay("t1")
+        advanceUntilIdle()
+
+        assertEquals("viajó el saldo que vio la caja", 6_000, cuerposEnviados.single().getInt("expectedRemainingCents"))
+        assertEquals("El saldo de esta cuenta cambió: ahora faltan ${'$'}30.00.", (vm.state.value as PaymentFlowState.Error).message)
+        assertEquals(com.avoqado.pos.payment.data.SaldoVigente("venue-1", venta.identidadDeVenta, "orden-mostrador", 3_000), vm.saldoVigente.value)
+        assertEquals("no se reenvía solo", 1, postsEnviados.size)
+        assertTrue("la solicitud rechazada no queda como duda", ids().isEmpty())
     }
 
     @Test

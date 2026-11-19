@@ -99,6 +99,8 @@ class F1FolioDelCarritoModeloTest {
         /** Lo que el servidor corrige al crear la orden (r2 #1): total en pesos y precios por renglón. */
         var totalAlCrear: Double? = null
         var cambiosAlCrear: List<com.avoqado.pos.pos.data.model.CambioDePrecio> = emptyList()
+        /** El `expectedRemainingCents` de cada envío (el saldo que vio la caja). */
+        val saldosEsperados = mutableListOf<Int?>()
         /** El aparato pide propina (la cajera captura [propinaCents] en la pantalla del cliente). */
         var conPropina = false
         /** Qué contesta el próximo envío a la terminal (null = la tarjeta queda en duda). */
@@ -133,6 +135,8 @@ class F1FolioDelCarritoModeloTest {
                 TerminalListResult.Success(listOf(OnlineTerminal(terminalId = "t1", name = "Terminal 1")))
             every { t.pendienteDeLaVenta(any()) } answers { firstArg<String?>()?.let { pendientesLocales[it] } }
             every { t.sigueEnDuda(any()) } answers { pendientesLocales.containsKey(firstArg()) }
+            every { t.dudaDeLaVenta(any()) } answers { firstArg<String?>()?.let { pendientesLocales[it] } }
+            every { t.saldoEsperadoDelProximoEnvio = any() } answers { saldosEsperados += firstArg<Int?>() }
             every { t.folios } returns foliosDeTarjeta
             every { t.pendientesDeOtrasVentas(any()) } returns emptyList()
             every { t.intentoEnVuelo() } returns null
@@ -257,6 +261,7 @@ class F1FolioDelCarritoModeloTest {
                 carrito.getCartForPayment(), customerId = cliente?.id, customerName = cliente?.name,
                 resumeOrderId = carrito.chargingAgainstOrderId, apertura = UUID.randomUUID().toString(),
                 antesDeLaTarjeta = carrito::guardarFolioAntesDeLaTarjeta,
+                saldoDelFolio = carrito.saldoDelFolioConocido(),
             )
             propinaCents?.let(cobro::submitTip)
             return true
@@ -265,6 +270,15 @@ class F1FolioDelCarritoModeloTest {
         fun tarjeta() {
             cobro.selectPaymentMethod(PaymentMethod.CARD)
             cobro.selectTerminalAndPay("t1")
+        }
+
+        /** El 412 de saldo distinto: lo que hace `PaymentFlowScreen` (`onSaldoVigente` y cerrar el cobro). */
+        fun atenderSaldoVigente() {
+            val saldo = cobro.saldoVigente.value ?: return
+            cobro.consumirSaldoVigente()
+            carrito.tomarSaldoVigente(saldo)
+            carrito.cerrarCobro()
+            carrito.releaseChargingOrder()
         }
 
         /** [Seguir] en la pantalla de la duda, y lo que `PaymentFlowScreen` hace al salir (`debeSalir`). */
@@ -611,5 +625,49 @@ class F1FolioDelCarritoModeloTest {
         caja.carrito.releaseChargingOrder()
 
         assertTrue("una tarjeta rechazada no deja una cuenta fantasma", caja.guardados.savedCarts.value.isEmpty())
+    }
+
+    // MARK: - expectedRemainingCents y el 412
+
+    @Test
+    fun otraCajaAbona_entreLecturaYEnvio_noCobraDeMas() = runTest {
+        val servidor = Servidor()
+        val caja = Caja(servidor)
+        // A con un abono confirmado: su copia guardada dice que faltan $60 (lo leyó del SERVIDOR).
+        tarjetaDeAEnDuda(caja)
+        caja.seguir()
+        assertTrue(caja.guardar())
+        servidor.pendientesLocales.remove("order-a")
+        servidor.saldos["order-a"] = OrderRepository.SaldoDeLaOrden(6_000, "PARTIAL", "PENDING")
+        servidor.foliosDeTarjeta.emit(com.avoqado.pos.payment.data.DesenlaceDeFolio("venue-1", "order-a", "req-1"))
+        advanceUntilIdle()
+        assertEquals(Restauracion.Hecha, caja.retomarFolio("order-a"))
+        assertEquals("montaje: la caja ve $60", 6_000, caja.carrito.cartState.value.totalCents)
+
+        // Otra caja abona $30 entre la lectura y el envío. El SERVIDOR sólo admite el saldo real, al centavo.
+        servidor.saldos["order-a"] = OrderRepository.SaldoDeLaOrden(3_000, "PARTIAL", "PENDING")
+        servidor.proximoEnvio = { _, requestId ->
+            val esperado = servidor.saldosEsperados.last()
+            if (esperado == 3_000) TerminalPaymentResult.Undetermined("x", requestId)
+            else TerminalPaymentResult.Error("El cobro no cuadra", requestId = requestId, noSeCreo = true, saldoVigenteCents = 3_000)
+        }
+        val enviosAntes = servidor.envios.size
+        assertTrue(caja.cobrar())
+        caja.tarjeta()
+        advanceUntilIdle()
+        caja.atenderSaldoVigente()
+
+        assertEquals("viajó lo que vio la caja", 6_000, servidor.saldosEsperados.last())
+        assertEquals("un solo envío: no se reenvía solo", enviosAntes + 1, servidor.envios.size)
+        assertEquals("la caja queda con lo que de verdad falta", 3_000, caja.carrito.cartState.value.totalCents)
+        assertEquals(com.avoqado.pos.payment.data.avisoDeSaldoCambiado(3_000), caja.carrito.avisoDeVales.value)
+        assertEquals("y sigue siendo A", listOf("order-a"), servidor.ordenesCreadas.map { it.first })
+
+        // El nuevo reparto sale del saldo vigente.
+        assertTrue(caja.cobrar())
+        assertEquals("order-a", caja.carrito.chargingAgainstOrderId)
+        caja.tarjeta()
+        advanceUntilIdle()
+        assertEquals(3_000, servidor.saldosEsperados.last())
     }
 }

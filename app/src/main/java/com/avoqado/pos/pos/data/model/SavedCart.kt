@@ -62,6 +62,8 @@ data class FolioGuardado(
     val creacionIncierta: String? = null,
     /** F1 bloque 2: false = el intento ya se resolvió y la cuenta sigue abierta en su folio (se cobra el resto sobre A). */
     val enDuda: Boolean = true,
+    /** F1 bloque 2: el saldo base de la cuenta según el SERVIDOR (viaja como `expectedRemainingCents`). null = no se sabe. */
+    val saldoCents: Int? = null,
 )
 
 @Serializable

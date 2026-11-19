@@ -691,6 +691,14 @@ class TerminalPaymentService @Inject constructor(
     @Volatile
     var antesDelProximoEnvio: ((String) -> Boolean)? = null
 
+    /**
+     * 🔴 F1 bloque 2 (contrato `expectedRemainingCents`): el saldo base de la cuenta que la caja vio, para el PRÓXIMO envío ligado a
+     * un folio (se consume en él). El SERVIDOR lo compara al centavo bajo el candado de la orden y, si no cuadra, contesta 412 sin
+     * tocar el lector. null = no se conoce: no viaja (contrato viejo, con su margen). Un servidor viejo lo ignora.
+     */
+    @Volatile
+    var saldoEsperadoDelProximoEnvio: Int? = null
+
     suspend fun sendPaymentToTerminal(
         terminalId: String,
         amountCents: Int,
@@ -709,6 +717,8 @@ class TerminalPaymentService @Inject constructor(
     ): TerminalPaymentResult {
         val antesDeEnviar = antesDelProximoEnvio
         antesDelProximoEnvio = null
+        val saldoEsperado = saldoEsperadoDelProximoEnvio
+        saldoEsperadoDelProximoEnvio = null
         // 🔴 Founder, 25-sep: sólo espera la MISMA venta. El pendiente de OTRA venta ya no frena este cobro
         // (la pantalla lo avisa); al de esta venta, sí: consultar y declarar, como siempre.
         dudaDeLaVenta(orderId)?.let { return TerminalPaymentResult.Undetermined(CardChargeDecision.UNDETERMINED_MESSAGE, it, inherited = true) }
@@ -760,6 +770,7 @@ class TerminalPaymentService @Inject constructor(
                     orderId = orderId,
                     processedByStaffId = processedByStaffId,
                     requestId = requestId,
+                    expectedRemainingCents = saldoEsperado?.takeIf { orderId != null },
                     // Un id en blanco NO es un cliente: se descarta aquí para que el cuerpo
                     // quede idéntico al de una venta anónima.
                     customerId = customerId?.trim()?.takeIf { it.isNotEmpty() },
@@ -898,6 +909,21 @@ class TerminalPaymentService @Inject constructor(
                             // C1 (22-oct): QUIÉN ocupa, para que la pantalla ofrezca «Revisar ese cobro». Es OTRA solicitud
                             // —quizá de otro aparato—: se puede consultar, nunca se hace propia (ver `resolveOutcome(ajeno)`).
                             bloqueador = busyByAnother.blockingRequestId?.let { BloqueadorDeCobro(it, busyByAnother.scope) },
+                        )
+                    }
+                    // 🔴 F1 bloque 2: 412 `REMAINING_BALANCE_MISMATCH` nombrando a ESTA solicitud: el servidor no la creó (nada llegó al
+                    // lector) porque el saldo de la cuenta no es el que vio la caja. No queda como duda; se dice cuánto falta.
+                    val saldoDistinto = rejectionDto?.takeIf {
+                        responseCode in 400..499 && it.code == SALDO_DISTINTO_AL_ESPERADO && it.details?.requestId?.trim() == requestId
+                    }
+                    if (saldoDistinto != null) {
+                        Log.w("💳", "🧮 Saldo distinto al esperado para $requestId: este cobro NO se envió")
+                        clearMatching(requestId)
+                        return TerminalPaymentResult.Error(
+                            errorMsg ?: "El saldo de esta cuenta cambió.",
+                            requestId = requestId,
+                            noSeCreo = true,
+                            saldoVigenteCents = saldoDistinto.details?.remainingBalanceCents?.let { kotlin.math.round(it).toInt() },
                         )
                     }
                     // 🔴 Misma familia que el 409 de arriba y la MISMA garantía: la CORRELACIÓN.
@@ -1535,6 +1561,8 @@ sealed class TerminalPaymentResult {
         val bloqueador: BloqueadorDeCobro? = null,
         /** D58: consta que no se cobró y no fue un rechazo (ver [CardChargeOutcome.NotCharged.sinCobroNiRechazo]). */
         val sinCobroNiRechazo: Boolean = false,
+        /** F1 bloque 2: 412 `REMAINING_BALANCE_MISMATCH` de ESTA solicitud: lo que de verdad falta en la cuenta (base, sin propina). */
+        val saldoVigenteCents: Int? = null,
     ) : TerminalPaymentResult()
 
     /**
@@ -1644,6 +1672,8 @@ private data class TerminalPaymentRequest(
      * hubiera elegido cliente (el de efectivo sí lo mandaba desde su propio fix).
      */
     val customerId: String? = null,
+    /** F1 bloque 2: el saldo base que vio la caja (ver `saldoEsperadoDelProximoEnvio`). Ausente = contrato viejo, cuerpo idéntico. */
+    val expectedRemainingCents: Int? = null,
 )
 
 @Serializable
@@ -1770,6 +1800,8 @@ data class RejectionDetailsDto(
      * Texto libre y opcional: un servidor viejo no lo manda.
      */
     val scope: String? = null,
+    /** F1 bloque 2: en el 412 `REMAINING_BALANCE_MISMATCH`, lo que de verdad falta en la cuenta (centavos, sin propina). */
+    val remainingBalanceCents: Double? = null,
 )
 
 @Serializable
@@ -1858,3 +1890,6 @@ data class OnlineTerminal(
     val isOnline: Boolean = true,
     val hasSocket: Boolean = false,
 )
+
+/** F1 bloque 2 (contrato del SERVIDOR): el envío no cuadra con el saldo que la caja dijo ver (`expectedRemainingCents`). */
+const val SALDO_DISTINTO_AL_ESPERADO = "REMAINING_BALANCE_MISMATCH"

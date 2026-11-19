@@ -83,6 +83,10 @@ fun PaymentFlowScreen(
     onCreacionIncierta: (String, String) -> Unit = { _, _ -> },
     /** F1 bloque 2 (paso 3): la copia durable de la cuenta con su folio antes de mandar la tarjeta; false = no sale. */
     antesDeLaTarjeta: (com.avoqado.pos.payment.data.FolioEnDuda) -> Boolean = { true },
+    /** F1 bloque 2: el 412 de saldo distinto: el carrito toma el saldo vigente y el cobro se cierra (no se reenvía solo). */
+    onSaldoVigente: (com.avoqado.pos.payment.data.SaldoVigente) -> Unit = {},
+    /** F1 bloque 2: el saldo de la cuenta retomada según el SERVIDOR (viaja como `expectedRemainingCents`). */
+    saldoDelFolio: Int? = null,
     onCreacionResuelta: (String) -> Unit = {},
     ventaViva: () -> CartState = { cartState },
     fotoDeLaVenta: (() -> FotoDeLaVenta)? = null,
@@ -216,6 +220,7 @@ fun PaymentFlowScreen(
             cuentaDeTarjetas = cuentaDeTarjetas,
             onCreacionIncierta = onCreacionIncierta,
             antesDeLaTarjeta = antesDeLaTarjeta,
+            saldoDelFolio = saldoDelFolio,
             onCreacionResuelta = onCreacionResuelta,
             origen = origen,
             textoSiLaCuentaSeCancelo = textoSiLaCuentaSeCancelo,
@@ -662,6 +667,15 @@ fun PaymentFlowScreen(
 
     // El flujo terminó por una cancelación (se canceló la venta, o el cajero salió dejándola
     // pendiente): cerrar es decisión del ViewModel, que es quien sabe si el cobro ya se resolvió.
+    val saldoVigente by viewModel.saldoVigente.collectAsState()
+    LaunchedEffect(saldoVigente) {
+        saldoVigente?.let {
+            viewModel.consumirSaldoVigente()
+            onSaldoVigente(it)
+            onCancel()
+        }
+    }
+
     val debeSalir by viewModel.debeSalir.collectAsState()
     LaunchedEffect(debeSalir) {
         if (debeSalir) {

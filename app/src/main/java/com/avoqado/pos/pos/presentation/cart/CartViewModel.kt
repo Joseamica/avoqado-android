@@ -751,6 +751,8 @@ class CartViewModel @Inject constructor(
          * guarda con su folio y vuelve contra él. Dos compras iguales son dos ventas: la identidad la da el folio, no los artículos.
          */
         val duda: com.avoqado.pos.payment.data.FolioEnDuda? = null,
+        /** F1 bloque 2 (invariante 2): lo que falta en la cuenta según el SERVIDOR; viaja como `expectedRemainingCents`. */
+        val saldoDelServidorCents: Int? = null,
     )
 
     private val _pendingSplitOrder = MutableStateFlow<PendingSplitOrder?>(null)
@@ -776,6 +778,18 @@ class CartViewModel @Inject constructor(
         // Paso 3: la copia durable queda con el intento y el precio del servidor; «Guardar» reusa SU id.
         if (guardarFolioAntesDeLaTarjeta(folio)) copiaAntesDelEnvio?.let { id -> _cartState.update { it.copy(carritoGuardadoId = id) } }
         Log.d("🛒", "Tarjeta en duda: este carrito sigue contra el folio ${folio.orderId}")
+    }
+
+    /**
+     * 🔴 F1 bloque 2 (412 `REMAINING_BALANCE_MISMATCH`): el SERVIDOR dijo cuánto falta de verdad en la cuenta de ESTA venta. El
+     * carrito queda con ese saldo («Saldo pendiente»), ligado a su folio, y lo dice; el cobro y el reparto salen de ahí.
+     */
+    fun tomarSaldoVigente(saldo: com.avoqado.pos.payment.data.SaldoVigente) {
+        val state = _cartState.value
+        if (state.isEmpty || state.identidadDeVenta != saldo.identidadDeVenta || saldo.venueId != secureStorage.venueId) return
+        if (_pendingSplitOrder.value?.let { it.duda != null || it.orderId != saldo.orderId } == true) return
+        aplicarAlCarrito(DesenlaceDelFolio.CON_ABONO, saldo.cents, saldo.orderId)
+        _avisoDeVales.value = com.avoqado.pos.payment.data.avisoDeSaldoCambiado(saldo.cents)
     }
 
     /** F1 bloque 2 (paso 3): la copia que se escribió antes de mandar la tarjeta, y si ya existía (un carrito retomado). */
@@ -875,13 +889,14 @@ class CartViewModel @Inject constructor(
                 _pendingSplitOrder.value = null
                 _cartState.update { it.copy(identidadDeVenta = UUID.randomUUID().toString(), creacionIncierta = null) }
             }
-            DesenlaceDelFolio.OTRA_VEZ_SOBRE_A -> _pendingSplitOrder.update { it?.copy(duda = null) }
+            DesenlaceDelFolio.OTRA_VEZ_SOBRE_A -> _pendingSplitOrder.update { it?.copy(duda = null, saldoDelServidorCents = saldoCents) }
             DesenlaceDelFolio.CON_ABONO -> {
                 val identidad = _cartState.value.identidadDeVenta
                 val guardada = _cartState.value.carritoGuardadoId
                 clearCart()
                 _cartState.update { it.copy(identidadDeVenta = identidad, carritoGuardadoId = guardada, vinoDeCarritoGuardado = guardada != null) }
                 addCustomAmount(name = "Saldo pendiente", amountCents = saldoCents)
+                saldoConfirmadoQueSigue = saldoCents
                 markPendingSplitOrder(orderId)
             }
             DesenlaceDelFolio.RETIRAR -> {
@@ -896,12 +911,12 @@ class CartViewModel @Inject constructor(
         val folio = copia.folio ?: return
         val escrito = when (desenlace) {
             DesenlaceDelFolio.LIBERAR -> savedCartsRepository.saveCart(copia.copy(folio = null))
-            DesenlaceDelFolio.OTRA_VEZ_SOBRE_A -> savedCartsRepository.saveCart(copia.copy(folio = folio.copy(enDuda = false)))
+            DesenlaceDelFolio.OTRA_VEZ_SOBRE_A -> savedCartsRepository.saveCart(copia.copy(folio = folio.copy(enDuda = false, saldoCents = saldoCents)))
             DesenlaceDelFolio.CON_ABONO -> savedCartsRepository.saveCart(
                 copia.copy(
                     items = listOf(com.avoqado.pos.pos.data.model.SavedCartItem(productId = null, name = "Saldo pendiente", unitPrice = saldoCents, quantity = 1)),
                     orderDiscount = null, orderDiscountReason = null, orderDiscountReasonComment = null,
-                    folio = folio.copy(enDuda = false),
+                    folio = folio.copy(enDuda = false, saldoCents = saldoCents),
                 ),
             )
             DesenlaceDelFolio.RETIRAR -> savedCartsRepository.deleteCart(copia.id)
@@ -911,6 +926,12 @@ class CartViewModel @Inject constructor(
 
     /** F1 bloque 2: la duda que traía la venta mientras se aplica un cobro confirmado; vuelve al re-marcar su mismo folio. */
     private var dudaQueSigue: com.avoqado.pos.payment.data.FolioEnDuda? = null
+    /** F1 bloque 2: el saldo que confirmó el SERVIDOR para la cuenta que se re-marca a continuación. */
+    private var saldoConfirmadoQueSigue: Int? = null
+
+    /** F1 bloque 2: el saldo de la cuenta que se va a cobrar según el SERVIDOR, o null si no se sabe (no se manda). */
+    fun saldoDelFolioConocido(): Int? = _pendingSplitOrder.value
+        ?.takeIf { it.duda == null && it.orderId != null && it.orderId == chargingAgainstOrderId }?.saldoDelServidorCents
 
     /**
      * 🔴 DINERO. La orden contra la que corre el cobro que está ABIERTO ahora
@@ -1024,6 +1045,7 @@ class CartViewModel @Inject constructor(
         if (id == null) {
             _pendingSplitOrder.value = null
             dudaQueSigue = null
+            saldoConfirmadoQueSigue = null
             return
         }
         val cart = _cartState.value
@@ -1035,8 +1057,10 @@ class CartViewModel @Inject constructor(
             descuentoDeCuenta = cart.orderDiscount,
             // F1 bloque 2: un abono confirmado no resuelve la tarjeta en duda de este folio: la cuenta sigue ligada y sin editarse.
             duda = dudaQueSigue?.takeIf { it.orderId == id },
+            saldoDelServidorCents = saldoConfirmadoQueSigue,
         )
         dudaQueSigue = null
+        saldoConfirmadoQueSigue = null
         // Si es la orden de la sesión de vales, ya tiene un abono aunque su copia no lo diga: que no vuelva a proyectarse
         // aunque luego se vacíe el carrito (D3, Codex r1). El saldo es lo que quedó en el carrito (regla 10).
         areaTicketRepository.session.marcarConAbono(id, saldoCents = cart.totalCents)
@@ -2499,6 +2523,7 @@ class CartViewModel @Inject constructor(
         dudaQueSigue = _pendingSplitOrder.value?.duda
         _pendingSplitOrder.update { it?.copy(duda = null) }
         if (dudaQueSigue == null) soltarCopiaAntesDelEnvio()
+        saldoConfirmadoQueSigue = remainingBalanceCents.takeIf { saldoDelServidor && it > 0 }
         _cartState.update { it.copy(carritoGuardadoId = null) }
         // 🔴 «Se cobra el precio que vio el cliente»: el carrito de ESTA venta queda con el precio de la orden, y su descuento de
         // cuenta como quedó en ella. ANTES de quitar lo pagado: la huella es de la venta completa, y lo que quede es un subconjunto.
@@ -3551,6 +3576,7 @@ class CartViewModel @Inject constructor(
             PendingSplitOrder(
                 orderId = f.orderId, itemIds = cart.items.map { it.id }.toSet(), totalCents = cart.totalCents,
                 renglones = cart.items, descuentoDeCuenta = cart.orderDiscount,
+                saldoDelServidorCents = f.saldoCents,
                 duda = f.takeIf { it.enDuda }?.let {
                     com.avoqado.pos.payment.data.FolioEnDuda(
                         venueId = f.venueId, identidadDeVenta = f.identidadDeVenta, orderId = f.orderId, requestId = f.requestId,

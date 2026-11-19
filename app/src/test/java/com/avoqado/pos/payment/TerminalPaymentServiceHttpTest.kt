@@ -356,6 +356,26 @@ class TerminalPaymentServiceHttpTest {
         return """{"success":false,"status":"failed","code":"TERMINAL_BUSY","errorMessage":"La terminal t1 está ocupada por un cobro de ${'$'}125.50 enviado hace 3 min desde Sunmi D3","message":"La terminal t1 está ocupada por un cobro de ${'$'}125.50 enviado hace 3 min desde Sunmi D3","blockingRequest":$bloqueador$details}"""
     }
 
+    /**
+     * F1 bloque 2: `expectedRemainingCents` viaja SÓLO en el envío para el que se fijó, y un SERVIDOR viejo que no lo conoce contesta
+     * lo de siempre: el desenlace es idéntico al de un envío sin él, y sin él el cuerpo no trae la llave.
+     */
+    @Test
+    fun servidorViejo_ignoraElCampo() = runBlocking {
+        enqueue(409, busyBody("otro-cobro", scope = "TERMINAL"))
+        enqueue(409, busyBody("otro-cobro", scope = "TERMINAL"))
+
+        service.saldoEsperadoDelProximoEnvio = 6_000
+        val con = service.sendPaymentToTerminal(terminalId = "t1", amountCents = 6_000, orderId = "orden-a")
+        val sin = service.sendPaymentToTerminal(terminalId = "t1", amountCents = 6_000, orderId = "orden-a")
+
+        val cuerpoCon = server.takeRequest().body.readUtf8()
+        val cuerpoSin = server.takeRequest().body.readUtf8()
+        assertTrue(cuerpoCon, cuerpoCon.contains("\"expectedRemainingCents\":6000"))
+        assertFalse("se consume en un solo envío; sin él, el cuerpo de siempre", cuerpoSin.contains("expectedRemainingCents"))
+        assertEquals(sin, con.let { (it as TerminalPaymentResult.Error).copy(requestId = (sin as TerminalPaymentResult.Error).requestId) })
+    }
+
     // MARK: - C1 (22-oct): «Terminal ocupada» con salida — el id del cobro que ocupa viaja hasta la pantalla
 
     @Test

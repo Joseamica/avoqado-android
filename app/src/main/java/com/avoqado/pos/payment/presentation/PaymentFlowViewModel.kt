@@ -1380,6 +1380,11 @@ class PaymentFlowViewModel @Inject constructor(
      * su venta y el intento que la frena; se entrega UNA vez al anfitrión, que liga su carrito a él como un abono parcial.
      */
     private var folioEnDudaAlSalir: com.avoqado.pos.payment.data.FolioEnDuda? = null
+
+    /** F1 bloque 2: el saldo vigente que dio un 412 de ESTA venta; el anfitrión se lo pasa al carrito y cierra el cobro. */
+    private val _saldoVigente = MutableStateFlow<com.avoqado.pos.payment.data.SaldoVigente?>(null)
+    val saldoVigente: StateFlow<com.avoqado.pos.payment.data.SaldoVigente?> = _saldoVigente.asStateFlow()
+    fun consumirSaldoVigente() { _saldoVigente.value = null }
     fun consumirFolioEnDuda(): com.avoqado.pos.payment.data.FolioEnDuda? = folioEnDudaAlSalir.also { folioEnDudaAlSalir = null }
 
     init {
@@ -2567,6 +2572,20 @@ class PaymentFlowViewModel @Inject constructor(
      * la tiene, con su bloqueador). `false` = el aparato no la guardó: la tarjeta no sale.
      */
     private var antesDeLaTarjeta: (com.avoqado.pos.payment.data.FolioEnDuda) -> Boolean = { true }
+    /** F1 bloque 2: el saldo de la cuenta retomada según el SERVIDOR ([startPaymentFlow]). */
+    private var saldoDelFolio: Int? = null
+    /** F1 bloque 2: lo que vale la cuenta que ESTE cobro acaba de crear, según el SERVIDOR y sin propina. */
+    private var baseDeLaCuentaCreadaCents: Int? = null
+
+    /**
+     * 🔴 F1 bloque 2 (invariante 2): el saldo base que la caja ve del folio, el mismo que alimenta cobro y divisor. Cuenta creada
+     * por este cobro: su total de la creación (con el precio ya corregido) menos la propina. Cuenta retomada: el saldo que leyó el
+     * SERVIDOR. null = no se conoce (no se manda: contrato viejo).
+     */
+    private fun saldoEsperadoDelFolio(): Int? {
+        if (createdOrderId.isNullOrBlank()) return null
+        return if (ordenCreadaPorEsteFlujo) baseDeLaCuentaCreadaCents else saldoDelFolio
+    }
     private var onCreacionResuelta: (String) -> Unit = {}
 
     fun startPaymentFlow(
@@ -2579,6 +2598,8 @@ class PaymentFlowViewModel @Inject constructor(
         onCreacionIncierta: (String, String) -> Unit = { _, _ -> },
         onCreacionResuelta: (String) -> Unit = {},
         antesDeLaTarjeta: (com.avoqado.pos.payment.data.FolioEnDuda) -> Boolean = { true },
+        /** F1 bloque 2 (invariante 2): el saldo base de la cuenta [resumeOrderId] según el SERVIDOR, el que ve la caja. null = no se sabe. */
+        saldoDelFolio: Int? = null,
         origen: com.avoqado.pos.payment.domain.OrigenDelCobro = com.avoqado.pos.payment.domain.OrigenDelCobro.NORMAL,
         /**
          * Tienda híbrida (A3, decisión 16): el cobro es de un folio. Si el SERVIDOR rechaza el efectivo EN VIVO porque la cuenta ya
@@ -2622,6 +2643,7 @@ class PaymentFlowViewModel @Inject constructor(
         this.onCreacionIncierta = onCreacionIncierta
         this.onCreacionResuelta = onCreacionResuelta
         this.antesDeLaTarjeta = antesDeLaTarjeta
+        this.saldoDelFolio = saldoDelFolio
         this.cuentaDeTarjetas.value = cuentaDeTarjetas
         origenDelCobro = origen
         siLaCuentaSeCancelo = textoSiLaCuentaSeCancelo
@@ -2681,6 +2703,7 @@ class PaymentFlowViewModel @Inject constructor(
         // esta venta al precio de la pasada.
         serverTotalOverrideCents = null
         serverOrderTotalCents = null
+        baseDeLaCuentaCreadaCents = null
         serverRemainingBalanceCents = null
         ultimoCobroConSaldo = null
         _avisoDelPremio.value = null
@@ -3635,6 +3658,12 @@ class PaymentFlowViewModel @Inject constructor(
                 }
                 _state.value = PaymentFlowState.SentToTerminal(total)
                 val generation = paymentGeneration
+                // F1 bloque 2: el saldo que vio la caja viaja con el envío; si no se conoce, va sin él (contrato viejo) y se anota.
+                val saldoEsperado = saldoEsperadoDelFolio()
+                if (saldoEsperado == null && !createdOrderId.isNullOrBlank()) {
+                    Log.w("💳", "F1: sin saldo conocido de la cuenta $createdOrderId: el cobro sale sin expectedRemainingCents")
+                }
+                terminalPaymentService.saldoEsperadoDelProximoEnvio = saldoEsperado
                 // D4: sin suspender de por medio, así el `requestId` que se anota es el de ESTE envío.
                 pendingGrantQueue?.let {
                     terminalPaymentService.antesDelProximoEnvio = { requestId ->
@@ -3689,8 +3718,14 @@ class PaymentFlowViewModel @Inject constructor(
                                 pendingGrantQueue?.quitarIntento(venta, com.avoqado.pos.customers.data.IntentoDeCobro(com.avoqado.pos.customers.data.IntentoDeCobro.Tipo.TARJETA, requestId))
                             }
                         }
+                        // F1 bloque 2: 412 de saldo distinto. La venta toma el saldo vigente y vuelve a cobrar desde ahí (sin reenviar).
+                        terminalResult.saldoVigenteCents?.let { saldo ->
+                            folioDeEstaCompra(null, com.avoqado.pos.payment.data.FolioEnDuda.Origen.LOCAL)?.let { f ->
+                                _saldoVigente.value = com.avoqado.pos.payment.data.SaldoVigente(f.venueId, f.identidadDeVenta, f.orderId, saldo)
+                            }
+                        }
                         _state.value = PaymentFlowState.Error(
-                            message = terminalResult.message,
+                            message = terminalResult.saldoVigenteCents?.let { com.avoqado.pos.payment.data.avisoDeSaldoCambiado(it) } ?: terminalResult.message,
                             source = if (terminalResult.sinCobroNiRechazo) PaymentErrorSource.NO_SE_COBRO else PaymentErrorSource.TERMINAL,
                             // C1: «Terminal ocupada» con salida — «Revisar ese cobro» sólo si el servidor nombró un cobro
                             // real (con `"unknown"` no hay a quién preguntar).
@@ -6401,6 +6436,8 @@ class PaymentFlowViewModel @Inject constructor(
         response: CreateOrderResponse,
         estimadoLocal: Int,
     ): Int {
+        // F1 bloque 2: la base de la cuenta recién creada (el total del servidor llega CON la propina que se mandó al crearla).
+        baseDeLaCuentaCreadaCents = response.data?.totalCents?.let { (it - orderRequest.tip).coerceAtLeast(0) }
         // 🔴 Premio de cartilla: el carrito ya restó un ESTIMADO; aquí manda lo que el servidor
         // CONFIRMÓ. Va antes que la promoción porque el total del servidor tras el canje no es
         // de fiar todavía (pierde descuento de cuenta y propina). Ver `cobroConPremio`.

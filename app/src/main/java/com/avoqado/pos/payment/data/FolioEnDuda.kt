@@ -20,3 +20,12 @@ data class FolioEnDuda(
 
 /** F1 bloque 2: el intento de un folio terminó en algún lado (ver `CancelacionDeCobroCoordinator.folios`): hay que releer el folio. */
 data class DesenlaceDeFolio(val venueId: String, val orderId: String, val requestId: String?)
+
+/**
+ * 🔴 F1 bloque 2 (412 `REMAINING_BALANCE_MISMATCH`): el SERVIDOR rechazó ESTE envío porque el saldo de la cuenta no es el que vio la
+ * caja. Nada llegó al lector. La caja toma [cents] como saldo vigente de su venta y vuelve a cobrar desde ahí; nunca reenvía sola.
+ */
+data class SaldoVigente(val venueId: String, val identidadDeVenta: String, val orderId: String, val cents: Int)
+
+fun avisoDeSaldoCambiado(cents: Int): String =
+    "El saldo de esta cuenta cambió: ahora faltan ${com.avoqado.pos.core.util.formatMoneyFromCents(cents)}."
