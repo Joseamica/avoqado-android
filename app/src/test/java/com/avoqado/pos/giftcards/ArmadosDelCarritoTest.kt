@@ -44,6 +44,9 @@ class ArmadosDelCarritoTest {
             "com/avoqado/pos/pos/presentation/cart/CartViewModel.kt:vaciar:finalizarVenta" to 1,
             // finalizarVentaSiEs: finaliza sólo si coincide la identidad.
             "com/avoqado/pos/pos/presentation/cart/CartViewModel.kt:finalizarVentaSiEs:finalizarVenta" to 1,
+            // F1 bloque 2: el desenlace de A sobre la cuenta en pantalla (con abono conserva identidad y copia; pagada, sale sólo A).
+            "com/avoqado/pos/pos/presentation/cart/CartViewModel.kt:aplicarAlCarrito:clearCart" to 1,
+            "com/avoqado/pos/pos/presentation/cart/CartViewModel.kt:aplicarAlCarrito:finalizarVenta" to 1,
             "com/avoqado/pos/tables/presentation/TableOrderScreen.kt:TableOrderScreen:CartState" to 1
         )
         // Por entrada: T4 / vínculo / origen guardado. Las ramas parciales están probadas en CartSplitContinuidadTest.
@@ -79,6 +82,8 @@ class ArmadosDelCarritoTest {
             "com/avoqado/pos/pos/presentation/cart/CartViewModel.kt:adoptarOrdenDeLaParte:finalizarVenta" to "borra-o-inicia-vacio / borra-o-inicia-vacio / borra-o-inicia-vacio",
             "com/avoqado/pos/pos/presentation/cart/CartViewModel.kt:vaciar:finalizarVenta" to "borra-o-inicia-vacio / borra-o-inicia-vacio / borra-o-inicia-vacio",
             "com/avoqado/pos/pos/presentation/cart/CartViewModel.kt:finalizarVentaSiEs:finalizarVenta" to "borra-si-es-su-venta / borra-si-es-su-venta / borra-si-es-su-venta",
+            "com/avoqado/pos/pos/presentation/cart/CartViewModel.kt:aplicarAlCarrito:clearCart" to "conserva-A-con-su-resto / vínculo-al-folio-sin-duda / conserva-su-copia",
+            "com/avoqado/pos/pos/presentation/cart/CartViewModel.kt:aplicarAlCarrito:finalizarVenta" to "borra-al-pagarse-A / borra / retira-su-copia",
             "com/avoqado/pos/tables/presentation/TableOrderScreen.kt:TableOrderScreen:CartState" to "ninguna / cuenta-del-server / ninguna"
         )
         assertEquals(armados.keys, manejos.keys)
