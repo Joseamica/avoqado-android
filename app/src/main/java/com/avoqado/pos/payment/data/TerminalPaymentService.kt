@@ -874,6 +874,22 @@ class TerminalPaymentService @Inject constructor(
                             bloqueador = busyByAnother.blockingRequestId?.let { BloqueadorDeCobro(it, busyByAnother.scope) },
                         )
                     }
+                    // 🔴 hz:bdd815fd:D4: «la cuenta cambió mientras se cobraba» (D53). La admisión lo rechazó nombrando a ESTA solicitud,
+                    // así que consta que no se creó (misma garantía que abajo); viaja con el saldo del SERVIDOR para que la caja vuelva al
+                    // carrito con lo que de verdad falta. Sin la correlación se queda como antes (el texto, sin «no se creó»).
+                    if (responseCode == 412 && rejectionDto?.code == CardChargeDecision.CODIGO_CUENTA_CAMBIO &&
+                        rejectionDto.details?.requestId?.trim() == requestId
+                    ) {
+                        Log.w("💳", "🔁 La cuenta cambió para $requestId: este cobro NO se envió (saldo ${rejectionDto.details?.remainingCents})")
+                        clearMatching(requestId)
+                        return TerminalPaymentResult.Error(
+                            errorMsg?.takeIf { it.isNotBlank() } ?: CardChargeDecision.CUENTA_CAMBIO_RESPALDO,
+                            requestId = requestId,
+                            noSeCreo = true,
+                            cuentaCambio = true,
+                            saldoDelServidorCents = rejectionDto.details?.remainingCents?.takeIf { it >= 0 },
+                        )
+                    }
                     // 🔴 Misma familia que el 409 de arriba y la MISMA garantía: la CORRELACIÓN.
                     // El servidor rechazó la admisión nombrando a ESTA solicitud (deja lápida por
                     // `requestId`), así que consta que no se creó el cobro: se suelta la llave y se
@@ -1135,7 +1151,8 @@ class TerminalPaymentService @Inject constructor(
             // Consta que NO se cobró: reintentar es seguro.
             clearMatching(requestId)
             Log.d("💳", "🚫 Consta que no se cobró: $message")
-            TerminalPaymentResult.Error(message, requestId = requestId, sinCobroNiRechazo = sinCobroNiRechazo).also {
+            TerminalPaymentResult.Error(message, requestId = requestId, sinCobroNiRechazo = sinCobroNiRechazo, cuentaCambio = cuentaCambio,
+                saldoDelServidorCents = saldoDelServidorCents).also {
                 if (requestId in activePosts) recoveredPosts[requestId] = it
             }
         }
@@ -1499,6 +1516,13 @@ sealed class TerminalPaymentResult {
         val bloqueador: BloqueadorDeCobro? = null,
         /** D58: consta que no se cobró y no fue un rechazo (ver [CardChargeOutcome.NotCharged.sinCobroNiRechazo]). */
         val sinCobroNiRechazo: Boolean = false,
+        /**
+         * hz:bdd815fd:D4: el SERVIDOR no cobró porque la cuenta cambió mientras se cobraba (412 `ORDER_BALANCE_CHANGED` o su lápida).
+         * El flujo no pinta un error: relee los vales y vuelve al carrito con el saldo nuevo.
+         */
+        val cuentaCambio: Boolean = false,
+        /** D4: lo que falta según el SERVIDOR al rechazar (`details.remainingCents` del 412); null = no lo dijo (la consulta). */
+        val saldoDelServidorCents: Int? = null,
     ) : TerminalPaymentResult()
 
     /**
@@ -1734,6 +1758,8 @@ data class RejectionDetailsDto(
      * Texto libre y opcional: un servidor viejo no lo manda.
      */
     val scope: String? = null,
+    /** D4: en el 412 `ORDER_BALANCE_CHANGED`, lo que falta según el SERVIDOR (centavos, sin propina). Opcional. */
+    val remainingCents: Int? = null,
 )
 
 @Serializable
@@ -1786,6 +1812,8 @@ data class TerminalPaymentStatusDto(
      * seria CODIGO MUERTO — que es exactamente el defecto que Codex encontro el 21-sep en el servidor.
      */
     val errorMessage: String? = null,
+    /** hz:bdd815fd:D4: en la lápida de «la cuenta cambió», lo que faltaba según el SERVIDOR. Opcional. */
+    val remainingCents: Int? = null,
 ) {
     fun aProbe(): ChargeStatusProbe.Known = ChargeStatusProbe.Known(
         status = status,
@@ -1800,6 +1828,7 @@ data class TerminalPaymentStatusDto(
         orderId = orderId,
         terminalId = terminalId,
         errorMessage = errorMessage,
+        remainingCents = remainingCents,
     )
 }
 

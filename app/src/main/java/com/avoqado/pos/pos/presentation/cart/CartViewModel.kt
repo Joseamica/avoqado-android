@@ -951,7 +951,11 @@ class CartViewModel @Inject constructor(
      *
      * `null` o vacío borra el vínculo — es la forma explícita de cerrar la venta.
      */
-    fun markPendingSplitOrder(orderId: String?) {
+    fun markPendingSplitOrder(
+        orderId: String?,
+        /** D4 (Codex r1 #3): false = la cuenta no tiene pagos (cambió por un cargo): la copia de la sesión no se marca «con abono». */
+        marcarAbono: Boolean = true,
+    ) {
         val id = orderId?.trim()?.takeIf { it.isNotEmpty() }
         if (id == null) {
             _pendingSplitOrder.value = null
@@ -967,7 +971,7 @@ class CartViewModel @Inject constructor(
         )
         // Si es la orden de la sesión de vales, ya tiene un abono aunque su copia no lo diga: que no vuelva a proyectarse
         // aunque luego se vacíe el carrito (D3, Codex r1). El saldo es lo que quedó en el carrito (regla 10).
-        areaTicketRepository.session.marcarConAbono(id, saldoCents = cart.totalCents)
+        if (marcarAbono) areaTicketRepository.session.marcarConAbono(id, saldoCents = cart.totalCents)
         Log.d("🛒", "Split de mostrador a medias: la venta sigue contra la orden $id")
     }
 
@@ -1218,6 +1222,32 @@ class CartViewModel @Inject constructor(
             addCustomAmount(name = "Saldo pendiente", amountCents = saldo)
             markPendingSplitOrder(orden.id)
         }
+    }
+
+    /**
+     * 🔴 DINERO (hz:bdd815fd:D4). El cobro con tarjeta de esta venta de vales se detuvo sin cobrar: la cuenta cambió mientras se cobraba
+     * (alguien abonó en el panel u otra caja) y el SERVIDOR no tocó la terminal. El carrito queda con lo que de verdad falta,
+     * [saldoCents] según el SERVIDOR, como «Saldo pendiente» ligado a [orderId] (igual que tras cobrar una parte), y el siguiente
+     * «Cobrar» cobra eso. Sólo si sigue siendo la venta [venta] y el saldo es > 0; si no, no toca nada y la salida es el aviso fijo
+     * «Cobrar saldo». No suelta el apartado de vales: es la misma venta (con abono el servidor lo niega, y sin abono lo perdería).
+     *
+     * @return true si el carrito quedó con el saldo.
+     */
+    fun ponerSaldoTrasCuentaCambiada(orderId: String?, saldoCents: Int?, venta: String?, conAbono: Boolean = true): Boolean = delCobro {
+        val orden = orderId?.trim()?.takeIf { it.isNotEmpty() } ?: return@delCobro false
+        val saldo = saldoCents?.takeIf { it > 0 } ?: return@delCobro false
+        val actual = _cartState.value
+        if (venta == null || actual.identidadDeVenta != venta) return@delCobro false
+        if (bloqueoDeEntrega() != null || pagarDespuesTomoLaFoto) return@delCobro false
+        vaciarCarrito(soltarApartado = false)
+        _cartState.update {
+            it.copy(identidadDeVenta = actual.identidadDeVenta, creacionIncierta = actual.creacionIncierta,
+                vinoDeCarritoGuardado = actual.vinoDeCarritoGuardado)
+        }
+        addCustomAmount(name = "Saldo pendiente", amountCents = saldo)
+        markPendingSplitOrder(orden, marcarAbono = conAbono)
+        Log.d("🛒", "D4: la cuenta $orden cambió a media tarjeta; el carrito queda con su saldo $saldo")
+        true
     }
 
     /**
@@ -2355,10 +2385,16 @@ class CartViewModel @Inject constructor(
             venueId = venueId,
         )
 
-    fun clearCart() {
+    fun clearCart() = vaciarCarrito(soltarApartado = true)
+
+    /**
+     * [clearCart] con [soltarApartado] = false: no le pide al servidor soltar el apartado de vales. Sólo para cuando el carrito sigue
+     * siendo la MISMA venta de vales, ahora por su saldo ([ponerSaldoTrasCuentaCambiada]).
+     */
+    private fun vaciarCarrito(soltarApartado: Boolean) {
         if (cobroLoImpide()) return
         bloqueoDeEntrega()?.let { _avisoDelCarrito.value = it; return }
-        if (areaTicketRepository.session.current() != null) {
+        if (soltarApartado && areaTicketRepository.session.current() != null) {
             viewModelScope.launch {
                 runCatching { areaTicketRepository.cancel() }
                     .onFailure { Log.e("🎟️", "No se pudo liberar la sesión al limpiar el carrito: ${it.message}") }
