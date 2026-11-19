@@ -1368,6 +1368,33 @@ class PaymentFlowViewModelTest {
     }
 
     @Test
+    fun `P1 D4 la consulta relee el apartado del envio aunque un latido ya haya soltado la sesion`() = runTest {
+        // Codex D4 r3 #1: se perdió el 412, otra caja liquidó la cuenta y el latido soltó la sesión antes de «Volver a consultar».
+        val sesion = sesionDeVales("0.00", valeDeArea("a", "3.00"))
+        var vigente: AreaTicketCheckout? = sesion
+        every { areaTicketRepository.session.current() } answers { vigente }
+        coEvery { areaTicketRepository.materialize(any(), any(), any(), any(), any(), any(), any(), any()) } returns sesion
+        coEvery { areaTicketRepository.refresh(any(), any()) } returns
+            conAbono(sesion, pagado = "3.00", saldo = "0.00").let { it.copy(status = "PAID", order = it.order!!.copy(paymentStatus = "PAID")) }
+        coEvery {
+            terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any(), any(), any(), any())
+        } returns TerminalPaymentResult.Undetermined("No pudimos confirmar el cobro.", "req-1")
+        coEvery { terminalPaymentService.resolveOutcome("req-1", any(), any()) } returns
+            TerminalPaymentResult.Error(textoDelServidor, requestId = "req-1", cuentaCambio = true)
+
+        viewModel.startPaymentFlow(CartState(items = listOf(lineaDeVale("a", 300))))
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        viewModel.selectTerminalAndPay("t1")
+        advanceUntilIdle()
+        vigente = null
+        viewModel.recheckCardCharge()
+        advanceUntilIdle()
+
+        coVerify { areaTicketRepository.refresh(match { it.id == sesion.id }, any()) }
+        assertTrue("la relectura vio que ya está pagada", viewModel.cuentaDeValesCambio.value?.pagada == true)
+    }
+
+    @Test
     fun `D4 un cambio sin pagos (un cargo agregado) no toca el carrito`() = runTest {
         val sesion = sesionDeVales("0.00", valeDeArea("a", "3.00"))
         every { areaTicketRepository.session.current() } returns sesion

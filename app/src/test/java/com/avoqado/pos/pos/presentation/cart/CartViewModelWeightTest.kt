@@ -1065,6 +1065,8 @@ class CartViewModelWeightTest {
         every { areaTicketRepository.session.current() } returns checkoutConVales("linea-a" to "50.00", "linea-b" to "30.00")
         val vm = createViewModel()
         vm.traerValesDeLaSesion()
+        // Tras el 412 la relectura ya trae la orden con su abono.
+        every { areaTicketRepository.session.current() } returns sesionConOrden(status = "PARTIALLY_PAID", pagado = "0.50")
         val venta = vm.cartState.value.identidadDeVenta
 
         val puesto = vm.ponerSaldoTrasCuentaCambiada("orden-vales", 7950, venta)
@@ -1080,6 +1082,7 @@ class CartViewModelWeightTest {
 
     @Test
     fun `P1 D4 la parte 2 que choco cambia su Saldo pendiente por el del servidor`() = runTest {
+        every { areaTicketRepository.session.current() } returns sesionConOrden(status = "PARTIALLY_PAID", pagado = "75.00")
         val vm = createViewModel()
         vm.addCustomAmount(name = "Saldo pendiente", amountCents = 7500)
         vm.markPendingSplitOrder("orden-vales")
@@ -1096,6 +1099,7 @@ class CartViewModelWeightTest {
     @Test
     fun `D4 la venta conserva su copia guardada para que al cobrar el saldo se retire`() = runTest {
         // Codex D4 r2 #5: sin `carritoGuardadoId` la copia no se retiraba al cobrar y se podía restaurar y cobrar otra vez.
+        every { areaTicketRepository.session.current() } returns sesionConOrden(status = "PARTIALLY_PAID", pagado = "75.00")
         val vm = createViewModel()
         vm.addCustomAmount(name = "Saldo pendiente", amountCents = 7500)
         vm.markPendingSplitOrder("orden-vales")
@@ -1107,6 +1111,20 @@ class CartViewModelWeightTest {
         assertTrue(vm.ponerSaldoTrasCuentaCambiada("orden-vales", 7000, conCopia.identidadDeVenta))
 
         assertEquals("copia-1", vm.cartState.value.carritoGuardadoId)
+    }
+
+    @Test
+    fun `P1 D4 si la sesion ya se solto (otra caja la liquido) el carrito no se toca`() = runTest {
+        // Codex D4 r3 #2: la relectura llegó tarde y un latido ya soltó la sesión pagada; su saldo ya no vale.
+        val vm = createViewModel()
+        vm.addCustomAmount(name = "Saldo pendiente", amountCents = 7500)
+        vm.markPendingSplitOrder("orden-vales")
+        val antes = vm.cartState.value
+        every { areaTicketRepository.session.current() } returns null
+
+        assertFalse(vm.ponerSaldoTrasCuentaCambiada("orden-vales", 3950, antes.identidadDeVenta))
+
+        assertEquals(antes, vm.cartState.value)
     }
 
     @Test

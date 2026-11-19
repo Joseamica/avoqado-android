@@ -3696,8 +3696,10 @@ class PaymentFlowViewModel @Inject constructor(
                         anotarIntentoDePaquetes(com.avoqado.pos.customers.data.IntentoDeCobro.Tipo.TARJETA, requestId)
                     }
                 }
-                // D4: el apartado de ESTE envío, por si la sesión se suelta mientras viaja (Codex D4 r2 #4).
+                // D4: el apartado de ESTE envío, por si la sesión se suelta mientras viaja (Codex D4 r2 #4); la consulta posterior de
+                // este mismo cobro lo vuelve a usar (r3 #1).
                 val apartadoDelEnvio = sesionDelCobro?.let { id -> areaTicketRepository.session.current()?.takeIf { it.id == id } }
+                apartadoDelUltimoEnvio = apartadoDelEnvio
                 val terminalResult = terminalPaymentService.sendPaymentToTerminal(
                     terminalId = terminalId,
                     amountCents = currentBaseAmount(),
@@ -5051,8 +5053,11 @@ class PaymentFlowViewModel @Inject constructor(
         }
         val propia = ConsultaEnVuelo(requestId, paymentGeneration, automatica)
         consultaEnVuelo = propia
-        // D4: el apartado de ESTE cobro, por si la sesión se suelta mientras se consulta.
-        val apartadoDelCobro = sesionDelCobro?.let { id -> areaTicketRepository.session.current()?.takeIf { it.id == id } }
+        // D4: el apartado de ESTE cobro, por si la sesión se suelta mientras se consulta; si un latido ya la soltó, el que se fotografió
+        // al mandarlo (Codex D4 r3 #1: sin él, la relectura no podía ver que otra caja ya la liquidó).
+        val apartadoDelCobro = sesionDelCobro?.let { id ->
+            areaTicketRepository.session.current()?.takeIf { it.id == id } ?: apartadoDelUltimoEnvio?.takeIf { it.id == id }
+        }
         // `encabezado` = se REVISA sin adoptar (`fromPreviousSale`). La pantalla tiene que seguir hablando de ESE cobro:
         // «Volver a consultar» y la declaración lo buscan aquí, porque no es el cobro de esta pantalla.
         val fromPreviousSale = encabezado != null
@@ -5954,6 +5959,9 @@ class PaymentFlowViewModel @Inject constructor(
      *
      * @param apartado el apartado de este cobro fotografiado antes del envío: se relee aunque un latido ya lo haya soltado (r2 #4).
      */
+    /** D4 (Codex r3 #1): el apartado del último envío a la terminal, para que su consulta posterior lo relea aunque la sesión se suelte. */
+    private var apartadoDelUltimoEnvio: AreaTicketCheckout? = null
+
     private fun salirPorCuentaCambiada(textoDelServidor: String, apartado: AreaTicketCheckout?) {
         val orden = createdOrderId
         val venta = cartState?.identidadDeVenta

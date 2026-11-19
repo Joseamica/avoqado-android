@@ -1236,6 +1236,9 @@ class CartViewModel @Inject constructor(
         val actual = _cartState.value
         if (venta == null || actual.identidadDeVenta != venta) return@delCobro false
         if (bloqueoDeEntrega() != null || pagarDespuesTomoLaFoto) return@delCobro false
+        // Codex D4 r3 #2: la venta tiene que seguir viva en la copia de la sesión. Si un latido ya la soltó (otra caja la liquidó, se
+        // canceló o venció) mientras la relectura venía en camino, su saldo ya no vale: el carrito no se toca.
+        if (areaTicketRepository.session.current()?.order?.id != orden) return@delCobro false
         vaciarCarrito(soltarApartado = false)
         // La misma venta: conserva su identidad y su copia guardada (Codex D4 r2 #5: sin `carritoGuardadoId`, al cobrar el saldo la
         // copia no se retiraba y se podía restaurar y cobrar otra vez).
