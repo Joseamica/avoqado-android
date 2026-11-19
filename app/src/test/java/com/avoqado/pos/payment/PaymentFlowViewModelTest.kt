@@ -1175,6 +1175,28 @@ class PaymentFlowViewModelTest {
     }
 
     @Test
+    fun `P1 D53 la primera parte en partes iguales manda la parte como importe y la cuenta entera como saldo esperado`() = runTest {
+        // Codex r5: con un abono de $35 sobre $80 la parte de $40 dejaba $5 sin pedir. Aquí se distingue «saldo» de «importe».
+        val sesion = sesionDeVales("0.00", valeDeArea("a", "3.00"))
+        every { areaTicketRepository.session.current() } returns sesion
+        coEvery { areaTicketRepository.materialize(any(), any(), any(), any(), any(), any(), any(), any()) } returns sesion
+        tarjetaQueFalla()
+
+        viewModel.setSplitConfig(type = "EQUALPARTS", numberOfParts = 2)
+        viewModel.startPaymentFlow(CartState(items = listOf(lineaDeVale("a", 300))))
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        viewModel.selectTerminalAndPay("t1")
+        advanceUntilIdle()
+
+        coVerify(exactly = 1) {
+            terminalPaymentService.sendPaymentToTerminal(
+                terminalId = "t1", amountCents = 150, tipCents = any(), rating = any(), orderId = "order-vales",
+                processedByStaffId = any(), customerId = any(), deLaBandeja = any(), expectedBalanceBeforeCents = 300,
+            )
+        }
+    }
+
+    @Test
     fun `D53 la parte 2 de una venta de vales dividida no manda saldo esperado (queda como hoy, por decidir)`() = runTest {
         // Continuación: el «Saldo pendiente» del carrito y el saldo de la orden pueden ser de lecturas distintas (Codex r1 #1 y #2).
         // Mandar uno de ellos sin que la caja sepa actualizar su renglón trabaría la tarjeta o dejaría pasar el abono. Hasta que el
@@ -1591,6 +1613,10 @@ class PaymentFlowViewModelTest {
                 rating = any(),
                 orderId = "order-vales",
                 processedByStaffId = any(),
+                customerId = any(),
+                deLaBandeja = any(),
+                // D53: el vale con descuento declara su neto como saldo esperado (el mismo que cobra).
+                expectedBalanceBeforeCents = 2700,
             )
         }
         assertFalse(viewModel.valesNoCoincidian.value)
