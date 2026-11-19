@@ -42,6 +42,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -343,7 +344,16 @@ fun CheckoutScreen(
     }
     var selectedProduct by remember { mutableStateOf<Product?>(null) }
     // Venta por peso (báscula): producto por peso pendiente de capturar peso.
-    var weightProduct by remember { mutableStateOf<Product?>(null) }
+    // D7: cada apertura de la captura de peso lleva su número ([CapturaDePeso]).
+    var capturaDePeso by remember { mutableStateOf<CapturaDePeso?>(null) }
+    val aperturasDePeso = remember { java.util.concurrent.atomic.AtomicLong() }
+    // Codex D7 r2 #3: volver a leer el producto que ya se está pesando no es otra apertura (no borra su peso tecleado).
+    val abrirCapturaDePeso: (Product) -> Unit = { nuevo ->
+        val abierta = capturaDePeso
+        // Codex D7 r3 #3: el mismo producto toma su ficha vigente (su precio nuevo) sin cambiar de apertura, como develop.
+        capturaDePeso = if (abierta?.product?.id == nuevo.id) abierta.copy(product = nuevo)
+        else CapturaDePeso(nuevo, aperturasDePeso.incrementAndGet())
+    }
     // Cómo se ve el mostrador en ESTE aparato: densidad de la cuadrícula y orden
     // de las pestañas. Es estado y no una lectura suelta porque la pestaña
     // "Configurar" lo cambia sin salir de la pantalla — el cajero tiene que ver
@@ -633,7 +643,7 @@ fun CheckoutScreen(
         if (!isTablet) selectedProduct = null
         promocionEnEleccion = null
         // D9 (Codex r1, ajeno de D8 r3): la captura de peso tampoco se queda abierta debajo; en WINDOWS retenía F4 y F5 del cobro.
-        weightProduct = null
+        capturaDePeso = null
         // D9: «¿Algo más?» no se queda montado encima del cobro (lo abrió «Dividir» con la tira minimizada, Codex D8 r3 #3): se
         // cierra como un «No, gracias», que el spec manda registrar.
         if (upsellViewModel.moment.value != null) upsellViewModel.finish(emptyList(), 0)
@@ -777,7 +787,7 @@ fun CheckoutScreen(
                             viewModel = cartViewModel,
                             teclasDeLaHoja = cartViewModel::procesarTecla,   // la hoja de tallas es otra ventana (D6)
                             onProductTap = { product ->
-                                handleProductTap(product, cartViewModel, { selectedProduct = it }, { weightProduct = it })
+                                handleProductTap(product, cartViewModel, { selectedProduct = it }, abrirCapturaDePeso)
                                 showSearch = false
                             },
                             onCreateProduct = if (roleManager?.canCreateProducts != false) {
@@ -837,7 +847,7 @@ fun CheckoutScreen(
                                         onConfirmPayLater = ::confirmPayLaterOrder,
                                         onCreateItem = { showCreateProduct = true },
                                         onProductTap = { product ->
-                                            handleProductTap(product, cartViewModel, { selectedProduct = it }, { weightProduct = it })
+                                            handleProductTap(product, cartViewModel, { selectedProduct = it }, abrirCapturaDePeso)
                                         },
                                         canCreateProducts = roleManager?.canCreateProducts ?: true,
                                         onTarjetaDeRegalo = abrirTarjetas,
@@ -852,7 +862,7 @@ fun CheckoutScreen(
                                                 product,
                                                 cartViewModel,
                                                 { selectedProduct = it },
-                                                { weightProduct = it },
+                                                abrirCapturaDePeso,
                                             )
                                         },
                                         onPackTap = if (roleManager?.canReadCreditPacks == true) {
@@ -1030,7 +1040,7 @@ fun CheckoutScreen(
                         viewModel = cartViewModel,
                         teclasDeLaHoja = cartViewModel::procesarTecla,   // la hoja de tallas es otra ventana (D6)
                         onProductTap = { product ->
-                            handleProductTap(product, cartViewModel, { selectedProduct = it }, { weightProduct = it })
+                            handleProductTap(product, cartViewModel, { selectedProduct = it }, abrirCapturaDePeso)
                             showSearch = false
                         },
                         onCreateProduct = if (roleManager?.canCreateProducts != false) {
@@ -1090,7 +1100,7 @@ fun CheckoutScreen(
                                     onConfirmPayLater = ::confirmPayLaterOrder,
                                     onCreateItem = { showCreateProduct = true },
                                     onProductTap = { product ->
-                                        handleProductTap(product, cartViewModel, { selectedProduct = it }, { weightProduct = it })
+                                        handleProductTap(product, cartViewModel, { selectedProduct = it }, abrirCapturaDePeso)
                                     },
                                     canCreateProducts = roleManager?.canCreateProducts ?: true,
                                     onTarjetaDeRegalo = abrirTarjetas,
@@ -1105,7 +1115,7 @@ fun CheckoutScreen(
                                             product,
                                             cartViewModel,
                                             { selectedProduct = it },
-                                            { weightProduct = it },
+                                            abrirCapturaDePeso,
                                         )
                                     },
                                     onPackTap = { cartViewModel.addCreditPack(it) },
@@ -1191,27 +1201,37 @@ fun CheckoutScreen(
     }
 
     // Venta por peso: panel de captura de peso (báscula/manual) para productos soldByWeight.
-    weightProduct?.let { product ->
+    capturaDePeso?.let { captura -> key(captura.apertura) {
+        val product = captura.product
         // La barrera la pone el propio panel (HojaConAtajo): F12 ahí es «Agregar», no Cobrar.
-        LaunchedEffect(product.id, areaOperationsState.settings?.scaleIntegration) {
+        // D7 (Codex D7 r1 #3): por APERTURA, no por producto: reabrir el mismo producto en el mismo cuadro vuelve a arrancar la
+        // báscula (y `key` deja vacíos su peso tecleado y su «ya agregado»).
+        LaunchedEffect(captura.apertura, areaOperationsState.settings?.scaleIntegration) {
             scaleCaptureViewModel.start(areaOperationsState.settings?.scaleIntegration)
         }
         WeightCapturePanel(
             product = product,
             isTablet = isTablet,
             scaleState = scaleState,
+            avisoDeEtiqueta = captura.avisoDeEtiqueta,
             onRetryScale = scaleCaptureViewModel::retry,
             onAdd = { weightKg ->
                 // D8 (Codex r2): con el cobro abierto (su F12 en WINDOWS, o un toque que le ganó al «No, gracias») el peso no
                 // entra al carrito ya fotografiado; la captura se cierra como siempre y se pesa otra vez al terminar.
-                if (!cartViewModel.cobroAbierto) cartViewModel.addProductByWeight(product, weightKg)
+                // D7 (Codex D7 r2 #2): sólo la captura que sigue abierta (el panel de una apertura vieja sigue un cuadro en pantalla).
+                if (!cartViewModel.cobroAbierto && capturaDePeso?.apertura == captura.apertura) {
+                    cartViewModel.addProductByWeight(product, weightKg)
+                }
             },
             onDismiss = {
-                scaleCaptureViewModel.stop()
-                weightProduct = null
+                // Sólo la captura que sigue abierta: la X de un panel viejo no cierra la siguiente.
+                if (capturaDePeso?.apertura == captura.apertura) {
+                    scaleCaptureViewModel.stop()
+                    capturaDePeso = null
+                }
             },
         )
-    }
+    } }
 
     // Promociones: hoja de elección, aviso al quitar y celebración al agregar.
     promocionEnEleccion?.let { promo ->
@@ -1554,6 +1574,10 @@ fun CheckoutScreen(
             // El cliente de ANTES de la consulta: si el cajero lo quitó o eligió otro mientras respondía, su toque gana
             // y la tarjeta escaneada no se vuelve a ligar (Codex, cliente en cobrar r3 #1).
             val clienteAlEscanear = cartViewModel.selectedCustomer.value?.id
+            // D7: la captura de peso abierta AL LEER; sólo en ella avisa su etiqueta. «Agregar» no espera a la lectura (Codex D7
+            // r5 #1: esperar descartaba el toque y la porción se perdía al pasar al siguiente producto): si la cajera lo toca antes
+            // de que la etiqueta de esa misma pieza termine de leerse, entran las dos, como en develop.
+            val capturaAlLeer = capturaDePeso
             val result = cartViewModel.resolveScannedBarcode(barcode, lecturaUs)
             // La consulta pudo tardar (red): si mientras tanto se abrió el cobro, no se aplica (pendientes, Codex r1 #2).
             if (!entra() || com.avoqado.pos.giftcards.domain.LectorParaTarjetas.abierta.value) return@launch
@@ -1586,10 +1610,17 @@ fun CheckoutScreen(
                         result.product,
                         cartViewModel,
                         { selectedProduct = it },
-                        { weightProduct = it },
+                        abrirCapturaDePeso,
                     )
-                is ScannedBarcodeResult.WeightedProductFound ->
+                is ScannedBarcodeResult.WeightedProductFound -> {
+                    // D7 (founder, 18-nov: «A′», tras ver cómo lo hacen Square y Lightspeed): la etiqueta del producto que se está
+                    // pesando entra y la captura SIGUE abierta con «Ya entró … por su etiqueta». Sin pasos ni botones nuevos: si era
+                    // la misma pieza, la cajera la cierra con la X; si era otra, toca «Agregar» como siempre.
+                    if (etiquetaEsDeLaCaptura(capturaAlLeer, capturaDePeso, result.product.id)) {
+                        capturaDePeso = capturaDePeso?.copy(avisoDeEtiqueta = avisoDeEtiqueta(result.product.name, result.weightKg))
+                    }
                     cartViewModel.addProductByWeight(result.product, result.weightKg)
+                }
                 is ScannedBarcodeResult.AreaTicketsAdded ->
                     areaTicketAddedCount = result.ticketCount
                 is ScannedBarcodeResult.CustomerCardFound -> if (cartViewModel.selectedCustomer.value?.id == clienteAlEscanear) {
@@ -1684,7 +1715,7 @@ fun CheckoutScreen(
                     showCreateProduct = false
                     createProductInitialName = ""
                     createProductInitialGtin = ""
-                    handleProductTap(product, cartViewModel, { selectedProduct = it }, { weightProduct = it })
+                    handleProductTap(product, cartViewModel, { selectedProduct = it }, abrirCapturaDePeso)
                 },
                 onDismiss = {
                     showCreateProduct = false
