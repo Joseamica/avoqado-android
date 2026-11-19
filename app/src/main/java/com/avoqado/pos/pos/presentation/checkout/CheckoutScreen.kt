@@ -1309,7 +1309,7 @@ fun CheckoutScreen(
         }
     }
     com.avoqado.pos.giftcards.presentation.VentaPorRecuperar(cartViewModel)
-    ClasePendiente(cartViewModel)
+    ClasePendiente(cartViewModel, enCobro = showPaymentFlow)
     cuentaConSaldoVisible?.let { id ->
         com.avoqado.pos.payment.presentation.CobroDeCuentaScreen(id, onSalir = { cuentaConSaldoVisible = null })
     }

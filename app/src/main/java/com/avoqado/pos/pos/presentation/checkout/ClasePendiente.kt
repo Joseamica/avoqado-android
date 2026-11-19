@@ -71,7 +71,7 @@ class ClasePendienteViewModel @Inject constructor(
  * después» (vuelve a salir cuando la caja queda libre) o «Ya no la cobro aquí» (la reserva no se toca).
  */
 @Composable
-fun ClasePendiente(cart: CartViewModel, vm: ClasePendienteViewModel = hiltViewModel()) {
+fun ClasePendiente(cart: CartViewModel, enCobro: Boolean = false, vm: ClasePendienteViewModel = hiltViewModel()) {
     val enEspera by cart.clasesPendientes.collectAsState()
     val cartState by cart.cartState.collectAsState()
     val cliente by cart.selectedCustomer.collectAsState()
@@ -83,7 +83,10 @@ fun ClasePendiente(cart: CartViewModel, vm: ClasePendienteViewModel = hiltViewMo
     LaunchedEffect(libre) { if (libre) vistas = emptySet() }
     // Codex r7 #1: cerrado con la X o «La agrego después» con la caja ya libre, vuelve a salir a los 2 minutos si sigue
     // pendiente: una clase sin cobrar no se queda escondida hasta la siguiente venta.
-    LaunchedEffect(vistas) { if (vistas.isNotEmpty()) { kotlinx.coroutines.delay(120_000); vistas = emptySet() } }
+    // Codex r8: el reloj sólo corre con la caja libre. Con otra venta en curso, o su cobro abierto, no vuelve a salir encima;
+    // sale al terminarla, cuando la caja queda libre.
+    LaunchedEffect(vistas, libre) { if (vistas.isNotEmpty() && libre) { kotlinx.coroutines.delay(120_000); vistas = emptySet() } }
+    if (enCobro) return
     var aviso by remember { mutableStateOf<String?>(null) }
     // Codex r6 #2: tras quitar una, la siguiente sale con el botón en el mismo lugar; un doble toque no la quita también.
     var ignorarHasta by remember { mutableStateOf(0L) }
