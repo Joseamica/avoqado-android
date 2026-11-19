@@ -459,6 +459,9 @@ class TerminalPaymentService @Inject constructor(
     /** F1 bloque 2: ¿el intento de ESTE folio sigue sin desenlace en esta tablet? */
     fun sigueEnDuda(orderId: String): Boolean = dudaDeLaVenta(orderId) != null
 
+    /** F1 cierre (cabo del bloque 2): consta en esta tablet que un intento de ESTE folio SÍ pasó (su «SÍ pasó» sigue en la lista). */
+    fun cobradoDelFolio(orderId: String): Boolean = vigentes().any { it.orderId == orderId && it.cobrado }
+
     fun pendienteDeLaVenta(orderId: String?): String? {
         val orden = orderId?.takeIf { it.isNotBlank() } ?: return null
         return vigentes().lastOrNull { it.orderId == orden }?.requestId

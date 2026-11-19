@@ -1727,6 +1727,17 @@ class PaymentFlowViewModel @Inject constructor(
     private val _avisoDeOtroCobro = MutableStateFlow<AvisoDeOtroCobro?>(null)
     val avisoDeOtroCobro: StateFlow<AvisoDeOtroCobro?> = _avisoDeOtroCobro.asStateFlow()
 
+    /**
+     * F1 bloque 3 (r2 #7): «Revisar ese cobro» desde B confirmó que el cobro AJENO que ocupaba la terminal SÍ pasó. B vuelve a su
+     * selector intacto y lo dice aquí (sólo en esta pantalla y en memoria: ese cobro lo cuida su aparato y lo concilia el servidor).
+     */
+    private var avisoDeLaRevision: AvisoDeOtroCobro? = null
+
+    private fun avisarRevisionQueSiPaso(requestId: String) {
+        avisoDeLaRevision = AvisoDeOtroCobro(requestId, textoCobroQueSiPaso(null), yaCobrado = true)
+        publicarAviso(terminalPaymentService.pendientesDeOtrasVentas(ordenEnCurso()))
+    }
+
     /** I-2 (re-revisión): con un «SÍ pasó» en la primera línea, la duda vigente más nueva de otra venta va DEBAJO — nunca la tapa. */
     private val _segundoAviso = MutableStateFlow<AvisoDeOtroCobro?>(null)
     val segundoAviso: StateFlow<AvisoDeOtroCobro?> = _segundoAviso.asStateFlow()
@@ -1736,6 +1747,12 @@ class PaymentFlowViewModel @Inject constructor(
      * siguiente confirmado —si hay— toma su lugar. Un aviso SIN confirmar no se descarta: su dinero todavía no consta.
      */
     fun descartarAvisoDeOtroCobro(requestId: String) {
+        if (avisoDeLaRevision?.requestId == requestId) {
+            // Ajeno: no está en la lista de esta tablet; «Entendido» sólo quita el aviso.
+            avisoDeLaRevision = null
+            publicarAviso(terminalPaymentService.pendientesDeOtrasVentas(ordenEnCurso()))
+            return
+        }
         if (_avisoDeOtroCobro.value?.let { it.requestId == requestId && it.yaCobrado } != true) return
         terminalPaymentService.reconocerCobro(requestId)
         publicarAviso(terminalPaymentService.pendientesDeOtrasVentas(ordenEnCurso()))
@@ -2661,6 +2678,7 @@ class PaymentFlowViewModel @Inject constructor(
         paymentGeneration++
         cobroDeValesId = java.util.UUID.randomUUID().toString()
         ventaEnCurso++
+        avisoDeLaRevision = null // F1 bloque 3: el «SÍ pasó» de un cobro ajeno se dijo en la venta que lo revisó, no en la siguiente
         cancelacionFallida = false
         // Una venta nueva arranca sin cobro propio: el pendiente de SU orden se lee vivo de la lista, al elegir tarjeta.
         undeterminedRequestId = null
@@ -3008,8 +3026,12 @@ class PaymentFlowViewModel @Inject constructor(
      */
     fun probeTerminalAvailability(background: Boolean = true) {
         _terminalAvailability.value = TerminalAvailability.CHECKING
+        // F1 bloque 3 (r2 #6): la disponibilidad es de ESTA venta: la de otra que llegue tarde no la pisa.
+        val origen = origenDeLaRespuesta()
         viewModelScope.launch {
-            when (val result = terminalPaymentService.fetchOnlineTerminals(background = background)) {
+            val result = terminalPaymentService.fetchOnlineTerminals(background = background)
+            if (!origen.esDeEstaVenta()) return@launch
+            when (result) {
                 is TerminalListResult.Success -> {
                     _onlineTerminals.value = result.terminals
                     _terminalAvailability.value =
@@ -3032,8 +3054,12 @@ class PaymentFlowViewModel @Inject constructor(
      * como de fondo: aquí el 403 debe verse.
      */
     private fun fetchTerminals() {
+        // F1 bloque 3 (r2 #6): la lista (con datos, vacía o con error) sólo toca el selector que la pidió.
+        val origen = origenDeLaRespuesta()
         viewModelScope.launch {
-            when (val result = terminalPaymentService.fetchOnlineTerminals()) {
+            val result = terminalPaymentService.fetchOnlineTerminals()
+            if (!origen.vigente()) return@launch
+            when (result) {
                 is TerminalListResult.Success -> {
                     _onlineTerminals.value = result.terminals
                     _terminalAvailability.value =
@@ -3056,6 +3082,22 @@ class PaymentFlowViewModel @Inject constructor(
             }
         }
     }
+
+    /**
+     * 🔴 F1 cierre bloque 3 (`plan-android.md` «Respuestas tardías», r1 #1 y #3, r2 #6 y #7): de quién es una respuesta
+     * asíncrona del cobro. Se captura ANTES de salir a red; al volver, la pantalla sólo la toca si sigue siendo la misma sucursal,
+     * la misma venta ([ventaEnCurso]) y la misma generación ([paymentGeneration]: una revisión, una cancelación o [Seguir] la
+     * cambian). El dinero no pasa por aquí: cada desenlace financiero va a su intento durable (`handleStaleCardResult`).
+     */
+    private data class OrigenDeLaRespuesta(val venueId: String?, val venta: Int, val generacion: Int)
+
+    private fun origenDeLaRespuesta() = OrigenDeLaRespuesta(secureStorage.venueId, ventaEnCurso, paymentGeneration)
+
+    /** Misma sucursal y misma venta (lo que vale para toda la venta, como la disponibilidad de terminales). */
+    private fun OrigenDeLaRespuesta.esDeEstaVenta() = venueId == secureStorage.venueId && !otraVenta(venta)
+
+    /** Además, la misma apertura de la pantalla: lo que gobierna lo que se ve (selector, duda, éxito). */
+    private fun OrigenDeLaRespuesta.vigente() = esDeEstaVenta() && generacion == paymentGeneration
 
     // MARK: - Cobros sin confirmar de OTRAS ventas (founder, 25-sep): se avisan, no frenan
 
@@ -3138,7 +3180,10 @@ class PaymentFlowViewModel @Inject constructor(
      */
     private fun publicarAviso(pendientes: List<ContextoDeCobro>) {
         vencimientoDelAviso?.cancel()
-        val (primero, segundo) = avisosDe(pendientes)
+        val (primero, segundo) = avisosDe(pendientes).let { (p, s) ->
+            // F1 bloque 3 (r2 #7): el «SÍ pasó» de la revisión de un cobro ajeno va arriba hasta su «Entendido».
+            avisoDeLaRevision?.let { it to (p ?: s) } ?: (p to s)
+        }
         _avisoDeOtroCobro.value = primero
         _segundoAviso.value = segundo
         val vence = listOfNotNull(primero, segundo)
@@ -5100,8 +5145,13 @@ class PaymentFlowViewModel @Inject constructor(
                         // disco hasta que se cierre «Cobro anterior resuelto» (o venza su ventana).
                         // 🔴 Codex android r1 #3: si es de OTRA venta («Ver» del aviso, «Revisar ese cobro»), nada de A cierra el
                         // cobro de B ni le borra su división: B vuelve a su selector y el «SÍ pasó» de A sale en su aviso.
-                        if (encabezado == PREVIOUS_CHARGE_PREFIX) volverDeLaRevision(total)
-                        else resolverCobroAnterior("El cobro anterior sí se había realizado", cobroQueSiPaso = requestId)
+                        if (encabezado == PREVIOUS_CHARGE_PREFIX) {
+                            volverDeLaRevision(total)
+                            // F1 bloque 3 (r2 #7): el cobro AJENO no entra a la lista local, así que su aviso no lo diría: B lo ve aquí.
+                            if (ajeno) avisarRevisionQueSiPaso(requestId)
+                        } else {
+                            resolverCobroAnterior("El cobro anterior sí se había realizado", cobroQueSiPaso = requestId)
+                        }
                     } else {
                         applyCardCharged(outcome.copy(requestId = outcome.requestId ?: requestId), total)
                     }

@@ -106,6 +106,19 @@ class F1FolioDelCarritoModeloTest {
         /** Qué contesta el próximo envío a la terminal (null = la tarjeta queda en duda). */
         var proximoEnvio: ((folio: String?, requestId: String) -> TerminalPaymentResult)? = null
 
+        /** Folios con un intento que SÍ pasó según la lista durable («SÍ pasó» marcado, cabo del bloque 2). */
+        val cobrados = mutableSetOf<String>()
+        /** requestId → folio de cada tarjeta mandada (para que «Entendido» vuelva a anunciar su folio, como `quitar`). */
+        val intentos = mutableMapOf<String, String>()
+        /**
+         * Bloque 3: consultas de terminales que se quedan colgadas hasta que la prueba las suelta, por tipo (`true` = la
+         * disponibilidad de fondo, `false` = la lista del selector). Sin colgada, contesta [listaDeTerminales].
+         */
+        val listasColgadas = mutableMapOf<Boolean, ArrayDeque<kotlinx.coroutines.CompletableDeferred<TerminalListResult>>>()
+        var listaDeTerminales: List<OnlineTerminal> = listOf(OnlineTerminal(terminalId = "t1", name = "Terminal 1"))
+        /** Bloque 3: lo que contesta la consulta de un intento (null = «no se sabe»). */
+        val desenlaces = mutableMapOf<String, TerminalPaymentResult>()
+
         /** Lo que contesta `GET …/orders/:id` por folio (estado, pago y saldo). Ausente = sin respuesta. */
         val saldos = mutableMapOf<String, OrderRepository.SaldoDeLaOrden>()
 
@@ -131,8 +144,14 @@ class F1FolioDelCarritoModeloTest {
         )
 
         val terminal: TerminalPaymentService = mockk<TerminalPaymentService>(relaxed = true).also { t ->
-            coEvery { t.fetchOnlineTerminals(any()) } returns
-                TerminalListResult.Success(listOf(OnlineTerminal(terminalId = "t1", name = "Terminal 1")))
+            coEvery { t.fetchOnlineTerminals(any()) } coAnswers {
+                listasColgadas[firstArg<Boolean>()]?.removeFirstOrNull()?.await() ?: TerminalListResult.Success(listaDeTerminales)
+            }
+            every { t.cobradoDelFolio(any()) } answers { firstArg<String>() in cobrados }
+            every { t.reconocerCobro(any()) } answers {
+                val requestId = firstArg<String>()
+                intentos[requestId]?.let { foliosDeTarjeta.tryEmit(com.avoqado.pos.payment.data.DesenlaceDeFolio("venue-1", it, requestId)) }
+            }
             every { t.pendienteDeLaVenta(any()) } answers { firstArg<String?>()?.let { pendientesLocales[it] } }
             every { t.sigueEnDuda(any()) } answers { pendientesLocales.containsKey(firstArg()) }
             every { t.dudaDeLaVenta(any()) } answers { firstArg<String?>()?.let { pendientesLocales[it] } }
@@ -146,10 +165,13 @@ class F1FolioDelCarritoModeloTest {
                 envios += folio
                 folio?.let { pendientesLocales[it] }?.let { return@answers TerminalPaymentResult.Undetermined("x", it, inherited = true) }
                 val requestId = "req-${envios.size}"
+                folio?.let { intentos[requestId] = it }
                 proximoEnvio?.invoke(folio, requestId)
                     ?: TerminalPaymentResult.Undetermined("x", requestId).also { folio?.let { pendientesLocales[it] = requestId } }
             }
-            coEvery { t.resolveOutcome(any(), any(), any()) } answers { TerminalPaymentResult.Undetermined("x", firstArg()) }
+            coEvery { t.resolveOutcome(any(), any(), any()) } answers {
+                desenlaces[firstArg()] ?: TerminalPaymentResult.Undetermined("x", firstArg())
+            }
         }
     }
 
@@ -290,6 +312,19 @@ class F1FolioDelCarritoModeloTest {
             carrito.cerrarCobro()
             carrito.releaseChargingOrder()
         }
+
+        /** La X del cobro (o Esc): `cancelarVenta` y, si el ViewModel decide salir, lo que hace `CheckoutScreen.onCancel`. */
+        fun salir() {
+            cobro.cancelarVenta()
+            if (!cobro.debeSalir.value) return
+            cobro.consumirSalida()
+            carrito.cerrarCobro()
+            carrito.releaseChargingOrder()
+        }
+
+        /** Lo que B tiene a la vista en su selector: lo que una respuesta de A no puede cambiar. */
+        fun selectorDeB() = listOf(cobro.state.value, cobro.onlineTerminals.value, cobro.terminalAvailability.value,
+            cobro.splitType.value, carrito.cartState.value, carrito.selectedCustomer.value?.id)
 
         fun guardar(): Boolean = carrito.saveCurrentCart("Cuenta")
 
@@ -669,5 +704,169 @@ class F1FolioDelCarritoModeloTest {
         caja.tarjeta()
         advanceUntilIdle()
         assertEquals(3_000, servidor.saldosEsperados.last())
+    }
+
+    // MARK: - Cabos del bloque 2: «Saldo por confirmar» y «Entendido»
+
+    @Test
+    fun constaDinero_sinSaldo_diceSaldoPorConfirmar_yNoCobraConElTotalViejo() = runTest {
+        val servidor = Servidor()
+        val caja = Caja(servidor)
+        tarjetaDeAEnDuda(caja)
+        caja.seguir()
+        val totalDeA = caja.carrito.cartState.value.totalCents
+
+        // Llega la aprobación de A, pero sin red no se sabe cuánto falta (GET de la orden sin respuesta).
+        servidor.pendientesLocales.remove("order-a")
+        servidor.cobrados += "order-a"
+        servidor.foliosDeTarjeta.emit(com.avoqado.pos.payment.data.DesenlaceDeFolio("venue-1", "order-a", "req-1"))
+        advanceUntilIdle()
+        assertEquals(com.avoqado.pos.pos.presentation.cart.SALDO_POR_CONFIRMAR, caja.carrito.avisoDeVales.value)
+        assertEquals("nada se inventa: el carrito sigue igual", totalDeA, caja.carrito.cartState.value.totalCents)
+
+        val enviosAntes = servidor.envios.size
+        assertTrue("con el total viejo no se abre el cobro", !caja.cobrar())
+        assertEquals(enviosAntes, servidor.envios.size)
+
+        // Vuelve la red: el siguiente intento relee y la cuenta queda con su resto real.
+        servidor.saldos["order-a"] = OrderRepository.SaldoDeLaOrden(6_000, "PARTIAL", "PENDING")
+        caja.cobrar()
+        advanceUntilIdle()
+        assertEquals("ahora sí: lo que falta según el servidor", 6_000, caja.carrito.cartState.value.totalCents)
+        assertTrue(caja.cobrar())
+        assertEquals("order-a", caja.carrito.chargingAgainstOrderId)
+    }
+
+    @Test
+    fun entendido_soloQuitaElAviso_conBAbierto() = runTest {
+        val servidor = Servidor()
+        val caja = Caja(servidor)
+        tarjetaDeAEnDuda(caja)
+        caja.seguir()
+        assertTrue(caja.guardar())
+        caja.armar("cli-beto", "Beto")
+        val b = CartStateDeB(caja.carrito.cartState.value, caja.carrito.selectedCustomer.value?.id)
+        servidor.pendientesLocales.remove("order-a")
+        servidor.saldos["order-a"] = OrderRepository.SaldoDeLaOrden(6_000, "PARTIAL", "PENDING")
+        servidor.foliosDeTarjeta.emit(com.avoqado.pos.payment.data.DesenlaceDeFolio("venue-1", "order-a", "req-1"))
+        advanceUntilIdle()
+        val copiaDeA = caja.guardados.savedCarts.value.single()
+
+        // «Entendido» (en el aviso o en «Cobro anterior resuelto») acaba en `reconocerCobro`, que vuelve a anunciar el folio.
+        servidor.terminal.reconocerCobro("req-1")
+        servidor.terminal.reconocerCobro("req-1")
+        advanceUntilIdle()
+
+        assertBIntacta(caja, b)
+        assertEquals("la copia de A no cambia: el resto se aplicó una vez", copiaDeA, caja.guardados.savedCarts.value.single())
+    }
+
+    // MARK: - Bloque 3: respuestas de A durante B
+
+    private enum class Llamada(val deFondo: Boolean) { LISTA(false), DISPONIBILIDAD(true) }
+
+    /** A abre su selector con [llamada] colgada; sale; B divide y abre el suyo. Devuelve la respuesta colgada de A. */
+    private fun TestScope.bEnSuSelectorConRespuestaDeAEnVuelo(caja: Caja, llamada: Llamada): kotlinx.coroutines.CompletableDeferred<TerminalListResult> {
+        val tarde = kotlinx.coroutines.CompletableDeferred<TerminalListResult>()
+        caja.servidor.listasColgadas[llamada.deFondo] = ArrayDeque(listOf(tarde))
+        caja.armar("cli-ana", "Ana")
+        assertTrue(caja.cobrar())
+        caja.cobro.selectPaymentMethod(PaymentMethod.CARD)
+        advanceUntilIdle()
+        caja.salir()
+        caja.carrito.vaciar()
+        caja.armar("cli-beto", "Beto")
+        assertTrue(caja.cobrar(parteCents = 9_000))
+        caja.cobro.selectPaymentMethod(PaymentMethod.CARD)
+        advanceUntilIdle()
+        assertEquals("montaje: B en su selector con su parte", 9_000, (caja.cobro.state.value as? PaymentFlowState.SelectingTerminal)?.totalAmount)
+        assertEquals("montaje: B ya puede elegir su lector", listOf("t1"), caja.cobro.onlineTerminals.value.map { it.terminalId })
+        return tarde
+    }
+
+    @Test
+    fun respuestaTardiaDeA_conservaB() = runTest {
+        val resultados = mapOf(
+            "con datos" to TerminalListResult.Success(listOf(OnlineTerminal(terminalId = "t-a", name = "La de A"))),
+            "vacía" to TerminalListResult.Success(emptyList()),
+            "error" to TerminalListResult.Error("Sin conexión", sinRed = true),
+        )
+        for (llamada in Llamada.values()) for ((nombre, resultado) in resultados) {
+            disco = PrefsDeDosCapas()
+            val caja = Caja(Servidor())
+            val tarde = bEnSuSelectorConRespuestaDeAEnVuelo(caja, llamada)
+            val b = caja.selectorDeB()
+
+            tarde.complete(resultado)
+            advanceUntilIdle()
+
+            assertEquals("$llamada $nombre: B conserva su selector, su parte y su lector", b, caja.selectorDeB())
+        }
+    }
+
+    @Test
+    fun respuestaTardiaDeA_consulta_conservaB() = runTest {
+        // La consulta de A («Ver» del aviso) contesta tarde con cada desenlace: sale a su intento, no a la pantalla de B.
+        for (desenlace in listOf<TerminalPaymentResult>(
+            TerminalPaymentResult.Success(paymentId = "pay-a", requestId = "req-a"),
+            TerminalPaymentResult.Error("No se cobró", requestId = "req-a"),
+            TerminalPaymentResult.Undetermined("x", "req-a"),
+        )) {
+            disco = PrefsDeDosCapas()
+            val servidor = Servidor()
+            val caja = Caja(servidor)
+            val tarde = kotlinx.coroutines.CompletableDeferred<TerminalPaymentResult>()
+            coEvery { servidor.terminal.resolveOutcome("req-a", any(), any()) } coAnswers { tarde.await() }
+            caja.armar("cli-beto", "Beto")
+            assertTrue(caja.cobrar(parteCents = 9_000))
+            caja.cobro.selectPaymentMethod(PaymentMethod.CARD)
+            advanceUntilIdle()
+            caja.cobro.revisarCobroDeOtraVenta("req-a")
+            advanceUntilIdle()
+            caja.seguir() // [Seguir] en la revisión de A: B vuelve a su selector
+            advanceUntilIdle()
+            val b = caja.selectorDeB()
+            assertEquals("montaje", 9_000, (b[0] as? PaymentFlowState.SelectingTerminal)?.totalAmount)
+
+            tarde.complete(desenlace)
+            advanceUntilIdle()
+            assertEquals("$desenlace: B intacta", b, caja.selectorDeB())
+            assertTrue("cero éxito atribuido a B", caja.cobro.state.value !is PaymentFlowState.Success)
+        }
+    }
+
+    @Test
+    fun aprobacionAjena_consultada_conservaDivisionYLectorDeB() = runTest {
+        val servidor = Servidor()
+        servidor.listaDeTerminales = listOf(OnlineTerminal(terminalId = "t1", name = "Terminal 1"), OnlineTerminal(terminalId = "t2", name = "Terminal 2"))
+        // Otra caja mandó A a la terminal t1 y la ocupa: el envío de B recibe 409 TERMINAL con el bloqueador.
+        servidor.proximoEnvio = { _, requestId ->
+            TerminalPaymentResult.Error("Terminal ocupada", requestId = requestId, noSeCreo = true,
+                bloqueador = BloqueadorDeCobro("req-otra-caja", "TERMINAL"))
+        }
+        servidor.desenlaces["req-otra-caja"] = TerminalPaymentResult.Success(paymentId = "pay-a", requestId = "req-otra-caja")
+        val caja = Caja(servidor)
+        caja.armar("cli-beto", "Beto")
+        assertTrue(caja.cobrar(parteCents = 9_000))
+        caja.tarjeta()
+        advanceUntilIdle()
+        assertEquals("montaje: «Revisar ese cobro»", "req-otra-caja", (caja.cobro.state.value as? PaymentFlowState.Error)?.revisarCobroId)
+
+        caja.cobro.revisarCobroQueOcupa()
+        advanceUntilIdle()
+
+        assertTrue("B no se cierra", !caja.cobro.debeSalir.value)
+        assertEquals("B vuelve a su selector con su parte", 9_000, (caja.cobro.state.value as? PaymentFlowState.SelectingTerminal)?.totalAmount)
+        assertNull((caja.cobro.state.value as PaymentFlowState.SelectingTerminal).sinLista)
+        assertEquals("con lectores que sí puede elegir", listOf("t1", "t2"), caja.cobro.onlineTerminals.value.map { it.terminalId })
+        val aviso = caja.cobro.avisoDeOtroCobro.value
+        assertEquals("y ve que el cobro de A sí pasó", "req-otra-caja", aviso?.requestId)
+        assertTrue(aviso!!.yaCobrado)
+
+        // «Entendido» sólo quita el aviso.
+        val b = caja.selectorDeB()
+        caja.cobro.descartarAvisoDeOtroCobro("req-otra-caja")
+        assertNull(caja.cobro.avisoDeOtroCobro.value)
+        assertEquals(b, caja.selectorDeB())
     }
 }

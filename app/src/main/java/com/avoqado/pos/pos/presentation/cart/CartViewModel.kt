@@ -449,6 +449,9 @@ const val PAGAR_DESPUES_NO_SE_GUARDO = "No se pudo guardar la cuenta en el apara
 /** F1 bloque 2: la cuenta de [Seguir] sigue ligada a su folio; para otro cliente, se guarda primero. */
 const val CUENTA_LIGADA_GUARDALA = "Guarda esta cuenta para atender a otro cliente"
 
+/** F1 (cabo del bloque 2, `plan-android.md` r2 #1): consta dinero de la cuenta pero no cuánto falta (sin red). Mismo texto en iOS. */
+const val SALDO_POR_CONFIRMAR = "Saldo por confirmar: ya entró un cobro con tarjeta de esta cuenta. Al volver la conexión se ve cuánto falta."
+
 const val VENTA_A_MEDIAS_CAMBIADA =
     "Esta venta ya tiene un cobro parcial: cobra primero su saldo pendiente. Quita lo que agregaste y véndelo aparte."
 
@@ -832,6 +835,11 @@ class CartViewModel @Inject constructor(
         }
     }
 
+    /** F1 (cabo del bloque 2): la cuenta en pantalla sigue ligada en duda a [orderId], pero esta tablet ya sabe que un cobro SÍ pasó. */
+    private fun dineroSinSaldo(orderId: String): Boolean =
+        _pendingSplitOrder.value?.let { it.orderId == orderId && it.duda != null } == true &&
+            terminalPaymentService?.cobradoDelFolio(orderId) == true
+
     /** F1 bloque 2: la cuenta ligada a su folio con la tarjeta en duda no se edita; se guarda para atender a otro cliente. */
     private fun detenerPorFolioEnDuda(): Boolean {
         if (_pendingSplitOrder.value?.duda == null) return false
@@ -870,7 +878,11 @@ class CartViewModel @Inject constructor(
      */
     private suspend fun releerFolio(venueId: String, orderId: String) {
         if (venueId != secureStorage.venueId) return
-        val saldo = orderRepository.saldoDeLaOrden(orderId) ?: return
+        val saldo = orderRepository.saldoDeLaOrden(orderId) ?: run {
+            // Consta dinero de A pero no su saldo nuevo (sin red): la cuenta en pantalla lo dice y no se cobra con el total viejo.
+            if (dineroSinSaldo(orderId)) _avisoDeVales.value = SALDO_POR_CONFIRMAR
+            return
+        }
         val copia = savedCartsRepository.savedCarts.value.firstOrNull { it.folio?.orderId == orderId && it.folio.enDuda }
         val visible = _pendingSplitOrder.value?.takeIf { it.orderId == orderId && it.duda != null }
         val origen = visible?.duda?.origen?.name ?: copia?.folio?.origen
@@ -1097,6 +1109,12 @@ class CartViewModel @Inject constructor(
      */
     fun detenerCobroDeVentaCambiada(): Boolean {
         val pendiente = _pendingSplitOrder.value ?: return false
+        // F1 (cabo del bloque 2): consta un cobro de este folio y falta su saldo: «Saldo por confirmar», se relee y no se cobra aún.
+        pendiente.duda?.takeIf { dineroSinSaldo(it.orderId) }?.let { duda ->
+            _avisoDeVales.value = SALDO_POR_CONFIRMAR
+            viewModelScope.launch { releerFolio(duda.venueId, duda.orderId) }
+            return true
+        }
         val cart = _cartState.value
         val venta = ventaDeValesConAbono()?.takeIf { it.order?.id == pendiente.orderId }
         if (venta != null) {
