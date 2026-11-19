@@ -8,7 +8,6 @@ import java.awt.Window
 import java.awt.event.KeyEvent
 import javax.swing.SwingUtilities
 import javax.swing.Timer
-import kotlinx.coroutines.flow.MutableSharedFlow
 
 /**
  * La pistola de códigos (USB o Bluetooth) en Windows. En Android entra por `MainActivity.dispatchKeyEvent` → `LectorHidBus`;
@@ -152,19 +151,12 @@ class LectorDePistola(
     }
 }
 
-/**
- * Lo que emite la pistola entra al MISMO bus que en Android (`LectorHidBus.codigos` → `CartViewModel.codigosEscaneados`).
- * Su `_codigos` es privado y `app/` no se toca desde escritorio: se emite por reflexión. Si Android lo renombra o le cambia
- * el tipo, esto TRUENA (y PistolaAlCobroTest también) en vez de emitir a nadie en silencio.
- */
+/** Lo que emite la pistola entra al MISMO bus que en Android (`LectorHidBus.leidos` → `CartViewModel.codigosEscaneados`). */
 fun emisorDelBus(bus: LectorHidBus): (String) -> Unit {
-    val campo = runCatching { LectorHidBus::class.java.getDeclaredField("_codigos") }.getOrNull()
-    check(campo != null && MutableSharedFlow::class.java.isAssignableFrom(campo.type)) {
-        "LectorHidBus ya no tiene «_codigos: MutableSharedFlow<String>»: la pistola de Windows no llega al cobro (revisa emisorDelBus)"
-    }
-    @Suppress("UNCHECKED_CAST")
-    val flujo = campo.apply { isAccessible = true }.get(bus) as MutableSharedFlow<String>
-    return { flujo.tryEmit(it) }
+    // D14 (18-nov): por la puerta pública del bus, la misma del lector integrado de Sunmi. Antes se emitía por reflexión
+    // sobre `_codigos`, y al cambiar el bus (los códigos viajan con su lectura en inglés) la pistola de Windows se quedaba
+    // sin llegar al cobro.
+    return { bus.recibirDelLectorIntegrado(it) }
 }
 
 /**

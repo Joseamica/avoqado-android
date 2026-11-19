@@ -146,6 +146,21 @@ fun List<Product>.parecidoACodigo(codigo: String): Product? {
     return filter { p -> listOfNotNull(p.sku, p.barcode, p.gtin).any { it.equals(codigo, ignoreCase = true) } }.singleOrNull()
 }
 
+/**
+ * D14 (rediseño tras Codex r6): los productos que la lectura EN INGLÉS de la pistola puede ser, por los caminos de producto de
+ * la búsqueda normal: los exactos (SKU, código de barras, GTIN) o, si no hay, los que coinciden sin mayúsculas cuando no es
+ * tarjeta del servidor. Sólo productos: nada de vales, báscula, tarjetas ni servidor.
+ */
+fun List<Product>.coincidenciasDeLaLectura(codigo: String): List<Product> {
+    val c = codigo.trim()
+    val campos = { p: Product -> listOfNotNull(p.sku, p.barcode, p.gtin) }
+    val exactas = filter { p -> campos(p).any { it == c } }.distinctBy { it.id }
+    // Codex r7 #2: sin mayúsculas se compara salvo que sea una tarjeta DE VERDAD (código del servidor o de cliente): «CAFE-
+    // REGULAR-000001» tiene 17 letras y números, pero con U y L no es tarjeta, y debe encontrar «cafe-regular-000001».
+    if (exactas.isNotEmpty() || ReconocedorDeTarjeta.esDelServidor(c) || pareceTarjetaDeCliente(c)) return exactas
+    return filter { p -> campos(p).any { it.equals(c, ignoreCase = true) } }.distinctBy { it.id }
+}
+
 fun precioConUnidad(precio: Double, porPeso: Boolean): String = formatMoney(precio) + if (porPeso) "/kg" else ""
 
 @Serializable

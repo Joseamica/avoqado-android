@@ -227,4 +227,50 @@ class LectorHidBusTest {
         assertFalse(LectorHidBus.esTeclaFisicaQueEscribe(LECTOR, 0, KeyEvent.KEYCODE_SHIFT_LEFT))
         assertFalse(LectorHidBus.esTeclaFisicaQueEscribe(LECTOR, 0, KeyEvent.KEYCODE_BACK))
     }
+
+    private fun LectorHidBus.leer(delAparato: String, enIngles: String) {
+        delAparato.forEachIndexed { i, c ->
+            procesar(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_A, c.code, LECTOR, 1_000L + i * 10, 0, unicodeCharUs = enIngles[i].code)
+        }
+        enter(ms = 1_000L + delAparato.length * 10)
+    }
+
+    @Test
+    fun `D14 un codigo con apostrofo viaja con su lectura en ingles`() = runTest {
+        val bus = LectorHidBus()
+        bus.leidos.test {
+            bus.leer(delAparato = "AB'12", enIngles = "AB-12")
+            assertEquals(CodigoLeido("AB'12", lecturaUs = "AB-12"), awaitItem())
+        }
+    }
+
+    @Test
+    fun `D14 sin caracter raro no hay lectura en ingles aunque el teclado de EE UU lea distinto`() = runTest {
+        // Una pistola configurada en español lee bien «AB-12»; en el mapa de EE. UU. esa tecla es «/». No se reinterpreta.
+        val bus = LectorHidBus()
+        bus.leidos.test {
+            bus.leer(delAparato = "AB-12", enIngles = "AB/12")
+            assertEquals(CodigoLeido("AB-12"), awaitItem())
+        }
+    }
+
+    @Test
+    fun `D14 sin diferencia entre teclados no hay lectura en ingles`() = runTest {
+        val bus = LectorHidBus()
+        bus.leidos.test {
+            bus.rafaga("abc12")
+            bus.enter(ms = 1_100)
+            assertEquals(CodigoLeido("abc12"), awaitItem())
+        }
+    }
+
+    @Test
+    fun `D14 la lectura del aparato nunca se descarta aunque en ingles sean numeros`() = runTest {
+        // Codex r6 #4: con aparato y pistola en francés, «&&'(» es la etiqueta de verdad; en inglés sería «1145».
+        val bus = LectorHidBus()
+        bus.leidos.test {
+            bus.leer(delAparato = "&&'(", enIngles = "1145")
+            assertEquals(CodigoLeido("&&'(", lecturaUs = "1145"), awaitItem())
+        }
+    }
 }

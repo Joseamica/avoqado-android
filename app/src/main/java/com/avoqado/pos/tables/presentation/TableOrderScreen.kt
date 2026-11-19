@@ -93,6 +93,7 @@ import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.designsystem.theme.Success
 import com.avoqado.pos.pos.data.model.Product
 import com.avoqado.pos.pos.data.model.parecidoACodigo
+import com.avoqado.pos.pos.data.model.coincidenciasDeLaLectura
 import com.avoqado.pos.pos.presentation.cart.CartViewModel
 import com.avoqado.pos.pos.presentation.product.ProductDetailPanel
 import com.avoqado.pos.pos.presentation.product.ProductGridView
@@ -320,6 +321,7 @@ fun TableOrderScreen(
     var previousChargeNotice by cobroDeLaMesa::avisoCobroAnterior
     val tablesViewModel: TablesViewModel = androidx.hilt.navigation.compose.hiltViewModel()
     var unknownBarcode by remember { mutableStateOf<String?>(null) }
+    var codigoDoble by remember { mutableStateOf<String?>(null) }
     // Menú … por tiempo (¡Listo!/Repetir). Par (curso, abierto).
     var courseMenuTarget by remember { mutableStateOf<Pair<String?, String>?>(null) }
     var showDiscardDialog by remember { mutableStateOf(false) }
@@ -990,21 +992,33 @@ fun TableOrderScreen(
                 .fillMaxSize()
                 .background(Color.Black),
         ) {
-            val alEscanear: (String) -> Unit = escanear@{ barcode ->
+            val alEscanearLectura: (String, String?) -> Unit = escanear@{ barcode, lecturaUs ->
                 // Cámara y pistola pueden leer la misma etiqueta casi a la vez: la primera cierra el
                 // escáner y la otra ya no agrega (Codex d2 #3).
                 if (!showBarcodeScanner) return@escanear
                 showBarcodeScanner = false
-                val matched = catalogViewModel.products.value.find { product ->
-                    product.sku == barcode || product.barcode == barcode || product.gtin == barcode
-                } ?: catalogViewModel.products.value.parecidoACodigo(barcode)
-                if (matched != null) {
+                fun buscar(codigo: String) = catalogViewModel.products.value.find { product ->
+                    product.sku == codigo || product.barcode == codigo || product.gtin == codigo
+                } ?: catalogViewModel.products.value.parecidoACodigo(codigo)
+                // D14 (rediseño tras Codex r6): primero la lectura del aparato, como antes; la de EE. UU. sólo para productos.
+                // Las dos son las MISMAS teclas: si cada una es un producto distinto, no se adivina.
+                val delAparato = buscar(barcode)
+                val enIngles = lecturaUs?.let { catalogViewModel.products.value.coincidenciasDeLaLectura(it) }.orEmpty()
+                // Codex r8 #2: si la del aparato empató entre productos, no se elige uno de la otra lectura (como en develop).
+                val empateDelAparato = delAparato == null && lecturaUs != null &&
+                    catalogViewModel.products.value.coincidenciasDeLaLectura(barcode).isNotEmpty()
+                val matched = delAparato ?: enIngles.singleOrNull()?.takeUnless { empateDelAparato }
+                val doble = if (delAparato != null) enIngles.any { it.id != delAparato.id } else !empateDelAparato && enIngles.size > 1
+                if (lecturaUs != null && doble) {
+                    codigoDoble = com.avoqado.pos.pos.presentation.cart.avisoDeCodigoDoble(barcode.trim(), lecturaUs.trim())
+                } else if (matched != null) {
                     handleProductTap(matched)
                     panelTab = PanelTab.CUENTA
                 } else {
                     unknownBarcode = barcode
                 }
             }
+            val alEscanear: (String) -> Unit = { alEscanearLectura(it, null) }
             // La pistola (USB/Bluetooth) y el lector integrado de Sunmi entregan por `LectorHidBus`, no
             // por el campo: sin escucharlo aquí su código se perdía (sólo Cobrar escuchaba). Sólo con
             // esta pantalla RESUMED: al cambiar de pestaña la saliente y Cobrar conviven ~700 ms y el
@@ -1012,7 +1026,7 @@ fun TableOrderScreen(
             val ciclo = androidx.lifecycle.compose.LocalLifecycleOwner.current
             LaunchedEffect(ciclo) {
                 ciclo.repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.RESUMED) {
-                    catalogViewModel.codigosEscaneados.collect { alEscanear(it) }
+                    catalogViewModel.codigosEscaneados.collect { alEscanearLectura(it.texto, it.lecturaUs) }
                 }
             }
             com.avoqado.pos.pos.presentation.scanner.BarcodeScannerView(
@@ -1021,6 +1035,15 @@ fun TableOrderScreen(
                 onDismiss = { showBarcodeScanner = false },
             )
         }
+    }
+
+    codigoDoble?.let { aviso ->
+        AvoqadoDialog(
+            title = "Dos productos con esta etiqueta",
+            description = aviso,
+            onDismiss = { codigoDoble = null },
+            actionButton = { PrimaryButton(text = "Entendido", onClick = { codigoDoble = null }, fullWidth = true) },
+        ) {}
     }
 
     unknownBarcode?.let { scannedCode ->

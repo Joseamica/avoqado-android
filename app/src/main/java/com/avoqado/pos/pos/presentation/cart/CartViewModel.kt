@@ -33,6 +33,7 @@ import com.avoqado.pos.pos.data.model.Discount
 import com.avoqado.pos.pos.data.model.aplicarCambiosDePrecio
 import com.avoqado.pos.pos.data.model.avisoDeCambioDePrecio
 import com.avoqado.pos.pos.data.model.parecidoACodigo
+import com.avoqado.pos.pos.data.model.coincidenciasDeLaLectura
 import com.avoqado.pos.pos.data.model.Product
 import com.avoqado.pos.pos.data.model.Promotion
 import com.avoqado.pos.pos.data.model.SavedCart
@@ -72,6 +73,11 @@ import java.util.UUID
 import javax.inject.Inject
 import com.avoqado.pos.core.util.aCentavos
 
+/** D14: la misma etiqueta coincide con dos productos según cómo esté configurada la pistola. */
+fun avisoDeCodigoDoble(delAparato: String, enIngles: String) =
+    "La etiqueta «$enIngles» (o «$delAparato», según cómo esté configurada la pistola) coincide con más de un producto del " +
+        "catálogo. Agrega el producto a mano o corrige los códigos en el catálogo."
+
 sealed interface ScannedBarcodeResult {
     data class GiftCardFound(val prueba: com.avoqado.pos.giftcards.data.PruebaDeTarjeta) : ScannedBarcodeResult
     data class ProductFound(val product: Product) : ScannedBarcodeResult
@@ -86,6 +92,8 @@ sealed interface ScannedBarcodeResult {
      * el momento de más prisa del mostrador.
      */
     data class CustomerCardFound(val card: com.avoqado.pos.loyalty.data.WalletScanResponse) : ScannedBarcodeResult
+    /** D14: la etiqueta puede ser dos productos del catálogo según cómo esté configurada la pistola: no se agrega ninguno. */
+    data class CodigoDoble(val aviso: String) : ScannedBarcodeResult
     data class Unknown(val code: String) : ScannedBarcodeResult
     data class Error(val message: String) : ScannedBarcodeResult
 }
@@ -696,8 +704,8 @@ class CartViewModel @Inject constructor(
      * que un escaneo de cámara ([resolveScannedBarcode]): producto, vale, báscula o la
      * tarjeta del cliente — el lector sirve para todo lo que la cámara ya leía.
      */
-    val codigosEscaneados: kotlinx.coroutines.flow.SharedFlow<String>
-        get() = lectorHidBus.codigos
+    val codigosEscaneados: kotlinx.coroutines.flow.SharedFlow<com.avoqado.pos.pos.data.CodigoLeido>
+        get() = lectorHidBus.leidos
 
     /** La misma puerta que `MainActivity.dispatchKeyEvent`, para una hoja (otra ventana) abierta sobre el cobro. */
     fun procesarTecla(evento: android.view.KeyEvent): Boolean = lectorHidBus.procesar(evento)
@@ -2583,13 +2591,35 @@ class CartViewModel @Inject constructor(
         areaTicketRepository.heartbeat()?.let { replaceAreaTicketLines(it, venta) }
     }
 
-    suspend fun resolveScannedBarcode(rawCode: String): ScannedBarcodeResult {
+    /** @param lecturaUs la misma lectura de la pistola con el teclado de EE. UU. ([com.avoqado.pos.pos.data.CodigoLeido]); la cámara no la trae. */
+    suspend fun resolveScannedBarcode(rawCode: String, lecturaUs: String? = null): ScannedBarcodeResult {
         if (com.avoqado.pos.giftcards.domain.LectorParaTarjetas.abierta.value) return ScannedBarcodeResult.Error("Termina la consulta de la tarjeta primero.")
         // Con el cobro abierto no se consulta nada: ni el servidor se entera de un vale que no se va a cobrar.
         if (cobroAbierto) return ScannedBarcodeResult.Error("Se abrió el cobro: vuelve a escanear al terminar.")
         consultasDeCodigo.update { it + 1 }
         try {
-            return resolverCodigo(rawCode)
+            // D14 (rediseño tras Codex r6): primero la lectura del aparato, EXACTAMENTE como antes (vales, báscula, tarjetas,
+            // productos). La de EE. UU. sólo entra después y sólo para productos del catálogo.
+            val resultado = resolverCodigo(rawCode)
+            if (lecturaUs == null) return resultado
+            // Las teclas de «AB-123» con la pistola en inglés y de «AB'123» con la pistola en español son LAS MISMAS: si cada
+            // lectura es un producto distinto, no se adivina (como el PLU de báscula repetido).
+            val enIngles = products.value.coincidenciasDeLaLectura(lecturaUs)
+            val doble = ScannedBarcodeResult.CodigoDoble(avisoDeCodigoDoble(rawCode.trim(), lecturaUs.trim()))
+            return when (resultado) {
+                is ScannedBarcodeResult.ProductFound -> if (enIngles.any { it.id != resultado.product.id }) doble else resultado
+                // Codex r7 #1: la tarjeta de regalo NO se adivina con la segunda lectura (un SKU de proveedor podía abrir la hoja
+                // de saldo): con el teclado en español se lee en la hoja de tarjetas, que tiene su propio lector, como hoy.
+                is ScannedBarcodeResult.Unknown -> when {
+                    // Codex r8 #2: la del aparato no encontró nada porque empataron dos productos (sin mayúsculas): se avisa
+                    // «Producto no encontrado» como en develop, no se elige uno de la otra lectura.
+                    products.value.coincidenciasDeLaLectura(rawCode).isNotEmpty() -> resultado
+                    enIngles.size > 1 -> doble
+                    enIngles.size == 1 -> ScannedBarcodeResult.ProductFound(enIngles.single())
+                    else -> resultado
+                }
+                else -> resultado
+            }
         } finally {
             consultasDeCodigo.update { it - 1 }
         }

@@ -29,7 +29,7 @@ com/avoqado/pos/timeclock/presentation/SelfieDeEntrada.kt      # reemplazo: Came
 #
 # No se excluye de nada: sólo se vigila. Lo que Android declara aquí (servicios, receptores de arranque, permisos) lo da el
 # sistema; en escritorio se replica a mano en escritorio/Arranque.kt o se declara «no disponible en Windows».
-@manifiesto app/src/main/AndroidManifest.xml | huella: 4266477840aadd71529e9f2c9beb54f687f9de19103dc8c269bba7e52b5d0598
+@manifiesto app/src/main/AndroidManifest.xml | huella: 3f506370b556cd3e72c3a5f8d780710b339bedd9cd64cb1fe36b2c04de69cef3
 
 com/avoqado/pos/giftcards/presentation/CompartirLiga.kt # reemplazo: portapapeles de Windows | huella: 4777ca9b23e97480c02d8d9bf906dbbe776da54c2b57a4d9ec97d9344cda0e25
 
