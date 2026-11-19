@@ -300,4 +300,35 @@ class LectorHidTest {
 
         assertEquals(TeclaHid.Codigo("CAFE'001", textoUs = "CAFE'001"), fin)
     }
+    @Test
+    fun `D14 un Enter o Tab de otro teclado a media lectura deja sin lectura en ingles al resto`() {
+        // Codex r12: la pistola (7) lee «KITCAFE-001» y a media lectura el teclado (9) manda Enter (o Tab).
+        val lector = LectorHid()
+        var t = 1_000L
+        "KIT".forEach { c -> lector.procesar(caracter = c, esTerminador = false, esFisico = true, deviceId = 7, ahoraMs = t); t += 10 }
+        lector.procesar(caracter = null, esTerminador = true, esFisico = true, deviceId = 9, ahoraMs = t); t += 10
+        "CAFE'001".forEach { c ->
+            lector.procesar(caracter = c, esTerminador = false, esFisico = true, deviceId = 7, ahoraMs = t, caracterUs = if (c == '\'') '-' else c)
+            t += 10
+        }
+        val fin = lector.procesar(caracter = null, esTerminador = true, esFisico = true, deviceId = 7, ahoraMs = t)
+
+        assertEquals(TeclaHid.Codigo("CAFE'001", textoUs = "CAFE'001"), fin)
+    }
+
+    @Test
+    fun `D14 una lectura completa sigue ofreciendo su lectura en ingles`() {
+        // Regresión: un código entero y su Enter no cuentan como lectura cortada para el siguiente.
+        val lector = LectorHid()
+        var t = 1_000L
+        repeat(2) {
+            "CAFE'001".forEach { c ->
+                lector.procesar(caracter = c, esTerminador = false, esFisico = true, deviceId = 7, ahoraMs = t, caracterUs = if (c == '\'') '-' else c)
+                t += 10
+            }
+            val fin = lector.procesar(caracter = null, esTerminador = true, esFisico = true, deviceId = 7, ahoraMs = t)
+            assertEquals(TeclaHid.Codigo("CAFE'001", textoUs = "CAFE-001"), fin)
+            t += 500
+        }
+    }
 }

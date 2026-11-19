@@ -114,6 +114,9 @@ class LectorHid(
             val huboRafaga = teclasEnRafaga >= 2 &&
                 deviceId == aparatoDeLaRafaga &&
                 (ahoraMs - ultimaTeclaMs) <= maxIntervaloMs
+            // Codex r12: un Enter o Tab que NO cierra esta ráfaga (de otro teclado, o tardío) la tira a medias, igual que las
+            // otras tres salidas de arriba y abajo: queda la marca de cortada para lo que siga del mismo aparato.
+            if (!(huboRafaga && codigo.length >= largoMinimo)) abandonarRafaga()
             limpiar()
             val cortada = sinLecturaUs
             sinLecturaUs = false
