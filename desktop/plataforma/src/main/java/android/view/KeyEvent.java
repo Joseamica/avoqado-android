@@ -18,4 +18,5 @@ public class KeyEvent {
     public int getDeviceId() { return 0; }
     public long getEventTime() { return 0; }
     public int getRepeatCount() { return 0; }
+    public int getMetaState() { return 0; }
 }

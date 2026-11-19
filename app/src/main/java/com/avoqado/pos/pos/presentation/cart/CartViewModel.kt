@@ -33,6 +33,7 @@ import com.avoqado.pos.pos.data.model.Discount
 import com.avoqado.pos.pos.data.model.aplicarCambiosDePrecio
 import com.avoqado.pos.pos.data.model.avisoDeCambioDePrecio
 import com.avoqado.pos.pos.data.model.parecidoACodigo
+import com.avoqado.pos.pos.data.model.coincidenciasDeLaLectura
 import com.avoqado.pos.pos.data.model.Product
 import com.avoqado.pos.pos.data.model.Promotion
 import com.avoqado.pos.pos.data.model.SavedCart
@@ -72,6 +73,11 @@ import java.util.UUID
 import javax.inject.Inject
 import com.avoqado.pos.core.util.aCentavos
 
+/** D14: la misma etiqueta coincide con dos productos según cómo esté configurada la pistola. */
+fun avisoDeCodigoDoble(delAparato: String, enIngles: String) =
+    "La etiqueta «$enIngles» (o «$delAparato», según cómo esté configurada la pistola) coincide con más de un producto del " +
+        "catálogo. Agrega el producto a mano o corrige los códigos en el catálogo."
+
 sealed interface ScannedBarcodeResult {
     data class GiftCardFound(val prueba: com.avoqado.pos.giftcards.data.PruebaDeTarjeta) : ScannedBarcodeResult
     data class ProductFound(val product: Product) : ScannedBarcodeResult
@@ -86,6 +92,8 @@ sealed interface ScannedBarcodeResult {
      * el momento de más prisa del mostrador.
      */
     data class CustomerCardFound(val card: com.avoqado.pos.loyalty.data.WalletScanResponse) : ScannedBarcodeResult
+    /** D14: la etiqueta puede ser dos productos del catálogo según cómo esté configurada la pistola: no se agrega ninguno. */
+    data class CodigoDoble(val aviso: String) : ScannedBarcodeResult
     data class Unknown(val code: String) : ScannedBarcodeResult
     data class Error(val message: String) : ScannedBarcodeResult
 }
@@ -291,6 +299,10 @@ data class CartState(
     val orderDiscountCents: Int
         get() {
             val descuento = orderDiscount ?: return 0
+            // 🔴 DINERO (Codex r2 #1, hz:nube0000:nabcea1a). La venta de vales del SERVIDOR no lleva descuento de cuenta (`materialize`
+            // no lo manda). Con vales ya no se pone ninguno (`applyOrderDiscount`, D2, `replaceAreaTicketLines` lo limpia), pero el
+            // referido sí entraba: la caja cobraba de menos y la venta quedaba debiendo.
+            if (items.any { it.locked }) return 0
             descuentoDeCuentaCongelado?.takeIf { it.vigentePara(items) }
                 ?.let { return it.cents.coerceAtMost(netoTrasDescuentosDeLineaCents) }
             return descuento.calculateDiscount(netoTrasDescuentosDeLineaCents)
@@ -373,6 +385,40 @@ data class CartState(
 
 private fun formatCents(cents: Int): String {
     return formatMoney(cents / 100.0)
+}
+
+/**
+ * El renglón del carrito de un renglón de vale ([CartViewModel.replaceAreaTicketLines]). Lo usan también las pruebas del cobro.
+ *
+ * 🔴 DINERO (hz:nube0000:nabcea1a, 18-nov). `line.total` es el BRUTO y el descuento del vale viene aparte en `discountAmount`, como
+ * en la venta del SERVIDOR (neto = `total − discountAmount`). El renglón queda bruto y lleva su descuento como la foto de un descuento
+ * de renglón (`FIXED_AMOUNT`), así Subtotal · Descuento · Total y lo que se cobra son los del SERVIDOR. Sin `itemDiscountId`: no pide
+ * motivo ni PIN, no es cortesía y no viaja (los renglones del vale no se mandan al armar la venta). Un SERVIDOR que no manda el
+ * descuento deja "0.00": el renglón entra como antes.
+ */
+internal fun renglonDelVale(ticket: com.avoqado.pos.areatickets.data.AreaTicket, line: com.avoqado.pos.areatickets.data.AreaTicketLine): CartItem {
+    val descuentoCents = line.discountAmount.moneyToCents().coerceAtLeast(0)
+    // El subtítulo no cambia: el descuento se ve como el de cualquier producto (fila «Descuentos por artículo» y, en la segunda
+    // pantalla, «Descuento del vale −$X» en su renglón). En el subtítulo se cortaba y en el papel salía «?» (Codex r2 #3, r3 #1-#2).
+    val detail = buildList {
+        add("${ticket.fulfillmentArea.name} · Vale ${ticket.code}")
+        line.weightKg?.let { add("$it kg") }
+        if (line.quantity != "1" && line.weightKg == null) add("Cantidad ${line.quantity}")
+    }.joinToString(" · ")
+    return CartItem(
+        id = "area-ticket:${ticket.id}:${line.id}",
+        type = CartItemType.CustomAmount,
+        name = line.productNameSnapshot,
+        subtitle = detail,
+        unitPrice = line.total.moneyToCents(),
+        quantity = 1,
+        areaTicketId = ticket.id,
+        areaTicketLineId = line.id,
+        locked = true,
+        itemDiscountType = "FIXED_AMOUNT".takeIf { descuentoCents > 0 },
+        itemDiscountValue = (descuentoCents / 100.0).takeIf { descuentoCents > 0 },
+        itemDiscountName = "Descuento del vale".takeIf { descuentoCents > 0 },
+    )
 }
 
 internal const val AVISO_CARRITO_SIN_IMPUESTO =
@@ -658,8 +704,8 @@ class CartViewModel @Inject constructor(
      * que un escaneo de cámara ([resolveScannedBarcode]): producto, vale, báscula o la
      * tarjeta del cliente — el lector sirve para todo lo que la cámara ya leía.
      */
-    val codigosEscaneados: kotlinx.coroutines.flow.SharedFlow<String>
-        get() = lectorHidBus.codigos
+    val codigosEscaneados: kotlinx.coroutines.flow.SharedFlow<com.avoqado.pos.pos.data.CodigoLeido>
+        get() = lectorHidBus.leidos
 
     /** La misma puerta que `MainActivity.dispatchKeyEvent`, para una hoja (otra ventana) abierta sobre el cobro. */
     fun procesarTecla(evento: android.view.KeyEvent): Boolean = lectorHidBus.procesar(evento)
@@ -2499,7 +2545,7 @@ class CartViewModel @Inject constructor(
     /**
      * 🔴 DINERO. Un cobro de vales se detuvo porque este carrito no traía los vales de la sesión del servidor
      * (`PaymentFlowViewModel.valesNoCoincidian`): el carrito toma los de la sesión, que el cobro acaba de releer. Sin red.
-     * Esa parada sólo ocurre sin abonos en la orden, así que nunca regresa al carrito algo ya pagado.
+     * Con un abono en la orden no se proyecta (`replaceAreaTicketLines`), así que nunca regresa al carrito algo ya pagado.
      */
     fun traerValesDeLaSesion() {
         areaTicketRepository.session.current()?.let { replaceAreaTicketLines(it, _cartState.value.identidadDeVenta) }
@@ -2545,13 +2591,35 @@ class CartViewModel @Inject constructor(
         areaTicketRepository.heartbeat()?.let { replaceAreaTicketLines(it, venta) }
     }
 
-    suspend fun resolveScannedBarcode(rawCode: String): ScannedBarcodeResult {
+    /** @param lecturaUs la misma lectura de la pistola con el teclado de EE. UU. ([com.avoqado.pos.pos.data.CodigoLeido]); la cámara no la trae. */
+    suspend fun resolveScannedBarcode(rawCode: String, lecturaUs: String? = null): ScannedBarcodeResult {
         if (com.avoqado.pos.giftcards.domain.LectorParaTarjetas.abierta.value) return ScannedBarcodeResult.Error("Termina la consulta de la tarjeta primero.")
         // Con el cobro abierto no se consulta nada: ni el servidor se entera de un vale que no se va a cobrar.
         if (cobroAbierto) return ScannedBarcodeResult.Error("Se abrió el cobro: vuelve a escanear al terminar.")
         consultasDeCodigo.update { it + 1 }
         try {
-            return resolverCodigo(rawCode)
+            // D14 (rediseño tras Codex r6): primero la lectura del aparato, EXACTAMENTE como antes (vales, báscula, tarjetas,
+            // productos). La de EE. UU. sólo entra después y sólo para productos del catálogo.
+            val resultado = resolverCodigo(rawCode)
+            if (lecturaUs == null) return resultado
+            // Las teclas de «AB-123» con la pistola en inglés y de «AB'123» con la pistola en español son LAS MISMAS: si cada
+            // lectura es un producto distinto, no se adivina (como el PLU de báscula repetido).
+            val enIngles = products.value.coincidenciasDeLaLectura(lecturaUs)
+            val doble = ScannedBarcodeResult.CodigoDoble(avisoDeCodigoDoble(rawCode.trim(), lecturaUs.trim()))
+            return when (resultado) {
+                is ScannedBarcodeResult.ProductFound -> if (enIngles.any { it.id != resultado.product.id }) doble else resultado
+                // Codex r7 #1: la tarjeta de regalo NO se adivina con la segunda lectura (un SKU de proveedor podía abrir la hoja
+                // de saldo): con el teclado en español se lee en la hoja de tarjetas, que tiene su propio lector, como hoy.
+                is ScannedBarcodeResult.Unknown -> when {
+                    // Codex r8 #2: la del aparato no encontró nada porque empataron dos productos (sin mayúsculas): se avisa
+                    // «Producto no encontrado» como en develop, no se elige uno de la otra lectura.
+                    products.value.coincidenciasDeLaLectura(rawCode).isNotEmpty() -> resultado
+                    enIngles.size > 1 -> doble
+                    enIngles.size == 1 -> ScannedBarcodeResult.ProductFound(enIngles.single())
+                    else -> resultado
+                }
+                else -> resultado
+            }
         } finally {
             consultasDeCodigo.update { it - 1 }
         }
@@ -2739,26 +2807,7 @@ class CartViewModel @Inject constructor(
         // queda apartado y aparece al terminar esa venta.
         val conAbonos = checkout.status == "PARTIALLY_PAID" || (checkout.order?.paidAmount?.moneyToCents() ?: 0) > 0
         if (conAbonos || _pendingSplitOrder.value != null) return false
-        val ticketRows = checkout.tickets.flatMap { ticket ->
-            ticket.lines.map { line ->
-                val detail = buildList {
-                    add("${ticket.fulfillmentArea.name} · Vale ${ticket.code}")
-                    line.weightKg?.let { add("$it kg") }
-                    if (line.quantity != "1" && line.weightKg == null) add("Cantidad ${line.quantity}")
-                }.joinToString(" · ")
-                CartItem(
-                    id = "area-ticket:${ticket.id}:${line.id}",
-                    type = CartItemType.CustomAmount,
-                    name = line.productNameSnapshot,
-                    subtitle = detail,
-                    unitPrice = line.total.moneyToCents(),
-                    quantity = 1,
-                    areaTicketId = ticket.id,
-                    areaTicketLineId = line.id,
-                    locked = true,
-                )
-            }
-        }
+        val ticketRows = checkout.tickets.flatMap { ticket -> ticket.lines.map { line -> renglonDelVale(ticket, line) } }
         _cartState.update { state ->
             state.copy(
                 items = state.items.filterNot { it.locked } + ticketRows,

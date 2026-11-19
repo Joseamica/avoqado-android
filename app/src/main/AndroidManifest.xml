@@ -87,9 +87,13 @@
             android:value="false" />
 
 
+        <!-- configChanges SÓLO del teclado (D15, 18-nov): conectar o desconectar una pistola USB/Bluetooth
+             o un teclado recreaba la pantalla y cerraba la hoja abierta a media venta. Giro, tema, idioma
+             y fuente siguen recreándola a propósito (ver CustomerDisplayManager y CartViewModel). -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
+            android:configChanges="keyboard|keyboardHidden|navigation"
             android:windowSoftInputMode="adjustResize"
             android:theme="@style/Theme.Avoqado">
             <intent-filter>
@@ -113,6 +117,7 @@
         <activity
             android:name=".customerdisplay.CustomerDisplayActivity"
             android:exported="false"
+            android:configChanges="keyboard|keyboardHidden|navigation"
             android:launchMode="singleInstance"
             android:taskAffinity=".customerdisplay"
             android:excludeFromRecents="true"

@@ -466,6 +466,7 @@ fun CheckoutScreen(
     var createProductInitialGtin by remember { mutableStateOf("") }
     var unknownBarcode by remember { mutableStateOf<String?>(null) }
     var barcodeError by remember { mutableStateOf<String?>(null) }
+    var codigoDoble by remember { mutableStateOf<String?>(null) }
     var areaTicketAddedCount by remember { mutableStateOf<Int?>(null) }
     // La tarjeta digital que el cajero acaba de escanear, si escaneó una.
     var scannedCustomerCard by remember { mutableStateOf<com.avoqado.pos.loyalty.data.WalletScanResponse?>(null) }
@@ -1562,7 +1563,7 @@ fun CheckoutScreen(
     // 🔴 UN solo manejador para la cámara y para el lector de pistola: el `when` sobre
     // `ScannedBarcodeResult` vive aquí una vez. Duplicarlo por canal de entrada es
     // exactamente el defecto que tuvo el servidor con los sellos (tarjeta sí, efectivo no).
-    val manejarCodigo: (String) -> Unit = manejar@{ barcode ->
+    val manejarLectura: (String, String?) -> Unit = manejar@{ barcode, lecturaUs ->
         if (com.avoqado.pos.giftcards.domain.LectorParaTarjetas.abierta.value) return@manejar
         if (!codigoEntraALaVenta(cobroAbierto = showPaymentFlow || cartViewModel.cobroAbierto || aperturaDeTarjetas != null, emitiendoVale = areaOperationsState.issuing)) return@manejar
         showBarcodeScanner = false
@@ -1577,7 +1578,7 @@ fun CheckoutScreen(
             // r5 #1: esperar descartaba el toque y la porción se perdía al pasar al siguiente producto): si la cajera lo toca antes
             // de que la etiqueta de esa misma pieza termine de leerse, entran las dos, como en develop.
             val capturaAlLeer = capturaDePeso
-            val result = cartViewModel.resolveScannedBarcode(barcode)
+            val result = cartViewModel.resolveScannedBarcode(barcode, lecturaUs)
             // La consulta pudo tardar (red): si mientras tanto se abrió el cobro, no se aplica (pendientes, Codex r1 #2).
             if (!entra() || com.avoqado.pos.giftcards.domain.LectorParaTarjetas.abierta.value) return@launch
             // Una hoja abierta (la ficha cuando es hoja —teléfono o ventana angosta— y la de tallas) va encima de toda la caja:
@@ -1639,16 +1640,20 @@ fun CheckoutScreen(
                 }
                 is ScannedBarcodeResult.Unknown ->
                     unknownBarcode = result.code
+                is ScannedBarcodeResult.CodigoDoble ->
+                    codigoDoble = result.aviso
                 is ScannedBarcodeResult.Error ->
                     barcodeError = result.message
             }
         }
     }
+    // La cámara no trae lectura en inglés (D14): sólo la pistola.
+    val manejarCodigo: (String) -> Unit = { manejarLectura(it, null) }
 
     // Lector de pistola (USB/Bluetooth): teclea el código y cierra con Enter. Llega por
     // `LectorHidBus` desde la Activity y entra por el MISMO camino que la cámara.
     LaunchedEffect(Unit) {
-        cartViewModel.codigosEscaneados.collect { manejarCodigo(it) }
+        cartViewModel.codigosEscaneados.collect { manejarLectura(it.texto, it.lecturaUs) }
     }
     // El carrito sigue a esta pantalla: un cobro restaurado (girar la tablet, volver a la pestaña) sigue abierto para él, y
     // una pantalla que vuelve SIN cobro suelta una marca vieja, para que la pistola nunca se quede ignorada para siempre.
@@ -1796,6 +1801,15 @@ fun CheckoutScreen(
                     fullWidth = true,
                 )
             },
+        ) {}
+    }
+
+    codigoDoble?.let { aviso ->
+        AvoqadoDialog(
+            title = "Dos productos con esta etiqueta",
+            description = aviso,
+            onDismiss = { codigoDoble = null },
+            actionButton = { PrimaryButton(text = "Entendido", onClick = { codigoDoble = null }, fullWidth = true) },
         ) {}
     }
 

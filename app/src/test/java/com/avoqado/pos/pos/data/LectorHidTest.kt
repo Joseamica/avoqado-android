@@ -209,4 +209,126 @@ class LectorHidTest {
 
         assertEquals(TeclaHid.DejarPasar, repetido)
     }
+
+    @Test
+    fun `D14 junta tambien la lectura del teclado de EE UU de cada tecla`() {
+        // El aparato con el teclado en español convierte el «-» de una pistola en inglés en «'».
+        val lector = LectorHid()
+        "AB'12".forEachIndexed { i, c ->
+            lector.procesar(caracter = c, esTerminador = false, esFisico = true, deviceId = 7, ahoraMs = 1_000L + i * 10,
+                caracterUs = if (c == '\'') '-' else c)
+        }
+        val fin = lector.procesar(caracter = null, esTerminador = true, esFisico = true, deviceId = 7, ahoraMs = 1_100)
+
+        assertEquals(TeclaHid.Codigo("AB'12", textoUs = "AB-12"), fin)
+    }
+
+    @Test
+    fun `D14 una tecla de acento que parte la rafaga deja sin lectura en ingles al resto`() {
+        // Codex r8 #1: «KIT[CAFE-001» con el teclado en español: «[» es un acento, parte la ráfaga y queda «CAFE'001».
+        // Su lectura en inglés («CAFE-001») también está cortada: podía ser el código de OTRO artículo.
+        val lector = LectorHid()
+        var t = 1_000L
+        "KIT".forEach { c -> lector.procesar(caracter = c, esTerminador = false, esFisico = true, deviceId = 7, ahoraMs = t); t += 10 }
+        lector.procesar(caracter = null, esTerminador = false, esFisico = true, deviceId = 7, ahoraMs = t); t += 10
+        "CAFE'001".forEach { c ->
+            lector.procesar(caracter = c, esTerminador = false, esFisico = true, deviceId = 7, ahoraMs = t, caracterUs = if (c == '\'') '-' else c)
+            t += 10
+        }
+        val fin = lector.procesar(caracter = null, esTerminador = true, esFisico = true, deviceId = 7, ahoraMs = t)
+
+        assertEquals(TeclaHid.Codigo("CAFE'001", textoUs = "CAFE'001"), fin)
+    }
+
+    @Test
+    fun `D14 una pausa a media etiqueta deja sin lectura en ingles al final del codigo`() {
+        // Codex r9: «KIT » y una pausa de más de 120 ms; luego llega «CAFE'001» (en inglés «CAFE-001», el código de otra pieza).
+        val lector = LectorHid()
+        var t = 1_000L
+        "KIT ".forEach { c -> lector.procesar(caracter = c, esTerminador = false, esFisico = true, deviceId = 7, ahoraMs = t); t += 10 }
+        t += 300
+        "CAFE'001".forEach { c ->
+            lector.procesar(caracter = c, esTerminador = false, esFisico = true, deviceId = 7, ahoraMs = t, caracterUs = if (c == '\'') '-' else c)
+            t += 10
+        }
+        val fin = lector.procesar(caracter = null, esTerminador = true, esFisico = true, deviceId = 7, ahoraMs = t)
+
+        assertEquals(TeclaHid.Codigo("CAFE'001", textoUs = "CAFE'001"), fin)
+    }
+
+    @Test
+    fun `D14 un acento al inicio deja sin lectura en ingles`() {
+        val lector = LectorHid()
+        var t = 1_000L
+        lector.procesar(caracter = null, esTerminador = false, esFisico = true, deviceId = 7, ahoraMs = t); t += 10
+        "CAFE'001".forEach { c ->
+            lector.procesar(caracter = c, esTerminador = false, esFisico = true, deviceId = 7, ahoraMs = t, caracterUs = if (c == '\'') '-' else c)
+            t += 10
+        }
+        val fin = lector.procesar(caracter = null, esTerminador = true, esFisico = true, deviceId = 7, ahoraMs = t)
+
+        assertEquals(TeclaHid.Codigo("CAFE'001", textoUs = "CAFE'001"), fin)
+    }
+
+    @Test
+    fun `D14 una pausa tras un solo caracter tambien deja sin lectura en ingles`() {
+        // Codex r10: «P», pausa de 2 s, luego «CAFE'001».
+        val lector = LectorHid()
+        var t = 1_000L
+        lector.procesar(caracter = 'P', esTerminador = false, esFisico = true, deviceId = 7, ahoraMs = t); t += 2_000
+        "CAFE'001".forEach { c ->
+            lector.procesar(caracter = c, esTerminador = false, esFisico = true, deviceId = 7, ahoraMs = t, caracterUs = if (c == '\'') '-' else c)
+            t += 10
+        }
+        val fin = lector.procesar(caracter = null, esTerminador = true, esFisico = true, deviceId = 7, ahoraMs = t)
+
+        assertEquals(TeclaHid.Codigo("CAFE'001", textoUs = "CAFE'001"), fin)
+    }
+
+    @Test
+    fun `D14 una tecla de otro teclado a media lectura deja sin lectura en ingles al resto`() {
+        // Codex r11: la pistola (7) lee «KITCAFE-001» y a media lectura entra una tecla del teclado (9).
+        val lector = LectorHid()
+        var t = 1_000L
+        "KIT".forEach { c -> lector.procesar(caracter = c, esTerminador = false, esFisico = true, deviceId = 7, ahoraMs = t); t += 10 }
+        lector.procesar(caracter = 'x', esTerminador = false, esFisico = true, deviceId = 9, ahoraMs = t); t += 10
+        "CAFE'001".forEach { c ->
+            lector.procesar(caracter = c, esTerminador = false, esFisico = true, deviceId = 7, ahoraMs = t, caracterUs = if (c == '\'') '-' else c)
+            t += 10
+        }
+        val fin = lector.procesar(caracter = null, esTerminador = true, esFisico = true, deviceId = 7, ahoraMs = t)
+
+        assertEquals(TeclaHid.Codigo("CAFE'001", textoUs = "CAFE'001"), fin)
+    }
+    @Test
+    fun `D14 un Enter o Tab de otro teclado a media lectura deja sin lectura en ingles al resto`() {
+        // Codex r12: la pistola (7) lee «KITCAFE-001» y a media lectura el teclado (9) manda Enter (o Tab).
+        val lector = LectorHid()
+        var t = 1_000L
+        "KIT".forEach { c -> lector.procesar(caracter = c, esTerminador = false, esFisico = true, deviceId = 7, ahoraMs = t); t += 10 }
+        lector.procesar(caracter = null, esTerminador = true, esFisico = true, deviceId = 9, ahoraMs = t); t += 10
+        "CAFE'001".forEach { c ->
+            lector.procesar(caracter = c, esTerminador = false, esFisico = true, deviceId = 7, ahoraMs = t, caracterUs = if (c == '\'') '-' else c)
+            t += 10
+        }
+        val fin = lector.procesar(caracter = null, esTerminador = true, esFisico = true, deviceId = 7, ahoraMs = t)
+
+        assertEquals(TeclaHid.Codigo("CAFE'001", textoUs = "CAFE'001"), fin)
+    }
+
+    @Test
+    fun `D14 una lectura completa sigue ofreciendo su lectura en ingles`() {
+        // Regresión: un código entero y su Enter no cuentan como lectura cortada para el siguiente.
+        val lector = LectorHid()
+        var t = 1_000L
+        repeat(2) {
+            "CAFE'001".forEach { c ->
+                lector.procesar(caracter = c, esTerminador = false, esFisico = true, deviceId = 7, ahoraMs = t, caracterUs = if (c == '\'') '-' else c)
+                t += 10
+            }
+            val fin = lector.procesar(caracter = null, esTerminador = true, esFisico = true, deviceId = 7, ahoraMs = t)
+            assertEquals(TeclaHid.Codigo("CAFE'001", textoUs = "CAFE-001"), fin)
+            t += 500
+        }
+    }
 }
