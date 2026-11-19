@@ -446,6 +446,55 @@ class F1FolioDelCarritoModeloTest {
         assertEquals(listOf("order-a"), servidor.ordenesCreadas.map { it.first })
     }
 
+    /**
+     * Codex final r1 #5: sobre A, esta caja recibió `409 ORDER` por la tarjeta de $40 de la caja 1 y guardó A. Al retomar se consulta
+     * el intento BLOQUEADOR guardado: mientras siga en duda, la cuenta sigue frenada; ya resuelto (la caja 1 abonó), toma el saldo del
+     * SERVIDOR ($60) y suelta la duda. Antes se quedaba con la duda «por ser de otra caja» y los $180 en el carrito.
+     */
+    @Test
+    fun segundaCaja_tras409_primeraAbona_alRetomarTomaElSaldoYSueltaLaDuda() = runTest {
+        val servidor = Servidor()
+        servidor.proximoEnvio = { _, requestId ->
+            TerminalPaymentResult.Error("Esta venta ya tiene un cobro pendiente", requestId = requestId, noSeCreo = true,
+                bloqueador = BloqueadorDeCobro("req-otra-caja", "ORDER"))
+        }
+        val caja = Caja(servidor)
+        caja.armar("cli-ana", "Ana")
+        assertTrue(caja.cobrar())
+        caja.tarjeta()
+        advanceUntilIdle()
+        caja.cobro.revisarCobroQueOcupa()
+        advanceUntilIdle()
+        caja.seguir()
+        assertTrue(caja.guardar())
+        val identidadDeA = caja.guardados.savedCarts.value.single().folio!!.identidadDeVenta
+        servidor.proximoEnvio = null
+
+        // La caja 1 ya registró un abono en A, pero su tarjeta sigue en duda: el freno se conserva.
+        servidor.saldos["order-a"] = OrderRepository.SaldoDeLaOrden(6_000, "PARTIAL", "PENDING")
+        assertEquals(Restauracion.Hecha, caja.retomar())
+        advanceUntilIdle()
+        assertEquals("en duda: la cuenta no cambia", 18_000, caja.carrito.cartState.value.totalCents)
+        caja.carrito.addProduct(refresco)
+        assertEquals("ni se edita", com.avoqado.pos.pos.presentation.cart.CUENTA_LIGADA_GUARDALA, caja.carrito.avisoDeVales.value)
+        assertTrue(caja.guardar())
+
+        // La caja 1 termina su abono de $40: el intento bloqueador ya pasó.
+        servidor.desenlaces["req-otra-caja"] = TerminalPaymentResult.Success(paymentId = "pay-caja-1", requestId = "req-otra-caja")
+        assertEquals(Restauracion.Hecha, caja.retomar())
+        advanceUntilIdle()
+        assertEquals("toma el saldo del SERVIDOR", 6_000, caja.carrito.cartState.value.totalCents)
+        assertEquals(identidadDeA, caja.carrito.cartState.value.identidadDeVenta)
+        assertEquals("y su copia también", listOf("Saldo pendiente" to 6_000),
+            caja.guardados.savedCarts.value.single().items.map { it.name to it.unitPrice })
+        assertTrue("sin la duda, se cobra", caja.cobrar())
+        assertEquals("sobre A", "order-a", caja.carrito.chargingAgainstOrderId)
+        caja.tarjeta()
+        advanceUntilIdle()
+        assertEquals("con el saldo que se enseña", 6_000, servidor.saldosEsperados.last())
+        assertEquals(listOf("order-a"), servidor.ordenesCreadas.map { it.first })
+    }
+
     // MARK: - Fila 1: A recién creada con la tarjeta en duda
 
     @Test

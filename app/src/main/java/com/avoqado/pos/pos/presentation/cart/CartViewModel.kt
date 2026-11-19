@@ -892,6 +892,14 @@ class CartViewModel @Inject constructor(
      */
     private suspend fun releerFolio(venueId: String, orderId: String) {
         if (venueId != secureStorage.venueId) return
+        // 🔴 Codex final r1 #5: la duda de OTRA caja se resuelve con SU intento (el bloqueador guardado), consultado ANTES del saldo para
+        // que el saldo ya traiga su desenlace. Cobrado o no, decide el saldo del SERVIDOR; sólo si sigue en duda se conserva el freno.
+        val otraCaja = com.avoqado.pos.payment.data.FolioEnDuda.Origen.OTRA_CAJA.name
+        val bloqueador = (_pendingSplitOrder.value?.duda?.takeIf { it.orderId == orderId }?.let { it.origen.name to it.requestId }
+            ?: savedCartsRepository.savedCarts.value.firstOrNull { it.folio?.orderId == orderId && it.folio.enDuda }?.folio?.let { it.origen to it.requestId })
+            ?.takeIf { it.first == otraCaja }?.second
+        val bloqueadorResuelto = bloqueador?.let { terminalPaymentService?.resolveOutcome(it, enSegundoPlano = true, ajeno = true) }
+            ?.let { it !is com.avoqado.pos.payment.data.TerminalPaymentResult.Undetermined } == true
         val saldo = orderRepository.saldoDeLaOrden(orderId) ?: run {
             // Consta dinero de A pero no su saldo nuevo (sin red): la cuenta en pantalla lo dice y no se cobra con el total viejo.
             if (dineroSinSaldo(orderId)) _avisoDeVales.value = SALDO_POR_CONFIRMAR
@@ -900,9 +908,9 @@ class CartViewModel @Inject constructor(
         val copia = savedCartsRepository.savedCarts.value.firstOrNull { it.folio?.orderId == orderId && it.folio.enDuda }
         val visible = _pendingSplitOrder.value?.takeIf { it.orderId == orderId && it.duda != null }
         val origen = visible?.duda?.origen?.name ?: copia?.folio?.origen
-        // La duda de OTRA caja no está en la lista de esta tablet: sólo un estado final de A la resuelve. Sin la lista, tampoco.
-        val sigueEnDuda = origen == com.avoqado.pos.payment.data.FolioEnDuda.Origen.OTRA_CAJA.name ||
-            terminalPaymentService?.sigueEnDuda(orderId) != false
+        // La duda de OTRA caja no está en la lista de esta tablet: la resuelve su intento consultado (o un estado final de A). Sin la
+        // lista, tampoco.
+        val sigueEnDuda = if (origen == otraCaja) !bloqueadorResuelto else terminalPaymentService?.sigueEnDuda(orderId) != false
         val desenlace = decidirFolio(saldo, sigueEnDuda) ?: return
         Log.i("🛒", "Folio $orderId: $desenlace (pantalla=${visible != null}, copia=${copia?.id})")
         if (visible != null) aplicarAlCarrito(desenlace, saldo.remainingCents, orderId)
