@@ -712,6 +712,53 @@ class F1FolioDelCarritoModeloTest {
         assertEquals(3_000, servidor.saldosEsperados.last())
     }
 
+    /**
+     * Codex final r1 #4 (regresión): tras el 412 la pantalla ya decía $30, pero la limpieza de la copia de antes del envío la
+     * guardaba con `folio = null`. La app muere ahí: «Retomar» tiene que abrir A con el saldo vigente, nunca una venta nueva.
+     */
+    @Test
+    fun saldoCambio_412_reinicio_retomarAbreAConSuFolio() = runTest {
+        val servidor = Servidor()
+        val caja = Caja(servidor)
+        tarjetaDeAEnDuda(caja)
+        caja.seguir()
+        assertTrue(caja.guardar())
+        servidor.pendientesLocales.remove("order-a")
+        servidor.saldos["order-a"] = OrderRepository.SaldoDeLaOrden(6_000, "PARTIAL", "PENDING")
+        servidor.foliosDeTarjeta.emit(com.avoqado.pos.payment.data.DesenlaceDeFolio("venue-1", "order-a", "req-1"))
+        advanceUntilIdle()
+        assertEquals(Restauracion.Hecha, caja.retomarFolio("order-a"))
+        val identidadDeA = caja.carrito.cartState.value.identidadDeVenta
+        assertEquals("montaje: la caja ve $60", 6_000, caja.carrito.cartState.value.totalCents)
+
+        // Otra caja abona $30 antes del envío: 412 con lo que de verdad falta.
+        servidor.saldos["order-a"] = OrderRepository.SaldoDeLaOrden(3_000, "PARTIAL", "PENDING")
+        servidor.proximoEnvio = { _, requestId ->
+            if (servidor.saldosEsperados.last() == 3_000) TerminalPaymentResult.Undetermined("x", requestId)
+            else TerminalPaymentResult.Error("El cobro no cuadra", requestId = requestId, noSeCreo = true, saldoVigenteCents = 3_000)
+        }
+        assertTrue(caja.cobrar())
+        caja.tarjeta()
+        advanceUntilIdle()
+        caja.atenderSaldoVigente()
+        assertEquals("montaje: la pantalla ya dice $30", 3_000, caja.carrito.cartState.value.totalCents)
+
+        // La app muere aquí.
+        val despues = reiniciar(servidor)
+        val copia = despues.guardados.savedCarts.value.single()
+        assertEquals("la copia sigue ligada a A", "order-a", copia.folio?.orderId)
+        assertEquals("con su identidad", identidadDeA, copia.folio?.identidadDeVenta)
+        assertEquals(Restauracion.Hecha, despues.retomar())
+        assertEquals("Retomar abre A con el saldo vigente", 3_000, despues.carrito.cartState.value.totalCents)
+        assertEquals(identidadDeA, despues.carrito.cartState.value.identidadDeVenta)
+        assertTrue(despues.cobrar())
+        assertEquals("nunca una venta nueva", "order-a", despues.carrito.chargingAgainstOrderId)
+        despues.tarjeta()
+        advanceUntilIdle()
+        assertEquals("y manda el saldo vigente", 3_000, servidor.saldosEsperados.last())
+        assertEquals(listOf("order-a"), servidor.ordenesCreadas.map { it.first })
+    }
+
     // MARK: - Cabos del bloque 2: «Saldo por confirmar» y «Entendido»
 
     @Test

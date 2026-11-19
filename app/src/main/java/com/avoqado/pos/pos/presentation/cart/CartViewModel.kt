@@ -793,11 +793,19 @@ class CartViewModel @Inject constructor(
         if (_pendingSplitOrder.value?.let { it.duda != null || it.orderId != saldo.orderId } == true) return
         aplicarAlCarrito(DesenlaceDelFolio.CON_ABONO, saldo.cents, saldo.orderId)
         _avisoDeVales.value = com.avoqado.pos.payment.data.avisoDeSaldoCambiado(saldo.cents)
+        // 🔴 Codex final r1 #4: la copia de la cuenta retomada queda con el saldo vigente y su folio, y ya no se «suelta» al cerrar el
+        // cobro (la limpieza la dejaba sin folio): tras reiniciar, «Retomar» abre A con lo que de verdad falta, nunca una venta nueva.
+        copiaAntesDelEnvio?.takeIf { copiaYaExistia }?.let { id ->
+            savedCartsRepository.savedCarts.value.firstOrNull { it.id == id }?.let { aplicarALaCopia(it, DesenlaceDelFolio.CON_ABONO, saldo.cents) }
+            copiaAntesDelEnvio = null
+        }
     }
 
     /** F1 bloque 2 (paso 3): la copia que se escribió antes de mandar la tarjeta, y si ya existía (un carrito retomado). */
     private var copiaAntesDelEnvio: String? = null
     private var copiaYaExistia = false
+    /** Codex final r1 #4: el folio que ya tenía la copia retomada (A con abono) antes del envío; vuelve con él al soltarla. */
+    private var folioPrevio: com.avoqado.pos.pos.data.model.FolioGuardado? = null
 
     /**
      * 🔴 F1 bloque 2 (paso 3). La copia durable de ESTA compra con su folio, antes de mandar la tarjeta (o al saber que otra caja
@@ -819,17 +827,23 @@ class CartViewModel @Inject constructor(
             ),
         )
         if (!savedCartsRepository.saveCart(copia)) return false
-        if (copiaAntesDelEnvio == null) copiaYaExistia = previa != null
+        if (copiaAntesDelEnvio == null) {
+            copiaYaExistia = previa != null
+            folioPrevio = previa?.folio
+        }
         copiaAntesDelEnvio = id
         return true
     }
 
-    /** La copia de antes del envío ya no hace falta: la nueva se borra; la de un carrito retomado vuelve a ser como era (sin folio). */
+    /**
+     * La copia de antes del envío ya no hace falta: la nueva se borra; la de un carrito retomado vuelve a ser como era, con el folio que
+     * ya traía (Codex final r1 #4: con `null` una cuenta A con abono volvía, tras reiniciar, como venta nueva).
+     */
     private fun soltarCopiaAntesDelEnvio() {
         val id = copiaAntesDelEnvio ?: return
         copiaAntesDelEnvio = null
         if (copiaYaExistia) {
-            savedCartsRepository.savedCarts.value.firstOrNull { it.id == id }?.let { savedCartsRepository.saveCart(it.copy(folio = null)) }
+            savedCartsRepository.savedCarts.value.firstOrNull { it.id == id }?.let { savedCartsRepository.saveCart(it.copy(folio = folioPrevio)) }
         } else {
             savedCartsRepository.deleteCart(id)
         }
