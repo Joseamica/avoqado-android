@@ -62,6 +62,7 @@ object TextosPedidosEnLinea {
     /** D662: la tienda se pausó sola. En la Bandeja, con «Reanudar»; en el banner de cualquier pantalla, con «Ver». */
     const val PAUSADA_SOLA = "La tienda en línea se pausó sola: 2 pedidos seguidos no se aceptaron a tiempo. No llegan pedidos nuevos."
     const val PAUSADA_SOLA_BANNER = "Pedidos en línea en pausa: 2 pedidos seguidos sin aceptar"
+    const val SIGUE_PAUSA_DEL_GERENTE = "Los pedidos siguen en pausa: la pausa de Configuración se quita en el panel (Pedidos en línea › Configuración)."
 
     // --- Textos de la pantalla que el Anexo A no fija (iOS debe copiarlos tal cual) ---
     const val SE_MUESTRAN_ULTIMOS = "Se muestran los últimos 50"

@@ -361,6 +361,18 @@ class VigilanteDePedidosEnLineaTest {
     }
 
     @Test
+    fun `D662 a poll-now never sends the heartbeat (Codex r5 #4, r6 #4)`() = runTest {
+        val f = armar(Result.success(inbox()))
+        f.vigilante.onStart(owner)
+        runCurrent()
+        val n = f.falso.llamadas.size
+        f.vigilante.sondearYa() // la Bandeja aceptó y pidió un sondeo ya…
+        runCurrent()
+        assertEquals("el sondeo rápido nunca late (Codex r6 #4)", "pending" to false, f.falso.llamadas[n])
+        f.vigilante.onStop(owner)
+    }
+
+    @Test
     fun `D662 banner says the store paused itself first, also with orders waiting`() {
         assertEquals("Pedidos en línea en pausa: 2 pedidos seguidos sin aceptar", textoDelBanner(emptyList(), pausadaSola = true))
         assertEquals(

@@ -14,6 +14,7 @@ import io.mockk.mockk
 import kotlinx.coroutines.test.runTest
 import okhttp3.OkHttpClient
 import com.avoqado.pos.onlineorders.domain.PrecioDeRenglon
+import com.avoqado.pos.onlineorders.presentation.TextosPedidosEnLinea
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import okhttp3.mockwebserver.SocketPolicy
@@ -224,6 +225,16 @@ class OnlineOrdersRepositoryTest {
         assertEquals(AccionResultado.SinConexion, repo.ready("o1"))
         server.shutdown()
         assertTrue(repo.inbox("all", true).exceptionOrNull() is java.io.IOException)
+    }
+
+    @Test
+    fun `D662 Reanudar with the manager pause still on says so instead of resumed (Codex r6 #5)`() = runTest {
+        server.enqueue(MockResponse().setBody("""{"success":true,"data":{"pausedUntil":null,"manualPause":true}}"""))
+        assertEquals(AccionResultado.Error(TextosPedidosEnLinea.SIGUE_PAUSA_DEL_GERENTE), repo.pause(null))
+        server.enqueue(MockResponse().setBody("""{"success":true,"data":{"pausedUntil":null,"manualPause":false}}"""))
+        assertEquals(AccionResultado.Hecho, repo.pause(null))
+        server.enqueue(MockResponse().setBody("""{"success":true,"data":{"pausedUntil":"2026-11-18T20:15:00.000Z","manualPause":true}}"""))
+        assertEquals("pausar 15 min no es «reanudar»: no cambia", AccionResultado.Hecho, repo.pause(15))
     }
 
     @Test

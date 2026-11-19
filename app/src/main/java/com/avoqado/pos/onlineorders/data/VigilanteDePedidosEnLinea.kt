@@ -236,7 +236,8 @@ class VigilanteDePedidosEnLinea internal constructor(
     /** Un sondeo ya (la bandeja aceptó o rechazó): el sonido para en esta petición y no en el siguiente compás. */
     fun sondearYa() {
         if (ciclo == null) return // sin ciclo vivo (app en segundo plano) no se consulta nada
-        scope.launch { sondearUnaVez() }
+        // D662 (Codex r6 #4): este sondeo rápido nunca late: puede salir después de `onStop`. La Bandeja visible late por su cuenta.
+        scope.launch { sondearUnaVez(conLatido = false) }
     }
 
     /** Detiene la consulta y el sonido. La última lista queda tal cual para la insignia al volver. */
@@ -250,9 +251,9 @@ class VigilanteDePedidosEnLinea internal constructor(
     /** Un sondeo a la vez: el del compás y el de [sondearYa] no se pisan. */
     private val turnoDeSondeo = Mutex()
 
-    private suspend fun sondearUnaVez() = turnoDeSondeo.withLock { sondeo() }
+    private suspend fun sondearUnaVez(conLatido: Boolean = true) = turnoDeSondeo.withLock { sondeo(conLatido) }
 
-    private suspend fun sondeo() {
+    private suspend fun sondeo(conLatido: Boolean) {
         if (!puedeLeer()) {
             // Sin sesión o sin orders:read: no se consulta NADA y no queda nada colgado (ni lista, ni sonido, ni aviso).
             olvidarDatos()
@@ -262,7 +263,9 @@ class VigilanteDePedidosEnLinea internal constructor(
         // Cambió la sucursal desde el último sondeo bueno: lo de la anterior no se queda ni un instante (aunque este sondeo falle).
         if (venueDeLosDatos != null && venueDeLosDatos != venue) olvidarDatos()
         val resultado = try {
-            consultar("pending", seVe())
+            // D662: late sólo el compás del ciclo vivo y a la vista. Un latido de cuando la tienda estaba apagada no le sirve al encenderla:
+            // el SERVIDOR lo borra al encender (Codex r5 #3, r6 #3).
+            consultar("pending", conLatido && seVe() && ciclo != null)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -370,7 +373,7 @@ class VigilanteDePedidosEnLinea internal constructor(
         if (!puedeLeer()) return INTERVALO_MS
         // D662 (Codex r2 #6, r3 #6): sólo con la tienda APAGADA. Encendida, su latido no puede esperar 5 min: si el plan vuelve
         // (desde otro equipo, sin que este aparato se entere), la tienda no se queda «fuera de línea» con la caja a la vista.
-        if (!tienePlan() && !_hayPedidosAbiertos.value && ultimo?.storeOff != false) return INTERVALO_SIN_PLAN_MS
+        if (!tienePlan() && !_hayPedidosAbiertos.value && ultimo?.storeOff == true) return INTERVALO_SIN_PLAN_MS
         if (ultimo != null && ultimo.storeOff && ultimo.pending == 0) return INTERVALO_TIENDA_APAGADA_MS
         return INTERVALO_MS
     }
