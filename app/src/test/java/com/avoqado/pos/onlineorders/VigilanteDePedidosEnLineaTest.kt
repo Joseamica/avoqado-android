@@ -125,6 +125,29 @@ class VigilanteDePedidosEnLineaTest {
     }
 
     @Test
+    fun `D662 a store that is OFF does not send the heartbeat after reading it (Codex p1 #4)`() = runTest {
+        val f = armar(Result.success(inbox(storeOff = true)))
+        f.vigilante.onStart(owner)
+        runCurrent()
+        assertEquals("la primera no sabe: late", "pending" to true, f.falso.llamadas.last())
+        advanceTimeBy(60_000); runCurrent()
+        assertEquals("ya sabe que está apagada: no late", "pending" to false, f.falso.llamadas.last())
+        f.vigilante.onStop(owner)
+    }
+
+    @Test
+    fun `D662 the long wait ends when the venue changes (Codex p1 #3)`() = runTest {
+        val f = armar(Result.success(inbox(storeOff = true)))
+        f.vigilante.onStart(owner)
+        runCurrent()
+        val n = f.falso.llamadas.size
+        f.venue = "v2" // la cajera cambia a otra sucursal mientras la caja espera 60 s
+        advanceTimeBy(10_000); runCurrent()
+        assertEquals("la sucursal nueva se consulta a los 10 s, no al minuto", n + 1, f.falso.llamadas.size)
+        f.vigilante.onStop(owner)
+    }
+
+    @Test
     fun `D662 without plan but with the store ON it keeps the 10 s heartbeat`() = runTest {
         val f = armar(Result.success(inbox(storeOff = false)), tienePlan = false)
         f.vigilante.onStart(owner)

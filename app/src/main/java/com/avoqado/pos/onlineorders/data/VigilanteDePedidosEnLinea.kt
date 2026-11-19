@@ -217,7 +217,7 @@ class VigilanteDePedidosEnLinea internal constructor(
         ciclo = scope.launch {
             while (isActive) {
                 sondearUnaVez()
-                delay(proximoIntervalo())
+                esperarAlSiguiente()
             }
         }
         // Los folios van a su propio compás (`pollSeconds` del servidor: 30 s con la tienda híbrida encendida, 10 min si no).
@@ -257,8 +257,9 @@ class VigilanteDePedidosEnLinea internal constructor(
         // Cambió la sucursal desde el último sondeo bueno: lo de la anterior no se queda ni un instante (aunque este sondeo falle).
         if (venueDeLosDatos != null && venueDeLosDatos != venue) olvidarDatos()
         val resultado = try {
-            // D662: late sólo el compás del ciclo vivo y con la ventana a la vista.
-            consultar("pending", conLatido && seVe() && ciclo != null)
+            // D662: late sólo el compás del ciclo vivo, con la ventana a la vista y con la tienda encendida según la última lectura
+            // (Codex p1 #4: con la tienda apagada el latido sólo le costaría una escritura al SERVIDOR).
+            consultar("pending", conLatido && seVe() && ciclo != null && ultimosConteos?.storeOff != true)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -358,6 +359,25 @@ class VigilanteDePedidosEnLinea internal constructor(
             hayFolios = lista.counts.toPay + lista.counts.toDeliver > 0 || lista.porPagar.isNotEmpty() || lista.porEntregar.isNotEmpty()
         }
         actualizarAbiertos()
+    }
+
+    /**
+     * D662 (Codex p1 #3): la espera larga (sin plan, o con la tienda apagada) se corta si cambia la sucursal o vuelve el plan; se revisa
+     * en el aparato cada [INTERVALO_MS], sin tocar la red. Así una caja a la vista no deja «fuera de línea» la tienda de la sucursal a
+     * la que acaba de cambiar.
+     */
+    private suspend fun esperarAlSiguiente() {
+        val espera = proximoIntervalo()
+        if (espera <= INTERVALO_MS) return delay(espera)
+        val venue = venueActual()
+        val conPlan = tienePlan()
+        var resto = espera
+        while (resto > 0) {
+            val paso = minOf(resto, INTERVALO_MS)
+            delay(paso)
+            resto -= paso
+            if (venueActual() != venue || tienePlan() != conPlan) return
+        }
     }
 
     private fun proximoIntervalo(): Long {
