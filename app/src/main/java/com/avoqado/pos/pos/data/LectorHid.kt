@@ -70,6 +70,13 @@ class LectorHid(
     private var partidaAparato: Int = SIN_APARATO
     private var sinLecturaUs = false
 
+    /** Codex r11: cuándo se quedó a medias la última ráfaga de CADA aparato (otra tecla de otro teclado puede cortarla). */
+    private val abandonos = mutableMapOf<Int, Long>()
+
+    private fun abandonarRafaga() {
+        if (teclasEnRafaga >= 1 && aparatoDeLaRafaga != SIN_APARATO) abandonos[aparatoDeLaRafaga] = ultimaTeclaMs
+    }
+
     /** Aparatos que ya completaron una ráfaga: de ésos sí se consume desde la primera tecla. */
     private val lectoresConocidos = mutableSetOf<Int>()
 
@@ -91,6 +98,7 @@ class LectorHid(
     ): TeclaHid {
         // El teclado en pantalla nunca es un lector, por rápido que alguien escriba.
         if (!esFisico) {
+            abandonarRafaga()
             limpiar()
             return TeclaHid.DejarPasar
         }
@@ -122,6 +130,7 @@ class LectorHid(
         if (caracter == null) {
             // Codex r9: también un acento AL INICIO («[CAFE-001»): lo que sigue pegado es una lectura sin su principio.
             partidaMs = ahoraMs; partidaAparato = deviceId
+            abandonarRafaga()
             limpiar()
             return TeclaHid.DejarPasar
         }
@@ -132,8 +141,10 @@ class LectorHid(
         if (!continuaLaRafaga) {
             // Codex r9: la pistola hizo una pausa a media etiqueta («KIT » y luego «CAFE-001»): la ráfaga anterior del mismo
             // aparato se abandonó hace menos de 1 s, así que ésta es el FINAL de un código. Su segunda lectura no se ofrece.
-            // Codex r10: también con UN carácter suelto antes («P» y pausa, luego «CAFE-001»).
-            val abandonada = teclasEnRafaga >= 1 && aparatoDeLaRafaga == deviceId && ahoraMs - ultimaTeclaMs <= PAUSA_DE_UNA_LECTURA_MS
+            // Codex r10: también con UN carácter suelto antes («P» y pausa, luego «CAFE-001»). Codex r11: y si la cortó una tecla
+            // de OTRO teclado: cada aparato recuerda cuándo se le quedó a medias su última ráfaga.
+            abandonarRafaga()
+            val abandonada = abandonos[deviceId]?.let { ahoraMs - it <= PAUSA_DE_UNA_LECTURA_MS } == true
             buffer.setLength(0)
             bufferUs.setLength(0)
             teclasEnRafaga = 0

@@ -793,7 +793,9 @@ private fun UpsellPromptContenido(
                     shape = RoundedCornerShape(AvoqadoTheme.cornerRadius.lg),
                 ) {
                     Text(
-                        text = if (hasSelection) "Agregar · ${money(c.selectedDeltaCents)}" else "Agregar",
+                        // Codex r11: lado a lado en una pantalla angosta, «Agregar · $12,499.00» no cabe en una línea; el importe ya se
+                        // ve arriba, así que en fila el botón dice sólo «Agregar».
+                        text = if (hasSelection && !botonesEnFila) "Agregar · ${money(c.selectedDeltaCents)}" else "Agregar",
                         fontSize = CdActionMain,
                         fontWeight = FontWeight.Bold,
                     )

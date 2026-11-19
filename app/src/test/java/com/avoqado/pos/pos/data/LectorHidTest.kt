@@ -284,4 +284,20 @@ class LectorHidTest {
 
         assertEquals(TeclaHid.Codigo("CAFE'001", textoUs = "CAFE'001"), fin)
     }
+
+    @Test
+    fun `D14 una tecla de otro teclado a media lectura deja sin lectura en ingles al resto`() {
+        // Codex r11: la pistola (7) lee «KITCAFE-001» y a media lectura entra una tecla del teclado (9).
+        val lector = LectorHid()
+        var t = 1_000L
+        "KIT".forEach { c -> lector.procesar(caracter = c, esTerminador = false, esFisico = true, deviceId = 7, ahoraMs = t); t += 10 }
+        lector.procesar(caracter = 'x', esTerminador = false, esFisico = true, deviceId = 9, ahoraMs = t); t += 10
+        "CAFE'001".forEach { c ->
+            lector.procesar(caracter = c, esTerminador = false, esFisico = true, deviceId = 7, ahoraMs = t, caracterUs = if (c == '\'') '-' else c)
+            t += 10
+        }
+        val fin = lector.procesar(caracter = null, esTerminador = true, esFisico = true, deviceId = 7, ahoraMs = t)
+
+        assertEquals(TeclaHid.Codigo("CAFE'001", textoUs = "CAFE'001"), fin)
+    }
 }
