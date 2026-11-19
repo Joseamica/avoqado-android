@@ -12,6 +12,7 @@ import io.mockk.mockk
 import java.io.IOException
 import java.time.Instant
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
@@ -46,9 +47,11 @@ class VigilanteDePedidosEnLineaTest {
     private class Falso(var respuesta: Result<Inbox>) {
         val llamadas = mutableListOf<Pair<String, Boolean>>()
         var antes: () -> Unit = {}
+        var demora = 0L
         suspend fun consultar(status: String, comoBandeja: Boolean): Result<Inbox> {
             llamadas += status to comoBandeja
             antes()
+            if (demora > 0) delay(demora)
             return respuesta
         }
     }
@@ -132,6 +135,57 @@ class VigilanteDePedidosEnLineaTest {
         assertEquals("la primera no sabe: late", "pending" to true, f.falso.llamadas.last())
         advanceTimeBy(60_000); runCurrent()
         assertEquals("ya sabe que está apagada: no late", "pending" to false, f.falso.llamadas.last())
+        f.vigilante.onStop(owner)
+    }
+
+    @Test
+    fun `D662 the poll that finds the store turned ON beats right away (Codex p1-r2 #1)`() = runTest {
+        val f = armar(Result.success(inbox(storeOff = true)))
+        f.vigilante.onStart(owner)
+        runCurrent()
+        advanceTimeBy(60_000); runCurrent()
+        assertEquals("pending" to false, f.falso.llamadas.last())
+        val n = f.falso.llamadas.size
+        f.falso.respuesta = Result.success(inbox(storeOff = false)) // la prenden en el panel
+        advanceTimeBy(60_000); runCurrent()
+        assertEquals(
+            "la consulta que descubre que está prendida no latía; la caja late en ese momento, sin esperar otra vuelta",
+            listOf("pending" to false, "pending" to true),
+            f.falso.llamadas.drop(n),
+        )
+        f.vigilante.onStop(owner)
+    }
+
+    @Test
+    fun `D662 several poll-nows in a row queue at most one ahead of the heartbeat (Codex p1-r2 #4)`() = runTest {
+        val f = armar(Result.success(inbox()))
+        f.vigilante.onStart(owner)
+        runCurrent()
+        val n = f.falso.llamadas.size
+        f.falso.demora = 29_000 // red lenta
+        repeat(4) { f.vigilante.sondearYa() } // aceptan 4 pedidos seguidos
+        runCurrent()
+        advanceTimeBy(29_001); runCurrent()
+        assertEquals(
+            "una sola consulta rápida en fila; el latido del compás sale en cuanto termina",
+            listOf("pending" to false, "pending" to true),
+            f.falso.llamadas.drop(n),
+        )
+        f.vigilante.onStop(owner)
+    }
+
+    @Test
+    fun `D662 a poll-now asked while another runs still reads once more`() = runTest {
+        val f = armar(Result.success(inbox()))
+        f.vigilante.onStart(owner)
+        runCurrent()
+        val m = f.falso.llamadas.size // el compás vuelve a los 10 s: aquí sólo cuentan los «sondear ya»
+        f.falso.demora = 5_000
+        f.vigilante.sondearYa()
+        runCurrent() // ya va en camino
+        f.vigilante.sondearYa() // otro pedido aceptado mientras tanto: su resultado no puede perderse
+        advanceTimeBy(5_001); runCurrent()
+        assertEquals("la segunda sale después de la primera", m + 2, f.falso.llamadas.size)
         f.vigilante.onStop(owner)
     }
 

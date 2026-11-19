@@ -17,6 +17,7 @@ import com.avoqado.pos.onlineorders.presentation.numeroDeSeccion
 import com.avoqado.pos.onlineorders.presentation.cobradosConTarjetaEnLaLista
 import com.avoqado.pos.payment.data.CashPaymentRepository
 import java.io.IOException
+import java.util.concurrent.atomic.AtomicBoolean
 import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -231,8 +232,24 @@ class VigilanteDePedidosEnLinea internal constructor(
     fun sondearYa() {
         if (ciclo == null) return // sin ciclo vivo (app en segundo plano) no se consulta nada
         // D662: este sondeo rápido nunca late: puede salir después de `onStop`. La Bandeja visible late por su cuenta.
-        scope.launch { sondearUnaVez(conLatido = false) }
+        // D662 (Codex p1-r2 #4): a lo más UNO en fila. Varios «aceptar» seguidos no forman fila delante del latido del compás; el que
+        // se pide mientras otro corre sí sale después (su resultado no se pierde).
+        if (!sondeoYaEnFila.compareAndSet(false, true)) return
+        scope.launch {
+            var tomado = false
+            try {
+                turnoDeSondeo.withLock {
+                    tomado = true
+                    sondeoYaEnFila.set(false)
+                    sondeo(conLatido = false)
+                }
+            } finally {
+                if (!tomado) sondeoYaEnFila.set(false)
+            }
+        }
     }
+
+    private val sondeoYaEnFila = AtomicBoolean(false)
 
     /** Detiene la consulta y el sonido. La última lista queda tal cual para la insignia al volver. */
     @Synchronized
@@ -256,10 +273,12 @@ class VigilanteDePedidosEnLinea internal constructor(
         val venue = venueActual()
         // Cambió la sucursal desde el último sondeo bueno: lo de la anterior no se queda ni un instante (aunque este sondeo falle).
         if (venueDeLosDatos != null && venueDeLosDatos != venue) olvidarDatos()
+        // D662: late sólo el compás del ciclo vivo, con la ventana a la vista y con la tienda encendida según la última lectura
+        // (Codex p1 #4: con la tienda apagada el latido sólo le costaría una escritura al SERVIDOR).
+        val latiria = conLatido && seVe() && ciclo != null
+        val callaPorApagada = latiria && ultimosConteos?.storeOff == true
         val resultado = try {
-            // D662: late sólo el compás del ciclo vivo, con la ventana a la vista y con la tienda encendida según la última lectura
-            // (Codex p1 #4: con la tienda apagada el latido sólo le costaría una escritura al SERVIDOR).
-            consultar("pending", conLatido && seVe() && ciclo != null && ultimosConteos?.storeOff != true)
+            consultar("pending", latiria && !callaPorApagada)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -287,6 +306,9 @@ class VigilanteDePedidosEnLinea internal constructor(
             Log.d(TAG, "Sondeo sin respuesta: ${it.message}")
             if (it is IOException) _sinConexion.value = true
         }
+        // D662 (Codex p1-r2 #1): la acaban de prender en el panel y esta consulta salió callada por la lectura vieja: la caja late YA,
+        // sin esperar otra vuelta (ahora `ultimosConteos` dice encendida, así que esto pasa a lo más una vez).
+        if (callaPorApagada && resultado.getOrNull()?.storeOff == false) sondeo(conLatido)
     }
 
     /** Hubo una lectura (buena o la guardada) de folios en esta sucursal: la guardada no vuelve a pisar un «no disponible». */
@@ -367,10 +389,11 @@ class VigilanteDePedidosEnLinea internal constructor(
      * la que acaba de cambiar.
      */
     private suspend fun esperarAlSiguiente() {
-        val espera = proximoIntervalo()
-        if (espera <= INTERVALO_MS) return delay(espera)
+        // Codex p1-r2 #3: sucursal y plan se anotan ANTES de calcular la espera; un cambio entre las dos lecturas corta la espera.
         val venue = venueActual()
         val conPlan = tienePlan()
+        val espera = proximoIntervalo()
+        if (espera <= INTERVALO_MS) return delay(espera)
         var resto = espera
         while (resto > 0) {
             val paso = minOf(resto, INTERVALO_MS)
