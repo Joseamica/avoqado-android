@@ -44,7 +44,7 @@ class AcuseDeLiberacionLanTest {
         }
     }
     private val llaveDelRegistro = "${PayloadCache.TYPE_REGISTRO_DE_CUENTAS}|v1"
-    private val abiertas = mockk<CuentasAbiertasAqui> { coEvery { todas(any()) } returns setOf("o1", "o2") }
+    private val abiertas = mockk<CuentasAbiertasAqui> { coEvery { todas(any()) } returns setOf("o1", "o2", "o3") }
     private var ms = 1_000L
     private var hora = 1_700_000_000_000L
 
@@ -60,11 +60,10 @@ class AcuseDeLiberacionLanTest {
     private var perderLaRespuesta = false
     private var codigoForzado: Int? = null
 
-    /** El SERVIDOR de PRODUCCIÓN de hoy: su esquema rechaza con 400 de validación la `operationKey` `liberacion-lan:…`. */
-    private var servidorViejo = false
+    /** El cuerpo del 400 con que el SERVIDOR rechaza el PIN con llave (el de producción no conoce `liberacion-lan:…`). null = no hay 400. */
+    private var cuerpoDel400: String? = null
     /** La `operationKey` de cada PIN pedido (null = sin llave). */
     private val pinesPedidos = mutableListOf<String?>()
-    private var codigoDelPin: Int? = null
 
     private val servidor = Interceptor { chain ->
         if (sinRed) throw UnknownHostException("sin red")
@@ -73,10 +72,7 @@ class AcuseDeLiberacionLanTest {
             val pedido = Json.parseToJsonElement(Buffer().also { req.body!!.writeTo(it) }.readUtf8()).jsonObject
             val llave = pedido["operationKey"]?.jsonPrimitive?.content
             pinesPedidos += llave
-            codigoDelPin?.let { return@Interceptor responder(chain, it, """{"success":false,"code":"SUPERVISOR_AUTHORIZATION_REQUIRED","message":"Ese PIN no es de un gerente con permiso"}""") }
-            if (servidorViejo && llave != null) {
-                return@Interceptor responder(chain, 400, """{"message":"Error de validación: Formato de operación inválido."}""")
-            }
+            cuerpoDel400?.takeIf { llave != null }?.let { return@Interceptor responder(chain, 400, it) }
             val token = "tok-pin-${pinesPedidos.size}"
             llave?.let { autorizaciones[token] = it }
             return@Interceptor responder(chain, 201,
@@ -227,37 +223,36 @@ class AcuseDeLiberacionLanTest {
     }
 
     /**
-     * F1 (pendiente conocido de `decisiones-codigo-r1.md`): el SERVIDOR de PRODUCCIÓN no conoce la llave `liberacion-lan:` y contesta
-     * 400 de validación. La caja repite el PIN UNA vez sin la llave y firma como hoy: libera, sin asiento ni acuse pendiente.
+     * Codex final r2 #6: la caída sin llave se BORRÓ. Ante el SERVIDOR viejo aceptaba el PIN de una cajera (su rol trae el permiso de
+     * fábrica), un 400 vacío o ilegible la disparaba aun con el SERVIDOR nuevo y, si prosperaba, liberaba sin acuse. Sin acuse no se
+     * libera: cualquier 400 (de validación, vacío o ilegible) deja la cuenta comprometida, por revisar, y el PIN se pide UNA sola vez.
      */
-    @Test fun `mostrador_servidorViejo400_firmaSinLlaveYSinAcuse`() = runTest {
+    @Test fun `mostrador_400_dejaLaCuentaPendienteYNoRepite`() = runTest {
         val a = cajaUno()
-        assertEquals(Respuesta.Concedida, a.comprometer(v, "o1", ana))
-        ms += RegistroDeCuentas.NO_CONFIRMO_MS
-        val entre = mockk<CuentasEntreCajas>(relaxed = true)
         val pantalla = com.avoqado.pos.payment.presentation.CobroDeCuentaViewModel(
             mockk(), mockk<SecureStorage>(relaxed = true) { every { venueId } returns v }, mockk(), mockk(relaxed = true), mockk(relaxed = true),
-            cuentasEntreCajas = entre, duenoDeCuentas = a, permisos = permisos,
+            cuentasEntreCajas = mockk(relaxed = true), duenoDeCuentas = a, permisos = permisos,
         )
-        servidorViejo = true
+        val cuerpos = listOf("""{"message":"Error de validación: Formato de operación inválido."}""", "", "<html>502</html>")
+        cuerpos.forEachIndexed { n, cuerpo ->
+            val orden = "o${n + 1}"
+            val intento = "i-$orden"
+            assertEquals(Respuesta.Concedida, a.comprometer(v, orden, ana.copy(intento = intento)))
+            ms += RegistroDeCuentas.NO_CONFIRMO_MS
+            pinesPedidos.clear()
+            cuerpoDel400 = cuerpo
 
-        val r = pantalla.firmarNoSeCobro("o1", "4321", "i-ana")
+            val r = pantalla.firmarNoSeCobro(orden, "4321", intento)
 
-        assertTrue("firmó", r is com.avoqado.pos.core.data.network.OverrideResult.Granted)
-        assertEquals("con la llave y, ante el 400, UNA vez sin ella", listOf("liberacion-lan:o1:caja-1:i-ana", null), pinesPedidos)
-        assertNull("la cuenta quedó liberada", cajaUno().estadoDe(v, "o1"))
-        assertEquals("sin acuse pendiente", emptyMap<String, String>(), pendientesEnDisco())
-        io.mockk.verify(exactly = 0) { entre.empujarAcuses(any()) }
+            assertTrue("400 «$cuerpo»: no firma", r is com.avoqado.pos.core.data.network.OverrideResult.Failed)
+            assertEquals("400 «$cuerpo»: el PIN se pidió una sola vez, con su llave",
+                listOf<String?>(DuenoDeCuentas.operacionDeLiberacion(orden, "caja-1", intento)), pinesPedidos)
+            assertEquals("400 «$cuerpo»: la cuenta sigue comprometida por revisar", intento, cajaUno().estadoDe(v, orden)?.intento)
+            assertEquals("400 «$cuerpo»: sin acuse pendiente", emptyMap<String, String>(),
+                disco[llaveDelRegistro]?.let { RegistroDeCuentas.leer(it.json)!!.acusesPendientes } ?: emptyMap<String, String>())
+        }
         a.enviarAcuses(v)
         assertEquals(0, acusesRecibidos)
-
-        // Otro error no se repite: un PIN que no es de gerente (403) se pide una sola vez, como hoy.
-        pinesPedidos.clear()
-        assertEquals(Respuesta.Concedida, a.comprometer(v, "o2", ana.copy(intento = "i-o2")))
-        ms += RegistroDeCuentas.NO_CONFIRMO_MS
-        codigoDelPin = 403
-        assertTrue(pantalla.firmarNoSeCobro("o2", "0000", "i-o2") is com.avoqado.pos.core.data.network.OverrideResult.Failed)
-        assertEquals(listOf<String?>("liberacion-lan:o2:caja-1:i-o2"), pinesPedidos)
     }
 
     @Test fun `la llave sólo sale con la forma que acepta el servidor`() {

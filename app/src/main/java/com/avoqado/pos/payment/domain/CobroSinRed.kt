@@ -73,6 +73,9 @@ object TextosDeCuentaSinRed {
     /** Codex android r1 #5: el intento que vio el gerente ya no está (la otra caja lo soltó o se cerró): no se firma nada. */
     const val YA_NO_HAY_COBRO_PENDIENTE = "Esa caja ya soltó esa cuenta: no hay nada que firmar."
 
+    /** Codex final r2 #6: sin la llave de la operación el SERVIDOR no deja asiento; sin asiento no se libera (la cuenta espera). */
+    const val FIRMA_SIN_LLAVE = "No se pudo atar la firma a esta cuenta: queda por revisar. Avisa a soporte."
+
     /** F1 (un paso): el título del teclado del gerente, que ya dice qué firma. */
     fun pinParaFirmar(quien: String, caja: String) =
         "Gerente: escribe tu PIN para marcar como no cobrado lo que ${quien.ifBlank { "alguien" }} empezó a cobrar en $caja"

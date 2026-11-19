@@ -365,7 +365,7 @@ class DuenoDeCuentas internal constructor(
 
         /**
          * F1 bloque 6: la `operationKey` que ata el PIN del gerente a UNA liberación (contrato del SERVIDOR §4). null = alguna parte no
-         * cabe en la forma que acepta el servidor: se firma como antes, sin atar y sin asiento (un 400 dejaría al gerente sin liberar).
+         * cabe en la forma que acepta el servidor: no se firma (Codex final r2 #6: sin asiento no se libera; la cuenta queda por revisar).
          * Cada parte se revisa sola: un «:» en el folio se leería como parte del intento.
          */
         fun operacionDeLiberacion(orderId: String, cajaDuena: String, intento: String): String? =

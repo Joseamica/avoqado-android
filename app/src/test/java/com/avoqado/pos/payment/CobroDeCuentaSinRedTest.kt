@@ -625,6 +625,19 @@ class CobroDeCuentaSinRedTest {
         assertNull(m.noConfirmoEnLinea("o1"))
     }
 
+    /** Codex final r2 #6: si el intento no cabe en la llave que acepta el SERVIDOR, no hay asiento: no se pide el PIN ni se libera. */
+    @Test fun `Codex final r2 6 - sin llave no se pide el PIN ni se libera`() = runTest {
+        val m = vm()
+        registro = CuentaEnElRegistro(EstadoDeCuenta.COMPROMETIDA, "caja-2", "Caja 2", "Ana", "i a", Instante("b", 0))
+        puedeDeclarar = true
+        respuestaAlPin = com.avoqado.pos.core.data.network.OverrideResult.Granted(token = "t", authorizedByName = "Gerente")
+
+        assertEquals(com.avoqado.pos.core.data.network.OverrideResult.Failed(TextosDeCuentaSinRed.FIRMA_SIN_LLAVE),
+            m.firmarNoSeCobro("o1", "4321", "i a"))
+        coVerify(exactly = 0) { gerente.requestToken(any(), any(), any(), any()) }
+        coVerify(exactly = 0) { dueno.noSeCobro(any(), any(), any(), any(), any()) }
+    }
+
     @Test fun `Codex r1 5 - si la otra caja solto A y empezo B mientras el gerente tecleaba, se dice como quedo y no se libera B`() = runTest {
         val m = vm()
         registro = CuentaEnElRegistro(EstadoDeCuenta.COMPROMETIDA, "caja-2", "Caja 2", "Ana", "i-a", Instante("b", 0))
