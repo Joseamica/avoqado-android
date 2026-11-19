@@ -446,8 +446,18 @@ class TerminalPaymentService @Inject constructor(
      * no hay venta que cercar: `null`, y el aviso de la pantalla cubre el resto. Incluye uno que ya consta que SÍ pasó
      * ([yaCobrado]): la misma venta no se vuelve a mandar a la terminal en silencio.
      */
-    /** F1 bloque 2: ¿el intento de ESTE folio sigue sin desenlace en esta tablet? (Un «SÍ pasó» marcado ya no es duda.) */
-    fun sigueEnDuda(orderId: String): Boolean = vigentes().any { it.orderId == orderId && !it.cobrado }
+    /**
+     * 🔴 F1 bloque 2 (coordinador, 18-nov): la tarjeta EN DUDA de este folio, si hay. Un intento ya COBRADO (su «SÍ pasó» dura su
+     * ventana de 10 min) no es una duda: no frena el cobro del resto. Lo que no deja cobrar de más es el SERVIDOR (saldo real bajo
+     * el candado de la orden). Sólo una tarjeta en duda frena otra sobre la misma cuenta.
+     */
+    fun dudaDeLaVenta(orderId: String?): String? {
+        val orden = orderId?.takeIf { it.isNotBlank() } ?: return null
+        return vigentes().lastOrNull { it.orderId == orden && !it.cobrado }?.requestId
+    }
+
+    /** F1 bloque 2: ¿el intento de ESTE folio sigue sin desenlace en esta tablet? */
+    fun sigueEnDuda(orderId: String): Boolean = dudaDeLaVenta(orderId) != null
 
     fun pendienteDeLaVenta(orderId: String?): String? {
         val orden = orderId?.takeIf { it.isNotBlank() } ?: return null
@@ -701,7 +711,7 @@ class TerminalPaymentService @Inject constructor(
         antesDelProximoEnvio = null
         // 🔴 Founder, 25-sep: sólo espera la MISMA venta. El pendiente de OTRA venta ya no frena este cobro
         // (la pantalla lo avisa); al de esta venta, sí: consultar y declarar, como siempre.
-        pendienteDeLaVenta(orderId)?.let { return TerminalPaymentResult.Undetermined(CardChargeDecision.UNDETERMINED_MESSAGE, it, inherited = true) }
+        dudaDeLaVenta(orderId)?.let { return TerminalPaymentResult.Undetermined(CardChargeDecision.UNDETERMINED_MESSAGE, it, inherited = true) }
         val venueId = secureStorage.venueId ?: return TerminalPaymentResult.Error("No venue selected")
         val token = secureStorage.accessToken ?: return TerminalPaymentResult.Error("Not authenticated")
 
@@ -721,7 +731,7 @@ class TerminalPaymentService @Inject constructor(
         synchronized(attemptLock) {
             // Otra vez BAJO EL CANDADO, junto con la escritura: dos «Cobrar» de la misma venta a la vez no
             // salen los dos. La llave única lo impedía con su «ya hay llave»; la lista acepta varias.
-            pendienteDeLaVenta(orderId)?.let { return TerminalPaymentResult.Undetermined(CardChargeDecision.UNDETERMINED_MESSAGE, it, inherited = true) }
+            dudaDeLaVenta(orderId)?.let { return TerminalPaymentResult.Undetermined(CardChargeDecision.UNDETERMINED_MESSAGE, it, inherited = true) }
             if (antesDeEnviar?.invoke(requestId) == false || !secureStorage.persistPendingCardCharge(requestId, orderId, context.toString())) {
                 return TerminalPaymentResult.Error("No se pudo guardar el intento. No se envió el cobro.")
             }

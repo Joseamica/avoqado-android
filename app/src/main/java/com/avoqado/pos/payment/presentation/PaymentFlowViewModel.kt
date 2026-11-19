@@ -2876,7 +2876,8 @@ class PaymentFlowViewModel @Inject constructor(
                 // protección contra cobrarla dos veces la sigue dando el servidor, que cerca SU orden en toda terminal.
                 // SE LEE LA LISTA VIVA, nunca una copia (Sunmi D3, 21-sep: la copia sobrevivía a su propia causa).
                 // Una llave en blanco no es un pendiente: no hay a quién preguntarle por ella.
-                val deEstaVenta = terminalPaymentService.pendienteDeLaVenta(ordenEnCurso())
+                // F1 bloque 2: la DUDA de esta cuenta primero; un «SÍ pasó» solo no frena el resto (ver `esperarCobroDeEstaOrden`).
+                val deEstaVenta = terminalPaymentService.dudaDeLaVenta(ordenEnCurso())?.takeIf { it.isNotBlank() } ?: terminalPaymentService.pendienteDeLaVenta(ordenEnCurso())
                 if (!deEstaVenta.isNullOrBlank()) {
                     esperarCobroDeEstaOrden(deEstaVenta, total, CardChargeDecision.UNDETERMINED_MESSAGE)
                     return
@@ -3040,8 +3041,11 @@ class PaymentFlowViewModel @Inject constructor(
         // H2: ya consta que ESE cobro de esta orden SÍ pasó (sigue en disco su ventana) y no lo mandó este flujo.
         // No se manda otro ni se pregunta: se dice con el texto de siempre, y su «Entendido» en «Cobro anterior resuelto»
         // lo quita. El PROPIO sigue abajo: «Volver a consultar» lo aplica como su pago (pantalla de éxito).
+        // 🔴 F1 bloque 2 (coordinador, 18-nov; reemplaza a H2 «no se manda otro»): un intento ya COBRADO no es una duda y no
+        // frena el cobro del resto. El SERVIDOR no deja cobrar de más (saldo real bajo el candado de la orden; con F1, además el
+        // saldo esperado). El «SÍ pasó» sigue en su aviso hasta su «Entendido».
         if (requestId != undeterminedRequestId && terminalPaymentService.yaCobrado(requestId)) {
-            resolverCobroAnterior("El cobro anterior sí se había realizado", cobroQueSiPaso = requestId)
+            ofrecerTerminales(total)
             return
         }
         if (requestId == undeterminedRequestId) {
@@ -5263,7 +5267,9 @@ class PaymentFlowViewModel @Inject constructor(
         val orden = createdOrderId?.takeIf { it.isNotBlank() } ?: return null
         val venueId = secureStorage.venueId ?: return null
         val venta = cartState?.identidadDeVenta ?: return null
-        terminalPaymentService.pendienteDeLaVenta(orden)?.let {
+        // Un «SÍ pasó» no es duda: no liga el carrito.
+        (terminalPaymentService.dudaDeLaVenta(orden)?.takeIf { it.isNotBlank() }
+            ?: terminalPaymentService.pendienteDeLaVenta(orden)?.takeUnless { terminalPaymentService.yaCobrado(it) })?.let {
             return com.avoqado.pos.payment.data.FolioEnDuda(venueId, venta, orden, it, com.avoqado.pos.payment.data.FolioEnDuda.Origen.LOCAL, cambiosDeEstaVenta)
         }
         val ajeno = bloqueadorEnPantalla?.takeIf { it.scope == CardChargeDecision.SCOPE_ORDER } ?: return null

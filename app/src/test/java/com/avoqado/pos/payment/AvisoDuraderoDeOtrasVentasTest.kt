@@ -306,28 +306,57 @@ class AvisoDuraderoDeOtrasVentasTest {
         assertTrue("ni pendiente ni «SÍ pasó» sobre su propio pago", ids().isEmpty())
     }
 
+    /**
+     * 🔴 F1 bloque 2 (coordinador, 18-nov; reemplaza a H2 «no deja volver a cobrarla»): la parte 1 se cobró con tarjeta y
+     * quedó confirmada en disco (su «SÍ pasó» dura 10 min). Un intento COBRADO no es una duda: el resto se cobra con tarjeta
+     * de inmediato. El servidor no deja cobrar de más (saldo real bajo el candado de la orden). Sólo una tarjeta EN DUDA de
+     * esta cuenta frena otra.
+     */
     @Test
-    fun `H2 un cobro confirmado de ESTA orden no deja volver a cobrarla en silencio, y su Entendido la libera`() = runTest {
-        // Mostrador dividido: la parte 1 se cobró con tarjeta (y quedó confirmada en disco); ahora se cobra la parte 2.
+    fun aprobadaConSaldo_elRestoSeCobraConTarjetaSinEsperar() = runTest {
         sembrar("r-parte-1", "orden-mostrador", 25_000, haceMin = 3, cobrado = true)
         val vm = nuevaVenta()
 
         vm.startPaymentFlow(cuenta(25_000), resumeOrderId = "orden-mostrador")
         vm.selectPaymentMethod(PaymentMethod.CARD)
         advanceUntilIdle()
+        assertNull("no hay «cobro anterior» que resolver", vm.previousChargeResolved.value)
+        assertTrue("el resto va directo a elegir terminal", vm.state.value is PaymentFlowState.SelectingTerminal)
 
-        assertEquals("el texto de siempre del «SÍ pasó» de esta venta", "El cobro anterior sí se había realizado", vm.previousChargeResolved.value)
-        assertTrue("no salió ningún cobro", postsEnviados.isEmpty())
-        assertTrue("ni se preguntó nada: ya consta", consultados.isEmpty())
-        assertEquals("sigue en disco hasta «Entendido»", listOf("r-parte-1"), ids())
+        vm.selectTerminalAndPay("t1")
+        advanceUntilIdle()
+        assertEquals("sale UNA tarjeta nueva por el resto", 1, postsEnviados.size)
+        assertFalse("no es la de la parte 1", "r-parte-1" in postsEnviados)
+        assertTrue("ni se volvió a preguntar por la parte 1", "r-parte-1" !in consultados)
+    }
 
-        vm.clearPreviousChargeResolved() // la pantalla del cobro le pasa el mensaje al checkout…
-        vm.reconocerCobroAnteriorResuelto() // …y el cajero toca «Entendido» en «Cobro anterior resuelto»
-        assertTrue(ids().isEmpty())
+    @Test
+    fun `F1 con la parte 1 en DUDA la tarjeta del resto si espera`() = runTest {
+        sembrar("r-parte-1", "orden-mostrador", 25_000, haceMin = 3, cobrado = true)
+        sembrar("r-parte-2", "orden-mostrador", 25_000, haceMin = 1)
+        val vm = nuevaVenta()
 
+        vm.startPaymentFlow(cuenta(25_000), resumeOrderId = "orden-mostrador")
         vm.selectPaymentMethod(PaymentMethod.CARD)
         advanceUntilIdle()
-        assertTrue("sin callejón: la parte 2 ya se puede cobrar", vm.state.value is PaymentFlowState.SelectingTerminal)
+
+        assertTrue("la duda de esta cuenta frena otra tarjeta", vm.state.value is PaymentFlowState.Undetermined)
+        assertTrue("no salió ninguna", postsEnviados.isEmpty())
+    }
+
+    @Test
+    fun `F1 el servicio avisa el folio cuando su tarjeta en duda resulta cobrada`() = runTest {
+        sembrar("r-a", "orden-a", 4_000, haceMin = 1)
+        val avisos = mutableListOf<com.avoqado.pos.payment.data.DesenlaceDeFolio>()
+        val escucha = backgroundScope.launch(kotlinx.coroutines.Dispatchers.Unconfined) { servicio.folios.collect { avisos += it } }
+        estados["r-a"] = cobrado("pay-a")
+
+        assertTrue(servicio.sigueEnDuda("orden-a"))
+        servicio.resolveOutcome("r-a")
+
+        assertEquals(listOf(com.avoqado.pos.payment.data.DesenlaceDeFolio("venue-1", "orden-a", "r-a")), avisos)
+        assertFalse("un «SÍ pasó» marcado ya no es duda", servicio.sigueEnDuda("orden-a"))
+        escucha.cancel()
     }
 
     // MARK: - H6: todos tienen turno en la revisión de fondo
