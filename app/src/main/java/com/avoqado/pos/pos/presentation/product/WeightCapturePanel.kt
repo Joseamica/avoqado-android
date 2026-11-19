@@ -71,6 +71,8 @@ fun WeightCapturePanel(
     scaleState: ScaleConnectionState = ScaleConnectionState.NotConfigured,
     /** D7: se está leyendo una etiqueta de báscula con esta captura abierta: «Agregar» y F12 esperan a que se resuelva. */
     leyendoEtiqueta: () -> Boolean = { false },
+    /** D7: «Ya entró … por su etiqueta» (la etiqueta del mismo producto ya está en el carrito; la captura sigue abierta). */
+    avisoDeEtiqueta: String? = null,
     onRetryScale: () -> Unit = {},
     onAdd: (weightKg: Double) -> Unit,
     onDismiss: () -> Unit,
@@ -99,6 +101,7 @@ fun WeightCapturePanel(
                     product = product,
                     scaleState = scaleState,
                     leyendoEtiqueta = leyendoEtiqueta,
+                    avisoDeEtiqueta = avisoDeEtiqueta,
                     onRetryScale = onRetryScale,
                     onAdd = onAdd,
                     onDismiss = onDismiss,
@@ -121,6 +124,7 @@ fun WeightCapturePanel(
                 product = product,
                 scaleState = scaleState,
                 leyendoEtiqueta = leyendoEtiqueta,
+                avisoDeEtiqueta = avisoDeEtiqueta,
                 onRetryScale = onRetryScale,
                 onAdd = onAdd,
                 onDismiss = onDismiss,
@@ -134,6 +138,7 @@ private fun WeightCaptureContent(
     product: Product,
     scaleState: ScaleConnectionState,
     leyendoEtiqueta: () -> Boolean,
+    avisoDeEtiqueta: String?,
     onRetryScale: () -> Unit,
     onAdd: (weightKg: Double) -> Unit,
     onDismiss: () -> Unit,
@@ -318,6 +323,14 @@ private fun WeightCaptureContent(
             }
         }
 
+        avisoDeEtiqueta?.let { aviso ->
+            Text(
+                text = aviso,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.padding(horizontal = AvoqadoTheme.spacing.xl, vertical = AvoqadoTheme.spacing.sm),
+            )
+        }
         HorizontalDivider()
         PrimaryButton(
             text = when {

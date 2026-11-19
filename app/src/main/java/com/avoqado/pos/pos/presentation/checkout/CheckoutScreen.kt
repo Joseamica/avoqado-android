@@ -1217,6 +1217,7 @@ fun CheckoutScreen(
             isTablet = isTablet,
             scaleState = scaleState,
             leyendoEtiqueta = { etiquetasEnCamino.containsValue(captura.apertura) },
+            avisoDeEtiqueta = captura.avisoDeEtiqueta,
             onRetryScale = scaleCaptureViewModel::retry,
             onAdd = { weightKg ->
                 // D8 (Codex r2): con el cobro abierto (su F12 en WINDOWS, o un toque que le ganó al «No, gracias») el peso no
@@ -1631,10 +1632,12 @@ fun CheckoutScreen(
                         abrirCapturaDePeso,
                     )
                 is ScannedBarcodeResult.WeightedProductFound -> {
-                    // D7: la etiqueta de ESTA pesada cierra su captura (si no, «Agregar» la metía otra vez). La báscula SIGUE
-                    // conectada, como cuando el cobro esconde la captura: apagarla y prenderla seguido abría carreras con el USB y
-                    // el COM (Codex D7 r2 #4–#6). Se apaga con la X o «Agregar» de la siguiente captura.
-                    if (etiquetaCierraLaCaptura(capturaAlLeer, capturaDePeso, result.product.id)) capturaDePeso = null
+                    // D7 (founder, 18-nov: «A′», tras ver cómo lo hacen Square y Lightspeed): la etiqueta del producto que se está
+                    // pesando entra y la captura SIGUE abierta con «Ya entró … por su etiqueta». Sin pasos ni botones nuevos: si era
+                    // la misma pieza, la cajera la cierra con la X; si era otra, toca «Agregar» como siempre.
+                    if (etiquetaEsDeLaCaptura(capturaAlLeer, capturaDePeso, result.product.id)) {
+                        capturaDePeso = capturaDePeso?.copy(avisoDeEtiqueta = avisoDeEtiqueta(result.product.name, result.weightKg))
+                    }
                     cartViewModel.addProductByWeight(result.product, result.weightKg)
                 }
                 is ScannedBarcodeResult.AreaTicketsAdded ->
