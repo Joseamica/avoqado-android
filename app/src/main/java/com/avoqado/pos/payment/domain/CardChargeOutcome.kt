@@ -263,6 +263,9 @@ object CardChargeDecision {
     /** Transport classification only; other ambiguous HTTP codes also reconcile above. */
     fun isTransportFailure(httpCode: Int): Boolean = httpCode >= 500 || httpCode == 408
 
+    /** D53: las lápidas de admisión cuyo texto escribe el SERVIDOR con el saldo (D7 «falta $X» y D53 «la cuenta cambió»). */
+    private val LAPIDAS_DE_SALDO = setOf("REJECTED_ORDER_AMOUNT_OVER_BALANCE", "REJECTED_ORDER_BALANCE_CHANGED")
+
     /** H8: la evidencia con la que la terminal dice que NO inició el cobro (nada llegó al procesador). */
     const val EVIDENCIA_SIN_AUTORIZACION = "PRE_AUTHORIZATION"
 
@@ -337,6 +340,10 @@ object CardChargeDecision {
             // en el terminal»), recortado; si no lo dio, el respaldo.
             probe.status == "FAILED" && probe.outcomeEvidence == EVIDENCIA_SIN_AUTORIZACION ->
                 CardChargeOutcome.NotCharged(mensajeDeLaTerminal?.trim()?.takeIf { it.isNotEmpty() } ?: NO_INICIADO_RESPALDO)
+            // D53 (Codex r1 #3): la lápida de una cuenta que cambió (o del «falta $X» de D7) trae el texto del SERVIDOR: si se perdió
+            // la respuesta del 412, la cajera lee lo mismo por la consulta en vez de un «rechazado» que suena al banco.
+            probe.status == "FAILED" && probe.failureCode in LAPIDAS_DE_SALDO && !probe.errorMessage.isNullOrBlank() ->
+                CardChargeOutcome.NotCharged(probe.errorMessage.trim())
             probe.status == "FAILED" -> CardChargeOutcome.NotCharged("El cobro fue rechazado. No se cobró la tarjeta.")
             probe.status == "CANCELLED" && probe.cancelDisposition == "ACCEPTED" -> CardChargeOutcome.NotCharged("El cobro se canceló. No se cobró la tarjeta.", sinCobroNiRechazo = true)
             // TIMED_OUT, UNKNOWN — y cualquier estado que este cliente no conozca todavía.

@@ -739,6 +739,42 @@ class TerminalPaymentServiceHttpTest {
         assertFalse("un id en blanco no es un cliente: $cuerpo", cuerpo.contains("customerId"))
     }
 
+    // MARK: - D53: el cobro de vales lleva el saldo que la caja espera (hz:e9ce0be7:D53)
+
+    @Test
+    fun `D53 el cobro lleva el saldo esperado de la orden cuando se lo pasan`() = runBlocking {
+        enqueue(200, """{"success":true,"status":"success","paymentId":"pay-1"}""")
+
+        service.sendPaymentToTerminal(terminalId = "t1", amountCents = 8000, orderId = "order-vales", expectedBalanceBeforeCents = 8000)
+
+        val cuerpo = cuerpoDelCobro()
+        assertTrue("el cuerpo debe llevar el saldo esperado: $cuerpo", cuerpo.contains("\"expectedBalanceBeforeCents\":8000"))
+    }
+
+    @Test
+    fun `D53 un cobro que no es de vales NO manda la llave expectedBalanceBeforeCents`() = runBlocking {
+        enqueue(200, """{"success":true,"status":"success","paymentId":"pay-1"}""")
+
+        service.sendPaymentToTerminal(terminalId = "t1", amountCents = 25, orderId = "order-1")
+
+        val cuerpo = cuerpoDelCobro()
+        assertFalse("el cuerpo de siempre no lleva la llave: $cuerpo", cuerpo.contains("expectedBalanceBeforeCents"))
+    }
+
+    @Test
+    fun `P1 D53 el 412 de la cuenta que cambio se ensena tal cual y suelta la llave porque el cobro no se creo`() = runBlocking {
+        val texto = "La cuenta AREA-80 cambió mientras se cobraba: ahora falta \$79.50. No se cobró la tarjeta. Sal del cobro y cobra el saldo pendiente."
+        server.enqueue(MockResponse().setResponseCode(412).setBody(
+            """{"success":false,"status":"failed","code":"ORDER_BALANCE_CHANGED","message":"$texto","errorMessage":"$texto","details":{"requestId":"__RID__","remainingCents":7950,"expectedBalanceBeforeCents":8000}}""",
+        ))
+
+        val result = service.sendPaymentToTerminal(terminalId = "t1", amountCents = 8000, orderId = "order-vales", expectedBalanceBeforeCents = 8000)
+
+        assertTrue("$result", result is TerminalPaymentResult.Error)
+        assertEquals(texto, (result as TerminalPaymentResult.Error).message)
+        assertTrue("la llave se soltó: el SERVIDOR no creó el cobro", idsPendientes().isEmpty())
+    }
+
     // MARK: - La sonda de terminales corre SOLA
     //
     // Medido el 2026-08-16 en hardware: un CASHIER cobrando veía, en la pantalla

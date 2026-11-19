@@ -1115,6 +1115,109 @@ class PaymentFlowViewModelTest {
         } returns Result.success(OrderRepository.CashPayResult(paymentId = "pago-vales", receiptAccessKey = null))
     }
 
+    // MARK: - D53 (hz:e9ce0be7): el cobro con tarjeta de vales lleva el saldo que la caja vio al armar la venta
+
+    private fun conAbono(sesion: AreaTicketCheckout, pagado: String, saldo: String) =
+        sesion.copy(order = sesion.order!!.copy(paidAmount = pagado, remainingBalance = saldo, paymentStatus = "PARTIAL"))
+
+    private fun tarjetaQueFalla() {
+        coEvery {
+            terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any(), any(), any(), any())
+        } returns TerminalPaymentResult.Error("Terminal offline")
+    }
+
+    @Test
+    fun `P1 D53 el cobro con tarjeta de vales manda el saldo que dio el SERVIDOR al armar la venta`() = runTest {
+        val sesion = sesionDeVales("0.00", valeDeArea("a", "3.00"))
+        every { areaTicketRepository.session.current() } returns sesion
+        coEvery { areaTicketRepository.materialize(any(), any(), any(), any(), any(), any(), any(), any()) } returns sesion
+        tarjetaQueFalla()
+
+        viewModel.startPaymentFlow(CartState(items = listOf(lineaDeVale("a", 300))))
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        viewModel.selectTerminalAndPay("t1")
+        advanceUntilIdle()
+
+        coVerify(exactly = 1) {
+            terminalPaymentService.sendPaymentToTerminal(
+                terminalId = "t1", amountCents = 300, tipCents = any(), rating = any(), orderId = "order-vales",
+                processedByStaffId = any(), customerId = any(), deLaBandeja = any(), expectedBalanceBeforeCents = 300,
+            )
+        }
+    }
+
+    @Test
+    fun `P1 D53 un reintento del MISMO cobro conserva el saldo del primer armado aunque la cuenta ya tenga un abono`() = runTest {
+        // Codex r5: abono de $0.50 en el panel entre el primer intento (la terminal no estaba) y el reintento. La segunda
+        // materialización ya trae el abono, pero la orden es la «que continúa» y se salta `tieneAbono()`. Si el saldo esperado se
+        // tomara de ahí, el SERVIDOR aceptaría $3.00 sobre $2.50; con el primero, contesta «la cuenta cambió».
+        val sesion = sesionDeVales("0.00", valeDeArea("a", "3.00"))
+        every { areaTicketRepository.session.current() } returns sesion
+        coEvery { areaTicketRepository.materialize(any(), any(), any(), any(), any(), any(), any(), any()) } returnsMany
+            listOf(sesion, conAbono(sesion, pagado = "0.50", saldo = "2.50"))
+        tarjetaQueFalla()
+
+        viewModel.startPaymentFlow(CartState(items = listOf(lineaDeVale("a", 300))))
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        viewModel.selectTerminalAndPay("t1")
+        advanceUntilIdle()
+        viewModel.retry()
+        viewModel.selectTerminalAndPay("t1")
+        advanceUntilIdle()
+
+        coVerify(exactly = 2) { areaTicketRepository.materialize(any(), any(), any(), any(), any(), any(), any(), any()) }
+        coVerify(exactly = 2) {
+            terminalPaymentService.sendPaymentToTerminal(
+                terminalId = "t1", amountCents = 300, tipCents = any(), rating = any(), orderId = "order-vales",
+                processedByStaffId = any(), customerId = any(), deLaBandeja = any(), expectedBalanceBeforeCents = 300,
+            )
+        }
+    }
+
+    @Test
+    fun `D53 la parte 2 de una venta de vales dividida no manda saldo esperado (queda como hoy, por decidir)`() = runTest {
+        // Continuación: el «Saldo pendiente» del carrito y el saldo de la orden pueden ser de lecturas distintas (Codex r1 #1 y #2).
+        // Mandar uno de ellos sin que la caja sepa actualizar su renglón trabaría la tarjeta o dejaría pasar el abono. Hasta que el
+        // founder decida, la continuación no lo manda.
+        val sesion = conAbono(sesionDeVales("0.00", valeDeArea("a", "3.00")), pagado = "1.50", saldo = "1.50")
+        every { areaTicketRepository.session.current() } returns sesion
+        coEvery { areaTicketRepository.materialize(any(), any(), any(), any(), any(), any(), any(), any()) } returns sesion
+        tarjetaQueFalla()
+        val saldoPendiente = CartItem(id = "saldo", type = CartItemType.CustomAmount, name = "Saldo pendiente", unitPrice = 150)
+
+        viewModel.startPaymentFlow(CartState(items = listOf(saldoPendiente)), resumeOrderId = "order-vales")
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        viewModel.selectTerminalAndPay("t1")
+        advanceUntilIdle()
+
+        coVerify(exactly = 1) {
+            terminalPaymentService.sendPaymentToTerminal(
+                terminalId = "t1", amountCents = 150, tipCents = any(), rating = any(), orderId = "order-vales",
+                processedByStaffId = any(), customerId = any(), deLaBandeja = any(), expectedBalanceBeforeCents = null,
+            )
+        }
+    }
+
+    @Test
+    fun `D53 un cobro con tarjeta que no es de vales no manda saldo esperado`() = runTest {
+        coEvery {
+            orderRepository.createOrder(any(), any(), any(), any(), any(), capturedVenueId = any())
+        } returns Result.success(CreateOrderResponse(success = true, data = OrderData(id = "order-1")))
+        tarjetaQueFalla()
+
+        viewModel.startPaymentFlow(cardCart())
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        viewModel.selectTerminalAndPay("t1")
+        advanceUntilIdle()
+
+        coVerify(exactly = 1) {
+            terminalPaymentService.sendPaymentToTerminal(
+                terminalId = "t1", amountCents = any(), tipCents = any(), rating = any(), orderId = "order-1",
+                processedByStaffId = any(), customerId = any(), deLaBandeja = any(), expectedBalanceBeforeCents = null,
+            )
+        }
+    }
+
     @Test
     fun `los vales del carrito se comparan con los de la sesion renglon por renglon y en centavos`() {
         val sesion = sesionDeVales("0.00", valeDeArea("a", "1.00"), valeDeArea("b", "2.50"))
