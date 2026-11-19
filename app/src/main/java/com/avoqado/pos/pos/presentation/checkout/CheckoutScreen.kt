@@ -313,35 +313,7 @@ fun CheckoutScreen(
     LaunchedEffect(tableSessionActive?.orderId, tableSessionActive?.mode) {
         cartViewModel.consumePendingTableCobrar()
     }
-    // Class-seed conflict: the walk-in class wasn't added because the cart
-    // already links a different reservation — tell the cashier instead of
-    // silently dropping it.
-    val seedConflict by cartViewModel.seedConflict.collectAsState()
-    var seedConflictDialog by remember { mutableStateOf(false) }
-    val seedCtx = androidx.compose.ui.platform.LocalContext.current
-    LaunchedEffect(seedConflict) {
-        if (seedConflict) {
-            // En diálogo, no en Toast: el mesero acaba de intentar inscribir una
-            // clase y no pasó nada. Necesita entender que el carrito ya está ligado
-            // a otra reserva y qué hacer — un aviso que se desvanece (y que en la
-            // Sunmi puede ni salir en esta pantalla) lo deja atorado.
-            seedConflictDialog = true
-            cartViewModel.clearSeedConflict()
-        }
-    }
-
-    if (seedConflictDialog) {
-        AvoqadoDialog(
-            title = "El carrito ya tiene una reserva",
-            description = "Este carrito está ligado a otra reserva. Cóbralo o vacíalo " +
-                "antes de inscribir otra clase.",
-            onDismiss = { seedConflictDialog = false },
-            actionButton = {
-                PrimaryButton(text = "Entendido", onClick = { seedConflictDialog = false })
-            },
-            content = {},
-        )
-    }
+    // D13: el choque con otra reserva ya no tira la clase: queda en «Clase pendiente» (`ClasePendiente`).
     var selectedProduct by remember { mutableStateOf<Product?>(null) }
     // Venta por peso (báscula): producto por peso pendiente de capturar peso.
     // D7: cada apertura de la captura de peso lleva su número ([CapturaDePeso]).
@@ -646,6 +618,9 @@ fun CheckoutScreen(
         capturaDePeso = null
         // D9: «¿Algo más?» no se queda montado encima del cobro (lo abrió «Dividir» con la tira minimizada, Codex D8 r3 #3): se
         // cierra como un «No, gracias», que el spec manda registrar.
+        // D13: una tira que quedó viva de OTRA venta (restauraron B encima de A y la cobran con Tab + Enter) se cierra sin
+        // registrarse; sólo la de esta venta se cierra como «No, gracias».
+        upsellViewModel.soltarMomentoSiEsOtraVenta(cart.identidadDeVenta)
         if (upsellViewModel.moment.value != null) upsellViewModel.finish(emptyList(), 0)
         // D9 (pasada de la familia «a qué venta se le cuenta la sugerencia», Codex r6–r7): se decide AQUÍ, al fotografiar, por
         // donde pasan todos los caminos al cobro (botón, F12, «Dividir», la vuelta del motivo). La sugerencia pendiente de otra
@@ -670,6 +645,10 @@ fun CheckoutScreen(
     fun resolveUpsell(accept: Boolean, desdeElCliente: Boolean = false) {
         // Del FLUJO, no de `upsellMoment` capturado: el toque pudo llegar de la
         // pantalla del cliente, fuera de esta recomposición.
+        // D13 (Codex r3 #5): si el carrito ya es otra venta (restauraron B y el efecto que cierra la tira de A no ha corrido),
+        // el toque de A no agrega nada a B: la tira se cierra aquí mismo, sin registrarse.
+        val ventaAlTocar = cartViewModel.cartState.value.identidadDeVenta
+        upsellViewModel.soltarMomentoSiEsOtraVenta(ventaAlTocar)
         val moment = upsellViewModel.moment.value ?: return
         if (!accept) {
             upsellViewModel.finish(emptyList(), 0)
@@ -677,6 +656,12 @@ fun CheckoutScreen(
             return
         }
         checkoutScope.launch {
+            // D13 (Codex r4 #3): entre el toque y este trabajo pudieron restaurar otra venta. Se vuelve a mirar justo antes de
+            // agregar (el acomodador agrega todo sin pausas): si ya es otra, la tira se cierra sin registrarse.
+            if (cartViewModel.cartState.value.identidadDeVenta != ventaAlTocar) {
+                upsellViewModel.soltarMomento()
+                return@launch
+            }
             // 🔴 El acomodador re-valida contra el catálogo VIVO y DEVUELVE el
             // carrito resultante. De ahí sale el snapshot, de ningún otro lado:
             // leer `cartState` aquí daría el carrito de ANTES de agregar.
@@ -1345,6 +1330,13 @@ fun CheckoutScreen(
         }
     }
     com.avoqado.pos.giftcards.presentation.VentaPorRecuperar(cartViewModel)
+    // Codex r9: también los cobros de pantalla completa que no usan el carrito (la hoja de tarjetas de regalo, vender o
+    // consultar una, cobrar una cuenta con saldo): el aviso de la clase no sale encima de ninguno.
+    ClasePendiente(
+        cartViewModel,
+        enCobro = showPaymentFlow || mostrarHojaDeTarjetas || ventaDeTarjetas != null || consultaDeTarjeta != null ||
+            cuentaConSaldoVisible != null,
+    )
     cuentaConSaldoVisible?.let { id ->
         com.avoqado.pos.payment.presentation.CobroDeCuentaScreen(id, onSalir = { cuentaConSaldoVisible = null })
     }
@@ -1669,7 +1661,17 @@ fun CheckoutScreen(
     // D9 (Codex r5 #2): desde que el cliente sólo contesta, la sugerencia puede quedar pendiente sin cobro. Si el carrito queda
     // vacío sin cobrar (quitó todo, «Vaciar»), la venta que sigue es otra: ni se le cuenta ni se le deja de ofrecer.
     LaunchedEffect(cartState.isEmpty, showPaymentFlow) {
-        if (cartState.isEmpty && !showPaymentFlow) upsellViewModel.cancelPendingConversion()
+        if (cartState.isEmpty && !showPaymentFlow) {
+            upsellViewModel.cancelPendingConversion()
+            // D13 (Codex r1 #5): un carrito vacío ya no tiene a quién sugerirle: la tira de la venta anterior se cierra sin
+            // registrarse (quitar todo y armar otra venta conserva la identidad del carrito).
+            upsellViewModel.soltarMomento()
+        }
+    }
+    // D13: al cambiar de venta (restaurar un carrito guardado encima) la tira de «¿Algo más?» de la anterior se cierra sin
+    // registrarse: aceptarla metía el extra de A en la venta de B, y su registro podía caer en el folio de B.
+    LaunchedEffect(cartState.identidadDeVenta) {
+        upsellViewModel.soltarMomentoSiEsOtraVenta(cartState.identidadDeVenta)
     }
 
     // Barcode scanner overlay

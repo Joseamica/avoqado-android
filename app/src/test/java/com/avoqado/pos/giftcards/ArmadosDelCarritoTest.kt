@@ -24,6 +24,8 @@ class ArmadosDelCarritoTest {
             // D9: al cerrar un cobro, la baja del vendedor sólo cambia el vendedor (la venta puede traer un abono).
             "com/avoqado/pos/pos/presentation/cart/CartViewModel.kt:aplicarVendedores:defaultCartState" to 2,
             "com/avoqado/pos/pos/presentation/cart/CartViewModel.kt:consumePendingTableCobrar:clearCart" to 1,
+            // D13: «Agregar al carrito» de una clase pendiente empieza una venta NUEVA (el carrito ya está vacío y sin cliente).
+            "com/avoqado/pos/pos/presentation/cart/CartViewModel.kt:agregarClasePendiente:clearCart" to 1,
             "com/avoqado/pos/pos/presentation/cart/CartViewModel.kt:saveCurrentCart:finalizarVenta" to 1,
             "com/avoqado/pos/pos/presentation/cart/CartViewModel.kt:clearCart:_cartState.value =" to 1,
             "com/avoqado/pos/pos/presentation/cart/CartViewModel.kt:clearCart:defaultCartState" to 1,
@@ -64,6 +66,7 @@ class ArmadosDelCarritoTest {
             "com/avoqado/pos/pos/presentation/cart/CartViewModel.kt:aplicarVendedores:_cartState.value =" to "borra-o-inicia-vacio / borra-o-inicia-vacio / borra-o-inicia-vacio",
             "com/avoqado/pos/pos/presentation/cart/CartViewModel.kt:aplicarVendedores:defaultCartState" to "borra-o-inicia-vacio / borra-o-inicia-vacio / borra-o-inicia-vacio",
             "com/avoqado/pos/pos/presentation/cart/CartViewModel.kt:consumePendingTableCobrar:clearCart" to "borra-o-inicia-vacio / borra-o-inicia-vacio / borra-o-inicia-vacio",
+            "com/avoqado/pos/pos/presentation/cart/CartViewModel.kt:agregarClasePendiente:clearCart" to "borra-o-inicia-vacio / borra-o-inicia-vacio / borra-o-inicia-vacio",
             "com/avoqado/pos/pos/presentation/cart/CartViewModel.kt:saveCurrentCart:finalizarVenta" to "guarda-sin-marca-y-finaliza / no-persiste / no-persiste",
             "com/avoqado/pos/pos/presentation/cart/CartViewModel.kt:clearCart:_cartState.value =" to "borra-o-inicia-vacio / borra-o-inicia-vacio / borra-o-inicia-vacio",
             "com/avoqado/pos/pos/presentation/cart/CartViewModel.kt:clearCart:defaultCartState" to "borra-o-inicia-vacio / borra-o-inicia-vacio / borra-o-inicia-vacio",

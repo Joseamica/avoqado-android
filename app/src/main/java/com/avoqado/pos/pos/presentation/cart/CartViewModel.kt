@@ -68,6 +68,7 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.util.UUID
 import javax.inject.Inject
@@ -1346,12 +1347,6 @@ class CartViewModel @Inject constructor(
         _avisoDelPremio.value = null
     }
 
-    /// True when a class-seed was skipped because the cart already links a
-    /// different reservation — the UI shows a message so the class isn't
-    /// silently dropped.
-    private val _seedConflict = MutableStateFlow(false)
-    val seedConflict: StateFlow<Boolean> = _seedConflict.asStateFlow()
-    fun clearSeedConflict() { _seedConflict.value = false }
 
     private val _referralCode = MutableStateFlow("")
     val referralCode: StateFlow<String> = _referralCode.asStateFlow()
@@ -1616,41 +1611,109 @@ class CartViewModel @Inject constructor(
         addCustomAmount(name = label, amountCents = session.totalCents)
     }
 
+    /** D13 (Codex r4 #2): una sola inscripción a la vez, en el orden en que llegaron. */
+    private var consumiendoClase = false
+
     fun consumePendingClassSeed() {
-        // D9: con el cobro abierto, o con una venta a medio cobrar (su «Saldo pendiente» frenaría el siguiente «Cobrar», Codex r6
-        // #1), la clase no entra y la semilla NO se consume: la pantalla la vuelve a pedir al cerrarse el cobro.
-        if (cobroLoImpide(avisar = false) || hayVentaAMedias()) return
+        // La que está corriendo procesa la siguiente al terminar: dos a la vez se podían desordenar con el catálogo vacío.
+        if (consumiendoClase) return
+        // D9/D13: con el cobro abierto o una venta a medio cobrar (su «Saldo pendiente» frenaría el siguiente «Cobrar», Codex r6
+        // #1), ninguna recién inscrita entra: pasan a «Clase pendiente» y la cajera decide cuándo agregarlas (nunca solas).
+        if (cobroLoImpide(avisar = false) || hayVentaAMedias()) { classCheckoutSeed.esperarTodas(); return }
         val seed = classCheckoutSeed.consume() ?: return
+        // D13 (Codex r1 #4): la de otra sucursal no se busca en este catálogo (se perdía sin aviso): espera en la suya.
+        if (seed.venueId != null && seed.venueId != secureStorage.venueId) {
+            classCheckoutSeed.esperar(seed)
+            consumePendingClassSeed()   // Codex r4 #2: la siguiente de la fila no se queda escondida
+            return
+        }
+        consumiendoClase = true
+        // Codex r5 #2: si el carrito se descarta (o algo lanza) a media carga, la inscripción ya salió de la fila: vuelve a
+        // «Clase pendiente» en vez de perderse con su lugar apartado.
+        var colocada = false
         viewModelScope.launch {
-            if (productsRepository.products.value.isEmpty()) {
-                productsRepository.fetchProducts()
+            try {
+                if (productsRepository.products.value.isEmpty()) {
+                    productsRepository.fetchProducts()
+                }
+                // Codex r5 #3: la cajera cambió de sucursal mientras cargaba el catálogo: espera en la suya.
+                if (seed.venueId != null && seed.venueId != secureStorage.venueId) {
+                    classCheckoutSeed.esperar(seed); colocada = true
+                    return@launch
+                }
+                // D9 (Codex r1 #3): el cobro se abrió mientras cargaba el catálogo: pasa a pendientes (y las demás al seguir).
+                if (cobroLoImpide(avisar = false) || hayVentaAMedias()) {
+                    classCheckoutSeed.esperar(seed); colocada = true
+                    return@launch
+                }
+                val product = productsRepository.products.value.firstOrNull { it.id == seed.productId }
+                if (product == null) {
+                    // D13 (Codex r2 #8): antes se perdía con un log (el lugar ya estaba apartado en el servidor). Ahora queda en
+                    // «Clase pendiente», donde la cajera ve que no está en el catálogo o la quita.
+                    Log.w("🛒", "Class seed product ${seed.productId} not in catalog — goes to pending")
+                    classCheckoutSeed.esperar(seed); colocada = true
+                    return@launch
+                }
+                // Don't clobber a different reservation already linked to the cart:
+                // seeding class B into a cart that already carries class A's
+                // reservationId would leave the sale linked to only one of them.
+                val existingResId = _cartState.value.reservationId
+                if (existingResId != null && seed.reservationId != null && existingResId != seed.reservationId) {
+                    // D13: antes se perdía (con su lugar ya apartado en el servidor); ahora queda en «Clase pendiente».
+                    Log.w("🛒", "Cart already linked to reservation $existingResId — seed ${seed.reservationId} goes to pending")
+                    classCheckoutSeed.esperar(seed); colocada = true
+                    return@launch
+                }
+                addProductWithModifiers(product, quantity = seed.quantity, modifiers = emptyList())
+                seed.reservationId?.let { resId ->
+                    _cartState.update { it.copy(reservationId = resId) }
+                }
+                colocada = true
+                Log.d("🛒", "Seeded class ${product.name} x${seed.quantity} from walk-in flow")
+            } finally {
+                if (!colocada) classCheckoutSeed.esperar(seed)
+                consumiendoClase = false
+                // Codex r3 #4 y r4 #2: la siguiente de la fila se procesa en su orden, salga como salga ésta. Con el carrito ya
+                // descartado no (r5 #2): se quedaría sin correr; la toma el carrito siguiente.
+                if (classCheckoutSeed.hayFrescas() && viewModelScope.isActive) consumePendingClassSeed()
             }
-            // D9 (Codex r1 #3): el cobro se abrió mientras cargaba el catálogo: la semilla regresa y entra al cerrarlo.
-            if (cobroLoImpide(avisar = false) || hayVentaAMedias()) {
-                classCheckoutSeed.devolver(seed)
-                return@launch
-            }
-            val product = productsRepository.products.value.firstOrNull { it.id == seed.productId }
-            if (product == null) {
-                Log.w("🛒", "Class seed product ${seed.productId} not in catalog — cannot seed cart")
-                return@launch
-            }
-            // Don't clobber a different reservation already linked to the cart:
-            // seeding class B into a cart that already carries class A's
-            // reservationId would leave the sale linked to only one of them.
-            val existingResId = _cartState.value.reservationId
-            if (existingResId != null && seed.reservationId != null && existingResId != seed.reservationId) {
-                Log.w("🛒", "Cart already linked to reservation $existingResId — skipping seed for ${seed.reservationId}")
-                _seedConflict.value = true
-                return@launch
-            }
-            addProductWithModifiers(product, quantity = seed.quantity, modifiers = emptyList())
-            seed.reservationId?.let { resId ->
-                _cartState.update { it.copy(reservationId = resId) }
-            }
-            Log.d("🛒", "Seeded class ${product.name} x${seed.quantity} from walk-in flow")
         }
     }
+
+    /** D13: las clases que esperan en ESTA sucursal, para el aviso «Clase pendiente». */
+    val clasesPendientes: StateFlow<List<com.avoqado.pos.pos.data.ClassCheckoutSeed.Seed>>
+        get() = classCheckoutSeed.enEspera
+
+    fun clasesPendientesDeEsteNegocio(): List<com.avoqado.pos.pos.data.ClassCheckoutSeed.Seed> =
+        classCheckoutSeed.enEspera.value.filter { it.venueId == null || it.venueId == secureStorage.venueId }
+
+    /**
+     * D13: la cajera agrega una «Clase pendiente». Sólo a una venta nueva —carrito vacío y sin cliente elegido— para que nunca
+     * caiga en la venta ni con el cliente de otra persona (Codex D13 r1 #1). @return por qué no se pudo, o `null` si entró.
+     */
+    fun agregarClasePendiente(seed: com.avoqado.pos.pos.data.ClassCheckoutSeed.Seed): String? {
+        // D13 (Codex r3 #3): la cajera la quitó («Ya no la cobro aquí») mientras se consultaba a recepción.
+        if (!classCheckoutSeed.estaEnEspera(seed)) return "Esta clase ya no está pendiente."
+        if (cobroLoImpide()) return AVISO_COBRO_ABIERTO
+        if (hayVentaAMedias()) return "Termina la venta a medio cobrar antes de agregar la clase."
+        if (!_cartState.value.isEmpty || _selectedCustomer.value != null) {
+            return "La clase va en su propia venta: termina o guarda la venta actual (y quita al cliente) para agregarla."
+        }
+        val product = productsRepository.products.value.firstOrNull { it.id == seed.productId }
+            ?: return "Esta clase ya no está en el catálogo de esta sucursal."
+        // D13 (Codex r2 #1): un carrito vacío todavía puede ser la copia guardada de otra persona (le quitaron todo). La clase
+        // empieza una venta NUEVA, para que su cobro no retire esa copia ni herede nada de ella.
+        val antes = _cartState.value.identidadDeVenta
+        clearCart()
+        if (_cartState.value.identidadDeVenta == antes) return "No se pudo empezar una venta nueva para la clase."
+        classCheckoutSeed.quitarDeEspera(seed)
+        addProductWithModifiers(product, quantity = seed.quantity, modifiers = emptyList())
+        seed.reservationId?.let { resId -> _cartState.update { it.copy(reservationId = resId) } }
+        return null
+    }
+
+    /** D13: «Ya no la cobro aquí» (recepción ya la cobró o la canceló): sale de pendientes; la reserva no se toca. */
+    fun quitarClasePendiente(seed: com.avoqado.pos.pos.data.ClassCheckoutSeed.Seed) = classCheckoutSeed.quitarDeEspera(seed)
 
     // MARK: - Cart Operations
 
