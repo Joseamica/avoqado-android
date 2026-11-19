@@ -321,6 +321,7 @@ class DuenoDeCuentasTest {
                     com.avoqado.pos.tpvsettings.data.TerminalNavigationSettings(terminalName = "Caja 1"))
             },
             com.avoqado.pos.onlineorders.data.FoliosCobradosConTarjeta({ null }, { f -> f(null); true }),
+            mockk<com.avoqado.pos.core.data.network.PermissionOverrideRepository>(),
         ).also { it.reloj = { Instante(arranque, ms) }; it.horaDePared = { hora } }
         assertEquals(Respuesta.Concedida, a.apartar(v, "o1", ana.copy(enLinea = true)))
         a.soltar(v, "o1", "i-ana")
@@ -370,6 +371,7 @@ class DuenoDeCuentasTest {
                     com.avoqado.pos.tpvsettings.data.TerminalNavigationSettings(terminalName = "Caja 1"))
             },
             folios,
+            mockk<com.avoqado.pos.core.data.network.PermissionOverrideRepository>(),
         ).also { it.reloj = { Instante(arranque, ms) }; it.horaDePared = { hora } }
         // La caja 1 cobra su cuenta con tarjeta; el cobro queda en duda (en la lista) y la pantalla se va: sigue COMPROMETIDA.
         assertEquals(Respuesta.Concedida, a.comprometerPropio(v, "o1", "llave-1", "Yo", enLinea = true))

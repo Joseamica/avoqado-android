@@ -55,6 +55,12 @@ data class Registro(
     val cuentas: Map<String, CuentaEnElRegistro> = emptyMap(),
     /** Intentos que una persona declaró «No se cobró» (→ hora de pared, para podar): su apartar y comprometer tardíos se rechazan. */
     val cancelados: Map<String, Long> = emptyMap(),
+    /**
+     * F1 bloque 6: liberaciones de Mostrador entre cajas firmadas con PIN cuyo acuse el SERVIDOR aún no contesta (`operationKey` →
+     * token de la autorización; nunca el PIN). Entran en la MISMA escritura que la liberación; las quita [DuenoDeCuentas.enviarAcuses].
+     * Un registro de antes de este campo se lee vacío.
+     */
+    val acusesPendientes: Map<String, String> = emptyMap(),
 )
 
 /** Quién pide: la caja ([por], [caja]), la persona ([quien]) y su intento. [enLinea] = cobra con internet y el saldo vivo del servidor. */
@@ -101,7 +107,7 @@ object RegistroDeCuentas {
             }
         }.toMap()
         val cancelados = r.cancelados.filterValues { hora - it < PODA_DE_CANCELADOS_MS }
-        return if (cuentas == r.cuentas && cancelados == r.cancelados) r else Registro(cuentas, cancelados)
+        return if (cuentas == r.cuentas && cancelados == r.cancelados) r else r.copy(cuentas = cuentas, cancelados = cancelados)
     }
 
     fun apartar(r: Registro, orderId: String, s: Solicitud, ahora: Instante, hora: Long): Paso =
@@ -190,12 +196,14 @@ object RegistroDeCuentas {
     /**
      * «No se cobró»: la cuenta vuelve a LIBRE y su intento queda cancelado en disco. Antes de tiempo, nada. 🔴 Codex android r1 #5:
      * con [intento], sólo ESE (el que el gerente vio al abrir su teclado): si mientras tanto la otra caja soltó ése y empezó otro, nada.
+     * F1 bloque 6: [acuse] (`operationKey` → token) queda pendiente en el mismo registro, sólo si se liberó.
      */
-    fun noSeCobro(r0: Registro, orderId: String, ahora: Instante, hora: Long, intento: String? = null): Declaracion {
+    fun noSeCobro(r0: Registro, orderId: String, ahora: Instante, hora: Long, intento: String? = null, acuse: Pair<String, String>? = null): Declaracion {
         val r = normalizar(r0, ahora, hora)
         val c = r.cuentas[orderId]
         if (!puedeDeclararNoSeCobro(c, ahora)) return Declaracion(r, false)
         if (intento != null && c?.intento != intento) return Declaracion(r, false)
-        return Declaracion(Registro(r.cuentas - orderId, r.cancelados + (c!!.intento to hora)), true)
+        return Declaracion(r.copy(cuentas = r.cuentas - orderId, cancelados = r.cancelados + (c!!.intento to hora),
+            acusesPendientes = if (acuse == null) r.acusesPendientes else r.acusesPendientes + acuse), true)
     }
 }

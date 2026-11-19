@@ -47,6 +47,8 @@ class DuenoDeCuentas internal constructor(
      * `FoliosCobradosConTarjeta`). Un compromiso propio con su tarjeta resuelta tarde pasa a CERRADA.
      */
     private val tarjetaCobrada: (venueId: String, orderId: String) -> Boolean = { _, _ -> false },
+    /** F1 bloque 6: manda el acuse de una liberación firmada. true = el SERVIDOR ya contestó para siempre (se deja de mandar). */
+    private val acusar: suspend (venueId: String, operationKey: String, token: String) -> Boolean = { _, _, _ -> false },
 ) {
     @Inject constructor(
         cache: PayloadCache,
@@ -58,6 +60,7 @@ class DuenoDeCuentas internal constructor(
         outbox: com.avoqado.pos.core.data.sync.SyncOutbox,
         ajustes: com.avoqado.pos.tpvsettings.data.TpvSettingsRepository,
         folios: com.avoqado.pos.onlineorders.data.FoliosCobradosConTarjeta,
+        permisos: com.avoqado.pos.core.data.network.PermissionOverrideRepository,
     ) : this(
         cache = cache,
         abiertas = abiertas,
@@ -73,6 +76,7 @@ class DuenoDeCuentas internal constructor(
         miDeviceId = { outbox.deviceId },
         miCaja = { nombreDeCaja(ajustes.terminalNavigation.value.terminalName) },
         tarjetaCobrada = { venue, orden -> cobradas.marcasDe(venue).any { it.orderId == orden } || folios.marcasDe(venue).any { it.orderId == orden } },
+        acusar = { venue, llave, token -> permisos.acusarAplicada(venue, llave, token) },
     )
 
     /** Seams de prueba: el reloj monotónico con su arranque, y la hora de pared (sólo para enseñar y podar). */
@@ -162,13 +166,14 @@ class DuenoDeCuentas internal constructor(
 
     /**
      * «No se cobró» en ESTA caja, firmado por [quienDeclara] (F1: el gerente). false = todavía no se puede, no es mía, ya no es ese
-     * [intento] (Codex android r1 #5) o el disco falló.
+     * [intento] (Codex android r1 #5) o el disco falló. F1 bloque 6: [acuse] (`operationKey` → token del PIN) queda pendiente en la MISMA
+     * escritura que la liberación; sin liberación, tampoco acuse. Lo manda [enviarAcuses].
      */
-    suspend fun noSeCobro(venueId: String, orderId: String, quienDeclara: String, intento: String? = null): Boolean = try {
+    suspend fun noSeCobro(venueId: String, orderId: String, quienDeclara: String, intento: String? = null, acuse: Pair<String, String>? = null): Boolean = try {
         conRegistro(venueId, orderId) { reg ->
             val antes = reg.cuentas[orderId]
-            val d = RegistroDeCuentas.noSeCobro(reg, orderId, reloj(), horaDePared(), intento)
-            // ponytail: la bitácora es el log del aparato más el intento cancelado en disco; una nota en el servidor pediría un intent nuevo.
+            val d = RegistroDeCuentas.noSeCobro(reg, orderId, reloj(), horaDePared(), intento, acuse)
+            // La Bitácora del servidor la deja el acuse (`POS_LAN_RELEASE_SIGNED`); este log es el diagnóstico del aparato.
             if (d.hecho) Log.w(TAG, "📝 «No se cobró» de $orderId, declarado por $quienDeclara: intento ${antes?.intento} de ${antes?.caja} cancelado")
             d.registro to d.hecho
         } == true
@@ -214,6 +219,43 @@ class DuenoDeCuentas internal constructor(
 
     /** ¿Ya puede una persona de esta caja declarar «No se cobró» sobre el cobro de OTRA caja? */
     fun puedeDeclararNoSeCobro(c: CuentaEnElRegistro?): Boolean = c != null && c.por != deviceId && RegistroDeCuentas.puedeDeclararNoSeCobro(c, reloj())
+
+    /**
+     * F1 bloque 6: manda los acuses pendientes de [venueId] y quita los que el SERVIDOR ya contestó para siempre. Nunca pide el PIN (el token
+     * vale aunque la autorización haya vencido), nunca lanza y no toca la red bajo el candado. Repetir uno es seguro: el servidor deja UN
+     * asiento por llave. Lo llaman la firma, el encendido de la caja y su vuelta de 10 s (`CuentasEntreCajas`).
+     */
+    suspend fun enviarAcuses(venueId: String) {
+        val pendientes = try {
+            enCrudo(venueId) { it?.acusesPendientes.orEmpty() }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            return
+        }
+        for ((llave, token) in pendientes) {
+            val contesto = try { acusar(venueId, llave, token) } catch (e: CancellationException) { throw e } catch (e: Exception) { false }
+            if (!contesto) continue
+            try {
+                enCrudo(venueId) { r ->
+                    // Sólo ESE acuse: lo demás del registro, tal como está (no se reconcilia ni se normaliza aquí).
+                    if (r != null && r.acusesPendientes[llave] == token) {
+                        cache.saveDurable(PayloadCache.TYPE_REGISTRO_DE_CUENTAS, venueId,
+                            RegistroDeCuentas.escribir(r.copy(acusesPendientes = r.acusesPendientes - llave)))
+                    }
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "⚠️ no se pudo quitar el acuse ya contestado de $venueId: ${e.message}") // se reenvía: «ya estaba»
+            }
+        }
+    }
+
+    /** El registro tal como está en disco (null = no hay o ilegible), bajo el candado y sin cortarse a la mitad. */
+    private suspend fun <T> enCrudo(venueId: String, bloque: suspend (Registro?) -> T): T = withContext(NonCancellable + io) {
+        mutex.withLock { bloque(cache.loadDurable(PayloadCache.TYPE_REGISTRO_DE_CUENTAS, venueId)?.let { RegistroDeCuentas.leer(it.json) }) }
+    }
 
     // MARK: - Disco
 
@@ -317,6 +359,17 @@ class DuenoDeCuentas internal constructor(
 
     companion object {
         private const val TAG = "DuenoDeCuentas"
+
+        private val PARTE = Regex("[A-Za-z0-9_-]{1,64}")
+        private val INTENTO = Regex("[A-Za-z0-9_.:-]{1,64}")
+
+        /**
+         * F1 bloque 6: la `operationKey` que ata el PIN del gerente a UNA liberación (contrato del SERVIDOR §4). null = alguna parte no
+         * cabe en la forma que acepta el servidor: se firma como antes, sin atar y sin asiento (un 400 dejaría al gerente sin liberar).
+         * Cada parte se revisa sola: un «:» en el folio se leería como parte del intento.
+         */
+        fun operacionDeLiberacion(orderId: String, cajaDuena: String, intento: String): String? =
+            if (PARTE.matches(orderId) && PARTE.matches(cajaDuena) && INTENTO.matches(intento)) "liberacion-lan:$orderId:$cajaDuena:$intento" else null
 
         /** C1: la fila de un cobro que SÍ ocurrió (la cola ya tiene el efectivo). `EN_VUELO` no: está en duda. */
         internal val CON_DINERO = setOf("PENDING", "SYNCING", "SYNCED", "FAILED")

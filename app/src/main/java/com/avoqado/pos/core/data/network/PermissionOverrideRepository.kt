@@ -144,4 +144,39 @@ open class PermissionOverrideRepository internal constructor(
                 OverrideResult.Failed("Necesitas conexión para pedir autorización")
             }
         }
+
+    /**
+     * F1 bloque 6: el acuse de una liberación de Mostrador entre cajas ya escrita en el disco (`POST …/permission-overrides/applied`). El
+     * SERVIDOR deja UN asiento por llave con el gerente de la autorización. true = contestó para siempre: 2xx (`recorded` true o false:
+     * asentó o ya estaba), 400, 404 `AUTHORIZATION_NOT_FOUND` o 409 `OPERATION_MISMATCH` (no se registró y reintentar no lo cambia).
+     * false = sin red, sin sesión, 5xx, 408, 429, o un 404 sin ese código (un servidor sin la ruta todavía): se reintenta. Sesión normal
+     * de la caja: ni PIN ni permiso, y vale aunque la autorización ya haya vencido.
+     */
+    open suspend fun acusarAplicada(venueId: String, operationKey: String, token: String): Boolean = withContext(Dispatchers.IO) {
+        val (sello, accessToken) = secureStorage.selloYAccess()
+        if (accessToken == null) return@withContext false
+        val body = json.encodeToString(AcuseBody.serializer(), AcuseBody(token, operationKey)).toRequestBody("application/json".toMediaType())
+        val request = Request.Builder()
+            .url("${ApiConstants.BASE_URL}/mobile/venues/$venueId/permission-overrides/applied")
+            .addHeader("Authorization", "Bearer $accessToken")
+            .tag(SelloDePeticion::class.java, SelloDePeticion(sello))
+            .post(body)
+            .build()
+        try {
+            client.newCall(request).execute().use { r ->
+                val codigo = runCatching { json.decodeFromString<OverrideErrorBody>(r.body?.string().orEmpty()).code }.getOrNull()
+                r.code in 200..299 || r.code == 400 || (codigo != null && FINALES_DEL_ACUSE[r.code] == codigo)
+            }
+        } catch (e: Exception) {
+            Log.w("🔐 Override", "Acuse de liberación pendiente: ${e.message}")
+            false
+        }
+    }
+
+    private companion object {
+        val FINALES_DEL_ACUSE = mapOf(404 to "AUTHORIZATION_NOT_FOUND", 409 to "OPERATION_MISMATCH")
+    }
 }
+
+@Serializable
+private data class AcuseBody(val token: String, val operationKey: String)

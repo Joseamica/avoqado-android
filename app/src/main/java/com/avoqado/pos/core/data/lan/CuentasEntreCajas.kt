@@ -89,6 +89,7 @@ class CuentasEntreCajas internal constructor(
         apagar()
         venueActivo = venueId
         red.conectarCuentas({ linea -> CuentasPorLaRed.contestar(linea, venueActivo, dueno) }, dueno.nombreCaja)
+        empujarAcuses(venueId) // al abrir la caja (y tras reiniciar): lo que quedó sin acuse
         trabajos = scope.launch {
             while (isActive) {
                 delay(RegistroDeCuentas.RENOVAR_MS)
@@ -103,6 +104,11 @@ class CuentasEntreCajas internal constructor(
         red.desconectarCuentas()
         apartados.clear()
         venueActivo = null
+    }
+
+    /** F1 bloque 6: los acuses de liberaciones firmadas, sin esperar a la vuelta de 10 s y sin detener a quien llama. */
+    fun empujarAcuses(venueId: String) {
+        scope.launch { dueno.enviarAcuses(venueId) }
     }
 
     /** Las otras cajas de MI sucursal que saben de D (R5). */
@@ -389,6 +395,8 @@ class CuentasEntreCajas internal constructor(
             if (r != null && r != Respuesta.Concedida) apartados.remove(orden, a)
         }
         val v = venueActivo ?: return
+        // ponytail: reintento cada 10 s sin espera creciente; son pocos (uno por liberación firmada) y aparte, para no frenar las renovaciones.
+        empujarAcuses(v)
         mandarAvisos(v)
     }
 

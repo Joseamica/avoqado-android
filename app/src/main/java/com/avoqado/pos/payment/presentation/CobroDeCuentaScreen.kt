@@ -341,13 +341,17 @@ class CobroDeCuentaViewModel @Inject constructor(
         val dueno = duenoDeCuentas ?: return OverrideResult.Failed(TextosDeCuentaSinRed.YA_NO_HAY_COBRO_PENDIENTE)
         // Codex android r1 #5: si el intento que vio el gerente ya no es el vigente, se dice cómo quedó y no se libera nada.
         dueno.estadoDe(venue, orderId).let { if (it?.intento != intento) return OverrideResult.Failed(comoQuedo(it)) }
-        return when (val r = validador.requestToken(venue, pin, CancelacionDeCobro.PERMISO_DECLARAR_NO_COBRADO)) {
-            // El token no viaja a ningún lado (el registro es local): el PIN validado ES la firma, y el servidor la dejó en su bitácora.
-            // El registro anota al GERENTE que firmó (el nombre que contestó el servidor), y sólo sobre ESE intento.
+        // F1 bloque 6: el PIN se ata a ESTA liberación; si alguna parte no cabe en la forma del servidor, se firma como antes (sin asiento).
+        val operacion = com.avoqado.pos.core.data.lan.DuenoDeCuentas.operacionDeLiberacion(orderId, dueno.deviceId, intento)
+        return when (val r = validador.requestToken(venue, pin, CancelacionDeCobro.PERMISO_DECLARAR_NO_COBRADO, operacion)) {
+            // El registro anota al GERENTE que firmó (el nombre que contestó el servidor), y sólo sobre ESE intento. El token queda en la
+            // MISMA escritura que la liberación y su acuse le dice al servidor qué cuenta se liberó (un asiento con el gerente en la Bitácora).
             is OverrideResult.Granted -> {
                 val gerente = r.authorizedByName.ifBlank { storage.selectedStaffNameForCurrentVenue ?: storage.userFirstName.orEmpty() }
-                if (dueno.noSeCobro(venue, orderId, gerente, intento)) r
-                else OverrideResult.Failed(comoQuedo(dueno.estadoDe(venue, orderId)))
+                if (dueno.noSeCobro(venue, orderId, gerente, intento, operacion?.let { it to r.token })) {
+                    if (operacion != null) cuentasEntreCajas?.empujarAcuses(venue)
+                    r
+                } else OverrideResult.Failed(comoQuedo(dueno.estadoDe(venue, orderId)))
             }
             OverrideResult.WrongPin, OverrideResult.Insufficient -> OverrideResult.Failed(CancelacionDeCobro.PIN_NO_ES_DE_GERENTE)
             else -> r

@@ -101,7 +101,7 @@ class CobroDeCuentaSinRedTest {
         coEvery { estadoDe(any(), any()) } answers { registro }
         every { puedeDeclararNoSeCobro(any()) } answers { puedeDeclarar }
         every { deviceId } returns "caja-yo"
-        coEvery { noSeCobro(any(), any(), any(), any()) } answers { registro = null; puedeDeclarar = false; true }
+        coEvery { noSeCobro(any(), any(), any(), any(), any()) } answers { registro = null; puedeDeclarar = false; true }
     }
     private val filasDePagarDespues = MutableStateFlow<List<PayLaterRow>>(emptyList())
     private val pagarDespues = mockk<PayLaterQueue> { every { filas } returns filasDePagarDespues }
@@ -464,7 +464,7 @@ class CobroDeCuentaSinRedTest {
         m.consultarSinRed("o1")
         // 🔴 F1 (tarea 6, K16): sin red, a los 2 min sin confirmar, el cajero ya no declara «No se cobró: cobrar aquí»: la cuenta espera.
         assertEquals(Gris("Ana la está cobrando en Caja 2. Espera a que termine."), m.sinRed.value)
-        coVerify(exactly = 0) { dueno.noSeCobro(any(), any(), any(), any()) }
+        coVerify(exactly = 0) { dueno.noSeCobro(any(), any(), any(), any(), any()) }
         registro = CuentaEnElRegistro(EstadoDeCuenta.CERRADA, "caja-2", "Caja 2", "Ana", "i", Instante("b", 0), faltaSubirla = true)
         m.consultarSinRed("o1")
         assertEquals(Gris("Cobrada en Caja 2 · falta subirla"), m.sinRed.value)
@@ -611,13 +611,17 @@ class CobroDeCuentaSinRedTest {
         respuestaAlPin = com.avoqado.pos.core.data.network.OverrideResult.WrongPin
         assertEquals(com.avoqado.pos.core.data.network.OverrideResult.Failed(com.avoqado.pos.payment.domain.CancelacionDeCobro.PIN_NO_ES_DE_GERENTE),
             m.firmarNoSeCobro("o1", "1111", firma.intento))
-        coVerify(exactly = 0) { dueno.noSeCobro(any(), any(), any(), any()) }
+        coVerify(exactly = 0) { dueno.noSeCobro(any(), any(), any(), any(), any()) }
 
         respuestaAlPin = com.avoqado.pos.core.data.network.OverrideResult.Granted(token = "t", authorizedByName = "Gerente")
         assertTrue(m.firmarNoSeCobro("o1", "4321", firma.intento) is com.avoqado.pos.core.data.network.OverrideResult.Granted)
-        coVerify(exactly = 1) { gerente.requestToken("v1", "4321", com.avoqado.pos.payment.domain.CancelacionDeCobro.PERMISO_DECLARAR_NO_COBRADO, null) }
+        // F1 bloque 6: el PIN se ata a ESTA liberación (folio, caja dueña, intento) y su token viaja al disco con ella, para el acuse.
+        val llave = "liberacion-lan:o1:caja-yo:i"
+        coVerify(exactly = 1) { gerente.requestToken("v1", "4321", com.avoqado.pos.payment.domain.CancelacionDeCobro.PERMISO_DECLARAR_NO_COBRADO, llave) }
         // Codex android r1 #5: el registro anota al GERENTE que firmó (el nombre que devolvió el servidor), no a quien opera la caja.
-        coVerify(exactly = 1) { dueno.noSeCobro("v1", "o1", "Gerente", "i") }
+        coVerify(exactly = 1) { dueno.noSeCobro("v1", "o1", "Gerente", "i", llave to "t") }
+        // Y el acuse sale en cuanto queda escrita (sin esperar al lazo de 10 s); los PIN rechazados no empujaron nada.
+        io.mockk.verify(exactly = 1) { entre.empujarAcuses("v1") }
         assertNull(m.noConfirmoEnLinea("o1"))
     }
 
@@ -632,7 +636,7 @@ class CobroDeCuentaSinRedTest {
 
         assertEquals(com.avoqado.pos.core.data.network.OverrideResult.Failed("Beto la está cobrando en Caja 2. Espera a que termine."),
             m.firmarNoSeCobro("o1", "4321", firma.intento))
-        coVerify(exactly = 0) { dueno.noSeCobro(any(), any(), any(), any()) }
+        coVerify(exactly = 0) { dueno.noSeCobro(any(), any(), any(), any(), any()) }
         coVerify(exactly = 0) { gerente.requestToken(any(), any(), any(), any()) }
     }
 }
