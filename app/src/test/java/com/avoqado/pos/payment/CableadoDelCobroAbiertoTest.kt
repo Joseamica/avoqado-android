@@ -35,6 +35,17 @@ class CableadoDelCobroAbiertoTest {
         assertTrue(cobro.indexOf("pinta.cobroSinRed?.let") in 0 until salida)
     }
 
+    /**
+     * F1 · Codex final r1 #1: «Cuentas abiertas» manda el saldo que enseña (`expectedRemainingCents`) y, con el 412, se queda en la
+     * cuenta con el saldo vigente y su aviso, como el carrito (el `onCancel` que sigue al 412 no la cierra).
+     */
+    @Test fun `cuentas abiertas manda su saldo y el 412 la deja en la cuenta`() {
+        val cobroEnLinea = cobro.substring(cobro.indexOf("PaymentFlowScreen(cartState=cart,resumeOrderId=cuenta.id,"))
+        assertTrue(cobroEnLinea.contains("saldoDelFolio=saldoDelFolioDeLaCuenta(cuenta),"))
+        assertTrue(cobroEnLinea.contains("onSaldoVigente={saldo->trasElSaldo=true;cobrar=false;avisoLocal=com.avoqado.pos.payment.data.avisoDeSaldoCambiado(saldo.cents)"))
+        assertTrue(cobroEnLinea.contains("onCancel={if(trasElSaldo)trasElSaldo=falseelseonSalir(CierreDeCuenta.ABIERTA)},"))
+    }
+
     /** M-n2: al cerrar el cobro en línea se vuelve a pedir la OFERTA (que también recarga), no sólo la cuenta. */
     @Test fun `al cerrar el cobro en linea se refresca la oferta`() {
         val enLinea = cobro.substring(cobro.indexOf("if(pinta.cobroEnLinea)"), cobro.indexOf("pinta.cobroSinRed?.let"))

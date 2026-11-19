@@ -410,6 +410,13 @@ class CobroDeCuentaViewModel @Inject constructor(
 
 enum class CierreDeCuenta { ABIERTA, PAGADA, CANCELADA }
 
+/**
+ * F1 · Codex final r1 #1: el saldo que «Cuentas abiertas» enseña viaja con su cobro como `expectedRemainingCents` (invariante 2), y el
+ * SERVIDOR lo compara al centavo. Sólo el del SERVIDOR (`preBillBalance`): sin él, una cuenta sin pagos enseña su total, que puede traer
+ * la propina de la creación (un 412 falso).
+ */
+internal fun saldoDelFolioDeLaCuenta(cuenta: OrderDetail): Int? = cuenta.preBillBalance?.remainingBalanceCents
+
 @Composable
 fun CobroDeCuentaScreen(
     orderId: String,
@@ -438,6 +445,8 @@ fun CobroDeCuentaScreen(
     var cobrar by rememberSaveable(orderId) { mutableStateOf(false) }
     var avisoLocal by rememberSaveable(orderId) { mutableStateOf<String?>(null) }
     var restanteTrasCobrar by rememberSaveable(orderId) { mutableStateOf<Int?>(null) }
+    // Codex final r1 #1: el 412 llega seguido de `onCancel`; esta marca hace que ese `onCancel` sólo cierre el cobro, no la cuenta.
+    var trasElSaldo by remember { mutableStateOf(false) }
     LaunchedEffect(orderId) { if (enLinea) viewModel.ofertaParaCobrar(orderId, cuentaDelCarrito() == orderId) }
     Dialog(onDismissRequest = { onSalir(CierreDeCuenta.ABIERTA) }, properties = DialogProperties(
         usePlatformDefaultWidth = false, dismissOnBackPress = false, dismissOnClickOutside = false)) {
@@ -453,6 +462,11 @@ fun CobroDeCuentaScreen(
                 type = CartItemType.CustomAmount, name = if (cuenta.esCuentaDeTarjetas) TextosDeTarjetas.NOMBRE_EN_CUENTAS else "Saldo pendiente", unitPrice = cents))) }
             PaymentFlowScreen(cartState = cart, resumeOrderId = cuenta.id,
                 cuentaDeTarjetas = cuenta.esCuentaDeTarjetas, desdeCuentasAbiertas = true,
+                // F1 · Codex final r1 #1: el saldo que se enseña es el que se manda; con el 412, como el carrito: se cierra el cobro, la
+                // cuenta se relee y dice cuánto falta de verdad (nunca se reenvía sola).
+                saldoDelFolio = saldoDelFolioDeLaCuenta(cuenta),
+                onSaldoVigente = { saldo -> trasElSaldo = true; cobrar = false; avisoLocal = com.avoqado.pos.payment.data.avisoDeSaldoCambiado(saldo.cents)
+                    scope.launch { if (enLinea) viewModel.ofertaParaCobrar(orderId, cuentaDelCarrito() == orderId) } },
                 // D13: la foto de antes de leer esta cuenta, con los pagos que trajo ESTA misma cuenta (de donde sale el saldo que se cobra);
                 // lo que llegue después lo frena la puerta del efectivo.
                 dineroConocido = viewModel.dineroConocido.copy(pagosContados = cuenta.payments.filter { it.status == "COMPLETED" }.map { it.id }.toSet()),
@@ -466,7 +480,7 @@ fun CobroDeCuentaScreen(
                         scope.launch { if (enLinea) viewModel.ofertaParaCobrar(orderId, cuentaDelCarrito() == orderId) }
                     }
                 },
-                onCancel = { onSalir(CierreDeCuenta.ABIERTA) },
+                onCancel = { if (trasElSaldo) trasElSaldo = false else onSalir(CierreDeCuenta.ABIERTA) },
                 onPreviousChargeResolved = { texto -> cobrar = false; avisoLocal = texto; scope.launch { if (enLinea) viewModel.ofertaParaCobrar(orderId, cuentaDelCarrito() == orderId) } },
             )
         } else {
