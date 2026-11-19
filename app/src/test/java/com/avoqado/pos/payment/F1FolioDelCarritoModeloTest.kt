@@ -108,6 +108,13 @@ class F1FolioDelCarritoModeloTest {
         var conPropina = false
         /** Qué contesta el próximo envío a la terminal (null = la tarjeta queda en duda). */
         var proximoEnvio: ((folio: String?, requestId: String) -> TerminalPaymentResult)? = null
+        /**
+         * F1 plan #9: lápidas `REJECTED_ORDER_BUSY` del SERVIDOR (llave del envío → intento de otra caja que nombró su 409). La consulta de
+         * esa llave reproduce el MISMO 409, como `TerminalPaymentService.reproducirBloqueoDeLaCuenta` (el reenvío con la misma llave).
+         */
+        val lapidas = mutableMapOf<String, String>()
+        /** F1 plan #9: el SERVIDOR ya contestó el 409, pero la respuesta no llega a la app (la app muere antes). */
+        var respuestaColgada: kotlinx.coroutines.CompletableDeferred<Unit>? = null
 
         /** Folios con un intento que SÍ pasó según la lista durable («SÍ pasó» marcado, cabo del bloque 2). */
         val cobrados = mutableSetOf<String>()
@@ -184,19 +191,32 @@ class F1FolioDelCarritoModeloTest {
             every { t.pendientesDeOtrasVentas(any()) } returns emptyList()
             every { t.intentoEnVuelo() } returns null
             every { t.contextoDe(any()) } returns null
-            coEvery { t.sendPaymentToTerminal(any(), any(), any(), any(), any(), any(), any(), any()) } answers {
+            coEvery { t.sendPaymentToTerminal(any(), any(), any(), any(), any(), any(), any(), any()) } coAnswers {
                 val folio = arg<String?>(4)
                 envios += folio
                 montos += arg<Int>(1)
-                folio?.let { pendientesLocales[it] }?.let { return@answers TerminalPaymentResult.Undetermined("x", it, inherited = true) }
+                folio?.let { pendientesLocales[it] }?.let { return@coAnswers TerminalPaymentResult.Undetermined("x", it, inherited = true) }
                 val requestId = "req-${envios.size}"
                 folio?.let { intentos[requestId] = it }
-                proximoEnvio?.invoke(folio, requestId)
+                val resultado = proximoEnvio?.invoke(folio, requestId)
                     ?: TerminalPaymentResult.Undetermined("x", requestId).also { folio?.let { pendientesLocales[it] = requestId } }
+                // r3 #5 · plan #9 (contrato del servicio): un 409 ORDER deja la llave del envío en la lista durable (su ancla) hasta que
+                // quien guarda el bloqueador la suelta; el SERVIDOR guarda la lápida que lo reproduce.
+                (resultado as? TerminalPaymentResult.Error)?.bloqueador?.takeIf { it.scope == "ORDER" && folio != null }?.let {
+                    pendientesLocales[folio!!] = requestId
+                    lapidas[requestId] = it.requestId
+                }
+                respuestaColgada?.await()
+                resultado
             }
+            every { t.soltarLlaveSiEs(any()) } answers { pendientesLocales.values.remove(firstArg<String>()) }
             coEvery { t.resolveOutcome(any(), any(), any()) } coAnswers {
                 consultasColgadas[firstArg()]?.await()
-                desenlaces[firstArg()] ?: TerminalPaymentResult.Undetermined("x", firstArg())
+                lapidas[firstArg()]?.let {
+                    TerminalPaymentResult.Error("Esta venta tiene un cobro pendiente de confirmar.", requestId = firstArg(), noSeCreo = true,
+                        bloqueador = BloqueadorDeCobro(it, "ORDER"))
+                }
+                    ?: desenlaces[firstArg()] ?: TerminalPaymentResult.Undetermined("x", firstArg())
             }
         }
     }
@@ -615,6 +635,130 @@ class F1FolioDelCarritoModeloTest {
         assertEquals(Restauracion.Hecha, caja.retomar())
         advanceUntilIdle()
         assertEquals("con Y resuelto, A toma su saldo", 6_000, caja.carrito.cartState.value.totalCents)
+    }
+
+    // MARK: - Familia 1 · ronda 3: la duda de A tiene UN dueño (Codex final r3 #4, #5 y plan de rediseño #9)
+
+    /**
+     * Codex final r3 #4: A está en duda por el intento X de otra caja. Esta caja vuelve a mandar A y recibe `409 ORDER` por un intento NUEVO
+     * Y. ANTES de [Seguir] llega el aviso del folio (X ya abonó $120) y la relectura consulta X. Pantalla y copia ya son de Y desde el 409:
+     * la respuesta de X no toca nada. Antes la pantalla seguía en X hasta [Seguir], la relectura consultaba X y escribía su abono también
+     * en la copia, que ya era de Y: quedaba sin duda.
+     */
+    @Test
+    fun avisoDelFolio_entre409ySeguir_noBorraLaDudaDeY() = runTest {
+        val servidor = Servidor()
+        val caja = Caja(servidor)
+        aEnDudaDeOtraCaja(caja, "req-x")
+        servidor.desenlaces["req-x"] = TerminalPaymentResult.Success(paymentId = "pay-x", requestId = "req-x")
+        servidor.saldos["order-a"] = OrderRepository.SaldoDeLaOrden(6_000, "PARTIAL", "PENDING")
+
+        servidor.ocupadaPor("req-y")
+        assertTrue(caja.cobrar())
+        caja.tarjeta()
+        advanceUntilIdle()
+        assertEquals("montaje: «Revisar ese cobro» de Y", "req-y", (caja.cobro.state.value as? PaymentFlowState.Error)?.revisarCobroId)
+
+        // Antes de [Seguir], el aviso del folio relee A.
+        servidor.foliosDeTarjeta.emit(com.avoqado.pos.payment.data.DesenlaceDeFolio("venue-1", "order-a", "req-x"))
+        advanceUntilIdle()
+
+        val copia = caja.guardados.savedCarts.value.single().folio
+        assertEquals("la copia sigue en duda por Y", Triple("req-y", "OTRA_CAJA", true), Triple(copia?.requestId, copia?.origen, copia?.enDuda))
+        assertEquals("la cuenta en pantalla no cambia: su duda ya es Y", 18_000, caja.carrito.cartState.value.totalCents)
+
+        caja.cobro.revisarCobroQueOcupa()
+        advanceUntilIdle()
+        caja.seguir()
+        caja.carrito.addProduct(refresco)
+        assertEquals("ni se edita", com.avoqado.pos.pos.presentation.cart.CUENTA_LIGADA_GUARDALA, caja.carrito.avisoDeVales.value)
+        // Y se resuelve: su propia relectura sí decide.
+        servidor.desenlaces["req-y"] = TerminalPaymentResult.Error("Rechazada", requestId = "req-y")
+        assertTrue(caja.guardar())
+        assertEquals(Restauracion.Hecha, caja.retomar())
+        advanceUntilIdle()
+        assertEquals("con Y resuelto, A toma su saldo", 6_000, caja.carrito.cartState.value.totalCents)
+    }
+
+    /**
+     * Codex final r3 #5 y plan de rediseño #9 («Seguir» no puede trabar la caja): el `409 ORDER` nombra el intento Y de otra caja y el disco
+     * no acepta la copia con Y. La pantalla lo dice sin afirmar nada del banco; [Seguir] sale; A queda en duda por Y; «Guardar» deja atender a
+     * B aunque el disco siga fallando (A ya estaba en «Carritos guardados» con su folio en duda y la llave del envío sigue en disco). La app
+     * muere: al abrir, la consulta de esa llave reproduce el 409 y la copia de A queda con Y; ya guardada, la llave se suelta. Antes el
+     * `false` se ignoraba y la app volvía con la copia vieja, sin Y.
+     */
+    @Test
+    fun guardadoFalla_tras409_salePorB_muere_alAbrirRecuperaY() = runTest {
+        val servidor = Servidor()
+        servidor.proximoEnvio = { _, requestId ->
+            disco.commitFalla = true // el disco deja de escribir justo después del envío
+            TerminalPaymentResult.Error("Esta venta tiene un cobro pendiente de confirmar.", requestId = requestId, noSeCreo = true,
+                bloqueador = BloqueadorDeCobro("req-y", "ORDER"))
+        }
+        val caja = Caja(servidor)
+        caja.armar("cli-ana", "Ana")
+        assertTrue(caja.cobrar())
+        caja.tarjeta()
+        advanceUntilIdle()
+        val error = caja.cobro.state.value as? PaymentFlowState.Error
+        assertEquals("se puede revisar Y", "req-y", error?.revisarCobroId)
+        assertTrue("dice que no se guardó: ${error?.message}",
+            error?.message?.contains(com.avoqado.pos.payment.presentation.BLOQUEADOR_SIN_GUARDAR) == true)
+        assertEquals("la llave del envío sigue de ancla", mapOf("order-a" to "req-1"), servidor.pendientesLocales)
+
+        caja.cobro.revisarCobroQueOcupa()
+        advanceUntilIdle()
+        caja.seguir()
+        assertEquals("[Seguir] sale: A sigue en pantalla", "cli-ana", caja.carrito.selectedCustomer.value?.id)
+        caja.carrito.addProduct(refresco)
+        assertEquals("en duda por Y, no se edita", com.avoqado.pos.pos.presentation.cart.CUENTA_LIGADA_GUARDALA, caja.carrito.avisoDeVales.value)
+        assertTrue("«Guardar» deja atender a B aunque el disco falle", caja.guardar())
+        assertEquals(com.avoqado.pos.pos.presentation.cart.CUENTA_EN_DUDA_SIN_GUARDAR, caja.carrito.avisoDeVales.value)
+        caja.armar("cli-beto", "Beto")
+        assertEquals("B en pantalla", "cli-beto", caja.carrito.selectedCustomer.value?.id)
+
+        // La app muere: en disco quedaron la copia de A de antes de la tarjeta (sin Y) y la llave del envío.
+        val despues = reiniciar(servidor)
+        advanceUntilIdle()
+        val folio = despues.guardados.savedCarts.value.single().folio
+        assertEquals("al abrir, la copia de A queda con Y", Triple("req-y", "OTRA_CAJA", true), Triple(folio?.requestId, folio?.origen, folio?.enDuda))
+        assertTrue("ya guardada, la llave se suelta", servidor.pendientesLocales.isEmpty())
+        assertEquals(Restauracion.Hecha, despues.retomar())
+        assertTrue(despues.cobrar())
+        assertEquals("A sigue en su folio", "order-a", despues.carrito.chargingAgainstOrderId)
+        assertEquals(listOf("order-a"), servidor.ordenesCreadas.map { it.first })
+    }
+
+    /**
+     * Codex plan de rediseño #9: el SERVIDOR ya rechazó el envío de A con `409 ORDER` (intento Y de otra caja) y la app muere antes de que
+     * la respuesta se guarde. Al abrir, la copia de A (la de antes de la tarjeta) y la llave del envío siguen en disco: la consulta de esa
+     * llave reenvía con la MISMA llave, el SERVIDOR repite el 409 y la copia de A queda con Y. Antes la llave se borraba al recibir el 409 y
+     * A volvía sin saber de Y.
+     */
+    @Test
+    fun muereTras409AntesDeGuardarY_alAbrirRecuperaY() = runTest {
+        val servidor = Servidor()
+        servidor.ocupadaPor("req-y")
+        servidor.respuestaColgada = kotlinx.coroutines.CompletableDeferred() // el 409 nunca llega a guardarse
+        val caja = Caja(servidor)
+        caja.armar("cli-ana", "Ana")
+        assertTrue(caja.cobrar())
+        caja.tarjeta()
+        runCurrent()
+        assertEquals("montaje: la copia de antes de la tarjeta, sin Y", null to "LOCAL",
+            caja.guardados.savedCarts.value.single().folio.let { it?.requestId to it?.origen })
+
+        // La app muere aquí.
+        servidor.respuestaColgada = null
+        val despues = reiniciar(servidor)
+        advanceUntilIdle()
+        val folio = despues.guardados.savedCarts.value.single().folio
+        assertEquals("al abrir, A sabe que su duda es Y", Triple("req-y", "OTRA_CAJA", true), Triple(folio?.requestId, folio?.origen, folio?.enDuda))
+        assertTrue("ya guardada, la llave se suelta", servidor.pendientesLocales.isEmpty())
+        assertEquals(Restauracion.Hecha, despues.retomar())
+        assertTrue(despues.cobrar())
+        assertEquals("order-a", despues.carrito.chargingAgainstOrderId)
+        assertEquals(listOf("order-a"), servidor.ordenesCreadas.map { it.first })
     }
 
     // MARK: - Fila 1: A recién creada con la tarjeta en duda

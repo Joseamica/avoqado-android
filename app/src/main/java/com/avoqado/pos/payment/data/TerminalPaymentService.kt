@@ -123,6 +123,9 @@ class TerminalPaymentService @Inject constructor(
         const val BANDEJA_FOLIO = "bandejaEsFolio"
         /** D14: el cobro con tarjeta salió de otra pantalla que cobra una cuenta que ya existía; igual deja su marca. */
         const val BANDEJA_FUERA = "bandejaFuera"
+
+        /** F1 plan #9: el motivo de la lápida de un 409 ORDER (`MotivoDeRechazo` del SERVIDOR). */
+        const val LAPIDA_DE_ORDEN_OCUPADA = "REJECTED_ORDER_BUSY"
     }
 
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true; explicitNulls = false }
@@ -917,37 +920,21 @@ class TerminalPaymentService @Inject constructor(
                         json.decodeFromString(TerminalPaymentRejectionDto.serializer(), body)
                     } catch (_: Exception) { null }
                     val errorMsg = rejectionDto?.errorMessage ?: rejectionDto?.message
-                    val rejection = rejectionDto?.let {
-                        CreationRejection(
-                            code = it.code,
-                            blockingRequestId = it.blockingRequest?.requestId,
-                            amountCents = it.blockingRequest?.amountCents,
-                            ageSeconds = it.blockingRequest?.ageSeconds,
-                            senderDevice = it.blockingRequest?.senderDevice,
-                            // C1: opcional; un servidor viejo no lo manda y se ve como hoy.
-                            scope = it.details?.scope,
-                        )
-                    }
                     // 🔴 La UNA excepción del 409: el server se negó a CREAR este intento porque
                     // OTRA solicitud ocupa la terminal. Nada viajó a la terminal, así que no hay
-                    // nada que preguntar ni llave que conservar — ver CardChargeDecision.
-                    val busyByAnother = rejection?.takeIf {
-                        responseCode == 409 && CardChargeDecision.refusedForAnotherRequest(it, requestId)
-                    }
-                    if (busyByAnother != null) {
-                        Log.w("💳", "🔒 Terminal ocupada por OTRA solicitud (${busyByAnother.blockingRequestId}): este intento nunca se creó — se libera la llave")
-                        // F1 bloque 4 (r2 #15): el importe del bloqueador se conserva (sin propina conocida = «antes de propina»).
-                        anotarImporte(venueId, busyByAnother.blockingRequestId, rejectionDto?.blockingRequest?.amountCents,
-                            rejectionDto?.blockingRequest?.tipCents)
-                        clearMatching(requestId)
-                        return TerminalPaymentResult.Error(
-                            CardChargeDecision.busyMessage(busyByAnother, errorMsg),
-                            requestId = requestId,
-                            noSeCreo = true,
-                            // C1 (22-oct): QUIÉN ocupa, para que la pantalla ofrezca «Revisar ese cobro». Es OTRA solicitud
-                            // —quizá de otro aparato—: se puede consultar, nunca se hace propia (ver `resolveOutcome(ajeno)`).
-                            bloqueador = busyByAnother.blockingRequestId?.let { BloqueadorDeCobro(it, busyByAnother.scope) },
-                        )
+                    // nada que preguntar — ver CardChargeDecision.
+                    val ocupada = rejectionDto?.takeIf { responseCode == 409 }?.let { ocupadaPorOtra(it, venueId, requestId) }
+                    if (ocupada != null) {
+                        // 🔴 F1 r3 #5 · plan #9: un 409 ORDER nombra la duda vigente de ESTA cuenta (el intento de otra caja). La llave de
+                        // este envío es su ancla durable: se queda hasta que el carrito guarde ese intento (la suelta quien lo guarda,
+                        // [soltarLlaveSiEs]). Si la app muere antes, la consulta de esta llave reproduce el 409 ([reproducirBloqueoDeLaCuenta]).
+                        if (ocupada.bloqueador?.scope == CardChargeDecision.SCOPE_ORDER && orderId != null) {
+                            Log.w("💳", "🔒 La cuenta $orderId tiene otro cobro pendiente (${ocupada.bloqueador?.requestId}): la llave $requestId se queda hasta guardarlo")
+                        } else {
+                            Log.w("💳", "🔒 Terminal ocupada por OTRA solicitud (${ocupada.bloqueador?.requestId}): este intento nunca se creó — se libera la llave")
+                            clearMatching(requestId)
+                        }
+                        return ocupada
                     }
                     // 🔴 F1 bloque 2: 412 `REMAINING_BALANCE_MISMATCH` nombrando a ESTA solicitud: el servidor no la creó (nada llegó al
                     // lector) porque el saldo de la cuenta no es el que vio la caja. No queda como duda; se dice cuánto falta.
@@ -1031,6 +1018,66 @@ class TerminalPaymentService @Inject constructor(
      * inalcanzable pareciera un "no se cobró" y habilitara un reintento a ciegas.
      */
     suspend fun getPaymentStatus(requestId: String): ChargeStatusProbe = consultarEstado(requestId, venueId = null).probe
+
+    /**
+     * El 409 `TERMINAL_BUSY` que nombra a OTRA solicitud, como lo recibe la pantalla (texto, «Revisar ese cobro» y su alcance). null = no
+     * es ése (o nombra a ESTA misma solicitud, o a nadie: sigue siendo duda). No toca la llave: eso lo decide quien llama.
+     */
+    private fun ocupadaPorOtra(dto: TerminalPaymentRejectionDto, venueId: String, requestId: String): TerminalPaymentResult.Error? {
+        val rechazo = CreationRejection(
+            code = dto.code,
+            blockingRequestId = dto.blockingRequest?.requestId,
+            amountCents = dto.blockingRequest?.amountCents,
+            ageSeconds = dto.blockingRequest?.ageSeconds,
+            senderDevice = dto.blockingRequest?.senderDevice,
+            // C1: opcional; un servidor viejo no lo manda y se ve como hoy.
+            scope = dto.details?.scope,
+        ).takeIf { CardChargeDecision.refusedForAnotherRequest(it, requestId) } ?: return null
+        // F1 bloque 4 (r2 #15): el importe del bloqueador se conserva (sin propina conocida = «antes de propina»).
+        anotarImporte(venueId, rechazo.blockingRequestId, dto.blockingRequest?.amountCents, dto.blockingRequest?.tipCents)
+        return TerminalPaymentResult.Error(
+            CardChargeDecision.busyMessage(rechazo, dto.errorMessage ?: dto.message),
+            requestId = requestId,
+            noSeCreo = true,
+            // C1 (22-oct): QUIÉN ocupa, para que la pantalla ofrezca «Revisar ese cobro». Es OTRA solicitud
+            // —quizá de otro aparato—: se puede consultar, nunca se hace propia (ver `resolveOutcome(ajeno)`).
+            bloqueador = rechazo.blockingRequestId?.let { BloqueadorDeCobro(it, rechazo.scope) },
+        )
+    }
+
+    /**
+     * 🔴 F1 plan #9: la llave [requestId] es la lápida `REJECTED_ORDER_BUSY` de un envío de este aparato (el SERVIDOR lo rechazó porque la
+     * cuenta ya tenía otro cobro pendiente) y quizá nadie guardó cuál era: la app murió entre el 409 y el guardado, o el disco no lo
+     * aceptó. Se REENVÍA con la MISMA llave y el MISMO contrato: el SERVIDOR encuentra la lápida y repite el mismo 409 con el mismo
+     * bloqueador, sin crear ni emitir nada (`terminal-payment.service.ts`, réplica de la admisión). Sólo con el contexto completo del
+     * envío (sin él la réplica no coincide). null = no se pudo saber: la llave se queda.
+     */
+    private suspend fun reproducirBloqueoDeLaCuenta(requestId: String): TerminalPaymentResult.Error? {
+        val ctx = contextoDe(requestId) ?: return null
+        val venueId = ctx.venueId ?: return null
+        val token = secureStorage.accessToken ?: return null
+        val cuerpo = TerminalPaymentRequest(
+            terminalId = ctx.terminalId ?: return null,
+            amountCents = ctx.amountCents ?: return null,
+            tipCents = ctx.tipCents ?: 0,
+            orderId = ctx.orderId ?: return null,
+            requestId = requestId,
+        )
+        return try {
+            val request = Request.Builder()
+                .url("$baseUrl/mobile/venues/$venueId/terminal-payment")
+                .header("Authorization", "Bearer $token")
+                .post(json.encodeToString(TerminalPaymentRequest.serializer(), cuerpo).toRequestBody("application/json".toMediaType()))
+                .build()
+            // Cliente corto: la réplica de una lápida contesta de inmediato y no espera a nadie (ni a un PIN).
+            val (code, body) = withContext(io) { statusClient.newCall(request).execute().use { it.code to (it.body?.string() ?: "") } }
+            val dto = runCatching { json.decodeFromString(TerminalPaymentRejectionDto.serializer(), body) }.getOrNull() ?: return null
+            ocupadaPorOtra(dto, venueId, requestId)?.takeIf { code == 409 && it.bloqueador?.scope == CardChargeDecision.SCOPE_ORDER }
+        } catch (e: Exception) {
+            Log.w("💳", "No se pudo reproducir el 409 de $requestId: ${e.message}")
+            null
+        }
+    }
 
     /**
      * La misma consulta, diciendo además si HUBO respuesta del servidor.
@@ -1180,6 +1227,7 @@ class TerminalPaymentService @Inject constructor(
         // O1 (fix round 1 de C1): ¿ALGUNA consulta recibió respuesta? Si ninguna, la duda es por falta de red.
         var huboRespuesta = false
         var terminalLibreVentaEnDuda = false
+        var bloqueoReproducido: TerminalPaymentResult.Error? = null
         val resolved = kotlinx.coroutines.withTimeoutOrNull(RECONCILE_CEILING_MS) {
             val attempts = 3
             repeat(attempts) { attempt ->
@@ -1189,6 +1237,15 @@ class TerminalPaymentService @Inject constructor(
                 val consulta = consultarEstado(requestId, venueId = null, enSegundoPlano)
                 if (!consulta.sinRespuesta) huboRespuesta = true
                 val probe = consulta.probe
+                // 🔴 F1 plan #9: la lápida de un 409 ORDER de ESTE aparato prueba que este envío no se creó, pero el dato que importa es
+                // QUIÉN tiene la cuenta en duda. Se reproduce el 409 y se entrega como el original; la llave no se suelta aquí (la suelta
+                // quien guarde ese bloqueador). Sin el contexto del envío, como siempre.
+                if (!ajeno && probe is ChargeStatusProbe.Known && probe.status == "FAILED" && probe.failureCode == LAPIDA_DE_ORDEN_OCUPADA &&
+                    contextoDe(requestId) != null
+                ) {
+                    bloqueoReproducido = reproducirBloqueoDeLaCuenta(requestId)
+                    return@withTimeoutOrNull CardChargeDecision.exhausted()
+                }
                 terminalLibreVentaEnDuda = CardChargeDecision.terminalLibreVentaEnDuda(probe)
                 when (val decision = CardChargeDecision.decide(probe, isFinalAttempt = attempt == attempts - 1, mensajeDeLaTerminal)) {
                     is ProbeDecision.Resolved -> return@withTimeoutOrNull decision.outcome
@@ -1198,6 +1255,8 @@ class TerminalPaymentService @Inject constructor(
             // Se agotaron las consultas y seguía en curso: indeterminado, NUNCA "falló".
             CardChargeDecision.exhausted()
         }
+        // Sin el 409 reproducido (sin red, sin permiso) sigue la duda de siempre, con la llave en su lugar.
+        bloqueoReproducido?.let { return it }
         return synchronized(attemptLock) {
             // 🔴 Misma regla que en el POST (Codex, 21-sep): el ganador cacheado manda sobre la duda,
             // NUNCA sobre un cobro acreditado. Si esta consulta acaba de confirmar que el dinero salió,

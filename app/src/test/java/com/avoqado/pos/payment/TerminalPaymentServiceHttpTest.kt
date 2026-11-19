@@ -458,6 +458,61 @@ class TerminalPaymentServiceHttpTest {
         assertEquals(1, server.requestCount)
     }
 
+    /**
+     * 🔴 F1 r3 #5 · plan #9: el `409 ORDER` de una CUENTA (con folio) nombra su duda vigente. La llave del envío es su ancla durable: se queda
+     * hasta que quien guarda el bloqueador la suelta. Sin folio (como arriba) o con alcance TERMINAL, se suelta como siempre.
+     */
+    @Test
+    fun `F1 plan 9 - el 409 ORDER de una cuenta conserva la llave hasta que se guarda el bloqueador`() = runBlocking {
+        enqueue(409, busyBody("cobro-y", scope = "ORDER"))
+        val result = service.sendPaymentToTerminal(terminalId = "t1", amountCents = 6_000, orderId = "orden-a") as TerminalPaymentResult.Error
+        assertEquals(BloqueadorDeCobro("cobro-y", "ORDER"), result.bloqueador)
+        assertTrue(result.noSeCreo)
+        assertEquals("la llave sigue en disco", listOf(result.requestId), idsPendientes())
+        assertEquals("y no se pregunta nada", 1, server.requestCount)
+        service.soltarLlaveSiEs(result.requestId!!)
+        assertTrue(idsPendientes().isEmpty())
+
+        enqueue(409, busyBody("cobro-z", scope = "TERMINAL"))
+        service.sendPaymentToTerminal(terminalId = "t1", amountCents = 6_000, orderId = "orden-a")
+        assertTrue("alcance TERMINAL: se suelta como siempre", idsPendientes().isEmpty())
+    }
+
+    /**
+     * 🔴 F1 plan #9: la app murió entre el `409 ORDER` y el guardado de su bloqueador. Al consultar la llave, el SERVIDOR contesta su lápida
+     * (`FAILED` · `REJECTED_ORDER_BUSY`): se reenvía con la MISMA llave y el MISMO contrato, el SERVIDOR repite el 409 y el resultado es el del
+     * 409 original, con la llave en su lugar (la suelta quien guarde el bloqueador). Sin respuesta al reenvío, sigue la duda y la llave.
+     */
+    @Test
+    fun `F1 plan 9 - la lapida del 409 ORDER se reproduce con la misma llave y la llave se queda`() = runBlocking {
+        pendientes = PendientesDeTarjeta.agregar(null, "req-a", "orden-a",
+            """{"requestId":"req-a","venueId":"venue-1","terminalId":"t1","orderId":"orden-a","amountCents":6000,"tipCents":500}""")
+        enqueue(200, """{"status":"FAILED","inProgress":false,"failureCode":"REJECTED_ORDER_BUSY","outcome":"NOT_CHARGED"}""")
+        enqueue(409, busyBody("cobro-y", scope = "ORDER"))
+
+        val result = service.resolveOutcome("req-a", enSegundoPlano = true)
+
+        assertTrue("$result", result is TerminalPaymentResult.Error)
+        assertEquals(BloqueadorDeCobro("cobro-y", "ORDER"), (result as TerminalPaymentResult.Error).bloqueador)
+        assertEquals("req-a", result.requestId)
+        assertEquals("la llave no se suelta aquí", listOf("req-a"), idsPendientes())
+        assertEquals("GET", server.takeRequest().method)
+        val reenvio = server.takeRequest()
+        assertEquals("POST", reenvio.method)
+        assertEquals("/api/v1/mobile/venues/venue-1/terminal-payment", reenvio.path)
+        val cuerpo = reenvio.body.readUtf8()
+        for (campo in listOf("\"requestId\":\"req-a\"", "\"terminalId\":\"t1\"", "\"orderId\":\"orden-a\"", "\"amountCents\":6000", "\"tipCents\":500")) {
+            assertTrue("el reenvío lleva el mismo contrato ($campo): $cuerpo", cuerpo.contains(campo))
+        }
+
+        // Sin respuesta al reenvío: no se sabe de quién es la duda. Sigue en duda y la llave se queda.
+        enqueue(200, """{"status":"FAILED","inProgress":false,"failureCode":"REJECTED_ORDER_BUSY","outcome":"NOT_CHARGED"}""")
+        enqueue(503)
+        val sinRespuesta = service.resolveOutcome("req-a", enSegundoPlano = true)
+        assertTrue("$sinRespuesta", sinRespuesta is TerminalPaymentResult.Undetermined)
+        assertEquals(listOf("req-a"), idsPendientes())
+    }
+
     /** Codex android r1 #8: el aviso de 10 min (y «Cobros por confirmar») sólo con las dudas de la sucursal activa; una vieja sin sucursal se ve. */
     @Test
     fun `Codex r1 8 - los pendientes de otras ventas son solo de la sucursal activa`() {

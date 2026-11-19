@@ -189,6 +189,13 @@ data class AvisoDeOtroCobro(val requestId: String, val texto: String, val yaCobr
 /** F1 bloque 2 (paso 3): la copia de la cuenta no entró al aparato; la tarjeta no se manda. */
 const val NO_SE_GUARDO_LA_CUENTA = "No se pudo guardar la cuenta en este aparato. No se envió el cobro. Intenta de nuevo."
 
+/**
+ * F1 r3 #5 · Codex plan #9: el 409 ORDER nombró el cobro pendiente de otra caja y este aparato no pudo guardarlo. No se traba nada (se puede
+ * seguir y atender a otro cliente); la llave del envío sigue en disco y al reabrir se vuelve a preguntar. No afirma nada del banco.
+ */
+const val BLOQUEADOR_SIN_GUARDAR =
+    "No se pudo guardar en este aparato cuál es ese cobro: no cobres esta cuenta otra vez con tarjeta sin revisarlo. Si se cierra la app, al abrirla se vuelve a preguntar."
+
 @HiltViewModel
 class PaymentFlowViewModel @Inject constructor(
     private val tableSession: com.avoqado.pos.tables.data.TableSession,
@@ -3751,10 +3758,8 @@ class PaymentFlowViewModel @Inject constructor(
                     is TerminalPaymentResult.Success -> applyCardCharged(terminalResult, total)
                     is TerminalPaymentResult.Error -> {
                         // 🔴 F1 bloque 2 (paso 3): otra caja ya tiene una tarjeta en duda sobre ESTA cuenta (409 ORDER): su bloqueador
-                        // queda en la copia durable de la compra, para que tras reiniciar A siga con su folio.
-                        terminalResult.bloqueador?.takeIf { it.scope == CardChargeDecision.SCOPE_ORDER }?.let { ajeno ->
-                            folioDeEstaCompra(ajeno.revisable, com.avoqado.pos.payment.data.FolioEnDuda.Origen.OTRA_CAJA)?.let(antesDeLaTarjeta)
-                        }
+                        // queda en pantalla y en la copia durable de la compra, para que tras reiniciar A siga con su folio (r3 #4, #5).
+                        val bloqueadorGuardado = tomarBloqueadorDeLaCuenta(terminalResult)
                         // Consta que no se cobró: reintentar vuelve a ser seguro.
                         undeterminedRequestId = null
                         bloqueadorEnPantalla = terminalResult.bloqueador
@@ -3771,7 +3776,8 @@ class PaymentFlowViewModel @Inject constructor(
                             }
                         }
                         _state.value = PaymentFlowState.Error(
-                            message = terminalResult.saldoVigenteCents?.let { com.avoqado.pos.payment.data.avisoDeSaldoCambiado(it) } ?: terminalResult.message,
+                            message = terminalResult.saldoVigenteCents?.let { com.avoqado.pos.payment.data.avisoDeSaldoCambiado(it) }
+                                ?: if (bloqueadorGuardado) terminalResult.message else "${terminalResult.message}\n\n$BLOQUEADOR_SIN_GUARDAR",
                             source = if (terminalResult.sinCobroNiRechazo) PaymentErrorSource.NO_SE_COBRO else PaymentErrorSource.TERMINAL,
                             // C1: «Terminal ocupada» con salida — «Revisar ese cobro» sólo si el servidor nombró un cobro
                             // real (con `"unknown"` no hay a quién preguntar).
@@ -5160,6 +5166,9 @@ class PaymentFlowViewModel @Inject constructor(
                 is TerminalPaymentResult.Error -> {
                     // Consta que NO se cobró: aquí sí es seguro ofrecer cobrar de nuevo.
                     undeterminedRequestId = null
+                    // 🔴 F1 plan #9: la llave propia de esta cuenta era la lápida de un 409 ORDER (su consulta lo reprodujo): su bloqueador
+                    // se guarda y la llave se suelta, o la venta volvería a esperarla en cada «Cobrar».
+                    if (!ajeno) tomarBloqueadorDeLaCuenta(outcome)
                     if (fromPreviousSale) {
                         if (encabezado == PREVIOUS_CHARGE_PREFIX) volverDeLaRevision(total) // Codex android r1 #3
                         else resolverCobroAnterior("El cobro anterior no se realizó")
@@ -5386,6 +5395,23 @@ class PaymentFlowViewModel @Inject constructor(
         }
     }
 
+    /**
+     * 🔴 F1 r3 #4 · r3 #5 · plan #9: un `409 ORDER` de un envío de ESTA cuenta ([resultado], el del POST o el reproducido al consultar su
+     * llave) nombra la duda vigente de A: el intento de otra caja. Pantalla y copia pasan a él en un paso ([antesDeLaTarjeta]); con eso
+     * escrito, la llave del envío (su ancla durable) se suelta. Sin escribir, la llave se queda: al reabrir su consulta reproduce el 409.
+     * @return false = el aparato no lo guardó.
+     */
+    private fun tomarBloqueadorDeLaCuenta(resultado: TerminalPaymentResult.Error): Boolean {
+        val ajeno = resultado.bloqueador?.takeIf { it.scope == CardChargeDecision.SCOPE_ORDER } ?: return true
+        val llave = resultado.requestId
+        // Sólo la llave de un envío de ESTA cuenta (la de otra venta la resuelve su propia copia al releerse).
+        if (llave != null && terminalPaymentService.contextoDe(llave)?.orderId.let { it != null && it != createdOrderId }) return true
+        val guardado = folioDeEstaCompra(ajeno.revisable, com.avoqado.pos.payment.data.FolioEnDuda.Origen.OTRA_CAJA)?.let(antesDeLaTarjeta) ?: true
+        if (guardado) llave?.let(terminalPaymentService::soltarLlaveSiEs)
+        else Log.w("💳", "F1: el bloqueador ${ajeno.requestId} de la cuenta $createdOrderId no se guardó: la llave $llave se queda de ancla")
+        return guardado
+    }
+
     private fun folioDeEstaCompra(requestId: String?, origen: com.avoqado.pos.payment.data.FolioEnDuda.Origen): com.avoqado.pos.payment.data.FolioEnDuda? {
         val orden = createdOrderId?.takeIf { it.isNotBlank() } ?: return null
         val venueId = secureStorage.venueId ?: return null
@@ -5397,9 +5423,12 @@ class PaymentFlowViewModel @Inject constructor(
         val orden = createdOrderId?.takeIf { it.isNotBlank() } ?: return null
         val venueId = secureStorage.venueId ?: return null
         val venta = cartState?.identidadDeVenta ?: return null
-        // Un «SÍ pasó» no es duda: no liga el carrito.
+        // Un «SÍ pasó» no es duda: no liga el carrito. 🔴 F1 r3 #5: la llave del envío que el SERVIDOR rechazó con 409 tampoco: es el ancla
+        // del bloqueador que nombró (se queda mientras ése no se guarde) y la duda es la de ese bloqueador.
+        val anclaDelRechazo = ultimoIntento?.takeIf { it.noSeCreo }?.requestId
         (terminalPaymentService.dudaDeLaVenta(orden)?.takeIf { it.isNotBlank() }
-            ?: terminalPaymentService.pendienteDeLaVenta(orden)?.takeUnless { terminalPaymentService.yaCobrado(it) })?.let {
+            ?: terminalPaymentService.pendienteDeLaVenta(orden)?.takeUnless { terminalPaymentService.yaCobrado(it) })
+            ?.takeUnless { it == anclaDelRechazo }?.let {
             return com.avoqado.pos.payment.data.FolioEnDuda(venueId, venta, orden, it, com.avoqado.pos.payment.data.FolioEnDuda.Origen.LOCAL, cambiosDeEstaVenta)
         }
         val ajeno = bloqueadorEnPantalla?.takeIf { it.scope == CardChargeDecision.SCOPE_ORDER } ?: return null

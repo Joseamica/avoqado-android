@@ -452,6 +452,13 @@ const val CUENTA_LIGADA_GUARDALA = "Guarda esta cuenta para atender a otro clien
 /** F1 (cabo del bloque 2, `plan-android.md` r2 #1): consta dinero de la cuenta pero no cuánto falta (sin red). Mismo texto en iOS. */
 const val SALDO_POR_CONFIRMAR = "Saldo por confirmar: ya entró un cobro con tarjeta de esta cuenta. Al volver la conexión se ve cuánto falta."
 
+/**
+ * F1 r3 #5 · plan #9: «Guardar» una cuenta con su tarjeta por confirmar y el aparato no escribe. La caja no se traba: la cuenta ya está en
+ * «Carritos guardados» con su folio en duda (la copia de antes de la tarjeta) y la llave del envío sigue en disco. No afirma nada del banco.
+ */
+const val CUENTA_EN_DUDA_SIN_GUARDAR =
+    "No se pudo guardar en este aparato. La cuenta sigue en «Carritos guardados» con su tarjeta por confirmar: no la cobres otra vez con tarjeta sin revisarla."
+
 const val VENTA_A_MEDIAS_CAMBIADA =
     "Esta venta ya tiene un cobro parcial: cobra primero su saldo pendiente. Quita lo que agregaste y véndelo aparte."
 
@@ -765,12 +772,18 @@ class CartViewModel @Inject constructor(
      * esa compra por el MISMO vínculo que un abono parcial ([PendingSplitOrder] con [PendingSplitOrder.duda]). Sólo si el carrito
      * sigue siendo ESA venta (su identidad) y en su sucursal. Reemplaza al vínculo paralelo de `8ffa8fe1`, que comparaba artículos
      * y total: la misma mercancía con otro cliente pasaba por A.
+     *
+     * 🔴 F1 r3 #4: también al recibir el `409 ORDER` ([guardarFolioAntesDeLaTarjeta] con el bloqueador): pantalla y copia pasan a ese
+     * intento en el MISMO paso, sin esperar a [Seguir]. Una duda, un dueño. La pantalla cambia aunque el disco falle (r3 #5): la caja no
+     * se traba y la llave del envío sigue de ancla en disco.
+     *
+     * @return false sólo si la copia no se pudo escribir (true = guardada, o este carrito no es esa venta y no hay nada que guardar).
      */
-    fun ligarTarjetaEnDuda(folio: com.avoqado.pos.payment.data.FolioEnDuda) {
+    fun ligarTarjetaEnDuda(folio: com.avoqado.pos.payment.data.FolioEnDuda): Boolean {
         val actual0 = _cartState.value
-        if (actual0.isEmpty || actual0.identidadDeVenta != folio.identidadDeVenta || folio.venueId != secureStorage.venueId) return
+        if (actual0.isEmpty || actual0.identidadDeVenta != folio.identidadDeVenta || folio.venueId != secureStorage.venueId) return true
         val actual = _pendingSplitOrder.value
-        if (actual != null && actual.orderId != folio.orderId) return
+        if (actual != null && actual.orderId != folio.orderId) return true
         // r2 #1: el carrito queda con el precio que el SERVIDOR puso al crear A (y así se guarda y se retoma).
         if (folio.cambiosDePrecio.isNotEmpty()) _cartState.update { it.conPreciosDelServidor(folio.cambiosDePrecio, congelar = true) }
         val cart = _cartState.value
@@ -779,8 +792,10 @@ class CartViewModel @Inject constructor(
             renglones = cart.items, descuentoDeCuenta = cart.orderDiscount,
         )).copy(duda = folio)
         // Paso 3: la copia durable queda con el intento y el precio del servidor; «Guardar» reusa SU id.
-        if (guardarFolioAntesDeLaTarjeta(folio)) copiaAntesDelEnvio?.let { id -> _cartState.update { it.copy(carritoGuardadoId = id) } }
-        Log.d("🛒", "Tarjeta en duda: este carrito sigue contra el folio ${folio.orderId}")
+        val guardada = escribirCopiaDelFolio(folio)
+        if (guardada) copiaAntesDelEnvio?.let { id -> _cartState.update { it.copy(carritoGuardadoId = id) } }
+        Log.d("🛒", "Tarjeta en duda: este carrito sigue contra el folio ${folio.orderId} (copia ${if (guardada) "guardada" else "SIN guardar"})")
+        return guardada
     }
 
     /**
@@ -820,8 +835,13 @@ class CartViewModel @Inject constructor(
      * ya tiene una sobre la cuenta): vínculo, cliente y renglones con el precio del SERVIDOR. Si la app muere tras [Seguir] sin
      * «Guardar», al abrir A está en «Carritos guardados» con su folio. `false` = no se pudo escribir: la tarjeta no debe salir.
      * Un folio de OTRA venta no es de este carrito y no frena nada.
+     *
+     * 🔴 F1 r3 #4: el bloqueador de un `409 ORDER` (otra caja) es desde ya la duda vigente de A: pantalla y copia ([ligarTarjetaEnDuda]).
      */
-    fun guardarFolioAntesDeLaTarjeta(folio: com.avoqado.pos.payment.data.FolioEnDuda): Boolean {
+    fun guardarFolioAntesDeLaTarjeta(folio: com.avoqado.pos.payment.data.FolioEnDuda): Boolean =
+        if (folio.origen == com.avoqado.pos.payment.data.FolioEnDuda.Origen.OTRA_CAJA) ligarTarjetaEnDuda(folio) else escribirCopiaDelFolio(folio)
+
+    private fun escribirCopiaDelFolio(folio: com.avoqado.pos.payment.data.FolioEnDuda): Boolean {
         val state = _cartState.value
         if (state.isEmpty || state.identidadDeVenta != folio.identidadDeVenta || folio.venueId != secureStorage.venueId) return true
         val corregido = if (folio.cambiosDePrecio.isNotEmpty()) state.conPreciosDelServidor(folio.cambiosDePrecio, congelar = true) else state
@@ -900,29 +920,41 @@ class CartViewModel @Inject constructor(
      */
     private suspend fun releerFolio(venueId: String, orderId: String) {
         if (venueId != secureStorage.venueId) return
-        // 🔴 Codex final r2 #5: la duda que ESTA relectura resuelve (origen e intento), leída ANTES de salir a la red, en pantalla y en la
-        // copia. Al volver, su desenlace sólo se aplica donde la duda vigente sigue siendo ésa: un intento nuevo Y de A no lo borra la
-        // respuesta de X (dos relecturas de X, al abrir y al retomar, o una que tarda mientras llega el 409 de Y).
-        val enPantalla = dudaEnPantalla(orderId)
-        val enCopia = dudaEnCopia(orderId)
-        // 🔴 Codex final r1 #5: la duda de OTRA caja se resuelve con SU intento (el bloqueador guardado), consultado ANTES del saldo para
-        // que el saldo ya traiga su desenlace. Cobrado o no, decide el saldo del SERVIDOR; sólo si sigue en duda se conserva el freno.
+        // 🔴 F1 r3 #4 (tercera vez de la familia: r1 #5, r2 #5): la duda de A tiene UN dueño y toda respuesta se compara contra él. Esta
+        // relectura consulta UN intento: la llave de un envío de ESTA tablet sobre A (la más reciente: el SERVIDOR sólo la admite si A no
+        // tenía otro cobro pendiente) o, si no hay, el intento de OTRA caja que nombra la duda (Codex final r1 #5), ANTES del saldo para
+        // que el saldo ya traiga su desenlace. Lo que conteste sólo se escribe donde la duda vigente sigue siendo ESE intento.
         val otraCaja = com.avoqado.pos.payment.data.FolioEnDuda.Origen.OTRA_CAJA.name
-        val bloqueador = (enPantalla ?: enCopia)?.takeIf { it.first == otraCaja }?.second
-        val bloqueadorResuelto = bloqueador?.let { terminalPaymentService?.resolveOutcome(it, enSegundoPlano = true, ajeno = true) }
-            ?.let { it !is com.avoqado.pos.payment.data.TerminalPaymentResult.Undetermined } == true
+        val ancla = terminalPaymentService?.dudaDeLaVenta(orderId)
+        val consultada = if (ancla != null) com.avoqado.pos.payment.data.FolioEnDuda.Origen.LOCAL.name to ancla
+            else (dudaEnPantalla(orderId) ?: dudaEnCopia(orderId))?.takeIf { it.first == otraCaja }
+        val respuesta = consultada?.second?.let { terminalPaymentService?.resolveOutcome(it, enSegundoPlano = true, ajeno = ancla == null) }
+        // 🔴 F1 plan #9: el SERVIDOR había rechazado esa llave porque otra caja ya tenía una tarjeta en duda sobre A (su 409, reproducido):
+        // la duda de A es ESE intento.
+        if (ancla != null) {
+            (respuesta as? com.avoqado.pos.payment.data.TerminalPaymentResult.Error)?.bloqueador
+                ?.takeIf { it.scope == com.avoqado.pos.payment.domain.CardChargeDecision.SCOPE_ORDER }
+                ?.let { adoptarBloqueador(orderId, ancla, it.revisable); return }
+        }
         val saldo = orderRepository.saldoDeLaOrden(orderId) ?: run {
             // Consta dinero de A pero no su saldo nuevo (sin red): la cuenta en pantalla lo dice y no se cobra con el total viejo.
             if (dineroSinSaldo(orderId)) _avisoDeVales.value = SALDO_POR_CONFIRMAR
             return
         }
-        val copia = enCopia?.takeIf { dudaEnCopia(orderId) == it }?.let { copiaEnDuda(orderId) }
-        val visible = enPantalla?.takeIf { dudaEnPantalla(orderId) == it }?.let { _pendingSplitOrder.value }
-        val origen = (if (visible != null) enPantalla else enCopia)?.first
-        // La duda de OTRA caja no está en la lista de esta tablet: la resuelve su intento consultado (o un estado final de A). Sin la
-        // lista, tampoco.
-        val sigueEnDuda = if (origen == otraCaja) !bloqueadorResuelto else terminalPaymentService?.sigueEnDuda(orderId) != false
+        // La duda de otra caja la resuelve su intento consultado (o un estado final de A); la local, la lista de esta tablet, ya al día.
+        val sigueEnDuda = if (consultada?.first == otraCaja) respuesta == null || respuesta is com.avoqado.pos.payment.data.TerminalPaymentResult.Undetermined
+            else terminalPaymentService?.sigueEnDuda(orderId) != false
         val desenlace = decidirFolio(saldo, sigueEnDuda) ?: return
+        // Justo antes de escribir: nadie mandó otra tarjeta sobre A desde la consulta, y la duda de ese lugar ES la consultada: la de otra
+        // caja, ese mismo intento (también en la copia que el envío de esta tablet marcó LOCAL antes de la tarjeta, que conserva el intento);
+        // la local, la que decide la lista. Antes se comparaba cada lugar consigo mismo y la respuesta de X se escribía en una copia que ya
+        // era de Y (r3 #4).
+        fun esLaConsultada(actual: Pair<String?, String?>?): Boolean {
+            if (actual == null || terminalPaymentService?.dudaDeLaVenta(orderId).let { it != null && it != ancla }) return false
+            return if (consultada?.first == otraCaja) actual.second == consultada.second else actual.first != otraCaja
+        }
+        val visible = _pendingSplitOrder.value?.takeIf { esLaConsultada(dudaEnPantalla(orderId)) }
+        val copia = copiaEnDuda(orderId)?.takeIf { esLaConsultada(dudaEnCopia(orderId)) }
         Log.i("🛒", "Folio $orderId: $desenlace (pantalla=${visible != null}, copia=${copia?.id})")
         if (visible != null) {
             aplicarAlCarrito(desenlace, saldo.remainingCents, orderId)
@@ -938,6 +970,26 @@ class CartViewModel @Inject constructor(
         _pendingSplitOrder.value?.duda?.takeIf { it.orderId == orderId }?.let { it.origen.name to it.requestId }
     private fun copiaEnDuda(orderId: String) = savedCartsRepository.savedCarts.value.firstOrNull { it.folio?.orderId == orderId && it.folio.enDuda }
     private fun dudaEnCopia(orderId: String): Pair<String?, String?>? = copiaEnDuda(orderId)?.folio?.let { it.origen to it.requestId }
+
+    /**
+     * 🔴 F1 plan #9 · r3 #5: la llave [ancla] de un envío de esta tablet era la lápida de un `409 ORDER`: el intento [bloqueador] de otra
+     * caja es la duda de A. Pasa a la pantalla y a la copia donde la duda todavía era la local (una que ya nombra a otra caja la escribió
+     * este 409 o uno posterior: no se toca). La llave se suelta sólo con la copia de A en disco; si no, sigue de ancla y se reintenta en
+     * la siguiente relectura (al retomar, al abrir la app).
+     */
+    private fun adoptarBloqueador(orderId: String, ancla: String, bloqueador: String?) {
+        val otraCaja = com.avoqado.pos.payment.data.FolioEnDuda.Origen.OTRA_CAJA
+        _pendingSplitOrder.update { p ->
+            val d = p?.duda?.takeIf { it.orderId == orderId && it.origen != otraCaja }
+            if (p == null || d == null) p else p.copy(duda = d.copy(requestId = bloqueador, origen = otraCaja))
+        }
+        val copia = copiaEnDuda(orderId) ?: return
+        val f = copia.folio ?: return
+        val escrita = f.origen == otraCaja.name ||
+            savedCartsRepository.saveCart(copia.copy(folio = f.copy(requestId = bloqueador ?: f.requestId, origen = otraCaja.name)))
+        Log.i("🛒", "Folio $orderId: su duda es el intento $bloqueador de otra caja (copia ${if (escrita) "guardada" else "SIN guardar"})")
+        if (escrita) terminalPaymentService?.soltarLlaveSiEs(ancla)
+    }
 
     private fun aplicarAlCarrito(desenlace: DesenlaceDelFolio, saldoCents: Int, orderId: String) {
         when (desenlace) {
@@ -2333,15 +2385,25 @@ class CartViewModel @Inject constructor(
             com.avoqado.pos.core.util.VenueTimeZone.now()
                 .format(java.time.format.DateTimeFormatter.ofPattern("HH:mm"))
         }"
-        val copia = comoCarritoGuardado(state, cartName, _selectedCustomer.value).let { c ->
+        // F1 r3 #5: la copia que ya tiene A en disco (la de antes de la tarjeta) se reescribe, no se duplica.
+        val copiaDeA = ligada?.let { l ->
+            savedCartsRepository.savedCarts.value.firstOrNull { it.folio?.orderId == l.orderId && it.folio?.identidadDeVenta == state.identidadDeVenta }
+        }
+        val aGuardar = if (copiaDeA != null && state.carritoGuardadoId == null) state.copy(carritoGuardadoId = copiaDeA.id) else state
+        val copia = comoCarritoGuardado(aGuardar, cartName, _selectedCustomer.value).let { c ->
             val duda = ligada?.duda ?: return@let c
             c.copy(venueId = duda.venueId, folio = com.avoqado.pos.pos.data.model.FolioGuardado(
                 orderId = duda.orderId, venueId = duda.venueId, identidadDeVenta = state.identidadDeVenta,
                 requestId = duda.requestId, origen = duda.origen.name, creacionIncierta = state.creacionIncierta,
             ))
         }
-        // Sólo con la escritura confirmada se suelta A y la caja queda libre para B.
-        if (!savedCartsRepository.saveCart(copia)) return false
+        // Sólo con la escritura confirmada se suelta A y la caja queda libre para B. 🔴 F1 r3 #5 · Codex plan #9: salvo la cuenta ligada a su
+        // tarjeta en duda que YA está en disco con su folio en duda: un disco que no escribe no traba la caja (B se atiende) y la llave del
+        // envío sigue de ancla para reconstruir la duda al retomarla o al abrir la app.
+        if (!savedCartsRepository.saveCart(copia)) {
+            if (copiaDeA?.folio?.enDuda != true) return false
+            _avisoDeVales.value = CUENTA_EN_DUDA_SIN_GUARDAR
+        }
         if (ligada != null) _pendingSplitOrder.value = null
         copiaAntesDelEnvio = null
         // El cliente se fue CON el carrito guardado (`attachedCustomerId` arriba), así
