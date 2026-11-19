@@ -1094,6 +1094,22 @@ class CartViewModelWeightTest {
     }
 
     @Test
+    fun `D4 la venta conserva su copia guardada para que al cobrar el saldo se retire`() = runTest {
+        // Codex D4 r2 #5: sin `carritoGuardadoId` la copia no se retiraba al cobrar y se podía restaurar y cobrar otra vez.
+        val vm = createViewModel()
+        vm.addCustomAmount(name = "Saldo pendiente", amountCents = 7500)
+        vm.markPendingSplitOrder("orden-vales")
+        val conCopia = vm.cartState.value.copy(carritoGuardadoId = "copia-1")
+        val campo = CartViewModel::class.java.getDeclaredField("_cartState").apply { isAccessible = true }
+        @Suppress("UNCHECKED_CAST")
+        (campo.get(vm) as kotlinx.coroutines.flow.MutableStateFlow<CartState>).value = conCopia
+
+        assertTrue(vm.ponerSaldoTrasCuentaCambiada("orden-vales", 7000, conCopia.identidadDeVenta))
+
+        assertEquals("copia-1", vm.cartState.value.carritoGuardadoId)
+    }
+
+    @Test
     fun `D4 si el carrito ya es otra venta o el saldo no es positivo, no se toca`() = runTest {
         val vm = createViewModel()
         vm.addCustomAmount(name = "Agua", amountCents = 2500)

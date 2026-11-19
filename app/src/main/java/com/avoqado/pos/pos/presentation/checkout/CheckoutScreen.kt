@@ -1933,8 +1933,8 @@ fun CheckoutScreen(
         var carritoAlDia by remember(aviso) { mutableStateOf<Boolean?>(null) }
         LaunchedEffect(aviso, showPaymentFlow) {
             if (!showPaymentFlow && carritoAlDia == null) {
-                carritoAlDia = !aviso.pagada &&
-                    cartViewModel.ponerSaldoTrasCuentaCambiada(aviso.orderId, aviso.saldoCents, aviso.venta, conAbono = aviso.conAbono)
+                carritoAlDia = aviso.conAbono && !aviso.pagada &&
+                    cartViewModel.ponerSaldoTrasCuentaCambiada(aviso.orderId, aviso.saldoCents, aviso.venta)
             }
         }
         carritoAlDia?.let { alDia ->

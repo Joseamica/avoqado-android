@@ -799,7 +799,6 @@ class TerminalPaymentServiceHttpTest {
         val error = result as TerminalPaymentResult.Error
         assertTrue("el SERVIDOR no creó el cobro", error.noSeCreo)
         assertTrue("es la cuenta que cambió", error.cuentaCambio)
-        assertEquals(7950, error.saldoDelServidorCents)
         assertTrue(error.message, error.message.startsWith("La cuenta AREA-80 cambió"))
         assertTrue("la llave se soltó", idsPendientes().isEmpty())
         assertEquals("no hay nada que consultar", 1, server.requestCount)

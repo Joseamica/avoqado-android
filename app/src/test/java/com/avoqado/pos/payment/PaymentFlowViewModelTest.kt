@@ -1247,10 +1247,10 @@ class PaymentFlowViewModelTest {
 
     private val textoDelServidor = "La cuenta AREA-80 cambió mientras se cobraba: ahora falta \$2.50. No se cobró la tarjeta."
 
-    private fun tarjetaQueChocaConLaCuentaCambiada(saldo: Int? = 250) {
+    private fun tarjetaQueChocaConLaCuentaCambiada() {
         coEvery {
             terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any(), any(), any(), any())
-        } returns TerminalPaymentResult.Error(textoDelServidor, requestId = "req-412", noSeCreo = true, cuentaCambio = true, saldoDelServidorCents = saldo)
+        } returns TerminalPaymentResult.Error(textoDelServidor, requestId = "req-412", noSeCreo = true, cuentaCambio = true)
     }
 
     @Test
@@ -1259,7 +1259,7 @@ class PaymentFlowViewModelTest {
         every { areaTicketRepository.session.current() } returns sesion
         coEvery { areaTicketRepository.materialize(any(), any(), any(), any(), any(), any(), any(), any()) } returns sesion
         coEvery { areaTicketRepository.refresh(any(), any()) } returns conAbono(sesion, pagado = "0.40", saldo = "2.60")
-        tarjetaQueChocaConLaCuentaCambiada(saldo = 250)
+        tarjetaQueChocaConLaCuentaCambiada()
         val cart = CartState(items = listOf(lineaDeVale("a", 300)))
 
         viewModel.startPaymentFlow(cart)
@@ -1272,18 +1272,19 @@ class PaymentFlowViewModelTest {
         val aviso = requireNotNull(viewModel.cuentaDeValesCambio.value)
         assertEquals("order-vales", aviso.orderId)
         assertEquals("manda la relectura (lo más nuevo)", 260, aviso.saldoCents)
+        assertTrue("la relectura confirmó el abono", aviso.conAbono)
         assertEquals(cart.identidadDeVenta, aviso.venta)
         coVerify(exactly = 1) { areaTicketRepository.refresh(any(), any()) }
         coVerify(exactly = 1) { terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any(), any(), any(), any()) }
     }
 
     @Test
-    fun `P1 D4 si la relectura falla el saldo sale del 412`() = runTest {
+    fun `P1 D4 si la relectura falla sale igual pero no se toca el carrito (sin saldo confirmado)`() = runTest {
         val sesion = sesionDeVales("0.00", valeDeArea("a", "3.00"))
         every { areaTicketRepository.session.current() } returns sesion
         coEvery { areaTicketRepository.materialize(any(), any(), any(), any(), any(), any(), any(), any()) } returns sesion
         coEvery { areaTicketRepository.refresh(any(), any()) } throws java.io.IOException("sin red")
-        tarjetaQueChocaConLaCuentaCambiada(saldo = 250)
+        tarjetaQueChocaConLaCuentaCambiada()
 
         viewModel.startPaymentFlow(CartState(items = listOf(lineaDeVale("a", 300))))
         viewModel.selectPaymentMethod(PaymentMethod.CARD)
@@ -1291,7 +1292,10 @@ class PaymentFlowViewModelTest {
         advanceUntilIdle()
 
         assertTrue(viewModel.debeSalir.value)
-        assertEquals(250, viewModel.cuentaDeValesCambio.value?.saldoCents)
+        val aviso = requireNotNull(viewModel.cuentaDeValesCambio.value)
+        assertNull("sin relectura no hay saldo confirmado", aviso.saldoCents)
+        assertFalse("ni abono confirmado: el carrito no se toca", aviso.conAbono)
+        assertEquals(textoDelServidor, textoDeCuentaCambiada(aviso, carritoAlDia = false))
     }
 
     @Test
@@ -1318,6 +1322,7 @@ class PaymentFlowViewModelTest {
 
         assertTrue("regresa al carrito", viewModel.debeSalir.value)
         assertEquals(250, viewModel.cuentaDeValesCambio.value?.saldoCents)
+        assertTrue(viewModel.cuentaDeValesCambio.value!!.conAbono)
         assertFalse("no vuelve al selector con el importe viejo", viewModel.state.value is PaymentFlowState.SelectingTerminal)
     }
 
@@ -1347,7 +1352,7 @@ class PaymentFlowViewModelTest {
         coEvery { areaTicketRepository.materialize(any(), any(), any(), any(), any(), any(), any(), any()) } returns sesion
         coEvery { areaTicketRepository.refresh(any(), any()) } returns
             conAbono(sesion, pagado = "3.00", saldo = "0.00").let { it.copy(status = "PAID", order = it.order!!.copy(paymentStatus = "PAID")) }
-        tarjetaQueChocaConLaCuentaCambiada(saldo = 250)
+        tarjetaQueChocaConLaCuentaCambiada()
 
         viewModel.startPaymentFlow(CartState(items = listOf(lineaDeVale("a", 300))))
         viewModel.selectPaymentMethod(PaymentMethod.CARD)
@@ -1357,17 +1362,18 @@ class PaymentFlowViewModelTest {
         val aviso = requireNotNull(viewModel.cuentaDeValesCambio.value)
         assertTrue(aviso.pagada)
         assertEquals(0, aviso.saldoCents)
+        assertFalse("pagada: el carrito no se toca solo", aviso.conAbono)
         val texto = textoDeCuentaCambiada(aviso, carritoAlDia = false)
         assertTrue(texto, texto.contains("ya pagó esta cuenta"))
     }
 
     @Test
-    fun `D4 un cambio sin pagos (un cargo agregado) no se avisa como abono`() = runTest {
+    fun `D4 un cambio sin pagos (un cargo agregado) no toca el carrito`() = runTest {
         val sesion = sesionDeVales("0.00", valeDeArea("a", "3.00"))
         every { areaTicketRepository.session.current() } returns sesion
         coEvery { areaTicketRepository.materialize(any(), any(), any(), any(), any(), any(), any(), any()) } returns sesion
         coEvery { areaTicketRepository.refresh(any(), any()) } returns sesion.copy(order = sesion.order!!.copy(remainingBalance = "3.30", total = "3.30"))
-        tarjetaQueChocaConLaCuentaCambiada(saldo = 330)
+        tarjetaQueChocaConLaCuentaCambiada()
 
         viewModel.startPaymentFlow(CartState(items = listOf(lineaDeVale("a", 300))))
         viewModel.selectPaymentMethod(PaymentMethod.CARD)
@@ -1380,8 +1386,9 @@ class PaymentFlowViewModelTest {
     }
 
     @Test
-    fun `P1 D4 si la cajera cancelo con el envio en vuelo, el desenlace tardio igual avisa con el saldo de ESA venta`() = runTest {
-        // Codex D4 r1 #4: «Cancelar» le gana al 412. La pantalla ya no lo gobierna, pero el carrito de esa venta sí puede ponerse al día.
+    fun `P1 D4 si la cajera cancelo con el envio en vuelo, el desenlace tardio no se le aplica a ningun carrito`() = runTest {
+        // Codex D4 r2 #1 y #3: un aviso tardío podía caer sobre otro cobro o religar una orden ya soltada. Queda como hoy:
+        // `handleStaleCardResult` lo registra y el siguiente «Cobrar» lleva a la salida de siempre.
         val sesion = sesionDeVales("0.00", valeDeArea("a", "3.00"))
         every { areaTicketRepository.session.current() } returns sesion
         coEvery { areaTicketRepository.materialize(any(), any(), any(), any(), any(), any(), any(), any()) } returns sesion
@@ -1390,21 +1397,17 @@ class PaymentFlowViewModelTest {
         coEvery {
             terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any(), any(), any(), any())
         } coAnswers { respuesta.await() }
-        val cart = CartState(items = listOf(lineaDeVale("a", 300)))
 
-        viewModel.startPaymentFlow(cart)
+        viewModel.startPaymentFlow(CartState(items = listOf(lineaDeVale("a", 300))))
         viewModel.selectPaymentMethod(PaymentMethod.CARD)
         viewModel.selectTerminalAndPay("t1")
         advanceUntilIdle()
         viewModel.cancelarVenta()
         advanceUntilIdle()
-        respuesta.complete(TerminalPaymentResult.Error(textoDelServidor, requestId = "req-412", noSeCreo = true, cuentaCambio = true, saldoDelServidorCents = 250))
+        respuesta.complete(TerminalPaymentResult.Error(textoDelServidor, requestId = "req-412", noSeCreo = true, cuentaCambio = true))
         advanceUntilIdle()
 
-        val aviso = requireNotNull(viewModel.cuentaDeValesCambio.value)
-        assertEquals(250, aviso.saldoCents)
-        assertEquals(cart.identidadDeVenta, aviso.venta)
-        assertEquals("order-vales", aviso.orderId)
+        assertNull(viewModel.cuentaDeValesCambio.value)
     }
 
     @Test

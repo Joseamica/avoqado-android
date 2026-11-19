@@ -38,8 +38,6 @@ sealed class ChargeStatusProbe {
         /** La orden del cobro según el servidor: completa una intención de cancelar que no la conocía. */
         val orderId: String? = null,
         val terminalId: String? = null,
-        /** hz:bdd815fd:D4: en la lápida de «la cuenta cambió», lo que faltaba según el SERVIDOR (centavos). Opcional. */
-        val remainingCents: Int? = null,
     ) : ChargeStatusProbe()
 
     /** 404: no se encontró la solicitud; no demuestra ausencia de cargo. */
@@ -72,8 +70,6 @@ sealed class CardChargeOutcome {
         val sinCobroNiRechazo: Boolean = false,
         /** hz:bdd815fd:D4: la lápida de «la cuenta cambió» (D53): el flujo relee los vales y vuelve al carrito con el saldo nuevo. */
         val cuentaCambio: Boolean = false,
-        /** D4: lo que faltaba según la lápida, para cuando la relectura de los vales tampoco se puede. */
-        val saldoDelServidorCents: Int? = null,
     ) : CardChargeOutcome()
 
     /** No se pudo determinar. Ni éxito ni fracaso: jamás ofrecer un reintento a ciegas. */
@@ -363,7 +359,6 @@ object CardChargeDecision {
                 CardChargeOutcome.NotCharged(
                     probe.errorMessage?.trim()?.takeIf { it.isNotEmpty() } ?: "El cobro fue rechazado. No se cobró la tarjeta.",
                     cuentaCambio = true,
-                    saldoDelServidorCents = probe.remainingCents?.takeIf { it >= 0 },
                 )
             probe.status == "FAILED" && probe.failureCode in LAPIDAS_DE_SALDO && !probe.errorMessage.isNullOrBlank() ->
                 CardChargeOutcome.NotCharged(probe.errorMessage.trim())

@@ -1766,10 +1766,10 @@ class PaymentFlowViewModel @Inject constructor(
         /** Codex D4 r1 #2: la relectura dice que otro cobro ya la liquidó. El carrito no se toca solo; el aviso lo dice. */
         val pagada: Boolean = false,
         /**
-         * Codex D4 r1 #3: la cuenta tiene un abono (o no se pudo saber: se asume que sí). Un cambio sin pagos (un cargo agregado) no
-         * marca la venta «con abono»: «Vaciar» sigue soltando el apartado como hoy.
+         * La relectura confirmó que la cuenta tiene un abono. Sólo entonces el carrito pasa a «Saldo pendiente» (Codex D4 r1 #3 y r2 #2:
+         * un cambio sin pagos, o una relectura que no se pudo, deja el carrito como estaba y la salida de siempre).
          */
-        val conAbono: Boolean = true,
+        val conAbono: Boolean = false,
     )
 
     private val _cuentaDeValesCambio = MutableStateFlow<CuentaDeValesCambio?>(null)
@@ -3696,8 +3696,8 @@ class PaymentFlowViewModel @Inject constructor(
                         anotarIntentoDePaquetes(com.avoqado.pos.customers.data.IntentoDeCobro.Tipo.TARJETA, requestId)
                     }
                 }
-                // D4: la venta y el apartado de ESTE envío, por si su desenlace llega después de «Cancelar».
-                val envioDeVales = envioDeVales()
+                // D4: el apartado de ESTE envío, por si la sesión se suelta mientras viaja (Codex D4 r2 #4).
+                val apartadoDelEnvio = sesionDelCobro?.let { id -> areaTicketRepository.session.current()?.takeIf { it.id == id } }
                 val terminalResult = terminalPaymentService.sendPaymentToTerminal(
                     terminalId = terminalId,
                     amountCents = currentBaseAmount(),
@@ -3725,7 +3725,6 @@ class PaymentFlowViewModel @Inject constructor(
                     // marca Success/Error ni se imprime sobre una pantalla de la que ya se fue.
                     // Pero el DINERO no se descarta con la navegación — ver handleStaleCardResult.
                     handleStaleCardResult(terminalResult)
-                    avisarCuentaCambiadaTardia(terminalResult, envioDeVales)
                     return
                 }
                 when (terminalResult) {
@@ -3741,8 +3740,8 @@ class PaymentFlowViewModel @Inject constructor(
                             }
                         }
                         // hz:bdd815fd:D4: la cuenta cambió (412 de D53): no es una pantalla de error, se vuelve al carrito con el saldo nuevo.
-                        if (terminalResult.cuentaCambio && esCobroDeVales()) {
-                            salirPorCuentaCambiada(terminalResult.message, terminalResult.saldoDelServidorCents)
+                        if (terminalResult.cuentaCambio) {
+                            salirPorCuentaCambiada(terminalResult.message, apartadoDelEnvio)
                             return
                         }
                         _state.value = PaymentFlowState.Error(
@@ -5052,8 +5051,8 @@ class PaymentFlowViewModel @Inject constructor(
         }
         val propia = ConsultaEnVuelo(requestId, paymentGeneration, automatica)
         consultaEnVuelo = propia
-        // D4: la venta y el apartado de ESTE cobro, por si su desenlace llega después de «Cancelar».
-        val envioDeVales = if (encabezado == null) envioDeVales() else null
+        // D4: el apartado de ESTE cobro, por si la sesión se suelta mientras se consulta.
+        val apartadoDelCobro = sesionDelCobro?.let { id -> areaTicketRepository.session.current()?.takeIf { it.id == id } }
         // `encabezado` = se REVISA sin adoptar (`fromPreviousSale`). La pantalla tiene que seguir hablando de ESE cobro:
         // «Volver a consultar» y la declaración lo buscan aquí, porque no es el cobro de esta pantalla.
         val fromPreviousSale = encabezado != null
@@ -5082,7 +5081,6 @@ class PaymentFlowViewModel @Inject constructor(
                     return@launch
                 }
                 handleStaleCardResult(if (outcome is TerminalPaymentResult.Success) outcome.copy(requestId = requestId) else outcome)
-                avisarCuentaCambiadaTardia(outcome, envioDeVales)
                 return@launch
             }
             // D2: la automática sólo gobierna el «Cobro sin confirmar» QUIETO que la lanzó — una declaración en vuelo
@@ -5133,10 +5131,10 @@ class PaymentFlowViewModel @Inject constructor(
                     undeterminedRequestId = null
                     if (fromPreviousSale) {
                         resolverCobroAnterior("El cobro anterior no se realizó")
-                    } else if (outcome.cuentaCambio && esCobroDeVales()) {
+                    } else if (outcome.cuentaCambio) {
                         // hz:bdd815fd:D4 (Codex D53 r3 #1): la respuesta del 412 se perdió y la consulta trajo su lápida. Volver al
                         // selector reintentaba con el importe viejo y sin el texto; se sale igual que con el 412 directo.
-                        salirPorCuentaCambiada(outcome.message, outcome.saldoDelServidorCents)
+                        salirPorCuentaCambiada(outcome.message, apartadoDelCobro)
                     } else {
                         ofrecerTerminales(total)
                     }
@@ -5946,57 +5944,39 @@ class PaymentFlowViewModel @Inject constructor(
     /**
      * 🔴 hz:bdd815fd:D4 (rediseño tras D53, Codex r1→r3). La cuenta de los vales cambió entre armar el cobro y mandarlo: el SERVIDOR no
      * tocó la terminal. En vez de dejar a la cajera en «Reintentar/Cancelar» (el reintento repetía el 412; «Cancelar» sin red pasaba por
-     * «Cancelación pendiente»; la consulta volvía al selector con el importe viejo), se relee la sesión de ESTE cobro (≤ 5 s) y se sale
-     * al carrito con lo que de verdad falta. Ninguna otra pantalla puede tomar este cobro: la generación sube antes de esperar.
+     * «Cancelación pendiente»; la consulta volvía al selector con el importe viejo), se relee el apartado de ESTE cobro (≤ 5 s) y se sale
+     * al carrito. Ninguna otra pantalla puede tomar este cobro: la generación sube antes de esperar.
+     *
+     * Sólo con lo que la relectura CONFIRMA se toca el carrito (Codex D4 r2): con abono, «Saldo pendiente» por lo que falta; pagada por
+     * otro cobro, un aviso que lo dice; sin pagos o sin relectura, el carrito queda como estaba y el aviso trae el texto del SERVIDOR (el
+     * siguiente «Cobrar» lleva a la salida de siempre: «Cobrar saldo», volver a escanear o el mismo 412; nunca cobra). Un desenlace así
+     * que llega después de «Cancelar» sigue como hoy (`handleStaleCardResult`): no se le aplica a ningún carrito (Codex D4 r2 #1 y #3).
+     *
+     * @param apartado el apartado de este cobro fotografiado antes del envío: se relee aunque un latido ya lo haya soltado (r2 #4).
      */
-    private fun salirPorCuentaCambiada(textoDelServidor: String, saldoDelRechazo: Int?) {
-        val envio = EnvioDeVales(createdOrderId, cartState?.identidadDeVenta, sesionDelCobro)
+    private fun salirPorCuentaCambiada(textoDelServidor: String, apartado: AreaTicketCheckout?) {
+        val orden = createdOrderId
+        val venta = cartState?.identidadDeVenta
+        val objetivo = apartado ?: sesionDelCobro?.let { id -> areaTicketRepository.session.current()?.takeIf { it.id == id } }
+        val venueCapturado = secureStorage.venueId?.takeIf { it.isNotBlank() }
         paymentGeneration++
         isProcessingPayment = false
         _state.value = PaymentFlowState.Loading
         viewModelScope.launch {
-            _cuentaDeValesCambio.value = releerTrasCuentaCambiada(envio, textoDelServidor, saldoDelRechazo)
+            val releida = objetivo?.let {
+                kotlinx.coroutines.withTimeoutOrNull(RELEER_VALES_TRAS_CAMBIO_MS) {
+                    runCatching { areaTicketRepository.refresh(objetivo = it, negocio = venueCapturado) }
+                        .onFailure { e -> Log.w("🎟️", "D4: no se pudo releer los vales tras «la cuenta cambió»: ${e.message}") }
+                        .getOrNull()
+                }
+            }?.takeIf { orden != null && it.order?.id == orden }
+            val pagada = releida != null && (releida.status == "PAID" || releida.order?.paymentStatus == "PAID")
+            val saldo = if (pagada) 0 else releida?.order?.remainingBalance?.moneyToCents()
+            val conAbono = !pagada && releida?.tieneAbono() == true
+            Log.w("💳", "D4: la cuenta $orden cambió mientras se cobraba; saldo $saldo, pagada $pagada, con abono $conAbono")
+            _cuentaDeValesCambio.value = CuentaDeValesCambio(orden, saldo, textoDelServidor, venta, pagada = pagada, conAbono = conAbono)
             salirDelFlujo()
         }
-    }
-
-    /** D4: la orden, la venta y el apartado del envío a la terminal, fotografiados antes de esperar (un desenlace tardío los usa). */
-    private class EnvioDeVales(val orderId: String?, val venta: String?, val sesionId: String?)
-
-    private fun envioDeVales(): EnvioDeVales? =
-        if (esCobroDeVales()) EnvioDeVales(createdOrderId, cartState?.identidadDeVenta, sesionDelCobro) else null
-
-    /**
-     * D4 (Codex r1 #4): la cajera tocó «Cancelar» con el envío en vuelo y el desenlace tardío es «la cuenta cambió». Esta pantalla ya
-     * no gobierna el cobro, pero el carrito de ESA venta sí puede quedar con el saldo nuevo: se relee y se avisa, sin tocar la pantalla.
-     * El checkout sólo lo aplica si el carrito sigue siendo esa venta y el cobro ya se cerró.
-     */
-    private fun avisarCuentaCambiadaTardia(result: TerminalPaymentResult, envio: EnvioDeVales?) {
-        val error = result as? TerminalPaymentResult.Error ?: return
-        if (!error.cuentaCambio || envio == null) return
-        viewModelScope.launch {
-            _cuentaDeValesCambio.value = releerTrasCuentaCambiada(envio, error.message, error.saldoDelServidorCents)
-        }
-    }
-
-    /** D4: relee el apartado de ESE envío (≤ 5 s) y arma el aviso. Lo más nuevo manda: la relectura; sin ella, lo que dijo el rechazo. */
-    private suspend fun releerTrasCuentaCambiada(envio: EnvioDeVales, textoDelServidor: String, saldoDelRechazo: Int?): CuentaDeValesCambio {
-        val orden = envio.orderId
-        val sesion = envio.sesionId?.let { id -> areaTicketRepository.session.current()?.takeIf { it.id == id } }
-        val venueCapturado = secureStorage.venueId?.takeIf { it.isNotBlank() }
-        val releida = sesion?.let {
-            kotlinx.coroutines.withTimeoutOrNull(RELEER_VALES_TRAS_CAMBIO_MS) {
-                runCatching { areaTicketRepository.refresh(objetivo = it, negocio = venueCapturado) }
-                    .onFailure { e -> Log.w("🎟️", "D4: no se pudo releer los vales tras «la cuenta cambió»: ${e.message}") }
-                    .getOrNull()
-            }
-        }?.takeIf { it.order?.id == orden }
-        val pagada = releida != null && (releida.status == "PAID" || releida.order?.paymentStatus == "PAID")
-        val saldo = if (pagada) 0 else releida?.order?.remainingBalance?.moneyToCents() ?: saldoDelRechazo
-        val conAbono = releida?.tieneAbono() ?: true
-        if (releida == null && orden != null && saldo != null && saldo > 0) areaTicketRepository.session.marcarConAbono(orden, saldo)
-        Log.w("💳", "D4: la cuenta $orden cambió mientras se cobraba; saldo $saldo, pagada $pagada, con abono $conAbono")
-        return CuentaDeValesCambio(orden, saldo, textoDelServidor, envio.venta, pagada = pagada, conAbono = conAbono)
     }
 
     private fun salirDelFlujo() {

@@ -247,16 +247,6 @@ class CardChargeDecisionTest {
     }
 
     @Test
-    fun `P1 D4 la consulta de la lapida trae lo que falta segun el servidor`() {
-        val json = "{\"status\":\"FAILED\",\"inProgress\":false,\"failureCode\":\"REJECTED_ORDER_BALANCE_CHANGED\",\"errorMessage\":\"x\",\"remainingCents\":7950}"
-        val dto = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }.decodeFromString(TerminalPaymentStatusDto.serializer(), json)
-        val r = CardChargeDecision.decide(dto.aProbe(), isFinalAttempt = true)
-        val out = (r as ProbeDecision.Resolved).outcome as CardChargeOutcome.NotCharged
-        assertTrue(out.cuentaCambio)
-        assertEquals(7950, out.saldoDelServidorCents)
-    }
-
-    @Test
     fun `D4 la lapida del falta X de D7 y un rechazo del banco no son la cuenta que cambio`() {
         for ((code, evidencia) in listOf("REJECTED_ORDER_AMOUNT_OVER_BALANCE" to null, null to "PROCESSOR_DECLINED")) {
             val r = CardChargeDecision.decide(
