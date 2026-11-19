@@ -674,6 +674,11 @@ class TerminalPaymentService @Inject constructor(
         customerId: String? = null,
         /** R100: el cobro sale de la bandeja «Pedidos en línea» (lo que debía la orden y si es folio). null = cualquier otro cobro. */
         deLaBandeja: com.avoqado.pos.onlineorders.data.CobroDeLaBandeja? = null,
+        /**
+         * 🔴 D53 (hz:e9ce0be7): lo que debía la orden de vales cuando ESTE cobro la armó, según el SERVIDOR. Si un abono entró en medio,
+         * el SERVIDOR contesta 412 `ORDER_BALANCE_CHANGED` sin tocar la terminal. null = cualquier otro cobro (el cuerpo sale igual).
+         */
+        expectedBalanceBeforeCents: Int? = null,
     ): TerminalPaymentResult {
         val antesDeEnviar = antesDelProximoEnvio
         antesDelProximoEnvio = null
@@ -731,6 +736,7 @@ class TerminalPaymentService @Inject constructor(
                     // Un id en blanco NO es un cliente: se descarta aquí para que el cuerpo
                     // quede idéntico al de una venta anónima.
                     customerId = customerId?.trim()?.takeIf { it.isNotEmpty() },
+                    expectedBalanceBeforeCents = expectedBalanceBeforeCents,
                 ),
             ).toRequestBody("application/json".toMediaType())
 
@@ -1602,6 +1608,8 @@ private data class TerminalPaymentRequest(
      * hubiera elegido cliente (el de efectivo sí lo mandaba desde su propio fix).
      */
     val customerId: String? = null,
+    /** D53: sólo en el cobro de vales; con `explicitNulls = false` la llave no aparece en los demás. */
+    val expectedBalanceBeforeCents: Int? = null,
 )
 
 @Serializable

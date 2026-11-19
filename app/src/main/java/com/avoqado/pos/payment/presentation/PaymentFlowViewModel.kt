@@ -3658,6 +3658,8 @@ class PaymentFlowViewModel @Inject constructor(
                     // R100: un cobro de la bandeja lleva su saldo; su positivo deja la marca «aquí ya se cobró» al reconocerse.
                     // D14: también la de una cuenta que ya existía cobrada fuera de la bandeja.
                     deLaBandeja = cobroDeLaBandeja ?: cobroFueraDeLaBandeja(),
+                    // D53: el cobro de vales lleva lo que debía su orden al armarla; si cambió, el SERVIDOR no cobra.
+                    expectedBalanceBeforeCents = saldoEsperadoDeLosVales(createdOrderId),
                 )
                 recordarIntentoDeCobro(terminalResult)
                 if (terminalResult is TerminalPaymentResult.Success && terminalResult.alreadyRecovered) return
@@ -6805,6 +6807,20 @@ class PaymentFlowViewModel @Inject constructor(
     private class ValesDelCobro(val checkout: AreaTicketCheckout, val llave: String, val cobroId: String,
         val ordenQueContinua: String?, val cobroQueLaArmo: String?)
 
+    /**
+     * 🔴 D53 (hz:e9ce0be7): lo que debía la orden de los vales cuando ESTE cobro (`cobroDeValesId`) la armó NUEVA, según el SERVIDOR.
+     * Viaja como `expectedBalanceBeforeCents` en el envío a la terminal; si un abono entró en medio, el SERVIDOR no cobra (412).
+     * Se fija una vez: un reintento del mismo cobro vuelve a materializar con la orden «que continúa» (se salta `tieneAbono()`), y
+     * adoptar ese saldo nuevo dejaría pasar el abono. Una continuación (partes 2..N) no lo fija: su «Saldo pendiente» y la
+     * materialización pueden ser de lecturas distintas (Codex D53 r1 #1/#2), y qué hace la caja con su renglón lo decide el founder.
+     */
+    private class SaldoAlArmar(val cobroId: String, val orderId: String, val cents: Int)
+    private var saldoAlArmarLosVales: SaldoAlArmar? = null
+
+    /** D53: el saldo fijado para la orden a la que va ESTE envío, o null (cualquier otro cobro: el cuerpo sale igual que siempre). */
+    private fun saldoEsperadoDeLosVales(orderId: String?): Int? =
+        saldoAlArmarLosVales?.takeIf { it.cobroId == cobroDeValesId && it.orderId == orderId }?.cents
+
     private fun valesDelCobro(): ValesDelCobro? = areaTicketRepository.session.current()?.takeIf { esCobroDeVales() }
         ?.let { ValesDelCobro(it, areaTicketRepository.session.materializeIdempotencyKey(), cobroDeValesId,
             createdOrderId, areaTicketRepository.session.cobroQueLaArmo) }
@@ -6905,6 +6921,10 @@ class PaymentFlowViewModel @Inject constructor(
             } else {
                 // La orden sólo es de la venta en pantalla si sigue siendo ésta; el cobro de ESTOS vales sigue con su orden igual.
                 if (!otraVenta(venta)) {
+                    // D53: sólo una orden NUEVA para este cobro (aquí ya consta que no traía abono) fija su saldo; un reintento lo conserva.
+                    if (order.id != ordenQueContinua) {
+                        saldoAlArmarLosVales = SaldoAlArmar(cobroCapturado, order.id, order.remainingBalance.moneyToCents())
+                    }
                     createdOrderId = order.id
                     createdOrderNumber = order.orderNumber
                     lastAreaDeliveryCode = order.areaDeliveryCode
