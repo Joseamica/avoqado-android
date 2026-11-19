@@ -3241,8 +3241,14 @@ private fun OrderDiscountsDialog(
                 if (applied.isNotEmpty()) {
                     Text("Aplicados", fontWeight = FontWeight.SemiBold)
                     applied.forEach { d ->
+                        // D15: la rebaja fija del cobro de vales enseña «Quitar» en gris con su nota; tocar la fila dice por qué.
+                        val quitar = quitarDeLaRebaja(d)
+                        var conRazon by remember(d.id) { mutableStateOf(false) }
                         Row(
-                            modifier = Modifier.fillMaxWidth().padding(vertical = AvoqadoTheme.spacing.xs),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .then(if (quitar.razon != null) Modifier.clickable(onClickLabel = "Ver por qué está fija") { conRazon = !conRazon } else Modifier)
+                                .padding(vertical = AvoqadoTheme.spacing.xs),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
                             Column(modifier = Modifier.weight(1f)) {
@@ -3252,8 +3258,21 @@ private fun OrderDiscountsDialog(
                                     style = MaterialTheme.typography.bodySmall,
                                     color = Success,
                                 )
+                                quitar.nota?.let {
+                                    Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                                if (conRazon) {
+                                    quitar.razon?.let {
+                                        Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    }
+                                }
                             }
-                            TextButton(onClick = { onRemove(d.id) }) { Text("Quitar", color = Color(0xFFD32F2F)) }
+                            TextButton(onClick = { onRemove(d.id) }, enabled = quitar.quitarActivo) {
+                                Text(
+                                    "Quitar",
+                                    color = if (quitar.quitarActivo) Color(0xFFD32F2F) else MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
                         }
                     }
                     Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
