@@ -157,6 +157,23 @@ class VigilanteDePedidosEnLineaTest {
     }
 
     @Test
+    fun `D662 no extra poll when the window was minimized while learning the store is ON (Codex p1-r3 #1)`() = runTest {
+        val f = armar(Result.success(inbox(storeOff = true)))
+        f.vigilante.onStart(owner)
+        runCurrent()
+        val n = f.falso.llamadas.size
+        f.falso.respuesta = Result.success(inbox(storeOff = false)) // la prenden en el panel…
+        f.falso.antes = { f.seVe = false } // …y minimizan la ventana mientras la consulta va en camino
+        advanceTimeBy(60_000); runCurrent()
+        assertEquals("sin consulta extra: la caja ya no se ve", listOf("pending" to false), f.falso.llamadas.drop(n))
+        f.falso.antes = {}
+        f.seVe = true // la restauran
+        advanceTimeBy(10_000); runCurrent()
+        assertEquals("el compás late a los 10 s, como antes", "pending" to true, f.falso.llamadas.last())
+        f.vigilante.onStop(owner)
+    }
+
+    @Test
     fun `D662 several poll-nows in a row queue at most one ahead of the heartbeat (Codex p1-r2 #4)`() = runTest {
         val f = armar(Result.success(inbox()))
         f.vigilante.onStart(owner)

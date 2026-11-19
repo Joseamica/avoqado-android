@@ -307,8 +307,9 @@ class VigilanteDePedidosEnLinea internal constructor(
             if (it is IOException) _sinConexion.value = true
         }
         // D662 (Codex p1-r2 #1): la acaban de prender en el panel y esta consulta salió callada por la lectura vieja: la caja late YA,
-        // sin esperar otra vuelta (ahora `ultimosConteos` dice encendida, así que esto pasa a lo más una vez).
-        if (callaPorApagada && resultado.getOrNull()?.storeOff == false) sondeo(conLatido)
+        // sin esperar otra vuelta (ahora `ultimosConteos` dice encendida, así que esto pasa a lo más una vez). Sólo si la caja SIGUE
+        // a la vista (Codex p1-r3 #1): una consulta extra sin latido sólo retrasaría al compás.
+        if (callaPorApagada && resultado.getOrNull()?.storeOff == false && seVe() && ciclo != null) sondeo(conLatido)
     }
 
     /** Hubo una lectura (buena o la guardada) de folios en esta sucursal: la guardada no vuelve a pisar un «no disponible». */
