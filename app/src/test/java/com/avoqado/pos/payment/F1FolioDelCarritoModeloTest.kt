@@ -94,6 +94,13 @@ class F1FolioDelCarritoModeloTest {
         val envios = mutableListOf<String?>() // folio de cada tarjeta mandada a la terminal
         /** La lista durable `PendientesDeTarjeta` del aparato: folio → intento en duda. */
         val pendientesLocales = mutableMapOf<String, String>()
+        /** El aviso de `TerminalPaymentService.folios`: el intento de un folio dejó de estar en duda en esta tablet. */
+        val foliosDeTarjeta = MutableSharedFlow<com.avoqado.pos.payment.data.DesenlaceDeFolio>(extraBufferCapacity = 16)
+        /** Lo que el servidor corrige al crear la orden (r2 #1): total en pesos y precios por renglón. */
+        var totalAlCrear: Double? = null
+        var cambiosAlCrear: List<com.avoqado.pos.pos.data.model.CambioDePrecio> = emptyList()
+        /** El aparato pide propina (la cajera captura [propinaCents] en la pantalla del cliente). */
+        var conPropina = false
         /** Qué contesta el próximo envío a la terminal (null = la tarjeta queda en duda). */
         var proximoEnvio: ((folio: String?, requestId: String) -> TerminalPaymentResult)? = null
 
@@ -104,7 +111,7 @@ class F1FolioDelCarritoModeloTest {
             coEvery { repo.createOrder(any(), any(), any(), any(), any(), any(), capturedVenueId = any()) } answers {
                 val folio = "order-${'a' + ordenesCreadas.size}"
                 ordenesCreadas += folio to thirdArg<String?>()
-                Result.success(CreateOrderResponse(success = true, data = OrderData(id = folio)))
+                Result.success(CreateOrderResponse(success = true, data = OrderData(id = folio, total = totalAlCrear, priceChanges = cambiosAlCrear)))
             }
             coEvery { repo.saldoDeLaOrden(any()) } answers { saldos[firstArg()] }
         }
@@ -125,6 +132,8 @@ class F1FolioDelCarritoModeloTest {
             coEvery { t.fetchOnlineTerminals(any()) } returns
                 TerminalListResult.Success(listOf(OnlineTerminal(terminalId = "t1", name = "Terminal 1")))
             every { t.pendienteDeLaVenta(any()) } answers { firstArg<String?>()?.let { pendientesLocales[it] } }
+            every { t.sigueEnDuda(any()) } answers { pendientesLocales.containsKey(firstArg()) }
+            every { t.folios } returns foliosDeTarjeta
             every { t.pendientesDeOtrasVentas(any()) } returns emptyList()
             every { t.intentoEnVuelo() } returns null
             every { t.contextoDe(any()) } returns null
@@ -180,7 +189,7 @@ class F1FolioDelCarritoModeloTest {
 
     private fun crearCobro(servidor: Servidor): PaymentFlowViewModel {
         val tpvSettingsRepository = mockk<TpvSettingsRepository>(relaxed = true)
-        every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings(showReviewScreen = false, showTipScreen = false)
+        every { tpvSettingsRepository.getCurrentSettings() } answers { TpvSettings(showReviewScreen = false, showTipScreen = servidor.conPropina) }
         val secureStorage = mockk<SecureStorage>(relaxed = true)
         every { secureStorage.venueName } returns "Avoqado Test"
         every { secureStorage.userId } returns "user-456"
@@ -237,16 +246,18 @@ class F1FolioDelCarritoModeloTest {
         val cobro = crearCobro(servidor)
 
         /** «Cobrar»: las puertas de `proceedToPayment` que tocan el folio, y el cobro abierto con la orden congelada. */
-        fun cobrar(): Boolean {
+        fun cobrar(parteCents: Int? = null, propinaCents: Int? = null): Boolean {
             if (carrito.detenerCobroDeVentaCambiada()) return false
             if (!carrito.prepararCobroDelCarritoGuardado()) return false
             carrito.resolvePendingSplitOrderForCharge()
             carrito.abrirCobro()
             val cliente = carrito.selectedCustomer.value
+            if (parteCents != null) cobro.setSplitConfig("CUSTOMAMOUNT", customAmountCents = parteCents) else cobro.setSplitConfig("FULLPAYMENT")
             cobro.startPaymentFlow(
                 carrito.getCartForPayment(), customerId = cliente?.id, customerName = cliente?.name,
                 resumeOrderId = carrito.chargingAgainstOrderId, apertura = UUID.randomUUID().toString(),
             )
+            propinaCents?.let(cobro::submitTip)
             return true
         }
 
@@ -269,6 +280,14 @@ class F1FolioDelCarritoModeloTest {
 
         fun retomar(): Restauracion {
             val copia = guardados.savedCarts.value.single()
+            return carrito.restoreSavedCart(copia).let {
+                if (it is Restauracion.PideConfirmacion) carrito.restoreSavedCart(copia, confirmado = true) else it
+            }
+        }
+
+        /** «Retomar» la copia del folio [orderId] (con otras guardadas en la lista). */
+        fun retomarFolio(orderId: String): Restauracion {
+            val copia = guardados.savedCarts.value.first { it.folio?.orderId == orderId }
             return carrito.restoreSavedCart(copia).let {
                 if (it is Restauracion.PideConfirmacion) carrito.restoreSavedCart(copia, confirmado = true) else it
             }
@@ -482,5 +501,53 @@ class F1FolioDelCarritoModeloTest {
                 assertEquals("${caso.nombre}: se cobra otra vez sobre A", "order-a", despues.carrito.chargingAgainstOrderId)
             }
         }
+    }
+
+    // MARK: - r2 #1: precio corregido y abono tardío (ejemplo numérico del plan)
+
+    @Test
+    fun precioCorregido_yAbonoTardio_repartenElSaldo() = runTest {
+        val servidor = Servidor().apply { conPropina = true }
+        val caja = Caja(servidor)
+        caja.carrito.setSelectedCustomer("cli-ana", "Ana")
+        caja.carrito.addProduct(Product(id = "prod-paquete", name = "Paquete", priceValue = 120.0))
+        assertEquals("el carrito estima $120", 12_000, caja.carrito.cartState.value.totalCents)
+        val linea = caja.carrito.cartState.value.items.single().id
+        servidor.totalAlCrear = 100.0
+        servidor.cambiosAlCrear = listOf(com.avoqado.pos.pos.data.model.CambioDePrecio(
+            externalId = linea, productId = "prod-paquete", displayedUnitPriceCents = 12_000, unitPriceCents = 10_000,
+        ))
+
+        // Se cobran $40 + $5 de propina con tarjeta y quedan en duda.
+        assertTrue(caja.cobrar(parteCents = 4_000, propinaCents = 500))
+        caja.tarjeta()
+        advanceUntilIdle()
+        assertEquals("en duda se ven $45", 4_500, (caja.cobro.state.value as? PaymentFlowState.Undetermined)?.totalAmount)
+
+        caja.seguir()
+        assertEquals("A queda con el precio del servidor", 10_000, caja.carrito.cartState.value.totalCents)
+        assertTrue(caja.guardar())
+        assertEquals(10_000, caja.guardados.savedCarts.value.single().items.single().unitPrice)
+        caja.armar("cli-beto", "Beto")
+        val b = CartStateDeB(caja.carrito.cartState.value, caja.carrito.selectedCustomer.value?.id)
+
+        // Llega la aprobación de los $40 mientras se atiende a B: el servidor ya descuenta la parte (sin la propina).
+        servidor.pendientesLocales.remove("order-a")
+        servidor.saldos["order-a"] = OrderRepository.SaldoDeLaOrden(6_000, "PARTIAL", "PENDING")
+        servidor.foliosDeTarjeta.emit(com.avoqado.pos.payment.data.DesenlaceDeFolio("venue-1", "order-a", "req-1"))
+        servidor.foliosDeTarjeta.emit(com.avoqado.pos.payment.data.DesenlaceDeFolio("venue-1", "order-a", "req-1")) // repetido
+        advanceUntilIdle()
+        assertBIntacta(caja, b)
+        assertEquals("la copia de A queda con su resto, una vez", listOf("Saldo pendiente" to 6_000),
+            caja.guardados.savedCarts.value.single().items.map { it.name to it.unitPrice })
+
+        // Al retomar A quedan $60 y dividir entre dos ofrece $30.
+        assertTrue(caja.guardar())
+        assertEquals(Restauracion.Hecha, caja.retomarFolio("order-a"))
+        assertEquals("quedan $60", 6_000, caja.carrito.cartState.value.totalCents)
+        assertEquals("dividir entre dos ofrece $30", 3_000, caja.carrito.cartState.value.totalCents / 2)
+        assertTrue(caja.cobrar())
+        assertEquals("el resto se cobra sobre A", "order-a", caja.carrito.chargingAgainstOrderId)
+        assertEquals(listOf("order-a"), servidor.ordenesCreadas.map { it.first })
     }
 }

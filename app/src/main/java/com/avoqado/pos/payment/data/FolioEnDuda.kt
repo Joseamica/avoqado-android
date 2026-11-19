@@ -12,6 +12,8 @@ data class FolioEnDuda(
     val orderId: String,
     val requestId: String?,
     val origen: Origen,
+    /** r2 #1: lo que el SERVIDOR corrigió al crear A («se cobra el precio que vio el cliente»): el carrito queda con ESE precio. */
+    val cambiosDePrecio: List<com.avoqado.pos.pos.data.model.CambioDePrecio> = emptyList(),
 ) {
     enum class Origen { LOCAL, OTRA_CAJA }
 }

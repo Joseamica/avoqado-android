@@ -297,7 +297,23 @@ class TerminalPaymentService @Inject constructor(
     /** N4 (Codex r2): marcas «SÍ pasó» que el disco no aceptó. Siguen a la vista (en memoria) y la lectura siguiente las reintenta. */
     private val marcasSinGuardar = mutableMapOf<String, CobroPendiente>()
 
+    /**
+     * 🔴 F1 bloque 2 (r2 #1): el intento de un folio dejó de estar en duda en esta tablet (salió de la lista o consta que SÍ pasó).
+     * El carrito relee ese folio en el SERVIDOR (la cuenta visible o su copia guardada); el dinero lo da esa lectura, así un aviso
+     * repetido no aplica el pago dos veces.
+     */
+    private val _folios = kotlinx.coroutines.flow.MutableSharedFlow<DesenlaceDeFolio>(extraBufferCapacity = 16)
+    val folios: kotlinx.coroutines.flow.SharedFlow<DesenlaceDeFolio> = _folios
+
+    private fun anunciarFolio(entrada: CobroPendiente?) {
+        val orderId = entrada?.orderId?.takeIf { it.isNotBlank() } ?: return
+        val venueId = runCatching { JSONObject(entrada.contexto).optString("venueId") }.getOrNull()?.takeIf { it.isNotBlank() }
+            ?: secureStorage.venueId ?: return
+        _folios.tryEmit(DesenlaceDeFolio(venueId, orderId, entrada.requestId))
+    }
+
     private fun quitar(entrada: CobroPendiente) {
+        anunciarFolio(entrada)
         reconocidos += entrada.requestId
         marcasSinGuardar.remove(entrada.requestId)
         synchronized(soltados) { soltados[entrada.requestId] = entrada }
@@ -370,15 +386,14 @@ class TerminalPaymentService @Inject constructor(
         if (requestId in marcasSinGuardar) return false
         if (entrada?.cobrado == true || (entrada == null && requestId in reconocidos)) return true
         val previo = entrada ?: soltado(requestId)
-        guardarMarca(
-            CobroPendiente(
-                requestId,
-                previo?.orderId,
-                previo?.contexto ?: JSONObject().put("requestId", requestId).toString(),
-                cobrado = true,
-                cobradoEn = System.currentTimeMillis(),
-            ),
+        val marca = CobroPendiente(
+            requestId,
+            previo?.orderId,
+            previo?.contexto ?: JSONObject().put("requestId", requestId).toString(),
+            cobrado = true,
+            cobradoEn = System.currentTimeMillis(),
         )
+        guardarMarca(marca).also { if (it) anunciarFolio(marca) }
     }
 
     private fun guardarMarca(marca: CobroPendiente): Boolean =
@@ -431,6 +446,9 @@ class TerminalPaymentService @Inject constructor(
      * no hay venta que cercar: `null`, y el aviso de la pantalla cubre el resto. Incluye uno que ya consta que SÍ pasó
      * ([yaCobrado]): la misma venta no se vuelve a mandar a la terminal en silencio.
      */
+    /** F1 bloque 2: ¿el intento de ESTE folio sigue sin desenlace en esta tablet? (Un «SÍ pasó» marcado ya no es duda.) */
+    fun sigueEnDuda(orderId: String): Boolean = vigentes().any { it.orderId == orderId && !it.cobrado }
+
     fun pendienteDeLaVenta(orderId: String?): String? {
         val orden = orderId?.takeIf { it.isNotBlank() } ?: return null
         return vigentes().lastOrNull { it.orderId == orden }?.requestId

@@ -5264,10 +5264,10 @@ class PaymentFlowViewModel @Inject constructor(
         val venueId = secureStorage.venueId ?: return null
         val venta = cartState?.identidadDeVenta ?: return null
         terminalPaymentService.pendienteDeLaVenta(orden)?.let {
-            return com.avoqado.pos.payment.data.FolioEnDuda(venueId, venta, orden, it, com.avoqado.pos.payment.data.FolioEnDuda.Origen.LOCAL)
+            return com.avoqado.pos.payment.data.FolioEnDuda(venueId, venta, orden, it, com.avoqado.pos.payment.data.FolioEnDuda.Origen.LOCAL, cambiosDeEstaVenta)
         }
         val ajeno = bloqueadorEnPantalla?.takeIf { it.scope == CardChargeDecision.SCOPE_ORDER } ?: return null
-        return com.avoqado.pos.payment.data.FolioEnDuda(venueId, venta, orden, ajeno.revisable, com.avoqado.pos.payment.data.FolioEnDuda.Origen.OTRA_CAJA)
+        return com.avoqado.pos.payment.data.FolioEnDuda(venueId, venta, orden, ajeno.revisable, com.avoqado.pos.payment.data.FolioEnDuda.Origen.OTRA_CAJA, cambiosDeEstaVenta)
     }
 
     /** Nombre histórico; hoy TODA cancelación es durable. */

@@ -760,10 +760,13 @@ class CartViewModel @Inject constructor(
      * y total: la misma mercancía con otro cliente pasaba por A.
      */
     fun ligarTarjetaEnDuda(folio: com.avoqado.pos.payment.data.FolioEnDuda) {
-        val cart = _cartState.value
-        if (cart.isEmpty || cart.identidadDeVenta != folio.identidadDeVenta || folio.venueId != secureStorage.venueId) return
+        val actual0 = _cartState.value
+        if (actual0.isEmpty || actual0.identidadDeVenta != folio.identidadDeVenta || folio.venueId != secureStorage.venueId) return
         val actual = _pendingSplitOrder.value
         if (actual != null && actual.orderId != folio.orderId) return
+        // r2 #1: el carrito queda con el precio que el SERVIDOR puso al crear A (y así se guarda y se retoma).
+        if (folio.cambiosDePrecio.isNotEmpty()) _cartState.update { it.conPreciosDelServidor(folio.cambiosDePrecio, congelar = true) }
+        val cart = _cartState.value
         _pendingSplitOrder.value = (actual ?: PendingSplitOrder(
             orderId = folio.orderId, itemIds = cart.items.map { it.id }.toSet(), totalCents = cart.totalCents,
             renglones = cart.items, descuentoDeCuenta = cart.orderDiscount,
@@ -815,7 +818,7 @@ class CartViewModel @Inject constructor(
         val origen = visible?.duda?.origen?.name ?: copia?.folio?.origen
         // La duda de OTRA caja no está en la lista de esta tablet: sólo un estado final de A la resuelve. Sin la lista, tampoco.
         val sigueEnDuda = origen == com.avoqado.pos.payment.data.FolioEnDuda.Origen.OTRA_CAJA.name ||
-            terminalPaymentService?.pendienteDeLaVenta(orderId) != null || terminalPaymentService == null
+            terminalPaymentService?.sigueEnDuda(orderId) != false
         val desenlace = decidirFolio(saldo, sigueEnDuda) ?: return
         Log.i("🛒", "Folio $orderId: $desenlace (pantalla=${visible != null}, copia=${copia?.id})")
         if (visible != null) aplicarAlCarrito(desenlace, saldo.remainingCents, orderId)
@@ -1386,6 +1389,10 @@ class CartViewModel @Inject constructor(
         // 🔴 F1 bloque 2 (r2 #5): la cancelación que termina en segundo plano y las copias con folio al abrir la app releen A.
         cancelacionDeCobro?.let { coordinador ->
             viewModelScope.launch { coordinador.folios.collect { releerFolio(it.venueId, it.orderId) } }
+        }
+        // r2 #1: el «SÍ pasó» (o la salida de la lista) de una tarjeta en duda, también con B en pantalla.
+        terminalPaymentService?.let { terminal ->
+            viewModelScope.launch { terminal.folios.collect { releerFolio(it.venueId, it.orderId) } }
         }
         viewModelScope.launch {
             savedCartsRepository.savedCarts.value.mapNotNull { it.folio?.takeIf { f -> f.enDuda } }.forEach { releerFolio(it.venueId, it.orderId) }
