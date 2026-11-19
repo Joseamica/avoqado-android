@@ -107,7 +107,7 @@ fun PaymentFlowScreen(
      * Codex android r1 #2: el cobro sale con [Seguir] y la orden que creó sigue con su tarjeta en duda. El carrito conserva ese folio
      * (como un abono parcial) para que el mismo carrito no vuelva a mandarse con otro. Se llama antes de [onCancel].
      */
-    onSalirConTarjetaEnDuda: (orderId: String) -> Unit = {},
+    onSalirConTarjetaEnDuda: (com.avoqado.pos.payment.data.FolioEnDuda) -> Unit = {},
 ) {
     val scopeDeSaldo = rememberCoroutineScope()
     val filaDeSaldo by viewModel.conductaDelSaldo.collectAsState()
@@ -663,7 +663,7 @@ fun PaymentFlowScreen(
     LaunchedEffect(debeSalir) {
         if (debeSalir) {
             viewModel.consumirSalida()
-            viewModel.consumirOrdenEnDuda()?.let(onSalirConTarjetaEnDuda)
+            viewModel.consumirFolioEnDuda()?.let(onSalirConTarjetaEnDuda)
             onCancel()
         }
     }

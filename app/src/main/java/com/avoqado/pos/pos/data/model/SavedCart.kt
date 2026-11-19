@@ -40,9 +40,27 @@ data class SavedCart(
     val attachedCustomerDescuento: com.avoqado.pos.customers.data.model.DescuentoDelCliente? = null,
     val autorizacionDelDescuento: AutorizacionDelDescuento? = null,
     val descuentosDeClienteQuitados: Set<String> = emptySet(),
+    /**
+     * 🔴 F1 bloque 2 (`plan-android.md`, invariante 1): la cuenta se guardó ligada a su folio con la tarjeta en duda. Retomarla
+     * devuelve ESA venta (su identidad y su folio) y el cobro vuelve contra él. Nulo en carritos viejos y sin folio.
+     */
+    val folio: FolioGuardado? = null,
 ) {
     val itemCount: Int get() = items.sumOf { it.quantity }
 }
+
+/** F1 bloque 2: el folio de la cuenta guardada (ver [SavedCart.folio]). */
+@Serializable
+data class FolioGuardado(
+    val orderId: String,
+    val venueId: String,
+    val identidadDeVenta: String,
+    val requestId: String? = null,
+    /** `LOCAL` u `OTRA_CAJA` ([com.avoqado.pos.payment.data.FolioEnDuda.Origen]). */
+    val origen: String? = null,
+    /** La llave de una creación de orden cuya respuesta se perdió: se recupera con el MISMO `externalId`. */
+    val creacionIncierta: String? = null,
+)
 
 @Serializable
 data class SavedCartItem(

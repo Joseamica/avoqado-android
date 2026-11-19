@@ -1537,6 +1537,7 @@ private fun SavedCartsSubView(
                                 Restauracion.Hecha -> onBack()
                                 is Restauracion.PideConfirmacion -> confirmarRestauracion = cart
                                 Restauracion.BloqueadaPorAbono -> restauracionBloqueada = com.avoqado.pos.payment.presentation.VALES_CON_ABONO
+                                Restauracion.BloqueadaPorCuentaLigada -> restauracionBloqueada = com.avoqado.pos.pos.presentation.cart.CUENTA_LIGADA_GUARDALA
                                 Restauracion.YaDejadaParaDespues ->
                                     restauracionBloqueada = com.avoqado.pos.pos.presentation.cart.YA_SE_DEJO_PARA_PAGAR_DESPUES
                             }

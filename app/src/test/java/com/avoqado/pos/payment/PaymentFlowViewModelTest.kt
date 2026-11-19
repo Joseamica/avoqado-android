@@ -3867,8 +3867,11 @@ class PaymentFlowViewModelTest {
 
         viewModel.salirDejandoPendiente()
 
-        assertEquals("order-1", viewModel.consumirOrdenEnDuda())
-        assertNull("se entrega una sola vez", viewModel.consumirOrdenEnDuda())
+        val folio = viewModel.consumirFolioEnDuda()
+        assertEquals("order-1", folio?.orderId)
+        assertEquals("req-a", folio?.requestId)
+        assertEquals(com.avoqado.pos.payment.data.FolioEnDuda.Origen.LOCAL, folio?.origen)
+        assertNull("se entrega una sola vez", viewModel.consumirFolioEnDuda())
     }
 
     @Test
@@ -3878,7 +3881,7 @@ class PaymentFlowViewModelTest {
 
         viewModel.salirDejandoPendiente()
 
-        assertNull(viewModel.consumirOrdenEnDuda())
+        assertNull(viewModel.consumirFolioEnDuda())
     }
 
     @Test

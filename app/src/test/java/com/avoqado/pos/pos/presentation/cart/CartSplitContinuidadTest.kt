@@ -101,36 +101,42 @@ class CartSplitContinuidadTest {
         markPendingSplitOrder(orderId)
     }
 
-    // ── Codex android r1 #2: la tarjeta en duda conserva el folio de ESTA compra ─────────────────
+    // ── F1 bloque 2 (antes Codex android r1 #2): la tarjeta en duda liga el carrito a SU folio, como un abono ─────────
+
+    private fun CartViewModel.folioEnDuda(orderId: String = "order-a") = com.avoqado.pos.payment.data.FolioEnDuda(
+        venueId = "venue-1", identidadDeVenta = cartState.value.identidadDeVenta, orderId = orderId, requestId = "req-a",
+        origen = com.avoqado.pos.payment.data.FolioEnDuda.Origen.LOCAL,
+    )
 
     @Test
-    fun `Codex r1 2 - el mismo carrito con la tarjeta en duda vuelve contra su folio`() = runTest {
+    fun `F1 - el mismo carrito con la tarjeta en duda vuelve contra su folio`() = runTest {
         val vm = createViewModel()
         vm.addCustomAmount(name = "Pizza", amountCents = 15_000)
-        vm.recordarOrdenEnDuda("order-a")
+        vm.ligarTarjetaEnDuda(vm.folioEnDuda())
 
         assertEquals("order-a", vm.resolvePendingSplitOrderForCharge())
         assertEquals("cerrar y volver a abrir el cobro: el mismo folio", "order-a", vm.resolvePendingSplitOrderForCharge())
     }
 
     @Test
-    fun `Codex r1 2 - si el cajero cambia el carrito, el vinculo con la orden en duda se va`() = runTest {
+    fun `F1 - la cuenta ligada no se edita ni se vacia, y se dice que se guarde`() = runTest {
         val vm = createViewModel()
         vm.addCustomAmount(name = "Pizza", amountCents = 15_000)
-        vm.recordarOrdenEnDuda("order-a")
+        vm.ligarTarjetaEnDuda(vm.folioEnDuda())
+        val antes = vm.cartState.value
         vm.addCustomAmount(name = "Refresco", amountCents = 2_500)
+        vm.vaciar()
 
-        assertNull("otra compra: folio nuevo", vm.resolvePendingSplitOrderForCharge())
-        assertNull("y ya no vuelve", vm.resolvePendingSplitOrderForCharge())
+        assertEquals(antes, vm.cartState.value)
+        assertEquals(CUENTA_LIGADA_GUARDALA, vm.avisoDeVales.value)
+        assertEquals("order-a", vm.resolvePendingSplitOrderForCharge())
     }
 
     @Test
-    fun `Codex r1 2 - vaciar el carrito suelta la orden en duda`() = runTest {
+    fun `F1 - el folio de otra venta no se liga a este carrito`() = runTest {
         val vm = createViewModel()
         vm.addCustomAmount(name = "Pizza", amountCents = 15_000)
-        vm.recordarOrdenEnDuda("order-a")
-        vm.clearCart()
-        vm.addCustomAmount(name = "Pizza", amountCents = 15_000)
+        vm.ligarTarjetaEnDuda(vm.folioEnDuda().copy(identidadDeVenta = "otra-venta"))
 
         assertNull(vm.resolvePendingSplitOrderForCharge())
     }

@@ -383,6 +383,8 @@ sealed interface Restauracion {
     data class PideConfirmacion(val cobroIniciadoEn: Long) : Restauracion
     /** D5: este carrito es una venta de vales con abono; restaurar otro la vaciaría. */
     data object BloqueadaPorAbono : Restauracion
+    /** F1 bloque 2: el carrito en pantalla sigue ligado a su folio con la tarjeta en duda: primero se guarda. */
+    data object BloqueadaPorCuentaLigada : Restauracion
     /** 27-oct (Codex): la copia está ligada a una cuenta de «Pagar después» viva; venderla otra vez la duplicaría. */
     data object YaDejadaParaDespues : Restauracion
 }
@@ -444,6 +446,9 @@ fun pagarDespuesNiGuardada(cliente: String) =
 const val PAGAR_DESPUES_NO_SE_GUARDO = "No se pudo guardar la cuenta en el aparato. Intenta de nuevo."
 
 /** Tablero D3 (21-oct). Mismo texto en iOS. */
+/** F1 bloque 2: la cuenta de [Seguir] sigue ligada a su folio; para otro cliente, se guarda primero. */
+const val CUENTA_LIGADA_GUARDALA = "Guarda esta cuenta para atender a otro cliente"
+
 const val VENTA_A_MEDIAS_CAMBIADA =
     "Esta venta ya tiene un cobro parcial: cobra primero su saldo pendiente. Quita lo que agregaste y véndelo aparte."
 
@@ -734,27 +739,43 @@ class CartViewModel @Inject constructor(
         val parteEnCola: String? = null,
         /** D1: nació de una parte sin red ⇒ el carrito tiene que seguir EXACTO (un descuento lo abarataría, Codex r2 #5). */
         val exacta: Boolean = false,
+        /**
+         * 🔴 F1 bloque 2 (`plan-android.md`, invariante 1): la tarjeta de ESTE folio quedó en duda al salir con [Seguir]. La
+         * compra sigue ligada a su folio como un abono parcial, pero SIN abono (ni `marcarConAbono` de vales): no se edita, se
+         * guarda con su folio y vuelve contra él. Dos compras iguales son dos ventas: la identidad la da el folio, no los artículos.
+         */
+        val duda: com.avoqado.pos.payment.data.FolioEnDuda? = null,
     )
 
     private val _pendingSplitOrder = MutableStateFlow<PendingSplitOrder?>(null)
 
     /**
-     * 🔴 Codex android r1 #2 (F1): la orden de esta MISMA compra cuya tarjeta quedó en duda al salir con [Seguir]. Como el abono
-     * parcial, el siguiente «Cobrar» de este carrito va contra ESE folio: el servidor y la lista durable frenan otra tarjeta mientras
-     * siga en duda (el efectivo sigue). Sin esto, el carrito intacto se volvía a mandar con un folio NUEVO y la cerca, que es por folio,
-     * lo dejaba pasar. Sólo vale con el carrito EXACTO: si el cajero lo vacía o lo cambia, el vínculo se va (es otra compra).
+     * 🔴 F1 bloque 2 (`plan-android.md`, r1 #2 y r2 #2–#4). [Seguir] con la tarjeta en duda: el carrito queda ligado al folio de
+     * esa compra por el MISMO vínculo que un abono parcial ([PendingSplitOrder] con [PendingSplitOrder.duda]). Sólo si el carrito
+     * sigue siendo ESA venta (su identidad) y en su sucursal. Reemplaza al vínculo paralelo de `8ffa8fe1`, que comparaba artículos
+     * y total: la misma mercancía con otro cliente pasaba por A.
      */
-    private val _ordenEnDuda = MutableStateFlow<PendingSplitOrder?>(null)
-
-    fun recordarOrdenEnDuda(orderId: String) {
+    fun ligarTarjetaEnDuda(folio: com.avoqado.pos.payment.data.FolioEnDuda) {
         val cart = _cartState.value
-        if (cart.isEmpty) return
-        _ordenEnDuda.value = PendingSplitOrder(
-            orderId = orderId, itemIds = cart.items.map { it.id }.toSet(), totalCents = cart.totalCents,
-            renglones = cart.items, descuentoDeCuenta = cart.orderDiscount, exacta = true,
-        )
-        Log.d("🛒", "Tarjeta en duda: este carrito sigue contra la orden $orderId")
+        if (cart.isEmpty || cart.identidadDeVenta != folio.identidadDeVenta || folio.venueId != secureStorage.venueId) return
+        val actual = _pendingSplitOrder.value
+        if (actual != null && actual.orderId != folio.orderId) return
+        _pendingSplitOrder.value = (actual ?: PendingSplitOrder(
+            orderId = folio.orderId, itemIds = cart.items.map { it.id }.toSet(), totalCents = cart.totalCents,
+            renglones = cart.items, descuentoDeCuenta = cart.orderDiscount,
+        )).copy(duda = folio)
+        Log.d("🛒", "Tarjeta en duda: este carrito sigue contra el folio ${folio.orderId}")
     }
+
+    /** F1 bloque 2: la cuenta ligada a su folio con la tarjeta en duda no se edita; se guarda para atender a otro cliente. */
+    private fun detenerPorFolioEnDuda(): Boolean {
+        if (_pendingSplitOrder.value?.duda == null) return false
+        _avisoDeVales.value = CUENTA_LIGADA_GUARDALA
+        return true
+    }
+
+    /** F1 bloque 2: la duda que traía la venta mientras se aplica un cobro confirmado; vuelve al re-marcar su mismo folio. */
+    private var dudaQueSigue: com.avoqado.pos.payment.data.FolioEnDuda? = null
 
     /**
      * 🔴 DINERO. La orden contra la que corre el cobro que está ABIERTO ahora
@@ -867,6 +888,7 @@ class CartViewModel @Inject constructor(
         val id = orderId?.trim()?.takeIf { it.isNotEmpty() }
         if (id == null) {
             _pendingSplitOrder.value = null
+            dudaQueSigue = null
             return
         }
         val cart = _cartState.value
@@ -876,7 +898,10 @@ class CartViewModel @Inject constructor(
             totalCents = cart.totalCents,
             renglones = cart.items,
             descuentoDeCuenta = cart.orderDiscount,
+            // F1 bloque 2: un abono confirmado no resuelve la tarjeta en duda de este folio: la cuenta sigue ligada y sin editarse.
+            duda = dudaQueSigue?.takeIf { it.orderId == id },
         )
+        dudaQueSigue = null
         // Si es la orden de la sesión de vales, ya tiene un abono aunque su copia no lo diga: que no vuelva a proyectarse
         // aunque luego se vacíe el carrito (D3, Codex r1). El saldo es lo que quedó en el carrito (regla 10).
         areaTicketRepository.session.marcarConAbono(id, saldoCents = cart.totalCents)
@@ -1147,21 +1172,14 @@ class CartViewModel @Inject constructor(
      * aquí con el carrito cambiado, el cobro no continúa ninguna orden y el vínculo sigue para cuando se quite lo agregado.
      */
     fun resolvePendingSplitOrderForCharge(): String? {
-        // Codex android r1 #2: el mismo carrito cuya tarjeta quedó en duda vuelve contra SU folio; si cambió, es otra compra.
-        if (_pendingSplitOrder.value == null) _ordenEnDuda.value?.let { duda ->
-            if (!carritoCambioDesde(duda, _cartState.value)) {
-                chargingAgainstOrderId = duda.orderId
-                return duda.orderId
-            }
-            _ordenEnDuda.value = null
-        }
         val pending = _pendingSplitOrder.value
         // D1: mientras su parte sin red no sube (o el saldo no cuadró), no hay orden que continuar (Codex r2 #2).
         if (pending == null || pending.parteEnCola != null) {
             chargingAgainstOrderId = null
             return null
         }
-        if (!carritoCambioDesde(pending, _cartState.value)) {
+        // F1 bloque 2: la cuenta ligada por su tarjeta en duda no se edita; vuelve contra SU folio (la identidad es el folio).
+        if (pending.duda != null || !carritoCambioDesde(pending, _cartState.value)) {
             chargingAgainstOrderId = pending.orderId
             return pending.orderId
         }
@@ -1566,6 +1584,7 @@ class CartViewModel @Inject constructor(
     }
 
     fun addProduct(product: Product) {
+        if (detenerPorFolioEnDuda()) return // F1 bloque 2: la cuenta ligada a su folio no se edita
         // Agotado AVISA, nunca bloquea (Square-parity 2026-08-12): el registro
         // del sistema puede estar desfasado y el producto sí existir en el
         // anaquel. El stock queda en negativo como señal de descuadre.
@@ -1638,6 +1657,7 @@ class CartViewModel @Inject constructor(
         /** f998c8: el descuento lo trae una sugerencia (upsell), no una persona: no pide motivo. */
         descuentoSugerido: Boolean = false,
     ) {
+        if (detenerPorFolioEnDuda()) return // F1 bloque 2: la cuenta ligada a su folio no se edita
         // Ver addProduct: agotado avisa, nunca bloquea.
         avisarSiAgotado(product)
         val newItem = CartItem(
@@ -1677,6 +1697,7 @@ class CartViewModel @Inject constructor(
      * panel de captura (no bloquea aquí — el backend es la autoridad al cobrar).
      */
     fun addProductByWeight(product: Product, weightKg: Double) {
+        if (detenerPorFolioEnDuda()) return // F1 bloque 2: la cuenta ligada a su folio no se edita
         if (weightKg <= 0) return
         val newItem = CartItem(
             type = CartItemType.ProductItem(product.id),
@@ -1700,6 +1721,7 @@ class CartViewModel @Inject constructor(
     }
 
     fun addCustomAmount(name: String, amountCents: Int) {
+        if (detenerPorFolioEnDuda()) return // F1 bloque 2: la cuenta ligada a su folio no se edita
         val item = CartItem(
             type = CartItemType.CustomAmount,
             name = name,
@@ -1715,6 +1737,7 @@ class CartViewModel @Inject constructor(
     private var lastPackAddAt: Long = 0
 
     fun addCreditPack(pack: com.avoqado.pos.articles.data.model.CreditPack) {
+        if (detenerPorFolioEnDuda()) return // F1 bloque 2: la cuenta ligada a su folio no se edita
         // Debounce accidental double-taps on the grid tile: two identical pack
         // lines within 1.5s is a mis-tap (and would double-charge + double-grant).
         val now = System.currentTimeMillis()
@@ -1761,6 +1784,7 @@ class CartViewModel @Inject constructor(
         extras: Map<String, List<SelectedModifier>> = emptyMap(),
         piezasConExtras: Set<String> = emptySet(),
     ): Boolean {
+        if (detenerPorFolioEnDuda()) return false // F1 bloque 2: la cuenta ligada a su folio no se edita
         val elegidas = opcionesElegidas(promotion, selecciones)
         if (elegidas.isNullOrEmpty()) {
             Log.w("🎁", "Promoción sin elección completa, no se agrega: ${promotion.name}")
@@ -1803,6 +1827,7 @@ class CartViewModel @Inject constructor(
      * y el cajero no tendría cómo notarlo.
      */
     fun quitarPromocion(instanceId: String) {
+        if (detenerPorFolioEnDuda()) return // F1 bloque 2: la cuenta ligada a su folio no se edita
         quitarLineasDePromocion(instanceId)
         // D2: sin el combo, el descuento del cliente que bloqueaba vuelve a ponerse solo (si no se quitó). Sólo aquí, en lo que
         // quita el cajero: el cobro por producto quita renglones pagados con [removeItem] y su orden ya decidió su descuento.
@@ -1821,6 +1846,7 @@ class CartViewModel @Inject constructor(
     }
 
     fun removeItem(itemId: String) {
+        if (detenerPorFolioEnDuda()) return // F1 bloque 2: la cuenta ligada a su folio no se edita
         // 🔴 La promoción se quita completa venga de donde venga el borrado
         // (deslizar, anular artículos, panel de detalle). El aviso previo
         // ("Se quitará el combo completo") lo da la UI; esta red de seguridad
@@ -1875,6 +1901,7 @@ class CartViewModel @Inject constructor(
      * quitan lo pagado con [removeItem], sin pasar por aquí.
      */
     fun quitarPorElCajero(itemId: String): Boolean {
+        if (detenerPorFolioEnDuda()) return false // F1 bloque 2: la cuenta ligada a su folio no se edita
         // Lo que se agregó encima sí se quita (es la salida de la regla 11); lo de la venta con abono, no.
         if (vaciarBloqueadoPorAbono() && _pendingSplitOrder.value?.itemIds?.contains(itemId) == true) {
             _avisoDeVales.value = com.avoqado.pos.payment.presentation.VALES_CON_ABONO
@@ -1892,6 +1919,7 @@ class CartViewModel @Inject constructor(
      * selector; esto lo cierra para cualquier otro camino. **iOS** pone la misma regla en su `CartViewModel.items`.
      */
     fun updateQuantity(itemId: String, newQuantity: Int) {
+        if (detenerPorFolioEnDuda()) return // F1 bloque 2: la cuenta ligada a su folio no se edita
         if (esLineaFija(itemId)) return
         if (newQuantity <= 0) {
             quitarPorElCajero(itemId)
@@ -1907,6 +1935,7 @@ class CartViewModel @Inject constructor(
     }
 
     fun incrementQuantity(itemId: String) {
+        if (detenerPorFolioEnDuda()) return // F1 bloque 2: la cuenta ligada a su folio no se edita
         if (esLineaFija(itemId)) return
         _cartState.update { state ->
             state.copy(
@@ -1919,6 +1948,7 @@ class CartViewModel @Inject constructor(
     }
 
     fun decrementQuantity(itemId: String) {
+        if (detenerPorFolioEnDuda()) return // F1 bloque 2: la cuenta ligada a su folio no se edita
         if (esLineaFija(itemId)) return
         // Bajar de 1 es quitar el renglón: pasa por el mismo candado que deslizar (D5).
         if ((_cartState.value.items.find { it.id == itemId }?.quantity ?: 0) <= 1) {
@@ -1948,6 +1978,7 @@ class CartViewModel @Inject constructor(
     }
 
     fun applyOrderDiscount(discount: Discount?, motivo: com.avoqado.pos.pos.domain.MotivoElegido? = null) {
+        if (detenerPorFolioEnDuda()) return // F1 bloque 2: la cuenta ligada a su folio no se edita
         if (_cartState.value.items.any { it.locked }) return
         // D2: quitar el del cliente desde la hoja de descuentos es su «Quitar»; otro descuento encima lo quita y lo dice.
         if (discount == null) quitarDescuentoDelCliente() else quitarElDelClientePorOtro()
@@ -1969,6 +2000,7 @@ class CartViewModel @Inject constructor(
     }
 
     fun markItemAsCortesia(itemId: String, reason: String?) {
+        if (detenerPorFolioEnDuda()) return // F1 bloque 2: la cuenta ligada a su folio no se edita
         // Una promoción no se regala línea por línea: el server cobra la
         // promoción completa, así que poner la línea en $0 aquí cobraría algo
         // distinto de lo que queda en la orden. Se quita el combo y se da el
@@ -1998,6 +2030,7 @@ class CartViewModel @Inject constructor(
     }
 
     fun updateItemCortesia(itemId: String, isCortesia: Boolean, reason: String?) {
+        if (detenerPorFolioEnDuda()) return // F1 bloque 2: la cuenta ligada a su folio no se edita
         if (esLineaFija(itemId)) return
         _cartState.update { state ->
             state.copy(
@@ -2010,6 +2043,7 @@ class CartViewModel @Inject constructor(
     }
 
     fun updateItemPriceAdjustment(itemId: String, priceCents: Int?, motivo: com.avoqado.pos.pos.domain.MotivoElegido? = null) {
+        if (detenerPorFolioEnDuda()) return // F1 bloque 2: la cuenta ligada a su folio no se edita
         if (esLineaFija(itemId)) return
         _cartState.update { state ->
             state.copy(
@@ -2050,13 +2084,24 @@ class CartViewModel @Inject constructor(
         // D5 (Codex r3 #5): guardar también vaciaba la venta de vales con abono (y su saldo guardado se cobraba aparte).
         if (vaciarBloqueadoPorAbono()) return false
         // Tablero D3 (Codex r9): guardar soltaba el vínculo y, al restaurarlo, el saldo se cobraba dentro de otra venta.
-        if (hayVentaAMedias()) return false
+        // F1 bloque 2: la cuenta ligada por su tarjeta en duda SÍ se guarda, con su folio (no se edita, así que no cambió).
+        val ligada = _pendingSplitOrder.value?.takeIf { it.duda != null && it.orderId != null }
+        if (ligada == null && hayVentaAMedias()) return false
 
         val cartName = name ?: "Carrito ${
             com.avoqado.pos.core.util.VenueTimeZone.now()
                 .format(java.time.format.DateTimeFormatter.ofPattern("HH:mm"))
         }"
-        if (!savedCartsRepository.saveCart(comoCarritoGuardado(state, cartName, _selectedCustomer.value))) return false
+        val copia = comoCarritoGuardado(state, cartName, _selectedCustomer.value).let { c ->
+            val duda = ligada?.duda ?: return@let c
+            c.copy(venueId = duda.venueId, folio = com.avoqado.pos.pos.data.model.FolioGuardado(
+                orderId = duda.orderId, venueId = duda.venueId, identidadDeVenta = state.identidadDeVenta,
+                requestId = duda.requestId, origen = duda.origen.name, creacionIncierta = state.creacionIncierta,
+            ))
+        }
+        // Sólo con la escritura confirmada se suelta A y la caja queda libre para B.
+        if (!savedCartsRepository.saveCart(copia)) return false
+        if (ligada != null) _pendingSplitOrder.value = null
         // El cliente se fue CON el carrito guardado (`attachedCustomerId` arriba), así
         // que aquí la venta terminó: si no se suelta, se queda en el encabezado y la
         // venta siguiente nace con él.
@@ -2174,7 +2219,6 @@ class CartViewModel @Inject constructor(
         //
         // El split lo vuelve a marcar DESPUÉS de dejar el saldo en el carrito.
         _pendingSplitOrder.value = null
-        _ordenEnDuda.value = null // Codex android r1 #2: vaciar el carrito suelta el folio de la tarjeta en duda
         Log.d("🛒", "Cart cleared")
     }
 
@@ -2209,6 +2253,7 @@ class CartViewModel @Inject constructor(
      * se perdió vuelve con el mismo contenido y el servidor devuelve ESE vale en vez de crear otro.
      */
     fun vaciar() {
+        if (detenerPorFolioEnDuda()) return // F1 bloque 2: la cuenta ligada a su folio no se edita
         if (detenerPorPagarDespues()) return
         secureStorage.venueId?.let { secureStorage.soltarLlaveDeEmisionDeVales(it) }
         finalizarVenta()
@@ -2300,6 +2345,9 @@ class CartViewModel @Inject constructor(
             return CobroAplicado(RamaCobro.PAGO_COMPLETO, false, null, aplicadoAlCarritoActual = false)
         }
         val referralPendiente = snapshotReferralPendiente()
+        // F1 bloque 2: lo que confirmó el servidor sí cambia la cuenta ligada (descuenta lo pagado); la duda vuelve al re-marcarla.
+        dudaQueSigue = _pendingSplitOrder.value?.duda
+        _pendingSplitOrder.update { it?.copy(duda = null) }
         _cartState.update { it.copy(carritoGuardadoId = null) }
         // 🔴 «Se cobra el precio que vio el cliente»: el carrito de ESTA venta queda con el precio de la orden, y su descuento de
         // cuenta como quedó en ella. ANTES de quitar lo pagado: la huella es de la venta completa, y lo que quede es un subconjunto.
@@ -2696,6 +2744,7 @@ class CartViewModel @Inject constructor(
      * servidor lo canjea al crearla y el cobro usa el monto que él confirma.
      */
     fun setPendingStampReward(premio: com.avoqado.pos.loyalty.data.PremioPorAplicar?): Boolean {
+        if (detenerPorFolioEnDuda()) return false // F1 bloque 2: la cuenta ligada a su folio no se edita
         // 🔴 Con una venta a medio cobrar, la orden YA decidió su premio: la parte siguiente cobra contra
         // ella sin volver a crearla, así que un premio nuevo (o quitarlo) cambiaría lo cobrado sin
         // canjearse (hallazgo P1 de Codex, ronda 2).
@@ -2738,6 +2787,8 @@ class CartViewModel @Inject constructor(
         val descuento = if (traeSuDescuento) descuentoDelCliente else descuentoDelCliente ?: anterior?.descuentoDelCliente?.takeIf { previous == id }
         val nuevo = id?.let { SelectedCustomer(it, customerName?.trim()?.takeIf { n -> n.isNotEmpty() } ?: "Cliente", descuento) }
         if (_selectedCustomer.value == nuevo) return
+        // F1 bloque 2 (Codex android r2 #4): otro cliente sobre la cuenta ligada a su folio cargaría a A la venta de B.
+        if (previous != id && detenerPorFolioEnDuda()) return
         _selectedCustomer.value = nuevo
         if (previous != id) {
             _eventosDelAviso.update { it.copy(sinRedAlPedir = false) }
@@ -2872,6 +2923,7 @@ class CartViewModel @Inject constructor(
 
     /** «Quitar» en la línea del descuento del cliente: vale para esta venta y este cliente (aunque lo vuelvan a elegir). */
     fun quitarDescuentoDelCliente() {
+        if (detenerPorFolioEnDuda()) return // F1 bloque 2: la cuenta ligada a su folio no se edita
         // Con una venta a medio cobrar su orden ya lleva el descuento: quitarlo aquí cobraría distinto de lo registrado.
         if (hayVentaAMedias()) return
         val id = _selectedCustomer.value?.id ?: return
@@ -2887,6 +2939,7 @@ class CartViewModel @Inject constructor(
      * cuenta sin ninguno de los dos.
      */
     fun usarDescuentoDelCliente() {
+        if (detenerPorFolioEnDuda()) return // F1 bloque 2: la cuenta ligada a su folio no se edita
         val cliente = _selectedCustomer.value ?: return
         val d = cliente.descuentoDelCliente ?: return
         if (!autorizadoPara(_cartState.value, cliente.id, d.discountId) && !puedeAplicarDescuentos()) {
@@ -3244,6 +3297,8 @@ class CartViewModel @Inject constructor(
         }
         // D5 (Codex r3 #5): restaurar reemplaza el carrito; con una venta de vales con abono la escondía.
         if (vaciarBloqueadoPorAbono()) return Restauracion.BloqueadaPorAbono
+        // F1 bloque 2: retomar otra cuenta ENCIMA de la que sigue ligada a su folio la escondería.
+        if (detenerPorFolioEnDuda()) return Restauracion.BloqueadaPorCuentaLigada
         savedCart.cobroIniciadoEn?.let {
             if (!confirmado || !savedCartsRepository.quitarMarca(savedCart.id)) return Restauracion.PideConfirmacion(it)
         }
@@ -3327,6 +3382,9 @@ class CartViewModel @Inject constructor(
             autorizacionDelDescuento = savedCart.autorizacionDelDescuento,
             descuentosDeClienteQuitados = savedCart.descuentosDeClienteQuitados,
         )
+        // F1 bloque 2: la cuenta guardada con su folio vuelve como ESA venta (identidad y creación incierta) y ligada a él.
+        val folio = savedCart.folio?.takeIf { it.venueId == secureStorage.venueId }
+        folio?.let { f -> _cartState.update { it.copy(identidadDeVenta = f.identidadDeVenta, creacionIncierta = f.creacionIncierta) } }
         // D13 (IVA por producto, plan 7a): «Agregar impuesto» ya no existe — en México el precio ya trae el IVA (LFPC 7 Bis).
         // Un carrito guardado con impuesto aparte se restaura SIN él, y se dice; uno sin impuesto limpia el aviso anterior
         // (r1 #15). Lo ya cobrado y lo encolado no se tocan. La copia guardada se conserva hasta el primer cobro confirmado.
@@ -3337,7 +3395,18 @@ class CartViewModel @Inject constructor(
         // los cazaría, pero el margen de un invariante de dinero no puede ser un
         // solo guard — y sin esto el cajero vería un aviso falso de "venta
         // anterior a medio cobrar" sobre una venta que ya terminó.
-        _pendingSplitOrder.value = null
+        _pendingSplitOrder.value = folio?.let { f ->
+            val cart = _cartState.value
+            PendingSplitOrder(
+                orderId = f.orderId, itemIds = cart.items.map { it.id }.toSet(), totalCents = cart.totalCents,
+                renglones = cart.items, descuentoDeCuenta = cart.orderDiscount,
+                duda = com.avoqado.pos.payment.data.FolioEnDuda(
+                    venueId = f.venueId, identidadDeVenta = f.identidadDeVenta, orderId = f.orderId, requestId = f.requestId,
+                    origen = com.avoqado.pos.payment.data.FolioEnDuda.Origen.entries.firstOrNull { it.name == f.origen }
+                        ?: com.avoqado.pos.payment.data.FolioEnDuda.Origen.LOCAL,
+                ),
+            )
+        }
         // El carrito guardado persiste el id del cliente, no su nombre: se cae a
         // "Cliente" (ver [setSelectedCustomer]) para que el encabezado NO diga
         // "Agregar cliente" sobre una venta que sí lo lleva — y para que ese
@@ -3402,6 +3471,7 @@ class CartViewModel @Inject constructor(
 
     /** El «Continuar» de «Pagar después». Corre en el alcance del ViewModel, no en el de la pantalla (R7). */
     fun pagarDespues(customerId: String) {
+        if (detenerPorFolioEnDuda()) return // F1 bloque 2: la cuenta ligada a su folio no se edita
         if (_pagarDespuesEnCurso.value != null) return
         viewModelScope.launch { _resultadoPagarDespues.value = createPayLaterOrder(customerId) }
     }

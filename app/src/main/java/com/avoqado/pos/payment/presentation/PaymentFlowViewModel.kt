@@ -1371,9 +1371,12 @@ class PaymentFlowViewModel @Inject constructor(
 
     fun consumirSalida() { _debeSalir.value = false }
 
-    /** Codex android r1 #2: la orden de esta compra cuya tarjeta quedó en duda al salir con [Seguir]; se entrega UNA vez al anfitrión. */
-    private var ordenEnDudaAlSalir: String? = null
-    fun consumirOrdenEnDuda(): String? = ordenEnDudaAlSalir.also { ordenEnDudaAlSalir = null }
+    /**
+     * F1 bloque 2 (`plan-android.md`): el folio de esta compra cuya tarjeta quedó en duda al salir con [Seguir], con su sucursal,
+     * su venta y el intento que la frena; se entrega UNA vez al anfitrión, que liga su carrito a él como un abono parcial.
+     */
+    private var folioEnDudaAlSalir: com.avoqado.pos.payment.data.FolioEnDuda? = null
+    fun consumirFolioEnDuda(): com.avoqado.pos.payment.data.FolioEnDuda? = folioEnDudaAlSalir.also { folioEnDudaAlSalir = null }
 
     init {
         // Refresca el catálogo de tipos de pago al entrar al flujo de cobro. Es
@@ -5256,6 +5259,17 @@ class PaymentFlowViewModel @Inject constructor(
         }
     }
 
+    private fun folioEnDudaDeEstaCompra(): com.avoqado.pos.payment.data.FolioEnDuda? {
+        val orden = createdOrderId?.takeIf { it.isNotBlank() } ?: return null
+        val venueId = secureStorage.venueId ?: return null
+        val venta = cartState?.identidadDeVenta ?: return null
+        terminalPaymentService.pendienteDeLaVenta(orden)?.let {
+            return com.avoqado.pos.payment.data.FolioEnDuda(venueId, venta, orden, it, com.avoqado.pos.payment.data.FolioEnDuda.Origen.LOCAL)
+        }
+        val ajeno = bloqueadorEnPantalla?.takeIf { it.scope == CardChargeDecision.SCOPE_ORDER } ?: return null
+        return com.avoqado.pos.payment.data.FolioEnDuda(venueId, venta, orden, ajeno.revisable, com.avoqado.pos.payment.data.FolioEnDuda.Origen.OTRA_CAJA)
+    }
+
     /** Nombre histórico; hoy TODA cancelación es durable. */
     fun cancel() = cancelarVenta()
 
@@ -5266,8 +5280,10 @@ class PaymentFlowViewModel @Inject constructor(
      * y si había una cancelación registrada, el coordinador la sigue reproduciendo solo.
      */
     fun salirDejandoPendiente() {
-        // Codex android r1 #2: si la orden que creó este flujo se queda con su tarjeta en duda, el carrito conserva ese folio.
-        ordenEnDudaAlSalir = createdOrderId?.takeIf { ordenCreadaPorEsteFlujo && terminalPaymentService.pendienteDeLaVenta(it) != null }
+        // F1 bloque 2 (r1 #2, r2 #2 y #3): la orden de esta compra se queda con su tarjeta en duda ⇒ el carrito conserva ESE folio.
+        // La duda es la de su lista durable o, si la mandó OTRA caja (409 con alcance ORDER), su bloqueador: ése no entra a la
+        // lista local ni da autoridad para firmar, sólo evita abrir otro folio para la misma compra.
+        folioEnDudaAlSalir = folioEnDudaDeEstaCompra()
         dejarDeObservarLaCancelacion()
         // Un desenlace que llegue tarde ya no gobierna esta pantalla, pero SÍ la llave durable.
         paymentGeneration++

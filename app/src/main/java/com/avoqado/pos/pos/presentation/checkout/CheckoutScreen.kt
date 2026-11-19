@@ -2226,8 +2226,8 @@ fun CheckoutScreen(
                 },
                 splitConfig = pendingSplitConfig,
                 resumeOrderId = resumeOrderId,
-                // Codex android r1 #2: el mismo carrito vuelve contra el folio de su tarjeta en duda.
-                onSalirConTarjetaEnDuda = cartViewModel::recordarOrdenEnDuda,
+                // F1 bloque 2: el carrito queda ligado al folio de su tarjeta en duda, como un abono parcial (en mesa manda la sesión).
+                onSalirConTarjetaEnDuda = { folio -> if (!isTablePaying) cartViewModel.ligarTarjetaEnDuda(folio) },
             )
         }
     }
