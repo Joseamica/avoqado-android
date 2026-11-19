@@ -790,7 +790,15 @@ class CartViewModel @Inject constructor(
     fun tomarSaldoVigente(saldo: com.avoqado.pos.payment.data.SaldoVigente) {
         val state = _cartState.value
         if (state.isEmpty || state.identidadDeVenta != saldo.identidadDeVenta || saldo.venueId != secureStorage.venueId) return
-        if (_pendingSplitOrder.value?.let { it.duda != null || it.orderId != saldo.orderId } == true) return
+        val ligada = _pendingSplitOrder.value
+        if (ligada != null && ligada.orderId != saldo.orderId) return
+        // 🔴 Codex final r2 #1: con la tarjeta en duda (la de otra caja, que esta tablet no sigue), el 412 dice que el SERVIDOR ya no tiene
+        // un cobro pendiente sobre A y que su saldo cambió. Decide la relectura de A (su intento y su saldo), la de siempre.
+        if (ligada?.duda != null) {
+            _avisoDeVales.value = com.avoqado.pos.payment.data.avisoDeSaldoCambiado(saldo.cents)
+            viewModelScope.launch { releerFolio(saldo.venueId, saldo.orderId) }
+            return
+        }
         aplicarAlCarrito(DesenlaceDelFolio.CON_ABONO, saldo.cents, saldo.orderId)
         _avisoDeVales.value = com.avoqado.pos.payment.data.avisoDeSaldoCambiado(saldo.cents)
         // 🔴 Codex final r1 #4: la copia de la cuenta retomada queda con el saldo vigente y su folio, y ya no se «suelta» al cerrar el
@@ -892,12 +900,15 @@ class CartViewModel @Inject constructor(
      */
     private suspend fun releerFolio(venueId: String, orderId: String) {
         if (venueId != secureStorage.venueId) return
+        // 🔴 Codex final r2 #5: la duda que ESTA relectura resuelve (origen e intento), leída ANTES de salir a la red, en pantalla y en la
+        // copia. Al volver, su desenlace sólo se aplica donde la duda vigente sigue siendo ésa: un intento nuevo Y de A no lo borra la
+        // respuesta de X (dos relecturas de X, al abrir y al retomar, o una que tarda mientras llega el 409 de Y).
+        val enPantalla = dudaEnPantalla(orderId)
+        val enCopia = dudaEnCopia(orderId)
         // 🔴 Codex final r1 #5: la duda de OTRA caja se resuelve con SU intento (el bloqueador guardado), consultado ANTES del saldo para
         // que el saldo ya traiga su desenlace. Cobrado o no, decide el saldo del SERVIDOR; sólo si sigue en duda se conserva el freno.
         val otraCaja = com.avoqado.pos.payment.data.FolioEnDuda.Origen.OTRA_CAJA.name
-        val bloqueador = (_pendingSplitOrder.value?.duda?.takeIf { it.orderId == orderId }?.let { it.origen.name to it.requestId }
-            ?: savedCartsRepository.savedCarts.value.firstOrNull { it.folio?.orderId == orderId && it.folio.enDuda }?.folio?.let { it.origen to it.requestId })
-            ?.takeIf { it.first == otraCaja }?.second
+        val bloqueador = (enPantalla ?: enCopia)?.takeIf { it.first == otraCaja }?.second
         val bloqueadorResuelto = bloqueador?.let { terminalPaymentService?.resolveOutcome(it, enSegundoPlano = true, ajeno = true) }
             ?.let { it !is com.avoqado.pos.payment.data.TerminalPaymentResult.Undetermined } == true
         val saldo = orderRepository.saldoDeLaOrden(orderId) ?: run {
@@ -905,17 +916,28 @@ class CartViewModel @Inject constructor(
             if (dineroSinSaldo(orderId)) _avisoDeVales.value = SALDO_POR_CONFIRMAR
             return
         }
-        val copia = savedCartsRepository.savedCarts.value.firstOrNull { it.folio?.orderId == orderId && it.folio.enDuda }
-        val visible = _pendingSplitOrder.value?.takeIf { it.orderId == orderId && it.duda != null }
-        val origen = visible?.duda?.origen?.name ?: copia?.folio?.origen
+        val copia = enCopia?.takeIf { dudaEnCopia(orderId) == it }?.let { copiaEnDuda(orderId) }
+        val visible = enPantalla?.takeIf { dudaEnPantalla(orderId) == it }?.let { _pendingSplitOrder.value }
+        val origen = (if (visible != null) enPantalla else enCopia)?.first
         // La duda de OTRA caja no está en la lista de esta tablet: la resuelve su intento consultado (o un estado final de A). Sin la
         // lista, tampoco.
         val sigueEnDuda = if (origen == otraCaja) !bloqueadorResuelto else terminalPaymentService?.sigueEnDuda(orderId) != false
         val desenlace = decidirFolio(saldo, sigueEnDuda) ?: return
         Log.i("🛒", "Folio $orderId: $desenlace (pantalla=${visible != null}, copia=${copia?.id})")
-        if (visible != null) aplicarAlCarrito(desenlace, saldo.remainingCents, orderId)
+        if (visible != null) {
+            aplicarAlCarrito(desenlace, saldo.remainingCents, orderId)
+            // La copia de antes del envío ya es el registro de A (con su desenlace): el cierre del cobro no la suelta. Si se borraba, la
+            // cuenta en pantalla quedaba apuntando a una copia que ya no existe y el siguiente «Cobrar» no se podía preparar.
+            copiaAntesDelEnvio = null
+        }
         copia?.let { aplicarALaCopia(it, desenlace, saldo.remainingCents) }
     }
+
+    /** La duda de [orderId] en pantalla y en su copia guardada: (origen, intento). La identidad de una duda es su intento. */
+    private fun dudaEnPantalla(orderId: String): Pair<String?, String?>? =
+        _pendingSplitOrder.value?.duda?.takeIf { it.orderId == orderId }?.let { it.origen.name to it.requestId }
+    private fun copiaEnDuda(orderId: String) = savedCartsRepository.savedCarts.value.firstOrNull { it.folio?.orderId == orderId && it.folio.enDuda }
+    private fun dudaEnCopia(orderId: String): Pair<String?, String?>? = copiaEnDuda(orderId)?.folio?.let { it.origen to it.requestId }
 
     private fun aplicarAlCarrito(desenlace: DesenlaceDelFolio, saldoCents: Int, orderId: String) {
         when (desenlace) {
@@ -963,9 +985,15 @@ class CartViewModel @Inject constructor(
     /** F1 bloque 2: el saldo que confirmó el SERVIDOR para la cuenta que se re-marca a continuación. */
     private var saldoConfirmadoQueSigue: Int? = null
 
-    /** F1 bloque 2: el saldo de la cuenta que se va a cobrar según el SERVIDOR, o null si no se sabe (no se manda). */
+    /**
+     * 🔴 F1 (invariante 2) · Codex final r2 #1: el saldo que ENSEÑA la pantalla de la cuenta que continúa este cobro; viaja como
+     * `expectedRemainingCents`. El del SERVIDOR si la cuenta lo adoptó; si no, lo que valía la cuenta al quedar ligada a su folio
+     * ([PendingSplitOrder.totalCents]: no se mueve si la cajera quita renglones para cobrar una parte). También con la tarjeta en duda: la de
+     * OTRA caja no está en la lista de esta tablet y sólo el SERVIDOR sabe si ya terminó; si el saldo cambió contesta 412 sin tocar el
+     * lector y la cuenta relee su folio ([tomarSaldoVigente]). null = el cobro no continúa un folio.
+     */
     fun saldoDelFolioConocido(): Int? = _pendingSplitOrder.value
-        ?.takeIf { it.duda == null && it.orderId != null && it.orderId == chargingAgainstOrderId }?.saldoDelServidorCents
+        ?.takeIf { it.orderId != null && it.orderId == chargingAgainstOrderId }?.let { it.saldoDelServidorCents ?: it.totalCents }
 
     /**
      * 🔴 DINERO. La orden contra la que corre el cobro que está ABIERTO ahora
