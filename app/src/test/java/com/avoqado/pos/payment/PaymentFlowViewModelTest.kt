@@ -3869,8 +3869,7 @@ class PaymentFlowViewModelTest {
 
         val folio = viewModel.consumirFolioEnDuda()
         assertEquals("order-1", folio?.orderId)
-        assertEquals("req-a", folio?.requestId)
-        assertEquals(com.avoqado.pos.payment.data.FolioEnDuda.Origen.LOCAL, folio?.origen)
+        assertEquals("la tarjeta propia en duda", "req-a", folio?.requestId)
         assertNull("se entrega una sola vez", viewModel.consumirFolioEnDuda())
     }
 

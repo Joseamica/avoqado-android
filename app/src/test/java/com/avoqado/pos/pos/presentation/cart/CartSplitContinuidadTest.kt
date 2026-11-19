@@ -105,7 +105,6 @@ class CartSplitContinuidadTest {
 
     private fun CartViewModel.folioEnDuda(orderId: String = "order-a") = com.avoqado.pos.payment.data.FolioEnDuda(
         venueId = "venue-1", identidadDeVenta = cartState.value.identidadDeVenta, orderId = orderId, requestId = "req-a",
-        origen = com.avoqado.pos.payment.data.FolioEnDuda.Origen.LOCAL,
     )
 
     @Test

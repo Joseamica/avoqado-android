@@ -619,26 +619,22 @@ class AvisoDuraderoDeOtrasVentasTest {
     }
 
     @Test
-    fun `P1 con alcance ORDER la revision dice de esta venta y con TERMINAL de otra venta`() = runTest {
-        // M2: decisión del controlador (22-oct). Con ORDER el cobro que bloquea es de ESTA venta: «…de esta venta.» y el
-        // título neutro «Cobro sin confirmar» (`revisaCobroDeOtraVenta() == false`). iOS (D1) copia esto.
+    fun `P1 con alcance ORDER la cuenta dice tarjeta por confirmar y con TERMINAL se revisa como de otra venta`() = runTest {
+        // F1 ronda 4 (Codex plan r4 #3, reescribe M2 del 22-oct): con ORDER el cobro que bloquea es de ESTA cuenta y lo decide el SERVIDOR.
+        // La pantalla dice «Tarjeta por confirmar» con el importe del 409 y sólo [Seguir]: ya no hay «Revisar ese cobro» que consulte ese
+        // intento (era el recuerdo de la otra caja en el POS). iOS: anotado en su ficha.
         codigoDelPost = 409
         respuestaDelPost = ocupadaPor("r-orden", alcance = "ORDER")
         val vm = nuevaVenta()
         cobrarConTarjeta(vm)
         val error = vm.state.value as PaymentFlowState.Error
         assertEquals("Esta venta tiene un cobro pendiente de confirmar.", error.message)
-        assertEquals("r-orden", error.revisarCobroId)
-
-        vm.revisarCobroQueOcupa()
+        assertEquals("r-orden", error.tarjetaDeLaCuenta)
+        assertNull("sin «Revisar ese cobro»", error.revisarCobroId)
+        vm.revisarCobroQueOcupa() // aunque alguien lo llamara, no consulta ese intento
         advanceUntilIdle()
-        val deLaOrden = vm.state.value as PaymentFlowState.Undetermined
-        assertTrue(deLaOrden.message, deLaOrden.message.startsWith("Quedó un cobro sin confirmar de esta venta."))
-        assertFalse("título «Cobro sin confirmar», no «Cobro anterior sin confirmar»", vm.revisaCobroDeOtraVenta())
-        vm.recheckCardCharge() // «Volver a consultar» conserva el encabezado
-        advanceUntilIdle()
-        val trasConsultar = vm.state.value as PaymentFlowState.Undetermined
-        assertTrue(trasConsultar.message, trasConsultar.message.startsWith("Quedó un cobro sin confirmar de esta venta."))
+        assertTrue("sigue en «Tarjeta por confirmar»", vm.state.value is PaymentFlowState.Error)
+        assertTrue("ese intento no se consulta: $consultados", "r-orden" !in consultados)
 
         // Con TERMINAL el cobro que ocupa es de otra venta: el encabezado y el título de siempre.
         respuestaDelPost = ocupadaPor("r-terminal", alcance = "TERMINAL")
@@ -721,7 +717,8 @@ class AvisoDuraderoDeOtrasVentasTest {
         assertEquals("Quedó un cobro sin confirmar de otra venta. $estaVenta", (vm.state.value as PaymentFlowState.Undetermined).message)
         assertEquals("la duda de esa venta sigue guardada", listOf("r-otra"), ids())
 
-        // 2) «Revisar ese cobro» con alcance ORDER: el cobro que bloquea es de ESTA venta.
+        // 2) Alcance ORDER (F1 ronda 4): el cobro que bloquea es de ESTA cuenta; ya no se revisa desde aquí (lo decide el SERVIDOR): la
+        //    pantalla dice «Tarjeta por confirmar» y sólo [Seguir], también sin red. Nunca invita al efectivo.
         sinRed = false
         codigoDelPost = 409
         respuestaDelPost = ocupadaPor("r-orden", alcance = "ORDER")
@@ -729,7 +726,7 @@ class AvisoDuraderoDeOtrasVentasTest {
         sinRed = true
         vm.revisarCobroQueOcupa()
         advanceUntilIdle()
-        assertEquals("Quedó un cobro sin confirmar de esta venta. $estaVenta", (vm.state.value as PaymentFlowState.Undetermined).message)
+        assertEquals("r-orden", (vm.state.value as PaymentFlowState.Error).tarjetaDeLaCuenta)
 
         // 3) El «Cobro sin confirmar» PROPIO: el cobro que mandó esta pantalla no se sabe cómo quedó.
         sinRed = false

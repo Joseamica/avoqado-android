@@ -589,7 +589,18 @@ fun PaymentFlowScreen(
                     }
                 }
             }
-            is PaymentFlowState.Error -> {
+            // 🔴 F1 ronda 4 (Ajuste 2): el 409 ORDER — la cuenta tiene una tarjeta por confirmar (casi siempre de otra caja). El importe de ESE
+            // intento y sólo [Seguir] (Atrás y Esc también); la siguiente tarjeta la decide el SERVIDOR.
+            is PaymentFlowState.Error -> if (currentState.tarjetaDeLaCuenta != null) {
+                val importes by viewModel.importesDeIntentos.collectAsState()
+                val texto = remember(importes, currentState) { viewModel.textoDeLaTarjetaDeLaCuenta { formatMoneyFromCents(it) } }
+                TarjetaPorConfirmarView(
+                    montoDelCobro = texto,
+                    confirmando = false,
+                    sinRed = !accionesDeRedHabilitadas,
+                    onSeguir = { viewModel.seguirDesdeLaDuda() },
+                )
+            } else {
                 val fuente = currentState.source
                 // D14 (hz:87f4b879:D14): «lo autoriza un gerente» no es una falla del cobro: gris; con el PIN apagado no hay nada que
                 // reintentar y la salida es «Volver al carrito» (el carrito se queda como estaba).
