@@ -39,8 +39,8 @@ sealed interface TableActionState {
     data class Error(val message: String) : TableActionState
     data class Success(val message: String) : TableActionState
     /**
-     * D48: el Hub contestó que OTRA caja tiene esta mesa. La hoja dice «Ocupada en otra caja» y no deja abrirla (antes: «Libre»
-     * en verde y el botón activo junto al aviso rojo). Cerrar la hoja o volver a elegir la mesa la regresa a [Idle].
+     * D48: el Hub contestó que OTRA caja tiene esta mesa. La hoja dice «Ocupada en otra caja» y su botón «Intentar de nuevo» (antes:
+     * «Libre» en verde y «Abrir mesa y ordenar» junto al aviso rojo). Cerrar la hoja o volver a elegir la mesa la regresa a [Idle].
      */
     data class OcupadaEnOtraCaja(val quien: String) : TableActionState {
         val message: String get() = "$quien está atendiendo esta mesa en otro dispositivo"
