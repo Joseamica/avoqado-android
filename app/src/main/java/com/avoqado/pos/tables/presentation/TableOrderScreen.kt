@@ -3247,7 +3247,7 @@ private fun OrderDiscountsDialog(
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .then(if (quitar.razon != null) Modifier.clickable { conRazon = !conRazon } else Modifier)
+                                .then(if (quitar.razon != null) Modifier.clickable(onClickLabel = "Ver por qué está fija") { conRazon = !conRazon } else Modifier)
                                 .padding(vertical = AvoqadoTheme.spacing.xs),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
