@@ -165,25 +165,26 @@ object KitchenDeliveryPolicy {
      * avisó, esa estación ya no vuelve a acusar — sin este filtro el aviso se quedaría pegado para siempre aunque ya
      * no haya pantalla que alcanzar.
      */
-    fun avisoDeRacha(sinAlcance: Set<String>, config: PrintConfig, desconectadas: Set<String> = emptySet()): String? {
-        // D6 de Flautas (opción B, 20-nov): primero lo que el SERVIDOR no ve (sin eso la pantalla no recibe nada por internet);
-        // después, de las DEMÁS, las que no se alcanzan por el WiFi (Codex r6 #5: una no tapa a la otra).
-        val conPantalla = config.stations.filter { it.active && it.hasKitchenDisplay }
-        val apagadas = conPantalla.filter { it.id in desconectadas }.map { it.name }
-        val sinWifi = conPantalla.filter { it.id in sinAlcance && it.id !in desconectadas }.map { it.name }
-        val partes = listOfNotNull(
-            when (apagadas.size) {
-                0 -> null
-                1 -> "La pantalla de cocina de ${apagadas.single()} no está conectada: sus comandas le llegan cuando se conecte"
-                else -> "Las pantallas de cocina de ${lista(apagadas)} no están conectadas: sus comandas les llegan cuando se conecten"
-            },
-            when (sinWifi.size) {
-                0 -> null
-                1 -> "La pantalla de ${sinWifi.single()} no se alcanza por el WiFi"
-                else -> "Las pantallas de ${lista(sinWifi)} no se alcanzan por el WiFi"
-            },
-        )
-        return partes.takeIf { it.isNotEmpty() }?.joinToString(" · ")
+    fun avisoDeRacha(sinAlcance: Set<String>, config: PrintConfig): String? {
+        val nombres = config.stations.filter { it.id in sinAlcance && it.active && it.hasKitchenDisplay }.map { it.name }
+        if (nombres.isEmpty()) return null
+        return if (nombres.size == 1) {
+            "La pantalla de ${nombres.single()} no se alcanza por el WiFi"
+        } else {
+            "Las pantallas de ${lista(nombres)} no se alcanzan por el WiFi"
+        }
+    }
+
+    /**
+     * D6 de Flautas (20-nov, opción B del founder «como Square y Toast», simplificada tras Codex r7): las pantallas de cocina
+     * que el SERVIDOR no ve conectadas (no han pedido su tablero en 90 s). Los nombres los manda el servidor, de SU
+     * configuración: aquí sólo se arma el texto. Dice sólo lo que se sabe: no promete entrega (lo que salió en papel de
+     * respaldo no vuelve a la pantalla) ni habla del WiFi del local (eso es [avisoDeRacha]). `null` = ninguna.
+     */
+    fun avisoDePantallasSinInternet(nombres: List<String>): String? = when (nombres.size) {
+        0 -> null
+        1 -> "La pantalla de cocina de ${nombres.single()} no está conectada a internet"
+        else -> "Las pantallas de cocina de ${lista(nombres)} no están conectadas a internet"
     }
 
     private fun lista(nombres: List<String>): String =

@@ -2,11 +2,11 @@ package com.avoqado.pos.kds.data
 
 import android.util.Log
 import com.avoqado.pos.core.data.network.ApiService
-import com.avoqado.pos.printing.routing.PrintConfigRepository
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -19,51 +19,55 @@ import javax.inject.Singleton
 private const val TAG = "PantallasDeCocina"
 
 @Serializable
-data class PantallasConectadasData(
-    val conectadas: List<String> = emptyList(),
-    /** `false` justo después de que el servidor arrancó (Codex r5 #4): lo que falta en [conectadas] no se sabe todavía. */
+data class PantallaDesconectada(val id: String = "", val name: String = "")
+
+@Serializable
+data class PantallasDesconectadasData(
+    /** `false` = el negocio no tiene pantallas de cocina (casilla y plan): se pregunta más despacio. */
+    val hayPantallas: Boolean = false,
+    /** `false` justo después de que el servidor arrancó (Codex r5 #4): todavía no da a ninguna por desconectada. */
     val completo: Boolean = false,
+    val desconectadas: List<PantallaDesconectada> = emptyList(),
 )
 
-/** `GET kds/pantallas-conectadas` (`kds.mobile.controller.ts` → `listarPantallasConectadas`). */
+/** `GET kds/pantallas-desconectadas` (`kitchenDisplayStations.ts` → `pantallasDesconectadas`). */
 @Serializable
-data class PantallasConectadasResponse(val success: Boolean = true, val data: PantallasConectadasData = PantallasConectadasData())
+data class PantallasDesconectadasResponse(val success: Boolean = true, val data: PantallasDesconectadasData = PantallasDesconectadasData())
 
 /**
- * D6 de Flautas (20-nov, opción B del founder: «como Square y Toast»): qué pantallas de cocina NO están conectadas. La caja
- * ya no avisa «No salió» en cada orden cuando la venta está en el servidor y la estación es sólo pantalla; en cambio, la
- * franja fija dice «La pantalla de cocina de X no está conectada» si esa pantalla no le ha pedido su tablero al servidor en
- * 90 s (el servidor lo lleva en memoria, `pantallasVivas.ts`) ni acusó su última entrega por WiFi (eso lo resta `AppState`).
+ * D6 de Flautas (20-nov, opción B del founder: «como Square y Toast», simplificada tras Codex r7): qué pantallas de cocina NO
+ * están conectadas a internet. Lo decide SÓLO el servidor, con SU configuración (siempre al día) y la última lectura de cada
+ * tablero; aquí sólo se guarda la lista de nombres que él manda, para la franja fija («La pantalla de cocina de X no está
+ * conectada a internet»). No se mezcla con la config de la caja ni con los acuses por WiFi (eso es la racha, D11).
  *
- * Cada [INTERVALO_MS], con sesión y sólo si el negocio tiene estaciones con pantalla. Sin red, con error, pasados [TOPE_MS]
- * o con un servidor viejo que no conoce la ruta: «no se sabe», y no se afirma nada (sin red ya habla la banda de «Sin
- * conexión»). Sólo lee: no hay nada que guardar antes de la red.
+ * Sin red, con error, sin permiso, pasados [TOPE_MS] o con un servidor viejo que no conoce la ruta: «no se sabe» y la lista
+ * queda vacía (no se afirma nada). Sólo lee: no hay nada que guardar antes de la red.
  */
 @Singleton
 class EstadoDePantallasDeCocina @Inject constructor(
     private val apiService: ApiService,
-    private val printConfigRepository: PrintConfigRepository,
-    private val transporteLan: com.avoqado.pos.core.data.lan.TransporteLan,
 ) {
-    private val _desconectadas = MutableStateFlow<Set<String>>(emptySet())
+    private val _sinInternet = MutableStateFlow<List<String>>(emptyList())
 
-    /** Ids de estación (activas y con pantalla) cuya pantalla el servidor no ha visto; vacío si todo bien o si no se sabe. */
-    val desconectadas: StateFlow<Set<String>> = _desconectadas.asStateFlow()
+    /** Nombres de las estaciones cuya pantalla el servidor no ve conectada; vacío si todo bien o si no se sabe. */
+    val sinInternet: StateFlow<List<String>> = _sinInternet.asStateFlow()
 
     private var trabajo: Job? = null
     private var venueDelTrabajo: String? = null
 
-    /** Idempotente por sucursal; con otra, reinicia. Vive en [scope] (el de la app). */
+    /** Idempotente por sucursal; con otra, reinicia y olvida lo de la anterior. Vive en [scope] (el de la app). */
     @Synchronized
     fun iniciar(scope: CoroutineScope, venueId: String) {
         if (venueDelTrabajo == venueId && trabajo?.isActive == true) return
         trabajo?.cancel()
         venueDelTrabajo = venueId
-        _desconectadas.value = emptySet()
+        _sinInternet.value = emptyList()
         trabajo = scope.launch {
             while (true) {
-                _desconectadas.value = revisar(venueId) ?: emptySet()
-                delay(INTERVALO_MS)
+                val revision = revisar(venueId)
+                ensureActive() // una respuesta que llegó tras cambiar de sucursal o cerrar sesión no se publica
+                _sinInternet.value = revision?.nombres.orEmpty()
+                delay(esperaTras(revision))
             }
         }
     }
@@ -73,38 +77,40 @@ class EstadoDePantallasDeCocina @Inject constructor(
         trabajo?.cancel()
         trabajo = null
         venueDelTrabajo = null
-        _desconectadas.value = emptySet()
+        _sinInternet.value = emptyList()
     }
 
-    /** Las estaciones con pantalla que NO están conectadas, o `null` si no se sabe. Expuesta para las pruebas. */
-    internal suspend fun revisar(venueId: String, ahora: Long = System.currentTimeMillis()): Set<String>? {
-        // Codex r6 #4: la config de ESTA sucursal (al cambiar de sucursal la de memoria puede ser la anterior).
-        val conPantalla = printConfigRepository.savedConfig(venueId).stations.filter { it.active && it.hasKitchenDisplay }.map { it.id }
-        if (conPantalla.isEmpty()) return emptySet()
-        val respuesta = try {
-            withTimeoutOrNull(TOPE_MS) { apiService.pantallasConectadas(venueId).data }
+    /** Lo que dijo el servidor. [nombres] vacío si no hay ninguna desconectada o si el servidor aún no sabe (`completo`). */
+    internal data class Revision(val hayPantallas: Boolean, val nombres: List<String>)
+
+    /** `null` = no se sabe (sin red, error, sin permiso, tope, servidor viejo). Expuesta para las pruebas. */
+    internal suspend fun revisar(venueId: String): Revision? {
+        val data = try {
+            withTimeoutOrNull(TOPE_MS) { apiService.pantallasDesconectadas(venueId).data }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            Log.d(TAG, "No se supo qué pantallas están conectadas: ${e.message}")
+            Log.d(TAG, "No se supo qué pantallas de cocina están conectadas: ${e.message}")
             null
         } ?: return null
-        // Recién arrancado el servidor no sabe aún de las que faltan: no se afirma nada (un servidor viejo nunca dice «completo»).
-        if (!respuesta.completo) return null
-        // Codex r5 #2 / r6 #1: la que acusó por WiFi hace poco está recibiendo aunque el servidor no la vea; un acuse viejo no cuenta.
-        val conectadas = respuesta.conectadas.toSet() + transporteLan.racha.acusaronDesde(ahora - ACUSE_WIFI_VIGENTE_MS)
-        return conPantalla.filterNot { it in conectadas }.toSet()
+        val nombres = if (data.completo) data.desconectadas.map { it.name }.filter { it.isNotBlank() } else emptyList()
+        return Revision(data.hayPantallas, nombres)
+    }
+
+    /** Cuánto esperar para volver a preguntar, según la última respuesta. */
+    internal fun esperaTras(revision: Revision?): Long = when {
+        revision == null -> ESPERA_SIN_RESPUESTA_MS
+        revision.hayPantallas -> INTERVALO_MS
+        else -> INTERVALO_SIN_PANTALLAS_MS
     }
 
     companion object {
-        /** Cada cuánto se pregunta: una pantalla que se cierra sale en la franja en unos 2 min (90 s de ventana + esto). */
+        /** Con pantallas: una que se cierra sale en la franja en unos 2 min (90 s de ventana del servidor + esto). */
         const val INTERVALO_MS = 20_000L
+        /** Sin pantallas de cocina no hay nada que vigilar: se vuelve a mirar por si el negocio prende una. */
+        const val INTERVALO_SIN_PANTALLAS_MS = 5 * 60_000L
+        /** Tras un error (sin red, sin permiso, servidor viejo): sin insistir cada 20 s. */
+        const val ESPERA_SIN_RESPUESTA_MS = 60_000L
         const val TOPE_MS = 5_000L
-        /**
-         * Un acuse por WiFi cuenta como «está recibiendo» por esto. Llegan sólo cuando hay comandas: con más, una pantalla
-         * sin internet pero con WiFi saldría como desconectada en un rato sin pedidos; con menos, una que se apagó tras su
-         * último acuse se taparía más tiempo. Acotado (Codex r6 #1: antes, para siempre).
-         */
-        const val ACUSE_WIFI_VIGENTE_MS = 5 * 60_000L
     }
 }

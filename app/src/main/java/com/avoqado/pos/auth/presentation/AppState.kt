@@ -100,7 +100,7 @@ class AppState @Inject constructor(
     @Inject
     lateinit var preparationDelivery: com.avoqado.pos.kds.data.PreparationDeliveryService
 
-    /** D6 de Flautas (opción B): qué pantallas de cocina no están conectadas al servidor, para la franja fija. Por miembro. */
+    /** D6 de Flautas (opción B): qué pantallas de cocina no están conectadas a internet (lo dice el servidor), para la franja fija. Por miembro. */
     @Inject
     lateinit var estadoDePantallas: com.avoqado.pos.kds.data.EstadoDePantallasDeCocina
 
@@ -389,17 +389,23 @@ class AppState @Inject constructor(
         }.stateIn(scope = viewModelScope, started = SharingStarted.WhileSubscribed(5_000), initialValue = null)
     }
 
-    /**
-     * D11: tras 3 entregas seguidas sin acuse a una estación, «La pantalla de Barra no se alcanza por el WiFi», con o sin
-     * internet. D6 de Flautas (opción B): antes que eso, si el SERVIDOR no ve a la pantalla, «La pantalla de cocina de Barra no
-     * está conectada» (la caja ya no avisa orden por orden cuando la venta está en el servidor).
-     */
+    /** D11: tras 3 entregas seguidas sin acuse a una estación, «La pantalla de Barra no se alcanza por el WiFi», con o sin internet. */
     val avisoDeRacha: StateFlow<String?> by lazy {
-        val desconectadas = if (::estadoDePantallas.isInitialized) estadoDePantallas.desconectadas
-        else kotlinx.coroutines.flow.MutableStateFlow(emptySet<String>())
-        combine(printConfigRepository.config, transporteLan.racha.sinAlcance, desconectadas) { config, sinAlcance, apagadas ->
-            com.avoqado.pos.printing.routing.KitchenDeliveryPolicy.avisoDeRacha(sinAlcance, config, apagadas)
+        combine(printConfigRepository.config, transporteLan.racha.sinAlcance) { config, sinAlcance ->
+            com.avoqado.pos.printing.routing.KitchenDeliveryPolicy.avisoDeRacha(sinAlcance, config)
         }.stateIn(scope = viewModelScope, started = SharingStarted.WhileSubscribed(5_000), initialValue = null)
+    }
+
+    /**
+     * D6 de Flautas (opción B): «La pantalla de cocina de COCINA 1 no está conectada a internet», según el SERVIDOR (la caja
+     * ya no avisa «No salió» orden por orden cuando la venta está en el servidor). La banda sólo lo enseña CON red: sin red
+     * no se afirma nada del servidor. `by lazy`: [estadoDePantallas] se inyecta por miembro después del constructor.
+     */
+    val avisoDePantallas: StateFlow<String?> by lazy {
+        if (!::estadoDePantallas.isInitialized) return@lazy kotlinx.coroutines.flow.MutableStateFlow<String?>(null)
+        estadoDePantallas.sinInternet
+            .map { com.avoqado.pos.printing.routing.KitchenDeliveryPolicy.avisoDePantallasSinInternet(it) }
+            .stateIn(scope = viewModelScope, started = SharingStarted.WhileSubscribed(5_000), initialValue = null)
     }
 
     val showOfflineBanner: StateFlow<Boolean> = combine(
