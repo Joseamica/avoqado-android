@@ -100,6 +100,30 @@ class AnularProductoEnviadoTest {
         coVerify(exactly = 0) { outbox.enqueue(any(), any(), any(), any(), any(), any()) }
     }
 
+    @Test fun sinRespuestaDelServidorNoDiceQueNoSeAnulo() = runTest {
+        // Codex r1 #9: el aparato creía tener red y la llamada se cortó: no se sabe si el SERVIDOR lo anuló.
+        coEvery { repo.voidItem(any(), any(), any(), any()) } returns Result.failure(java.net.SocketTimeoutException("timeout"))
+        vm.loadCheck(); advanceUntilIdle()
+
+        vm.voidSentItem("line", "Error de entrada"); advanceUntilIdle()
+
+        assertEquals(ANULAR_SIN_CONFIRMAR, vm.mensajeSinRed.value)
+        assertFalse(vm.actionIsError.value)
+        coVerify(exactly = 0) { outbox.enqueue(any(), any(), any(), any(), any(), any()) }
+    }
+
+    @Test fun anularVaEnGrisConPromocionOElUnicoProducto() {
+        val suelto = OrderDetailItem(id = "a", productName = "Agua", total = 35.0)
+        val pieza = OrderDetailItem(id = "p", productName = "Agua del combo", total = 33.0, orderPromotionId = "promo-1")
+        val dos = OrderDetail("o", items = listOf(suelto, OrderDetailItem(id = "b", productName = "Flautas", total = 65.0)))
+        assertNull(motivoParaNoAnular(suelto, dos))
+        assertNull(motivoParaNoAnular(suelto, null)) // sin la cuenta leída decide el SERVIDOR
+        assertEquals(PROMOCION_SIN_ANULAR, motivoParaNoAnular(pieza, dos))
+        assertEquals(ULTIMO_PRODUCTO_SIN_ANULAR, motivoParaNoAnular(suelto, OrderDetail("o", items = listOf(suelto))))
+        // La promoción manda aunque sea el único renglón: la salida es la cortesía o anular la cuenta.
+        assertEquals(PROMOCION_SIN_ANULAR, motivoParaNoAnular(pieza, OrderDetail("o", items = listOf(pieza))))
+    }
+
     @Test fun losMotivosEmpiezanPorLosDeAnular() {
         assertEquals(listOf("Error de entrada", "El cliente cambió de parecer", "El artículo ya no está disponible"),
             MOTIVOS_DE_RENGLON_ENVIADO.take(3))

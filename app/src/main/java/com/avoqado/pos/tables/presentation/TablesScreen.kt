@@ -1008,6 +1008,18 @@ internal val MOTIVOS_DE_RENGLON_ENVIADO = listOf(
 internal const val ULTIMO_PRODUCTO_SIN_ANULAR =
     "Es el único producto de la cuenta. Para quitarlo usa «Anular cuenta», o manda primero lo que lo reemplaza y luego anúlalo."
 
+/** Una pieza suelta de una promoción dejaría las demás a precio de combo (Codex r1 #2): el SERVIDOR la rechaza con este texto. */
+internal const val PROMOCION_SIN_ANULAR =
+    "Es parte de una promoción y no se anula suelto. Puedes darlo de cortesía o anular la cuenta completa."
+
+/** Por qué «Anular producto» va en gris para [item] de la cuenta [check] (null = se puede). La cortesía no cambia. */
+internal fun motivoParaNoAnular(item: com.avoqado.pos.tables.data.OrderDetailItem, check: com.avoqado.pos.tables.data.OrderDetail?): String? =
+    when {
+        item.orderPromotionId != null -> PROMOCION_SIN_ANULAR
+        check?.items?.size == 1 -> ULTIMO_PRODUCTO_SIN_ANULAR
+        else -> null
+    }
+
 /**
  * Un renglón YA ENVIADO a cocina (Flautas, 20-nov: «un agua de pepino… no, mejor de rompope»): el motivo y dos salidas.
  * «Anular producto» lo quita de la cuenta; «Dar de cortesía» lo deja en la cuenta en $0. Las dos piden motivo.

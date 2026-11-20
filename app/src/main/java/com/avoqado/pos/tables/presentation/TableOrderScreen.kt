@@ -1579,7 +1579,7 @@ fun TableOrderScreen(
         // Flautas (20-nov): lo enviado se anula o se regala, en la misma ventana.
         RenglonEnviadoDialog(
             productName = target.productName ?: "Artículo",
-            sinAnular = if (check?.items?.size == 1) ULTIMO_PRODUCTO_SIN_ANULAR else null,
+            sinAnular = motivoParaNoAnular(target, check),
             onDismiss = { compTarget = null },
             onAnular = { reason ->
                 compTarget = null

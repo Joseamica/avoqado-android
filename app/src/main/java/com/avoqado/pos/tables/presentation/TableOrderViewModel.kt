@@ -165,6 +165,10 @@ internal const val DESCUENTO_MANUAL_GUARDADO_SIN_RED =
 internal const val DESCUENTO_MANUAL_SIN_RESPUESTA =
     "Sin conexión: no supimos si el descuento se aplicó. Revisa «Aplicados» al volver la red antes de darlo otra vez."
 
+/** «Anular producto» (Codex r1 #9): la red cayó a media llamada; no se sabe si se anuló. La cuenta se relee al volver la señal. */
+internal const val ANULAR_SIN_CONFIRMAR =
+    "Sin conexión: no supimos si el producto se anuló. Revisa la cuenta al volver la red antes de anularlo otra vez."
+
 /** 7133e3: el valor como lo guarda el SERVIDOR (2 decimales, mitad hacia arriba). */
 internal fun valorDelManual(value: Double): Double =
     java.math.BigDecimal(value.toString()).setScale(2, java.math.RoundingMode.HALF_UP).toDouble()
@@ -1681,7 +1685,10 @@ class TableOrderViewModel @Inject constructor(
                     repository.refresh(vId)
                 },
                 onFailure = { e ->
-                    showError(com.avoqado.pos.core.data.network.ServerErrorText.humanize(e, "No se pudo anular el producto"))
+                    // Codex r1 #9: sin respuesta (WiFi sin salida, corte a medias) no se sabe si el SERVIDOR lo anuló: se dice así, en
+                    // gris, y la relectura de `mutar` enseña la cuenta real en cuanto vuelva la señal. Nunca «no se anuló» a ciegas.
+                    if (com.avoqado.pos.core.data.network.ServerErrorText.isOffline(e)) showSinRed(ANULAR_SIN_CONFIRMAR)
+                    else showError(com.avoqado.pos.core.data.network.ServerErrorText.humanize(e, "No se pudo anular el producto"))
                 },
             )
         }
