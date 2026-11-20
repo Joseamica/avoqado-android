@@ -1,5 +1,6 @@
 package com.avoqado.pos.giftcards
 
+import com.avoqado.pos.core.util.telefonoMx
 import com.avoqado.pos.giftcards.data.*
 import com.avoqado.pos.giftcards.domain.*
 import kotlinx.serialization.json.*
@@ -40,6 +41,23 @@ class FormularioDeVentaTest {
         assertFalse(rows[1].jsonObject.containsKey("recipientPhone"))
         assertTrue(cuerpo.contains("500.00"))
         assertEquals("+525512345678", telefonoMx("5512345678"))
-        for (bad in listOf("551234567", "55123456789", "55-12345678", "５512345678")) assertNull(telefonoMx(bad))
+        assertEquals("+525512345678", telefonoMx("55-12345678"))
+        assertEquals("+525512345678", telefonoMx("５512345678"))   // ancho completo: se convierte (Codex r3)
+        for (bad in listOf("551234567", "55123456789", "1512345678")) assertNull(telefonoMx(bad))
+    }
+    @Test fun `P1 Flautas el celular con +52 pasa y viaja con 10 digitos`() {
+        val f = FormularioDeVenta(listOf(sobre.copy(canal = "WHATSAPP", telefonoDigitos = "+52 5591873922")), "Eugenio")
+        assertTrue(f.invalidos(ajustes).isEmpty())
+        val row = Json.parseToJsonElement(f.cuerpo("k", "a", "Ana")).jsonObject["sobres"]!!.jsonArray[0].jsonObject
+        assertEquals("+525591873922", row["recipientPhone"]!!.jsonPrimitive.content)
+    }
+    @Test fun `P2 el motivo de Cobrar gris dice que campo falta`() {
+        assertNull(motivoDeCobrarApagado(emptySet(), 1))
+        assertEquals("Revisa el celular", motivoDeCobrarApagado(setOf("telefono0"), 1))
+        assertEquals("Revisa el celular y «De parte de»", motivoDeCobrarApagado(setOf("telefono0", "deParteDe"), 1))
+        assertEquals("Revisa el monto (tarjeta 1), el correo (tarjeta 2) y «De parte de»",
+            motivoDeCobrarApagado(setOf("monto0", "correo1", "deParteDe"), 2))
+        val f = FormularioDeVenta(listOf(sobre.copy(canal = "WHATSAPP", telefonoDigitos = "5591873922")), "")
+        assertEquals("Revisa «De parte de»", motivoDeCobrarApagado(f.invalidos(ajustes), 1))
     }
 }

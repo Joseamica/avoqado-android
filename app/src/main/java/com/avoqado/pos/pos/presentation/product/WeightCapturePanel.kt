@@ -69,6 +69,8 @@ fun WeightCapturePanel(
     product: Product,
     isTablet: Boolean,
     scaleState: ScaleConnectionState = ScaleConnectionState.NotConfigured,
+    /** D7: «Ya entró … por su etiqueta» (la etiqueta del mismo producto ya está en el carrito; la captura sigue abierta). */
+    avisoDeEtiqueta: String? = null,
     onRetryScale: () -> Unit = {},
     onAdd: (weightKg: Double) -> Unit,
     onDismiss: () -> Unit,
@@ -96,6 +98,7 @@ fun WeightCapturePanel(
                 WeightCaptureContent(
                     product = product,
                     scaleState = scaleState,
+                    avisoDeEtiqueta = avisoDeEtiqueta,
                     onRetryScale = onRetryScale,
                     onAdd = onAdd,
                     onDismiss = onDismiss,
@@ -117,6 +120,7 @@ fun WeightCapturePanel(
             WeightCaptureContent(
                 product = product,
                 scaleState = scaleState,
+                avisoDeEtiqueta = avisoDeEtiqueta,
                 onRetryScale = onRetryScale,
                 onAdd = onAdd,
                 onDismiss = onDismiss,
@@ -129,6 +133,7 @@ fun WeightCapturePanel(
 private fun WeightCaptureContent(
     product: Product,
     scaleState: ScaleConnectionState,
+    avisoDeEtiqueta: String?,
     onRetryScale: () -> Unit,
     onAdd: (weightKg: Double) -> Unit,
     onDismiss: () -> Unit,
@@ -311,6 +316,14 @@ private fun WeightCaptureContent(
             }
         }
 
+        avisoDeEtiqueta?.let { aviso ->
+            Text(
+                text = aviso,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.padding(horizontal = AvoqadoTheme.spacing.xl, vertical = AvoqadoTheme.spacing.sm),
+            )
+        }
         HorizontalDivider()
         PrimaryButton(
             text = if (totalCents != null) "Agregar • ${money(totalCents)}" else "Agregar",

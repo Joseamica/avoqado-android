@@ -124,7 +124,7 @@ class ReservationApi @Inject constructor(
     }
 
     /** [venueId]: la sucursal de un aviso de la franja (null = la de la sesión). */
-    suspend fun get(id: String, venueId: String? = null): Result<Reservation> = call {
+    suspend fun get(id: String, venueId: String? = null, background: Boolean = false): Result<Reservation> = call(background) {
         Request.Builder().url("${base(venueId) ?: error("No venue")}/$id").get().build()
     }.mapCatching { json.decodeFromString(Reservation.serializer(), it) }
 

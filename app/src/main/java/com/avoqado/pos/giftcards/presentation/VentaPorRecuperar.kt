@@ -59,7 +59,9 @@ internal fun avisosDeCuentasConSaldo(rows: List<SolicitudDeTarjeta>): List<Solic
         if (fila != null) AvoqadoDialog(onDismiss = { vistas += fila.llave }, title = TextosDeTarjetas.VENTA_POR_RECUPERAR) {
             if (!cartState.isEmpty) Text(TextosDeTarjetas.TERMINA_LA_VENTA_ACTUAL)
             mensaje?.let { Text(it) }
-            PrimaryButton(text = TextosDeTarjetas.RECUPERAR_VENTA, enabled = cartState.isEmpty, onClick = {
+            PrimaryButton(text = TextosDeTarjetas.RECUPERAR_VENTA, enabled = cartState.isEmpty, onClick = recuperar@{
+                // D9 (Codex r2 #7): con el cobro abierto (el recibo de otra venta) no se reserva nada en disco: se avisa.
+                if (cart.avisarSiElCobroEstaAbierto()) return@recuperar
                 scope.launch {
                     when (vm.recuperar(fila.llave, cart)) {
                         Recuperacion.RECUPERADA -> vistas += fila.llave

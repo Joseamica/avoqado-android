@@ -1,5 +1,6 @@
 package com.avoqado.pos.kds.presentation
 
+import com.avoqado.pos.pos.domain.juntarExtrasRepetidos
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -276,7 +277,7 @@ private fun KDSItemRow(
 
         // Modifiers
         if (item.modifiers.isNotEmpty()) {
-            item.modifiers.forEach { mod ->
+            juntarExtrasRepetidos(item.modifiers).forEach { mod ->
                 Text(
                     text = "  - $mod",
                     style = if (isLargeFont) MaterialTheme.typography.bodyMedium

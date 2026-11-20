@@ -1,5 +1,6 @@
 package com.avoqado.pos.tables.presentation
 
+import com.avoqado.pos.pos.domain.juntarExtrasRepetidos
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.tween
@@ -93,6 +94,7 @@ import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.designsystem.theme.Success
 import com.avoqado.pos.pos.data.model.Product
 import com.avoqado.pos.pos.data.model.parecidoACodigo
+import com.avoqado.pos.pos.data.model.coincidenciasDeLaLectura
 import com.avoqado.pos.pos.presentation.cart.CartViewModel
 import com.avoqado.pos.pos.presentation.product.ProductDetailPanel
 import com.avoqado.pos.pos.presentation.product.ProductGridView
@@ -281,6 +283,8 @@ fun TableOrderScreen(
     var showDiscountsDialog by remember { mutableStateOf(false) }
     // f998c8: el descuento de la mesa que espera su motivo (id y si pide aprobación).
     var descuentoDeMesaEsperandoMotivo by remember { mutableStateOf<Pair<String, Boolean>?>(null) }
+    // 7133e3: el descuento manual de la mesa que espera su motivo.
+    var descuentoManualEsperandoMotivo by remember { mutableStateOf<DescuentoManualPendiente?>(null) }
     var showSplitCheckDialog by remember { mutableStateOf(false) }
     var showSortCartDialog by remember { mutableStateOf(false) }
     var showCalculator by remember { mutableStateOf(false) }
@@ -320,6 +324,7 @@ fun TableOrderScreen(
     var previousChargeNotice by cobroDeLaMesa::avisoCobroAnterior
     val tablesViewModel: TablesViewModel = androidx.hilt.navigation.compose.hiltViewModel()
     var unknownBarcode by remember { mutableStateOf<String?>(null) }
+    var codigoDoble by remember { mutableStateOf<String?>(null) }
     // Menú … por tiempo (¡Listo!/Repetir). Par (curso, abierto).
     var courseMenuTarget by remember { mutableStateOf<Pair<String?, String>?>(null) }
     var showDiscardDialog by remember { mutableStateOf(false) }
@@ -990,21 +995,33 @@ fun TableOrderScreen(
                 .fillMaxSize()
                 .background(Color.Black),
         ) {
-            val alEscanear: (String) -> Unit = escanear@{ barcode ->
+            val alEscanearLectura: (String, String?) -> Unit = escanear@{ barcode, lecturaUs ->
                 // Cámara y pistola pueden leer la misma etiqueta casi a la vez: la primera cierra el
                 // escáner y la otra ya no agrega (Codex d2 #3).
                 if (!showBarcodeScanner) return@escanear
                 showBarcodeScanner = false
-                val matched = catalogViewModel.products.value.find { product ->
-                    product.sku == barcode || product.barcode == barcode || product.gtin == barcode
-                } ?: catalogViewModel.products.value.parecidoACodigo(barcode)
-                if (matched != null) {
+                fun buscar(codigo: String) = catalogViewModel.products.value.find { product ->
+                    product.sku == codigo || product.barcode == codigo || product.gtin == codigo
+                } ?: catalogViewModel.products.value.parecidoACodigo(codigo)
+                // D14 (rediseño tras Codex r6): primero la lectura del aparato, como antes; la de EE. UU. sólo para productos.
+                // Las dos son las MISMAS teclas: si cada una es un producto distinto, no se adivina.
+                val delAparato = buscar(barcode)
+                val enIngles = lecturaUs?.let { catalogViewModel.products.value.coincidenciasDeLaLectura(it) }.orEmpty()
+                // Codex r8 #2: si la del aparato empató entre productos, no se elige uno de la otra lectura (como en develop).
+                val empateDelAparato = delAparato == null && lecturaUs != null &&
+                    catalogViewModel.products.value.coincidenciasDeLaLectura(barcode).isNotEmpty()
+                val matched = delAparato ?: enIngles.singleOrNull()?.takeUnless { empateDelAparato }
+                val doble = if (delAparato != null) enIngles.any { it.id != delAparato.id } else !empateDelAparato && enIngles.size > 1
+                if (lecturaUs != null && doble) {
+                    codigoDoble = com.avoqado.pos.pos.presentation.cart.avisoDeCodigoDoble(barcode.trim(), lecturaUs.trim())
+                } else if (matched != null) {
                     handleProductTap(matched)
                     panelTab = PanelTab.CUENTA
                 } else {
                     unknownBarcode = barcode
                 }
             }
+            val alEscanear: (String) -> Unit = { alEscanearLectura(it, null) }
             // La pistola (USB/Bluetooth) y el lector integrado de Sunmi entregan por `LectorHidBus`, no
             // por el campo: sin escucharlo aquí su código se perdía (sólo Cobrar escuchaba). Sólo con
             // esta pantalla RESUMED: al cambiar de pestaña la saliente y Cobrar conviven ~700 ms y el
@@ -1012,7 +1029,7 @@ fun TableOrderScreen(
             val ciclo = androidx.lifecycle.compose.LocalLifecycleOwner.current
             LaunchedEffect(ciclo) {
                 ciclo.repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.RESUMED) {
-                    catalogViewModel.codigosEscaneados.collect { alEscanear(it) }
+                    catalogViewModel.codigosEscaneados.collect { alEscanearLectura(it.texto, it.lecturaUs) }
                 }
             }
             com.avoqado.pos.pos.presentation.scanner.BarcodeScannerView(
@@ -1021,6 +1038,15 @@ fun TableOrderScreen(
                 onDismiss = { showBarcodeScanner = false },
             )
         }
+    }
+
+    codigoDoble?.let { aviso ->
+        AvoqadoDialog(
+            title = "Dos productos con esta etiqueta",
+            description = aviso,
+            onDismiss = { codigoDoble = null },
+            actionButton = { PrimaryButton(text = "Entendido", onClick = { codigoDoble = null }, fullWidth = true) },
+        ) {}
     }
 
     unknownBarcode?.let { scannedCode ->
@@ -1427,6 +1453,25 @@ fun TableOrderScreen(
             },
             onRemove = { id -> viewModel.removeDiscount(id) },
             onDismiss = { showDiscountsDialog = false },
+            // 7133e3: con «Pedir motivo», primero el motivo (como el del catálogo y como MOSTRADOR).
+            onManual = { name, value, isPercentage ->
+                val manual = DescuentoManualPendiente(if (isPercentage) "PERCENTAGE" else "FIXED_AMOUNT", value, name)
+                if (viewModel.motivosDeDescuento.sePide) descuentoManualEsperandoMotivo = manual
+                else viewModel.applyManualDiscount(manual.type, manual.value, manual.name)
+            },
+        )
+    }
+    descuentoManualEsperandoMotivo?.let { manual ->
+        com.avoqado.pos.pos.presentation.components.DialogoMotivoDeDescuento(
+            motivos = viewModel.motivosDeDescuento.lista,
+            titulo = "Motivo del descuento",
+            detalle = listOf(manual.name.trim().ifBlank { "Descuento manual" }),
+            textoConfirmar = "Aplicar descuento",
+            onConfirmar = { motivo ->
+                viewModel.applyManualDiscount(manual.type, manual.value, manual.name, motivo)
+                descuentoManualEsperandoMotivo = null
+            },
+            onCancelar = { descuentoManualEsperandoMotivo = null },
         )
     }
     descuentoDeMesaEsperandoMotivo?.let { (id, pide) ->
@@ -1997,7 +2042,7 @@ private fun SentCard(
                             Text(item.productName ?: "Artículo", maxLines = 1, overflow = TextOverflow.Ellipsis)
                             if (item.modifiers.isNotEmpty()) {
                                 Text(
-                                    text = item.modifiers.joinToString(", ") { it.name },
+                                    text = juntarExtrasRepetidos(item.modifiers.map { it.name }).joinToString(", "),
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
@@ -3218,6 +3263,9 @@ private fun FulfillmentDialog(
 
 // MARK: - Descuentos de orden en el cheque
 
+/** 7133e3: el descuento manual que tecleó la caja, mientras elige su motivo. */
+private data class DescuentoManualPendiente(val type: String, val value: Double, val name: String)
+
 @Composable
 private fun OrderDiscountsDialog(
     available: List<com.avoqado.pos.pos.data.model.Discount>,
@@ -3225,7 +3273,10 @@ private fun OrderDiscountsDialog(
     onApply: (String) -> Unit,
     onRemove: (String) -> Unit,
     onDismiss: () -> Unit,
+    /** 7133e3: «Descuento manual» (% o $), como en MOSTRADOR. Recibe nombre, valor y si es %. */
+    onManual: (name: String, value: Double, isPercentage: Boolean) -> Unit = { _, _, _ -> },
 ) {
+    var conManual by remember { mutableStateOf(false) }
     AvoqadoDialog(
         title = "Descuentos",
         onDismiss = onDismiss,
@@ -3241,8 +3292,14 @@ private fun OrderDiscountsDialog(
                 if (applied.isNotEmpty()) {
                     Text("Aplicados", fontWeight = FontWeight.SemiBold)
                     applied.forEach { d ->
+                        // D15: la rebaja fija del cobro de vales enseña «Quitar» en gris con su nota; tocar la fila dice por qué.
+                        val quitar = quitarDeLaRebaja(d)
+                        var conRazon by remember(d.id) { mutableStateOf(false) }
                         Row(
-                            modifier = Modifier.fillMaxWidth().padding(vertical = AvoqadoTheme.spacing.xs),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .then(if (quitar.razon != null) Modifier.clickable(onClickLabel = "Ver por qué está fija") { conRazon = !conRazon } else Modifier)
+                                .padding(vertical = AvoqadoTheme.spacing.xs),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
                             Column(modifier = Modifier.weight(1f)) {
@@ -3252,12 +3309,43 @@ private fun OrderDiscountsDialog(
                                     style = MaterialTheme.typography.bodySmall,
                                     color = Success,
                                 )
+                                quitar.nota?.let {
+                                    Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                                if (conRazon) {
+                                    quitar.razon?.let {
+                                        Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    }
+                                }
                             }
-                            TextButton(onClick = { onRemove(d.id) }) { Text("Quitar", color = Color(0xFFD32F2F)) }
+                            TextButton(onClick = { onRemove(d.id) }, enabled = quitar.quitarActivo) {
+                                Text(
+                                    "Quitar",
+                                    color = if (quitar.quitarActivo) Color(0xFFD32F2F) else MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
                         }
                     }
                     Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
                 }
+                // 7133e3 (hz:0555ee15:D2): el descuento a mano de la cuenta, con el MISMO formulario de MOSTRADOR.
+                OutlinedButton(
+                    onClick = { conManual = !conManual },
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(AvoqadoTheme.cornerRadius.lg),
+                ) {
+                    Text("Descuento manual")
+                }
+                if (conManual) {
+                    Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
+                    com.avoqado.pos.pos.presentation.checkout.ManualDiscountEntry(
+                        onApply = { name, value, isPercentage ->
+                            onManual(name, value, isPercentage)
+                            conManual = false
+                        },
+                    )
+                }
+                Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
                 Text("Disponibles", fontWeight = FontWeight.SemiBold)
                 if (available.isEmpty()) {
                     Text(

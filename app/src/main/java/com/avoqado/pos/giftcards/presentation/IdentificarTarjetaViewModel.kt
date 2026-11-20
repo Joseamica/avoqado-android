@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.util.ConnectivityMonitor
+import com.avoqado.pos.core.util.telefonoMx
 import com.avoqado.pos.core.domain.RoleManager
 import com.avoqado.pos.pos.data.LectorHidBus
 import com.avoqado.pos.giftcards.data.*
@@ -73,7 +74,7 @@ class IdentificarTarjetaViewModel @Inject constructor(
         if (almacen.venueId != venueId || almacen.userId == null) return
         venue = venueId; usuario = almacen.userId; this.ajustes = ajustes
         escucha = viewModelScope.launch(start = CoroutineStart.UNDISPATCHED) {
-            lector.codigos.collect { crudo -> if (LectorParaTarjetas.abierta.value) launch { porEscaneo(crudo) } }
+            lector.leidos.collect { leido -> if (LectorParaTarjetas.abierta.value) launch { porEscaneo(lecturaDeTarjeta(leido)) } }
         }
         LectorParaTarjetas.abrir()
     }
@@ -131,6 +132,25 @@ class IdentificarTarjetaViewModel @Inject constructor(
             throw e
         } finally { if (g == generacion) ocupada = false }
     }
+    /**
+     * D14: el código de la tarjeta lleva guiones y, con el teclado del aparato en español, una pistola en inglés los manda
+     * como «'». Si la lectura del aparato no es una tarjeta y la de EE. UU. sí, se usa ésa.
+     */
+    private fun lecturaDeTarjeta(leido: com.avoqado.pos.pos.data.CodigoLeido): String {
+        val crudo = leido.texto
+        if (ReconocedorDeTarjeta.reconocer(crudo) != null) return crudo
+        val us = leido.lecturaUs ?: return crudo
+        // D14 (Codex r8 #3): la segunda lectura sólo vale si es de Avoqado: un código que el servidor pudo emitir o una liga
+        // de un dominio de Avoqado. Un QR ajeno con «/tarjeta/» ya no consulta al servidor (gastaba un intento).
+        return if (ReconocedorDeTarjeta.esDelServidor(us) && esDeAvoqado(us)) us else crudo
+    }
+
+    private fun esDeAvoqado(texto: String): Boolean {
+        if (ReconocedorDeTarjeta.reconocer(texto) !is PruebaDeTarjeta.PageToken) return true
+        val host = runCatching { java.net.URI(texto.trim()).host }.getOrNull()?.lowercase() ?: return false
+        return host == "avoqado.io" || host.endsWith(".avoqado.io")
+    }
+
     suspend fun porEscaneo(crudo: String) {
         if (!contextoVigente() || ocupada) return
         entrada.value = crudo; ultimaPrueba = null
@@ -166,7 +186,7 @@ class IdentificarTarjetaViewModel @Inject constructor(
     }
     suspend fun pedirCodigo(telefonoDigitos: String) {
         if (!contextoVigente() || ocupada || ajustes?.porTelefono != true) return
-        val phone = telefonoMx(telefonoDigitos) ?: run { mutableEstado.value = EstadoDeIdentificacion.Error("Escribe 10 dígitos de México (+52)"); return }
+        val phone = telefonoMx(telefonoDigitos) ?: run { mutableEstado.value = EstadoDeIdentificacion.Error(TextosDeTarjetas.CELULAR_INVALIDO); return }
         telefonoActual = phone; telefonoVerificado = null; ultimaPrueba = null
         pedir({ repo.pedirCodigo(it, phone) }) { telefonoVerificado = phone; mutableEstado.value = EstadoDeIdentificacion.CodigoPedido }
     }

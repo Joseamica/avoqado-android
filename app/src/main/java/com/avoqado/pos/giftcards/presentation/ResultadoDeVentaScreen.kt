@@ -13,6 +13,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import com.avoqado.pos.customerdisplay.QrCode
 import com.avoqado.pos.designsystem.components.*
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
+import com.avoqado.pos.core.util.filtrarTecleoDeTelefono
 import com.avoqado.pos.giftcards.domain.TextosDeTarjetas
 import kotlinx.coroutines.launch
 
@@ -88,7 +89,7 @@ fun ResultadoDeVentaScreen(llave: String?, orderId: String, onSalir: () -> Unit,
                         RadioButton(selected=canal=="WHATSAPP",enabled=!fijado,onClick={canal="WHATSAPP"});Text(TextosDeTarjetas.WHATSAPP)
                         RadioButton(selected=canal=="EMAIL",enabled=!fijado,onClick={canal="EMAIL"});Text(TextosDeTarjetas.CORREO)
                     }
-                    if(canal=="WHATSAPP") AvoqadoPillTextField(value=telefono,enabled=!fijado && !ocupado,onValueChange={if(!fijado) telefono=it},placeholder="+52 · 10 dígitos",keyboardType=KeyboardType.Phone)
+                    if(canal=="WHATSAPP") AvoqadoPillTextField(value=telefono,enabled=!fijado && !ocupado,onValueChange={if(!fijado) telefono=filtrarTecleoDeTelefono(it)},placeholder=TextosDeTarjetas.EJEMPLO_DE_CELULAR,keyboardType=KeyboardType.Phone)
                     else AvoqadoPillTextField(value=correo,enabled=!fijado && !ocupado,onValueChange={if(!fijado) correo=it},placeholder=TextosDeTarjetas.CORREO_DE_QUIEN_LA_RECIBE,keyboardType=KeyboardType.Email)
                 }
             }

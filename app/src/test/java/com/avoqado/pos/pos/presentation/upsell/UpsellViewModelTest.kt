@@ -269,4 +269,106 @@ class UpsellViewModelTest {
 
         io.mockk.coVerify(exactly = 0) { repo.recordImpression(any(), any()) }
     }
+
+    @Test
+    fun `D9 resuelto el momento no se vuelve a ofrecer en la misma venta, en la siguiente si`() {
+        val vm = viewModel()
+        val venta = cart("cafe")
+        assertNotNull(vm.offer(venta, UpsellContext.COUNTER))
+
+        vm.finish(emptyList(), 0)   // el cliente contestó en su pantalla; la cajera toca «Cobrar» otra vez
+
+        assertNull(vm.offer(venta, UpsellContext.COUNTER))
+        assertNotNull(vm.offer(cart("cafe"), UpsellContext.COUNTER))
+    }
+
+    @Test
+    fun `D9 al cancelar el cobro la venta se puede volver a ofrecer y la impresion vieja ya no convierte`() {
+        val vm = viewModel()
+        val a = cart("cafe")
+        vm.offer(a, UpsellContext.COUNTER)
+        vm.finish(emptyList(), 0)
+
+        vm.cancelPendingConversion()   // la cajera canceló el cobro (o salió a «Dividir importe»)
+
+        assertNotNull(vm.offer(a, UpsellContext.COUNTER))
+        vm.onOrderPaid("orden-A")   // el momento nuevo sigue abierto: nada que convertir
+        dispatcher.scheduler.advanceUntilIdle()
+        io.mockk.coVerify(exactly = 0) { repo.convertImpression(any(), any()) }
+    }
+
+    @Test
+    fun `D9 restaurar otra venta encima suelta la sugerencia pendiente, repintar la misma no`() {
+        val vm = viewModel()
+        val a = cart("cafe")
+        vm.offer(a, UpsellContext.COUNTER)
+        vm.finish(emptyList(), 0)   // el cliente de A contestó en su pantalla
+
+        vm.soltarSiEsOtraVenta(a.identidadDeVenta)           // la pantalla se repintó: sigue siendo A
+        vm.onOrderPaid("orden-A")
+        dispatcher.scheduler.advanceUntilIdle()
+        io.mockk.coVerify(exactly = 1) { repo.convertImpression(any(), "orden-A") }
+
+        vm.offer(cart("pan"), UpsellContext.COUNTER)
+        vm.finish(emptyList(), 0)
+        vm.soltarSiEsOtraVenta(cart("pan").identidadDeVenta)  // restauraron B encima
+        vm.onOrderPaid("orden-B")
+        dispatcher.scheduler.advanceUntilIdle()
+        io.mockk.coVerify(exactly = 0) { repo.convertImpression(any(), "orden-B") }
+    }
+
+    // ── D13: la sugerencia sabe de qué venta es ───────────────────────────────
+
+    @Test
+    fun `D13 al cambiar de venta la tira de la anterior se cierra sin registrarse`() {
+        val vm = viewModel()
+        val a = cart("cafe")
+        assertNotNull(vm.offer(a, UpsellContext.COUNTER))
+
+        vm.soltarMomentoSiEsOtraVenta(a.identidadDeVenta)      // la pantalla se repinta con la misma venta: sigue
+        assertNotNull(vm.moment.value)
+
+        val b = cart("pan")                                    // restauraron B encima
+        vm.soltarMomentoSiEsOtraVenta(b.identidadDeVenta)
+        assertNull(vm.moment.value)
+        vm.finish(emptyList(), 0)                              // el «Cobrar» de B ya no registra la tira de A
+        vm.onOrderPaid("orden-B")
+        dispatcher.scheduler.advanceUntilIdle()
+        io.mockk.coVerify(exactly = 0) { repo.recordImpression(any(), any()) }
+        io.mockk.coVerify(exactly = 0) { repo.convertImpression(any(), any()) }
+
+        assertNotNull("B puede recibir su propia sugerencia", vm.offer(b, UpsellContext.COUNTER))
+    }
+
+    @Test
+    fun `D13 con el carrito vacio la tira se cierra sin registrarse`() {
+        val vm = viewModel()
+        assertNotNull(vm.offer(cart("cafe"), UpsellContext.COUNTER))
+
+        vm.soltarMomento()                                     // quitaron todo: el carrito vacío no tiene a quién sugerirle
+
+        assertNull(vm.moment.value)
+        vm.finish(emptyList(), 0)
+        dispatcher.scheduler.advanceUntilIdle()
+        io.mockk.coVerify(exactly = 0) { repo.recordImpression(any(), any()) }
+    }
+
+    @Test
+    fun `D13 el registro pendiente de A no se cuenta en la venta C aunque se haya cerrado la tira de B`() {
+        // Codex r2 #7: el cliente de A tocó «No, gracias»; la cajera restaura B (nueva sugerencia, minimizada) y luego C.
+        val vm = viewModel()
+        val a = cart("cafe")
+        assertNotNull(vm.offer(a, UpsellContext.COUNTER))
+        vm.finish(emptyList(), 0)
+        val b = cart("cafe")
+        assertNotNull(vm.offer(b, UpsellContext.COUNTER))
+        val c = cart("cafe")
+        vm.soltarMomentoSiEsOtraVenta(c.identidadDeVenta)          // al restaurar C se cierra la tira de B
+
+        vm.soltarSiEsOtraVenta(c.identidadDeVenta)                 // «Cobrar» de C
+        vm.onOrderPaid("orden-C")
+        dispatcher.scheduler.advanceUntilIdle()
+
+        io.mockk.coVerify(exactly = 0) { repo.convertImpression(any(), "orden-C") }
+    }
 }

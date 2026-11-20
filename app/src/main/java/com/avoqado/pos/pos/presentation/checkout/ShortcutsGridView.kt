@@ -752,8 +752,9 @@ internal fun OrderDiscountsContent(
     }
 }
 
+/** El formulario del descuento manual (nombre, % o $, valor). Lo reusan MOSTRADOR (aquí) y MESAS (`TableOrderScreen`, 7133e3). */
 @Composable
-private fun ManualDiscountEntry(
+internal fun ManualDiscountEntry(
     onApply: (name: String, value: Double, isPercentage: Boolean) -> Unit,
 ) {
     var name by remember { mutableStateOf("") }
@@ -1540,6 +1541,8 @@ private fun SavedCartsSubView(
                                 Restauracion.BloqueadaPorCuentaLigada -> restauracionBloqueada = com.avoqado.pos.pos.presentation.cart.CUENTA_LIGADA_GUARDALA
                                 Restauracion.YaDejadaParaDespues ->
                                     restauracionBloqueada = com.avoqado.pos.pos.presentation.cart.YA_SE_DEJO_PARA_PAGAR_DESPUES
+                                // D9: el cobro se abrió; el carrito ya avisó encima del cobro.
+                                Restauracion.CobroAbierto -> Unit
                             }
                         },
                         onDelete = { confirmarEliminacion = cart },
@@ -1593,6 +1596,7 @@ private fun SavedCartsSubView(
                             confirmarRestauracion = null
                             restauracionBloqueada = com.avoqado.pos.pos.presentation.cart.YA_SE_DEJO_PARA_PAGAR_DESPUES
                         }
+                        Restauracion.CobroAbierto -> confirmarRestauracion = null
                         else -> Unit
                     }
                 })

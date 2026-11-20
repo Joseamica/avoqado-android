@@ -114,6 +114,8 @@ fun PaymentFlowScreen(
      * (como un abono parcial) para que el mismo carrito no vuelva a mandarse con otro. Se llama antes de [onCancel].
      */
     onSalirConTarjetaEnDuda: (com.avoqado.pos.payment.data.FolioEnDuda) -> Unit = {},
+    /** hz:bdd815fd:D5: lo que faltaba según la pantalla que abre el cobro («Pedidos → Cobrar»). Ver `PaymentFlowViewModel.startPaymentFlow`. */
+    saldoLeidoDeLaCuenta: Int? = null,
 ) {
     val scopeDeSaldo = rememberCoroutineScope()
     val filaDeSaldo by viewModel.conductaDelSaldo.collectAsState()
@@ -228,6 +230,7 @@ fun PaymentFlowScreen(
             antesDeRecibirEfectivo = antesDeRecibirEfectivo,
             alNoPasarLaPuerta = alNoPasarLaPuerta,
             dineroConocido = dineroConocido,
+            saldoLeidoDeLaCuenta = saldoLeidoDeLaCuenta,
         )
         aperturaIniciada = true
     }

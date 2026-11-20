@@ -748,6 +748,17 @@ class TerminalPaymentService @Inject constructor(
         customerId: String? = null,
         /** R100: el cobro sale de la bandeja «Pedidos en línea» (lo que debía la orden y si es folio). null = cualquier otro cobro. */
         deLaBandeja: com.avoqado.pos.onlineorders.data.CobroDeLaBandeja? = null,
+        /**
+         * 🔴 D53 (hz:e9ce0be7): lo que debía la orden de vales cuando ESTE cobro la armó, según el SERVIDOR. Si un abono entró en medio,
+         * el SERVIDOR contesta 412 `ORDER_BALANCE_CHANGED` sin tocar la terminal. null = cualquier otro cobro (el cuerpo sale igual).
+         */
+        expectedBalanceBeforeCents: Int? = null,
+        /**
+         * 🔴 hz:bdd815fd:D5: lo que faltaba de la cuenta según la pantalla que abrió este cobro («Pedidos → Cobrar»,
+         * `preBillBalance.remainingBalanceCents`). El SERVIDOR lo compara con lo que falta calculado con la MISMA cuenta; si un abono
+         * entró en medio, contesta 412 `ORDER_BALANCE_CHANGED` sin tocar la terminal. null = cualquier otro cobro (el cuerpo sale igual).
+         */
+        expectedRemainingCents: Int? = null,
     ): TerminalPaymentResult {
         val antesDeEnviar = antesDelProximoEnvio
         antesDelProximoEnvio = null
@@ -805,10 +816,12 @@ class TerminalPaymentService @Inject constructor(
                     orderId = orderId,
                     processedByStaffId = processedByStaffId,
                     requestId = requestId,
-                    expectedRemainingCents = saldoEsperado?.takeIf { orderId != null },
                     // Un id en blanco NO es un cliente: se descarta aquí para que el cuerpo
                     // quede idéntico al de una venta anónima.
                     customerId = customerId?.trim()?.takeIf { it.isNotEmpty() },
+                    expectedBalanceBeforeCents = expectedBalanceBeforeCents,
+                    // Unión con develop: D5 (parámetro) o, si no viene, el de F1 (ranura). El paso 1 deja sólo el parámetro.
+                    expectedRemainingCents = expectedRemainingCents ?: saldoEsperado?.takeIf { orderId != null },
                 ),
             ).toRequestBody("application/json".toMediaType())
 
@@ -962,6 +975,21 @@ class TerminalPaymentService @Inject constructor(
                             requestId = requestId,
                             noSeCreo = true,
                             saldoVigenteCents = saldoDistinto.details?.remainingBalanceCents?.let { kotlin.math.round(it).toInt() },
+                        )
+                    }
+                    // 🔴 hz:bdd815fd:D4: «la cuenta cambió mientras se cobraba» (D53). La admisión lo rechazó nombrando a ESTA solicitud,
+                    // así que consta que no se creó (misma garantía que abajo); viaja marcado para que la caja vuelva al
+                    // carrito con lo que de verdad falta (lo relee el flujo). Sin la correlación se queda como antes (el texto, sin «no se creó»).
+                    if (responseCode == 412 && rejectionDto?.code == CardChargeDecision.CODIGO_CUENTA_CAMBIO &&
+                        rejectionDto.details?.requestId?.trim() == requestId
+                    ) {
+                        Log.w("💳", "🔁 La cuenta cambió para $requestId: este cobro NO se envió")
+                        clearMatching(requestId)
+                        return TerminalPaymentResult.Error(
+                            errorMsg?.takeIf { it.isNotBlank() } ?: CardChargeDecision.CUENTA_CAMBIO_RESPALDO,
+                            requestId = requestId,
+                            noSeCreo = true,
+                            cuentaCambio = true,
                         )
                     }
                     // 🔴 Misma familia que el 409 de arriba y la MISMA garantía: la CORRELACIÓN.
@@ -1237,7 +1265,7 @@ class TerminalPaymentService @Inject constructor(
             // Consta que NO se cobró: reintentar es seguro.
             clearMatching(requestId)
             Log.d("💳", "🚫 Consta que no se cobró: $message")
-            TerminalPaymentResult.Error(message, requestId = requestId, sinCobroNiRechazo = sinCobroNiRechazo).also {
+            TerminalPaymentResult.Error(message, requestId = requestId, sinCobroNiRechazo = sinCobroNiRechazo, cuentaCambio = cuentaCambio).also {
                 if (requestId in activePosts) recoveredPosts[requestId] = it
             }
         }
@@ -1605,6 +1633,11 @@ sealed class TerminalPaymentResult {
         val sinCobroNiRechazo: Boolean = false,
         /** F1 bloque 2: 412 `REMAINING_BALANCE_MISMATCH` de ESTA solicitud: lo que de verdad falta en la cuenta (base, sin propina). */
         val saldoVigenteCents: Int? = null,
+        /**
+         * hz:bdd815fd:D4: el SERVIDOR no cobró porque la cuenta cambió mientras se cobraba (412 `ORDER_BALANCE_CHANGED` o su lápida).
+         * El flujo no pinta un error: relee los vales y vuelve al carrito con el saldo nuevo.
+         */
+        val cuentaCambio: Boolean = false,
     ) : TerminalPaymentResult()
 
     /**
@@ -1729,7 +1762,9 @@ private data class TerminalPaymentRequest(
      * hubiera elegido cliente (el de efectivo sí lo mandaba desde su propio fix).
      */
     val customerId: String? = null,
-    /** F1 bloque 2: el saldo base que vio la caja (ver `saldoEsperadoDelProximoEnvio`). Ausente = contrato viejo, cuerpo idéntico. */
+    /** D53: sólo en el cobro de vales; con `explicitNulls = false` la llave no aparece en los demás. */
+    val expectedBalanceBeforeCents: Int? = null,
+    /** hz:bdd815fd:D5: sólo en «Pedidos → Cobrar» de una cuenta abierta; con `explicitNulls = false` la llave no aparece en los demás. */
     val expectedRemainingCents: Int? = null,
 )
 

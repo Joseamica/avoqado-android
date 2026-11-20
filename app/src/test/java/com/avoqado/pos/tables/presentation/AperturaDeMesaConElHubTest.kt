@@ -542,8 +542,48 @@ class AperturaDeMesaConElHubTest {
         val subject = vm()
         try {
             subject.openTableAndStartOrdering(mesaB, 2) {}; advanceUntilIdle()
-            assertEquals(TableActionState.Error("Ana está atendiendo esta mesa en otro dispositivo"), subject.actionState.value)
+            assertEquals(TableActionState.OcupadaEnOtraCaja("Ana"), subject.actionState.value)
+            assertEquals("Ana está atendiendo esta mesa en otro dispositivo", (subject.actionState.value as TableActionState.OcupadaEnOtraCaja).message)
         } finally { subject.viewModelScope.cancel() }
+    }
+
+    // D48 (18-nov, N86): la hoja decía «Libre» en verde y dejaba «Abrir mesa y ordenar» activo junto al aviso rojo. Codex r1 #2: el
+    // botón no se apaga (una hoja que vuelve con el aviso viejo quedaba trabada): dice «Intentar de nuevo» y vuelve a preguntar.
+    @Test fun `p_taken la hoja dice Ocupada en otra caja y el boton Intentar de nuevo vuelve a preguntar`() = runTest {
+        var vueltas = 0
+        esperar = { _, _, _ -> if (++vueltas == 1) LeaseOutcome.Taken("Ana") else LeaseOutcome.Granted }
+        coEvery { repository.openTable(any(), any(), any()) } returns Result.success(OpenedOrder("o-B", "B"))
+        val subject = vm()
+        try {
+            subject.selectTable(mesaB.id)
+            subject.openTableAndStartOrdering(mesaB, 2) {}; advanceUntilIdle()
+            val estado = subject.actionState.value
+            assertEquals("Ocupada en otra caja", textoEstadoDeMesa(mesaB, estado))
+            assertEquals("Intentar de nuevo", textoAbrirMesa(estado, subject.revisandoConCajas.value))
+            assertEquals("sin «Sin comensales» mientras otra caja la tiene", false, ofreceSinComensales(estado))
+
+            subject.openTableAndStartOrdering(mesaB, 2) {}; advanceUntilIdle()
+            assertEquals("la segunda vez el Hub ya la soltó: se abre", "t-B", session.current()?.tableId)
+        } finally { subject.viewModelScope.cancel() }
+    }
+
+    @Test fun `p_taken al cerrar la hoja y volver a elegir la mesa dice Libre otra vez`() = runTest {
+        esperar = { _, _, _ -> LeaseOutcome.Taken("Ana") }
+        val subject = vm()
+        try {
+            subject.selectTable(mesaB.id)
+            subject.openTableAndStartOrdering(mesaB, 2) {}; advanceUntilIdle()
+            subject.selectTable(null); subject.selectTable(mesaB.id)
+            assertEquals("Libre", textoEstadoDeMesa(mesaB, subject.actionState.value))
+            assertEquals("Abrir mesa y ordenar", textoAbrirMesa(subject.actionState.value, subject.revisandoConCajas.value))
+            assertEquals(true, ofreceSinComensales(subject.actionState.value))
+        } finally { subject.viewModelScope.cancel() }
+    }
+
+    @Test fun `p_taken una mesa que llega reservada dice Reservada aunque quede el aviso de otra caja`() {
+        // Codex r1 #3: la cabecera no puede contradecir «Mesa reservada — se abre desde el check-in».
+        val reservada = DiningTable("t-B", "B", status = "RESERVED")
+        assertEquals("Reservada", textoEstadoDeMesa(reservada, TableActionState.OcupadaEnOtraCaja("Ana")))
     }
 
     @Test fun `p_revisando - mientras el arbitro pide esperar el boton dice Revisando con las otras cajas`() = runTest {
@@ -621,7 +661,7 @@ class AperturaDeMesaConElHubTest {
             assertEquals("m13", a.sesion.current()?.tableId)
 
             vmC.openTableAndStartOrdering(m13Libre, 2) {}; runCurrent()
-            assertEquals(TableActionState.Error("Ana está atendiendo esta mesa en otro dispositivo"), vmC.actionState.value)
+            assertEquals(TableActionState.OcupadaEnOtraCaja("Ana"), vmC.actionState.value)
             assertNull(c.sesion.current())
 
             a.red.retener = Red.Retener.NADA; a.red.soltarTodo(); runCurrent()

@@ -123,6 +123,7 @@ data class Product(
                         name = group.name,
                         required = group.required,
                         multipleSelect = group.allowMultiple,
+                        allowRepeat = group.allowRepeat,
                         minSelections = group.minSelections,
                         maxSelections = group.maxSelections,
                         sortOrder = entry.displayOrder,
@@ -144,6 +145,21 @@ data class Product(
 fun List<Product>.parecidoACodigo(codigo: String): Product? {
     if (ReconocedorDeTarjeta.reconocer(codigo) != null || pareceTarjetaDeCliente(codigo)) return null
     return filter { p -> listOfNotNull(p.sku, p.barcode, p.gtin).any { it.equals(codigo, ignoreCase = true) } }.singleOrNull()
+}
+
+/**
+ * D14 (rediseño tras Codex r6): los productos que la lectura EN INGLÉS de la pistola puede ser, por los caminos de producto de
+ * la búsqueda normal: los exactos (SKU, código de barras, GTIN) o, si no hay, los que coinciden sin mayúsculas cuando no es
+ * tarjeta del servidor. Sólo productos: nada de vales, báscula, tarjetas ni servidor.
+ */
+fun List<Product>.coincidenciasDeLaLectura(codigo: String): List<Product> {
+    val c = codigo.trim()
+    val campos = { p: Product -> listOfNotNull(p.sku, p.barcode, p.gtin) }
+    val exactas = filter { p -> campos(p).any { it == c } }.distinctBy { it.id }
+    // Codex r7 #2: sin mayúsculas se compara salvo que sea una tarjeta DE VERDAD (código del servidor o de cliente): «CAFE-
+    // REGULAR-000001» tiene 17 letras y números, pero con U y L no es tarjeta, y debe encontrar «cafe-regular-000001».
+    if (exactas.isNotEmpty() || ReconocedorDeTarjeta.esDelServidor(c) || pareceTarjetaDeCliente(c)) return exactas
+    return filter { p -> campos(p).any { it.equals(c, ignoreCase = true) } }.distinctBy { it.id }
 }
 
 fun precioConUnidad(precio: Double, porPeso: Boolean): String = formatMoney(precio) + if (porPeso) "/kg" else ""
@@ -212,6 +228,8 @@ data class ModifierGroupData(
     val name: String,
     val required: Boolean = false,
     val allowMultiple: Boolean = false,
+    /** La misma opción se puede elegir varias veces (encargo a508f4). Servidores viejos no lo mandan: false, como hasta hoy. */
+    val allowRepeat: Boolean = false,
     val minSelections: Int? = null,
     val maxSelections: Int? = null,
     val modifiers: List<Modifier> = emptyList(),
@@ -225,6 +243,8 @@ data class ProductModifierGroup(
     val name: String,
     val required: Boolean = false,
     val multipleSelect: Boolean = false,
+    /** Sólo cuenta con [multipleSelect]: cada opción lleva un contador (− 2 +) en vez de casilla. */
+    val allowRepeat: Boolean = false,
     val minSelections: Int? = null,
     val maxSelections: Int? = null,
     val sortOrder: Int? = null,
@@ -238,6 +258,8 @@ data class Modifier(
     val price: Double = 0.0,
     val isDefault: Boolean = false,
     val sortOrder: Int? = null,
+    /** Veces que se puede elegir en un grupo que deja repetir; null = hasta el máximo del grupo (encargo a508f4). */
+    val maxQuantity: Int? = null,
 ) {
     val priceInCents: Int get() = price.aCentavos()
 }

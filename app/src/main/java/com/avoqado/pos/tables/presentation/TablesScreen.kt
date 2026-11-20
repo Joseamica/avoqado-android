@@ -727,13 +727,13 @@ private fun TableCheckSheet(
                 modifier = Modifier.weight(1f),
             )
             Text(
-                text = when {
-                    table.isOccupied -> "Ocupada"
-                    table.isReserved -> "Reservada"
-                    else -> "Libre"
-                },
+                text = textoEstadoDeMesa(table, actionState),
                 style = MaterialTheme.typography.bodyMedium,
-                color = statusColor(table, isSystemInDarkTheme()),
+                color = if (!table.isOccupied && !table.isReserved && actionState is TableActionState.OcupadaEnOtraCaja) {
+                    tableColors(occupied = true, dark = isSystemInDarkTheme()).fill
+                } else {
+                    statusColor(table, isSystemInDarkTheme())
+                },
                 fontWeight = FontWeight.SemiBold,
             )
         }
@@ -745,6 +745,7 @@ private fun TableCheckSheet(
 
         when (val state = actionState) {
             is TableActionState.Error -> StatusLine(state.message, MaterialTheme.colorScheme.error)
+            is TableActionState.OcupadaEnOtraCaja -> StatusLine(state.message, MaterialTheme.colorScheme.error)
             is TableActionState.Success -> StatusLine(state.message, Success)
             else -> {}
         }
@@ -771,11 +772,13 @@ private fun TableCheckSheet(
                 )
                 // Escape de Square: abrir sin contar comensales (barra, para
                 // llevar). Sin conteo no hay asientos ni propina por grupo.
-                TextButton(
-                    onClick = { viewModel.openTableAndStartOrdering(table, 0, onReady = onOpenTableOrder) },
-                    enabled = actionState !is TableActionState.Working,
-                    modifier = Modifier.fillMaxWidth(),
-                ) { Text("Sin comensales") }
+                if (ofreceSinComensales(actionState)) {
+                    TextButton(
+                        onClick = { viewModel.openTableAndStartOrdering(table, 0, onReady = onOpenTableOrder) },
+                        enabled = actionState !is TableActionState.Working,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) { Text("Sin comensales") }
+                }
             }
 
             // ── Occupied: check summary + the 3 Square actions ───────────
@@ -1056,8 +1059,26 @@ private fun StatusLine(message: String, color: Color) {
 
 internal fun textoCuentaEnPlano(check:com.avoqado.pos.tables.data.OpenCheckSummary):String = if(check.isProvisional) "Por sincronizar" else check.totalDisplay
 
-/** El botón de una mesa libre. Hub D3: mientras el árbitro pide esperar, «Revisando con las otras cajas…». */
+/**
+ * D48: lo que dice la hoja junto al número. Si el Hub contestó que otra caja la tiene, ya no es «Libre». Lo que dice el SERVIDOR
+ * (ocupada, reservada) manda sobre el aviso del Hub (Codex r1 #3: «Reservada» va con «se abre desde el check-in»).
+ */
+internal fun textoEstadoDeMesa(table: DiningTable, estado: TableActionState): String = when {
+    table.isOccupied -> "Ocupada"
+    table.isReserved -> "Reservada"
+    estado is TableActionState.OcupadaEnOtraCaja -> "Ocupada en otra caja"
+    else -> "Libre"
+}
+
+/** D48: «Sin comensales» no se ofrece mientras otra caja tiene la mesa: el botón de arriba dice «Intentar de nuevo». */
+internal fun ofreceSinComensales(estado: TableActionState): Boolean = estado !is TableActionState.OcupadaEnOtraCaja
+
+/**
+ * El botón de una mesa libre. Hub D3: mientras el árbitro pide esperar, «Revisando con las otras cajas…». D48: si otra caja la tiene,
+ * «Intentar de nuevo» (vuelve a preguntar; no se apaga, Codex r1 #2: una hoja que vuelve con el aviso viejo quedaba trabada).
+ */
 internal fun textoAbrirMesa(estado: TableActionState, revisandoConCajas: Boolean): String = when {
+    estado is TableActionState.OcupadaEnOtraCaja -> "Intentar de nuevo"
     estado !is TableActionState.Working -> "Abrir mesa y ordenar"
     revisandoConCajas -> "Revisando con las otras cajas…"
     else -> "Abriendo..."

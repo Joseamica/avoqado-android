@@ -201,6 +201,17 @@ class LectorHidBusTest {
     }
 
     @Test
+    fun `con la casilla activa una tecla fisica sostenida tampoco escribe al repetirse`() {
+        // Codex D5 r1 #3: la 1.ª pulsación se consumía pero sus repeticiones (repeatCount > 0) llegaban a la casilla.
+        val bus = LectorHidBus()
+
+        assertTrue(bus.enCasilla('2', ms = 1_000))
+        assertTrue("la repetición tampoco llega", bus.procesar(KeyEvent.ACTION_DOWN, keyCodeDe('2'), '2'.code, LECTOR, 1_500, 1, casillaDeCantidad = true))
+        assertTrue("y su ACTION_UP se consume", bus.procesar(KeyEvent.ACTION_UP, keyCodeDe('2'), '2'.code, LECTOR, 1_600, 0, casillaDeCantidad = true))
+        assertFalse("sin la casilla, sostenerla sigue escribiendo", bus.procesar(KeyEvent.ACTION_DOWN, keyCodeDe('2'), '2'.code, LECTOR, 2_000, 1, casillaDeCantidad = false))
+    }
+
+    @Test
     fun `sin la casilla el 1er caracter de una pistola nueva pasa como siempre`() {
         val bus = LectorHidBus()
 
@@ -215,5 +226,51 @@ class LectorHidBusTest {
         assertFalse(LectorHidBus.esTeclaFisicaQueEscribe(android.view.KeyCharacterMap.VIRTUAL_KEYBOARD, '7'.code, KeyEvent.KEYCODE_7))
         assertFalse(LectorHidBus.esTeclaFisicaQueEscribe(LECTOR, 0, KeyEvent.KEYCODE_SHIFT_LEFT))
         assertFalse(LectorHidBus.esTeclaFisicaQueEscribe(LECTOR, 0, KeyEvent.KEYCODE_BACK))
+    }
+
+    private fun LectorHidBus.leer(delAparato: String, enIngles: String) {
+        delAparato.forEachIndexed { i, c ->
+            procesar(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_A, c.code, LECTOR, 1_000L + i * 10, 0, unicodeCharUs = enIngles[i].code)
+        }
+        enter(ms = 1_000L + delAparato.length * 10)
+    }
+
+    @Test
+    fun `D14 un codigo con apostrofo viaja con su lectura en ingles`() = runTest {
+        val bus = LectorHidBus()
+        bus.leidos.test {
+            bus.leer(delAparato = "AB'12", enIngles = "AB-12")
+            assertEquals(CodigoLeido("AB'12", lecturaUs = "AB-12"), awaitItem())
+        }
+    }
+
+    @Test
+    fun `D14 sin caracter raro no hay lectura en ingles aunque el teclado de EE UU lea distinto`() = runTest {
+        // Una pistola configurada en español lee bien «AB-12»; en el mapa de EE. UU. esa tecla es «/». No se reinterpreta.
+        val bus = LectorHidBus()
+        bus.leidos.test {
+            bus.leer(delAparato = "AB-12", enIngles = "AB/12")
+            assertEquals(CodigoLeido("AB-12"), awaitItem())
+        }
+    }
+
+    @Test
+    fun `D14 sin diferencia entre teclados no hay lectura en ingles`() = runTest {
+        val bus = LectorHidBus()
+        bus.leidos.test {
+            bus.rafaga("abc12")
+            bus.enter(ms = 1_100)
+            assertEquals(CodigoLeido("abc12"), awaitItem())
+        }
+    }
+
+    @Test
+    fun `D14 la lectura del aparato nunca se descarta aunque en ingles sean numeros`() = runTest {
+        // Codex r6 #4: con aparato y pistola en francés, «&&'(» es la etiqueta de verdad; en inglés sería «1145».
+        val bus = LectorHidBus()
+        bus.leidos.test {
+            bus.leer(delAparato = "&&'(", enIngles = "1145")
+            assertEquals(CodigoLeido("&&'(", lecturaUs = "1145"), awaitItem())
+        }
     }
 }

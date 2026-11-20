@@ -1057,4 +1057,87 @@ class CartViewModelWeightTest {
 
         assertEquals(7500, vm.cartState.value.totalCents)
     }
+
+    // MARK: - hz:bdd815fd:D4 · la cuenta cambió a media tarjeta: el carrito queda con el saldo del SERVIDOR, ligado a su orden
+
+    @Test
+    fun `P1 D4 tras la cuenta que cambio, el carrito de vales queda en Saldo pendiente ligado a su orden y sin soltar el apartado`() = runTest {
+        every { areaTicketRepository.session.current() } returns checkoutConVales("linea-a" to "50.00", "linea-b" to "30.00")
+        val vm = createViewModel()
+        vm.traerValesDeLaSesion()
+        // Tras el 412 la relectura ya trae la orden con su abono.
+        every { areaTicketRepository.session.current() } returns sesionConOrden(status = "PARTIALLY_PAID", pagado = "0.50")
+        val venta = vm.cartState.value.identidadDeVenta
+
+        val puesto = vm.ponerSaldoTrasCuentaCambiada("orden-vales", 7950, venta)
+        runCurrent()
+
+        assertTrue(puesto)
+        assertEquals(listOf("Saldo pendiente" to 7950), vm.cartState.value.items.map { it.name to it.unitPrice })
+        assertEquals("sigue siendo la misma venta", venta, vm.cartState.value.identidadDeVenta)
+        assertEquals("orden-vales", vm.cuentaLigada())
+        assertEquals("el siguiente cobro continúa ESA orden", "orden-vales", vm.resolvePendingSplitOrderForCharge())
+        coVerify(exactly = 0) { areaTicketRepository.cancel(any()) }
+    }
+
+    @Test
+    fun `P1 D4 la parte 2 que choco cambia su Saldo pendiente por el del servidor`() = runTest {
+        every { areaTicketRepository.session.current() } returns sesionConOrden(status = "PARTIALLY_PAID", pagado = "75.00")
+        val vm = createViewModel()
+        vm.addCustomAmount(name = "Saldo pendiente", amountCents = 7500)
+        vm.markPendingSplitOrder("orden-vales")
+        val venta = vm.cartState.value.identidadDeVenta
+
+        assertTrue(vm.ponerSaldoTrasCuentaCambiada("orden-vales", 7000, venta))
+        runCurrent()
+
+        assertEquals(listOf("Saldo pendiente" to 7000), vm.cartState.value.items.map { it.name to it.unitPrice })
+        assertEquals("orden-vales", vm.resolvePendingSplitOrderForCharge())
+        coVerify(exactly = 0) { areaTicketRepository.cancel(any()) }
+    }
+
+    @Test
+    fun `D4 la venta conserva su copia guardada para que al cobrar el saldo se retire`() = runTest {
+        // Codex D4 r2 #5: sin `carritoGuardadoId` la copia no se retiraba al cobrar y se podía restaurar y cobrar otra vez.
+        every { areaTicketRepository.session.current() } returns sesionConOrden(status = "PARTIALLY_PAID", pagado = "75.00")
+        val vm = createViewModel()
+        vm.addCustomAmount(name = "Saldo pendiente", amountCents = 7500)
+        vm.markPendingSplitOrder("orden-vales")
+        val conCopia = vm.cartState.value.copy(carritoGuardadoId = "copia-1")
+        val campo = CartViewModel::class.java.getDeclaredField("_cartState").apply { isAccessible = true }
+        @Suppress("UNCHECKED_CAST")
+        (campo.get(vm) as kotlinx.coroutines.flow.MutableStateFlow<CartState>).value = conCopia
+
+        assertTrue(vm.ponerSaldoTrasCuentaCambiada("orden-vales", 7000, conCopia.identidadDeVenta))
+
+        assertEquals("copia-1", vm.cartState.value.carritoGuardadoId)
+    }
+
+    @Test
+    fun `P1 D4 si la sesion ya se solto (otra caja la liquido) el carrito no se toca`() = runTest {
+        // Codex D4 r3 #2: la relectura llegó tarde y un latido ya soltó la sesión pagada; su saldo ya no vale.
+        val vm = createViewModel()
+        vm.addCustomAmount(name = "Saldo pendiente", amountCents = 7500)
+        vm.markPendingSplitOrder("orden-vales")
+        val antes = vm.cartState.value
+        every { areaTicketRepository.session.current() } returns null
+
+        assertFalse(vm.ponerSaldoTrasCuentaCambiada("orden-vales", 3950, antes.identidadDeVenta))
+
+        assertEquals(antes, vm.cartState.value)
+    }
+
+    @Test
+    fun `D4 si el carrito ya es otra venta o el saldo no es positivo, no se toca`() = runTest {
+        val vm = createViewModel()
+        vm.addCustomAmount(name = "Agua", amountCents = 2500)
+        val antes = vm.cartState.value
+
+        assertFalse(vm.ponerSaldoTrasCuentaCambiada("orden-vales", 7000, "otra-venta"))
+        assertFalse(vm.ponerSaldoTrasCuentaCambiada("orden-vales", 0, antes.identidadDeVenta))
+        assertFalse(vm.ponerSaldoTrasCuentaCambiada("orden-vales", 7000, null))
+
+        assertEquals(antes, vm.cartState.value)
+        assertNull(vm.cuentaLigada())
+    }
 }

@@ -79,6 +79,8 @@ import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.pos.data.model.Discount
 import com.avoqado.pos.pos.data.model.Product
 import com.avoqado.pos.pos.data.model.SelectedModifier
+import com.avoqado.pos.pos.domain.restarExtra
+import com.avoqado.pos.pos.domain.sumarExtra
 import com.avoqado.pos.pos.domain.MENSAJE_SUBIR_PRECIO
 import com.avoqado.pos.pos.domain.ajusteAGuardar
 import com.avoqado.pos.pos.domain.AccesoAlAjuste
@@ -111,6 +113,15 @@ fun ProductDetailPanel(
     onDismiss: () -> Unit,
     /** Encargo 1afe04: qué hace la fila «Ajuste de precio» (permiso / PIN del encargado; en Mesas no sale). */
     ajusteDePrecio: AccesoAlAjuste = AccesoAlAjuste.LIBRE,
+    /**
+     * Las teclas de la hoja del teléfono, que es otra ventana y no pasa por `MainActivity.dispatchKeyEvent`. El cobro pasa
+     * el lector de la pistola (`CartViewModel.procesarTecla`): sin él, un código leído con la hoja abierta se perdía en
+     * silencio (pizarrón D5, 17-nov). El default sólo protege la casilla de cantidad (Mesas lee en «Escanear»).
+     */
+    teclasDeLaHoja: (android.view.KeyEvent) -> Boolean = { evento ->
+        com.avoqado.pos.designsystem.components.CasillaDeCantidad.activa &&
+            com.avoqado.pos.pos.data.LectorHidBus.esTeclaFisicaQueEscribe(evento)
+    },
 ) {
     if (isTablet) {
         // iPad-style: side panel overlay from right
@@ -152,11 +163,8 @@ fun ProductDetailPanel(
         ) {
             com.avoqado.pos.designsystem.components.ImmersiveWindow()
             // La hoja es otra ventana: sus teclas no pasan por MainActivity. Con la casilla de cantidad activa, una tecla
-            // física (la pistola) tampoco le llega aquí (Codex r3 #2, r5 #1).
-            com.avoqado.pos.giftcards.presentation.LectorHidDeLaVentana { evento ->
-                com.avoqado.pos.designsystem.components.CasillaDeCantidad.activa &&
-                    com.avoqado.pos.pos.data.LectorHidBus.esTeclaFisicaQueEscribe(evento)
-            }
+            // física (la pistola) tampoco le llega aquí (Codex r3 #2, r5 #1); el lector de la pistola ya lo decide igual.
+            com.avoqado.pos.giftcards.presentation.LectorHidDeLaVentana(teclasDeLaHoja)
             ProductDetailContent(
                 product = product,
                 discounts = discounts,
@@ -261,6 +269,17 @@ private fun ProductDetailContent(
                                     it.groupId == group.id && it.modifierId == modifier.id
                                 }
                             }
+                        },
+                        // Grupo que deja repetir (encargo a508f4): − n + por opción. La lista guarda una entrada por vez.
+                        onSumarExtra = { modifier, group ->
+                            val nueva = sumarExtra(selectedModifiers.toList(), group, modifier)
+                            selectedModifiers.clear()
+                            selectedModifiers.addAll(nueva)
+                        },
+                        onRestarExtra = { modifier, group ->
+                            val nueva = restarExtra(selectedModifiers.toList(), group, modifier)
+                            selectedModifiers.clear()
+                            selectedModifiers.addAll(nueva)
                         },
                         onNavigate = { currentSubView = it },
                         onAddToCart = {
@@ -395,6 +414,8 @@ private fun MainDetailView(
     ajusteDePrecio: AccesoAlAjuste = AccesoAlAjuste.LIBRE,
     onQuantityChange: (Int) -> Unit,
     onModifierToggled: (com.avoqado.pos.pos.data.model.Modifier, Boolean, com.avoqado.pos.pos.data.model.ProductModifierGroup) -> Unit,
+    onSumarExtra: (com.avoqado.pos.pos.data.model.Modifier, com.avoqado.pos.pos.data.model.ProductModifierGroup) -> Unit,
+    onRestarExtra: (com.avoqado.pos.pos.data.model.Modifier, com.avoqado.pos.pos.data.model.ProductModifierGroup) -> Unit,
     onNavigate: (DetailSubView) -> Unit,
     onAddToCart: () -> Unit,
 ) {
@@ -489,6 +510,8 @@ private fun MainDetailView(
                     onModifierToggled = { modifier, isSelected ->
                         onModifierToggled(modifier, isSelected, group)
                     },
+                    onSumar = { modifier -> onSumarExtra(modifier, group) },
+                    onRestar = { modifier -> onRestarExtra(modifier, group) },
                 )
             }
 

@@ -153,6 +153,22 @@ private const val IMPORTE_RONDA_FUERA_DE_LIMITE = "El importe de esta ronda exce
 internal const val DESCUENTO_CON_APROBACION_SIN_RED_MESA =
     "Sin conexión: este descuento necesita internet para que lo apruebe un gerente. Aplícalo cuando vuelva la red."
 
+/** 7133e3: sin `discounts:apply` el manual pide el PIN del gerente y no se encola: sin red no hay PIN. */
+internal const val DESCUENTO_MANUAL_CON_PIN_SIN_RED_MESA =
+    "Sin conexión: este descuento necesita internet para que lo autorice un gerente. Aplícalo cuando vuelva la red."
+
+/** 7133e3: quedó en la cola del aparato (la mesa ya lo dio); el SERVIDOR lo aplica al volver la conexión. */
+internal const val DESCUENTO_MANUAL_GUARDADO_SIN_RED =
+    "Sin conexión: el descuento quedó guardado en el aparato y se aplica al volver la conexión."
+
+/** 7133e3: con PIN y la red cayó a media llamada: no se sabe si llegó. La cuenta se relee; antes de darlo otra vez, que se revise. */
+internal const val DESCUENTO_MANUAL_SIN_RESPUESTA =
+    "Sin conexión: no supimos si el descuento se aplicó. Revisa «Aplicados» al volver la red antes de darlo otra vez."
+
+/** 7133e3: el valor como lo guarda el SERVIDOR (2 decimales, mitad hacia arriba). */
+internal fun valorDelManual(value: Double): Double =
+    java.math.BigDecimal(value.toString()).setScale(2, java.math.RoundingMode.HALF_UP).toDouble()
+
 /** No changes to Cart formulas: reject nonrepresentable intermediates before reading its Int total. */
 internal fun valorRondaSinRedComprobado(items: List<CartItem>): Int = items.fold(0) { total, item ->
     val line = if (item.isCortesia) 0 else {
@@ -1744,6 +1760,64 @@ class TableOrderViewModel @Inject constructor(
                 onSuccess = { showMessage("Descuento aplicado"); repository.refresh(vId) },
                 onFailure = { e ->
                     if (pideAprobacion && repository.esFalloDeRed(e)) showSinRed(DESCUENTO_CON_APROBACION_SIN_RED_MESA)
+                    else showError(com.avoqado.pos.core.data.network.ServerErrorText.humanize(e, "No se pudo aplicar el descuento"))
+                },
+            )
+        }
+    }
+
+    /**
+     * Encargo 7133e3 (hz:0555ee15:D2): «Descuento manual» (% o fijo) de la cuenta de MESAS, con los candados de MOSTRADOR:
+     * `discounts:apply` (sin él, el PIN de un gerente), el motivo si el negocio lo pide (lo elige la pantalla antes), y el tope contra
+     * lo que la cuenta debe (lo aplica el SERVIDOR). Dejar la cuenta en $0 es una cortesía y pide su permiso (como la TPV).
+     *
+     * Sin red: quien no necesita PIN lo da y queda en la cola (sube solo, con la misma llave); quien lo necesita ve que hace falta
+     * internet y no se encola.
+     */
+    fun applyManualDiscount(type: String, value: Double, name: String, motivo: com.avoqado.pos.pos.domain.MotivoElegido? = null) {
+        val session = tableSession.current() ?: return
+        val vId = venueId ?: return
+        bloqueoDeSaldo(vId, session)?.let { showBlockedReason(it); return }
+        if (type != "PERCENTAGE" && type != "FIXED_AMOUNT") return
+        if (!value.isFinite()) { showError("El descuento debe ser mayor a cero"); return }
+        // Codex r3 #4: lo TECLEADO no pasa de 100 (100.004 % no se redondea a 100 %).
+        if (type == "PERCENTAGE" && value > 100) { showError("El porcentaje no puede ser mayor a 100"); return }
+        val valor = valorDelManual(value)
+        if (valor <= 0) { showError("El descuento debe ser mayor a cero"); return }
+        // Rediseño tras Codex r4 (la misma familia en r2, r3 y r4): la caja ya NO calcula si el manual deja la cuenta en $0. Eso lo decide
+        // el SERVIDOR con su importe y bajo su candado: en línea, sin permiso de cortesía contesta 403 y el `ForbiddenInterceptor` pide el
+        // PIN; sin red, un regalo sin permiso queda «por revisar» al subir (igual que una cortesía del catálogo dada sin red, D1).
+        val sinPin = com.avoqado.pos.core.domain.RoleManager(secureStorage).canApplyDiscounts
+        if (!sinPin && (!connectivityMonitor.isConnected.value || session.isProvisional)) {
+            showSinRed(DESCUENTO_MANUAL_CON_PIN_SIN_RED_MESA)
+            return
+        }
+        val nombre = name.trim()
+        // Rediseño tras Codex r5 (la familia de r2–r5 era la memoria de llaves ENTRE toques): una llave NUEVA por toque, compartida
+        // sólo entre su POST y su copia en la cola. Si el POST llegó y se perdió la respuesta, la cola sube la misma llave y el SERVIDOR
+        // no lo duplica (D21). Dos toques son dos descuentos, como en MOSTRADOR; un «no supimos» relee la cuenta para que se vea si llegó.
+        val llave = java.util.UUID.randomUUID().toString()
+        viewModelScope.launch {
+            mutarCuenta(vId, session) {
+                mutar {
+                    repository.applyManualOrderDiscount(
+                        vId,
+                        session.orderId,
+                        com.avoqado.pos.tables.data.DescuentoManualDeMesa(type, valor, nombre, llave),
+                        motivo,
+                        encolarSinRed = sinPin,
+                        provisional = session.isProvisional,
+                    )
+                }
+            }.fold(
+                onSuccess = { desenlace ->
+                    if (desenlace == com.avoqado.pos.tables.data.DesenlaceDelManual.GUARDADO_SIN_RED) showSinRed(DESCUENTO_MANUAL_GUARDADO_SIN_RED)
+                    else showMessage("Descuento aplicado")
+                    repository.refresh(vId)
+                },
+                onFailure = { e ->
+                    // Con PIN no se encola: si fue la red, no se sabe si llegó. `mutar` ya relee la cuenta: si llegó, se ve en «Aplicados».
+                    if (repository.esFalloDeRed(e)) showSinRed(DESCUENTO_MANUAL_SIN_RESPUESTA)
                     else showError(com.avoqado.pos.core.data.network.ServerErrorText.humanize(e, "No se pudo aplicar el descuento"))
                 },
             )

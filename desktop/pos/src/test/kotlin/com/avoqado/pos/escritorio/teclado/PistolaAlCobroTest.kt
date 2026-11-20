@@ -31,7 +31,7 @@ class PistolaAlCobroTest {
         val carrito = Escritorio.crearViewModel(CartViewModel::class.java, SavedStateHandle())
         val bus = Escritorio.inyector.getInstance(LectorHidBus::class.java)
 
-        val recibido = async(start = CoroutineStart.UNDISPATCHED) { withTimeout(5_000) { carrito.codigosEscaneados.first() } }
+        val recibido = async(start = CoroutineStart.UNDISPATCHED) { withTimeout(5_000) { carrito.codigosEscaneados.first().texto } }
         emisorDelBus(bus)("9040586673")
 
         assertEquals("9040586673", recibido.await())
