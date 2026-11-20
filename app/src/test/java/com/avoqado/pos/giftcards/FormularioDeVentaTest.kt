@@ -42,7 +42,8 @@ class FormularioDeVentaTest {
         assertTrue(cuerpo.contains("500.00"))
         assertEquals("+525512345678", telefonoMx("5512345678"))
         assertEquals("+525512345678", telefonoMx("55-12345678"))
-        for (bad in listOf("551234567", "55123456789", "５512345678")) assertNull(telefonoMx(bad))
+        assertEquals("+525512345678", telefonoMx("５512345678"))   // ancho completo: se convierte (Codex r3)
+        for (bad in listOf("551234567", "55123456789", "1512345678")) assertNull(telefonoMx(bad))
     }
     @Test fun `P1 Flautas el celular con +52 pasa y viaja con 10 digitos`() {
         val f = FormularioDeVenta(listOf(sobre.copy(canal = "WHATSAPP", telefonoDigitos = "+52 5591873922")), "Eugenio")

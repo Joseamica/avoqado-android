@@ -39,7 +39,6 @@ class TelefonoTest {
             "55918739221",        // 11 dígitos que no empiezan con 52
             "+1 202 555 0123",    // otra lada: la tarjeta sólo entrega a México
             "55 9187 39a2",       // una letra
-            "５５91873922",       // dígitos de ancho completo
             "52559187392",        // 52 + 9 dígitos
             "+52 55 9187 39221",  // 52 + 11 dígitos
         )
@@ -69,7 +68,7 @@ class TelefonoTest {
         var escrito = ""
         var digitos = ""
         for (tecla in texto) {
-            escrito = filtrarTecleoDeTelefono(textoVisibleDelCampo(escrito, digitos, lada) + tecla)
+            escrito = filtrarTecleoDelCampoConBandera(textoVisibleDelCampo(escrito, digitos, lada) + tecla)
             digitos = digitosNacionales(escrito, lada)
         }
         return digitos
@@ -88,7 +87,7 @@ class TelefonoTest {
             Triple("612 345 678", "34", "612345678"),
         )) {
             assertEquals("tecleado «$texto»", esperado, teclear(texto, lada))
-            assertEquals("pegado «$texto»", esperado, digitosNacionales(filtrarTecleoDeTelefono(texto), lada))
+            assertEquals("pegado «$texto»", esperado, digitosNacionales(filtrarTecleoDelCampoConBandera(texto), lada))
         }
     }
 
@@ -109,7 +108,39 @@ class TelefonoTest {
         assertEquals("55 9187 3922", filtrarTecleoDeTelefono("55 9187 \u202E3922\u202C"))
         val largo = "\u202A+52  1  (55)  9187 - 3922\u202C"
         assertEquals("+525591873922", telefonoMx(filtrarTecleoDeTelefono(largo)))
-        assertEquals("+52 55 9187 3922", filtrarTecleoDeTelefono("+52 55 9187 3922abc"))
+        // Una letra: en las tarjetas se queda a la vista y no pasa; en el campo con bandera no se deja escribir.
+        assertEquals("+52 55 9187 3922abc", filtrarTecleoDeTelefono("+52 55 9187 3922abc"))
+        assertNull(telefonoMx(filtrarTecleoDeTelefono("+52 55 9187 3922abc")))
+        assertEquals("+52 55 9187 3922", filtrarTecleoDelCampoConBandera("+52 55 9187 3922abc"))
+    }
+
+    @Test fun `P1 Codex r3 nada que cambie el numero se borra ni se corta en silencio`() {
+        // Ancho completo: se convierte, no se borra.
+        assertNull(telefonoMx(filtrarTecleoDeTelefono("＋53 5 123 4567")))                 // antes: «+525351234567»
+        assertEquals("+525591873922", telefonoMx(filtrarTecleoDeTelefono("55９1873922")))
+        assertEquals("+525591873922", telefonoMx("５５９１８７３９２２"))
+        assertEquals("5591873922", digitosNacionales(filtrarTecleoDelCampoConBandera("55９1873922")))
+        // Sin tope: ni se pierde el último dígito ni se esconde el que sobra.
+        val espacios = " ".repeat(31)
+        assertEquals("+525591873922", telefonoMx(filtrarTecleoDeTelefono(espacios + "5591873922")))
+        assertEquals("5591873922", digitosNacionales(filtrarTecleoDelCampoConBandera(espacios + "5591873922")))
+        assertNull(telefonoMx(filtrarTecleoDeTelefono("5591873922" + " ".repeat(30) + "1")))
+    }
+
+    @Test fun `P1 Codex r3 ningun celular de Mexico empieza con 0 o 1`() {
+        assertNull(telefonoMx("+52 1 (55) 9187-392"))   // «+52 1» con un dígito de menos: antes «+521559187392»
+        assertNull(telefonoMx("1559187392"))
+        assertNull(telefonoMx("0559187392"))
+    }
+
+    @Test fun `P1 Codex r3 al cambiar de pais los digitos se sacan otra vez de lo escrito`() {
+        // Lo que hace AvoqadoPhoneInput al elegir otra bandera: con EE. UU. «15123456789» da «5123456789»; con Alemania,
+        // de lo escrito sale «15123456789» (antes se quedaba «5123456789» y se mandaba «+495123456789»).
+        val escrito = "15123456789"
+        assertEquals("5123456789", digitosNacionales(escrito, "1"))
+        val visible = textoVisibleDelCampo(escrito, digitosNacionales(escrito, "1"), "1")
+        assertEquals("15123456789", digitosNacionales(visible, "49"))
+        assertEquals("612345678", digitosNacionales("+34 612 345 678", "34"))
     }
 
     @Test fun `P1 un numero de 10 digitos que empieza con 52 no pierde su principio`() {

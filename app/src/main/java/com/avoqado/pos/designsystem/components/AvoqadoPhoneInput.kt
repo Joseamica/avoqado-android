@@ -39,7 +39,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.core.util.digitosNacionales
-import com.avoqado.pos.core.util.filtrarTecleoDeTelefono
+import com.avoqado.pos.core.util.filtrarTecleoDelCampoConBandera
 import com.avoqado.pos.core.util.textoVisibleDelCampo
 
 /**
@@ -145,7 +145,7 @@ fun AvoqadoPhoneInput(
                     // igual pegado que tecleado. Regla en core/util/Telefono.kt.
                     value = textoVisibleDelCampo(escrito, digits, country.dialCode),
                     onValueChange = { nuevo ->
-                        escrito = filtrarTecleoDeTelefono(nuevo)
+                        escrito = filtrarTecleoDelCampoConBandera(nuevo)
                         onDigitsChange(digitosNacionales(escrito, country.dialCode))
                     },
                     singleLine = true,
@@ -165,7 +165,12 @@ fun AvoqadoPhoneInput(
         CountryPickerSheet(
             selected = country,
             onSelect = {
+                // Con lo escrito se vuelven a sacar los dígitos con la lada nueva: con EE. UU. «15123456789» quedaba en
+                // «5123456789» y al pasar a Alemania se mandaba «+495123456789» (Codex r3).
+                val visible = textoVisibleDelCampo(escrito, digits, country.dialCode)
+                escrito = visible
                 onCountryChange(it)
+                onDigitsChange(digitosNacionales(visible, it.dialCode))
                 showPicker = false
             },
             onDismiss = { showPicker = false },
