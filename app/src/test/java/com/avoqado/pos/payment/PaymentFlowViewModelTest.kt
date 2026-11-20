@@ -668,7 +668,8 @@ class PaymentFlowViewModelTest {
         assertEquals("Quedó un cobro sin confirmar de esta venta. ${CardChargeDecision.UNDETERMINED_MESSAGE}", state.message)
         // Y nadie cobró nada por el camino.
         coVerify(exactly = 0) {
-            terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any())
+            terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any(),
+                expectedBalanceBeforeCents = any(), expectedRemainingCents = any())
         }
     }
 
@@ -4655,7 +4656,7 @@ class PaymentFlowViewModelTest {
         assertNull("nada de A cierra el cobro de B", viewModel.previousChargeResolved.value)
         assertFalse(viewModel.debeSalir.value)
         assertTrue("B sigue en su selector: ${viewModel.state.value}", viewModel.state.value is PaymentFlowState.SelectingTerminal)
-        coVerify(exactly = 0) { terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) { terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any(), expectedBalanceBeforeCents = any(), expectedRemainingCents = any()) }
         coVerify(exactly = 0) { orderRepository.createOrder(any(), any(), any(), any(), any(), capturedVenueId = any()) }
     }
 
@@ -5093,7 +5094,7 @@ class PaymentFlowViewModelTest {
 
         assertFalse("un cobro que este flujo no mandó jamás da por pagada esta venta", viewModel.state.value is PaymentFlowState.Success)
         assertEquals("El cobro anterior sí se había realizado", viewModel.previousChargeResolved.value)
-        coVerify(exactly = 0) { terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) { terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any(), expectedBalanceBeforeCents = any(), expectedRemainingCents = any()) }
     }
 
     @Test
@@ -5117,7 +5118,7 @@ class PaymentFlowViewModelTest {
 
         assertFalse("la parte 2 no queda pagada con el cobro de la 1", viewModel.state.value is PaymentFlowState.Success)
         assertEquals("El cobro anterior sí se había realizado", viewModel.previousChargeResolved.value)
-        coVerify(exactly = 0) { terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) { terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any(), expectedBalanceBeforeCents = any(), expectedRemainingCents = any()) }
     }
 
     @Test
@@ -5198,7 +5199,7 @@ class PaymentFlowViewModelTest {
 
         assertFalse("jamás dar por pagada esta parte con el cobro de otra", viewModel.state.value is PaymentFlowState.Success)
         assertEquals("El cobro anterior sí se había realizado", viewModel.previousChargeResolved.value)
-        coVerify(exactly = 0) { terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) { terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any(), expectedBalanceBeforeCents = any(), expectedRemainingCents = any()) }
     }
 
     @Test
@@ -5288,7 +5289,7 @@ class PaymentFlowViewModelTest {
 
         assertFalse("B no queda pagada sin pasar su tarjeta", viewModel.state.value is PaymentFlowState.Success)
         assertEquals("El cobro anterior sí se había realizado", viewModel.previousChargeResolved.value)
-        coVerify(exactly = 0) { terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) { terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any(), expectedBalanceBeforeCents = any(), expectedRemainingCents = any()) }
     }
 
     @Test
@@ -5674,7 +5675,7 @@ class PaymentFlowViewModelTest {
         assertTrue(espera.fromPreviousSale)
         assertTrue(espera.message, espera.message.startsWith("Quedó un cobro sin confirmar de esta venta."))
         assertEquals("el total incluye la propina", 5_750, espera.totalAmount)
-        coVerify(exactly = 0) { terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) { terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any(), expectedBalanceBeforeCents = any(), expectedRemainingCents = any()) }
     }
 
     @Test
@@ -6047,7 +6048,7 @@ class PaymentFlowViewModelTest {
         estado as PaymentFlowState.Error
         assertEquals(PaymentFlowViewModel.TARJETA_SIN_RED, estado.message)
         assertEquals(PaymentErrorSource.NETWORK, estado.source)
-        coVerify(exactly = 0) { terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) { terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any(), expectedBalanceBeforeCents = any(), expectedRemainingCents = any()) }
     }
 
     // MARK: - Dividir por producto, fase 1 (27-oct): combo completo (D4), saldo real (D7), pantalla de la parte (D8)
@@ -6585,7 +6586,7 @@ class PaymentFlowViewModelTest {
         advanceUntilIdle()
 
         assertEquals(antes, viewModel.state.value)
-        coVerify(exactly = 0) { terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) { terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any(), any(), any(), expectedBalanceBeforeCents = any(), expectedRemainingCents = any()) }
         coVerify(exactly = 0) { orderRepository.createOrder(any(), any(), any(), any(), any(), capturedVenueId = any()) }
     }
 

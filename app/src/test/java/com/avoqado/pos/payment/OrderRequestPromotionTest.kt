@@ -314,7 +314,7 @@ class OrderRequestPromotionTest {
             orderRepository.createOrder(capture(cobrarSlot), any(), any(), any(), any(), capturedVenueId = any())
         } returns Result.success(CreateOrderResponse(success = true, data = OrderData(id = "order-1")))
         coEvery {
-            terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any())
+            terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any(), expectedRemainingCents = any())
         } returns TerminalPaymentResult.Error("Terminal timeout")
 
         paymentViewModel.startPaymentFlow(cart)
@@ -380,7 +380,7 @@ class OrderRequestPromotionTest {
             ),
         )
         coEvery {
-            terminalPaymentService.sendPaymentToTerminal(any(), capture(amountSlot), any(), any(), any(), any())
+            terminalPaymentService.sendPaymentToTerminal(any(), capture(amountSlot), any(), any(), any(), any(), expectedRemainingCents = any())
         } returns TerminalPaymentResult.Error("Terminal timeout")
 
         val carrito = lineasDelCombo().mapIndexed { index, item ->
@@ -403,7 +403,7 @@ class OrderRequestPromotionTest {
             CreateOrderResponse(success = true, data = OrderData(id = "order-1", total = 120.0)),
         )
         coEvery {
-            terminalPaymentService.sendPaymentToTerminal(any(), capture(amountSlot), any(), any(), any(), any())
+            terminalPaymentService.sendPaymentToTerminal(any(), capture(amountSlot), any(), any(), any(), any(), expectedRemainingCents = any())
         } returns TerminalPaymentResult.Error("Terminal timeout")
 
         paymentViewModel.startPaymentFlow(CartState(items = listOf(lineaNormal)))
@@ -427,7 +427,7 @@ class OrderRequestPromotionTest {
             CreateOrderResponse(success = true, data = OrderData(id = "order-1", total = 139.0)),
         )
         coEvery {
-            terminalPaymentService.sendPaymentToTerminal(any(), capture(amountSlot), any(), any(), any(), any())
+            terminalPaymentService.sendPaymentToTerminal(any(), capture(amountSlot), any(), any(), any(), any(), expectedRemainingCents = any())
         } returns TerminalPaymentResult.Error("Terminal timeout")
 
         val cart = CartState(items = lineasDelCombo() + lineaNormal)

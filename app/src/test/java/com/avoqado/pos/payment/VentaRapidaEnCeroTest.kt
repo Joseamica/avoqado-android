@@ -72,7 +72,7 @@ class VentaRapidaEnCeroTest {
         paymentViewModel.selectPaymentMethod(PaymentMethod.CARD)
         advanceUntilIdle()
         assertEquals("la tarjeta no aplica con \$0", PaymentFlowState.SelectingPaymentMethod(0), paymentViewModel.state.value)
-        coVerify(exactly = 0) { terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) { terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any(), expectedBalanceBeforeCents = any(), expectedRemainingCents = any()) }
         assertEquals("Venta en \$0: no hay nada que cobrar con tarjeta.", PaymentFlowViewModel.TEXTO_VENTA_EN_CERO)
     }
 

@@ -876,7 +876,7 @@ class PaymentFlowConSaldoTest {
             withContext(Dispatchers.Default) { delay(250) }; runCurrent()
             assertEquals(0, reservas)
             assertEquals(3, server.requestCount)
-            coVerify(exactly = 0) { terminal.sendPaymentToTerminal(any(), any(), any(), any(), any(), any(), any()) }
+            coVerify(exactly = 0) { terminal.sendPaymentToTerminal(any(), any(), any(), any(), any(), any(), any(), expectedBalanceBeforeCents = any(), expectedRemainingCents = any()) }
             assertTrue(store.delNegocio("a").single { it.llave == llave }.porRecuperar)
         } finally { cerrarR21(carrito) }
     }
@@ -901,7 +901,7 @@ class PaymentFlowConSaldoTest {
             }
             runCurrent()
             assertEquals(0, reservas); assertEquals(3, server.requestCount)
-            coVerify(exactly = 0) { terminal.sendPaymentToTerminal(any(), any(), any(), any(), any(), any(), any()) }
+            coVerify(exactly = 0) { terminal.sendPaymentToTerminal(any(), any(), any(), any(), any(), any(), any(), expectedBalanceBeforeCents = any(), expectedRemainingCents = any()) }
             uno.startPaymentFlow(carrito.cartState.value, apertura = "r21-uno")
             assertTrue(uno.esElCobroEnCurso("r21-uno")); assertFalse(dos.esElCobroEnCurso("r21-dos"))
             assertEquals(10000, uno.buildPaymentContext().totalCents)

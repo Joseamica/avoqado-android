@@ -121,7 +121,7 @@ class PrecioQueVioElClienteCobroTest {
 
     private fun montoEnLaTerminal(): MutableList<Int> {
         val montos = mutableListOf<Int>()
-        coEvery { terminalPaymentService.sendPaymentToTerminal(any(), capture(montos), any(), any(), any(), any()) } returns
+        coEvery { terminalPaymentService.sendPaymentToTerminal(any(), capture(montos), any(), any(), any(), any(), expectedRemainingCents = any()) } returns
             TerminalPaymentResult.Error("Terminal timeout")
         return montos
     }

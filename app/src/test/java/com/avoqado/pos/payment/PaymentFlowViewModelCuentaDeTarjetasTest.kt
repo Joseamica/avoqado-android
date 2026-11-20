@@ -163,7 +163,7 @@ class PaymentFlowViewModelCuentaDeTarjetasTest {
             m.selectTerminalAndPay("terminal")
             runCurrent()
             sinRed(m)
-            coVerify(exactly = 0) { terminal.sendPaymentToTerminal(any(), any(), any(), any(), any(), any(), any(), any()) }
+            coVerify(exactly = 0) { terminal.sendPaymentToTerminal(any(), any(), any(), any(), any(), any(), any(), any(), expectedBalanceBeforeCents = any(), expectedRemainingCents = any()) }
         } finally { almacen.clear() }
     }
 

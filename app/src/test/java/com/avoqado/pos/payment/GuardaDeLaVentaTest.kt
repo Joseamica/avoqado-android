@@ -319,7 +319,7 @@ class GuardaDeLaVentaTest {
         assertEquals("y SU número", "17", intencion.captured.orderNumber)
         verify { cancelacionDeCobro.procesarAhora(intencion.captured.id) }
         assertEquals("B no se toca", deB, vm.state.value)
-        coVerify(exactly = 0) { terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) { terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any(), any(), expectedBalanceBeforeCents = any(), expectedRemainingCents = any()) }
     }
 
     @Test

@@ -302,7 +302,7 @@ class PaymentFlowCancelacionDurableTest {
         orden.complete(Result.success(CreateOrderResponse(success = true, data = OrderData(id = "order-1"))))
         advanceUntilIdle()
 
-        coVerify(exactly = 0) { terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) { terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any(), any(), expectedBalanceBeforeCents = any(), expectedRemainingCents = any()) }
         assertEquals(listOf("DELETE:order-1"), transporte.llamadas)
         assertTrue(viewModel.debeSalir.value)
     }

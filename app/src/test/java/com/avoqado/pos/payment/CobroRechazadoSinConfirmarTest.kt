@@ -772,7 +772,7 @@ class CobroRechazadoSinConfirmarTest {
         compuerta.complete(Unit)
         advanceUntilIdle()
 
-        coVerify(exactly = 0) { terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) { terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any(), any(), expectedBalanceBeforeCents = any(), expectedRemainingCents = any()) }
         assertEquals("el cobro de la venta 1 no se reanuda sobre la venta 2", antes, vm.state.value)
     }
 
@@ -927,7 +927,7 @@ class CobroRechazadoSinConfirmarTest {
         vm.selectTerminalAndPay("t1")
         advanceUntilIdle()
 
-        coVerify(exactly = 0) { terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) { terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any(), any(), expectedBalanceBeforeCents = any(), expectedRemainingCents = any()) }
         assertEquals(CancelacionDeCobro.NO_SE_PUDO_CANCELAR_EL_COBRO, vm.cancelFailure.value)
         assertEquals(listOf(llave), enVuelo())
         assertTrue("sigue del flujo", caja.cobrosSinConfirmar().isEmpty())
@@ -964,7 +964,7 @@ class CobroRechazadoSinConfirmarTest {
         vm.selectTerminalAndPay("t1")
         advanceUntilIdle()
 
-        coVerify(exactly = 0) { terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) { terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any(), any(), expectedBalanceBeforeCents = any(), expectedRemainingCents = any()) }
         assertTrue((vm.state.value as PaymentFlowState.Processing).efectivoEnVuelo)
         pago.complete(pagado())
         advanceUntilIdle()

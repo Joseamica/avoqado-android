@@ -103,7 +103,7 @@ class PremioDeCartillaCobroTest {
         } returns respuesta(StampRewardOnOrder(applied = true, discountAmount = 30.0, rewardLabel = "\$30 de premio"))
         val monto = slot<Int>()
         coEvery {
-            terminalPaymentService.sendPaymentToTerminal(any(), capture(monto), any(), any(), any(), any())
+            terminalPaymentService.sendPaymentToTerminal(any(), capture(monto), any(), any(), any(), any(), expectedRemainingCents = any())
         } returns TerminalPaymentResult.Error("Terminal timeout")
 
         paymentViewModel.startPaymentFlow(carritoConPremio)
@@ -146,7 +146,7 @@ class PremioDeCartillaCobroTest {
         } returns respuesta(StampRewardOnOrder(applied = true, discountAmount = 25.0))
         val monto = slot<Int>()
         coEvery {
-            terminalPaymentService.sendPaymentToTerminal(any(), capture(monto), any(), any(), any(), any())
+            terminalPaymentService.sendPaymentToTerminal(any(), capture(monto), any(), any(), any(), any(), expectedRemainingCents = any())
         } returns TerminalPaymentResult.Error("Terminal timeout")
 
         paymentViewModel.startPaymentFlow(carritoConPremio)
@@ -164,7 +164,7 @@ class PremioDeCartillaCobroTest {
         } returns respuesta(StampRewardOnOrder(applied = false, reason = "Este premio ya fue canjeado."))
         val monto = slot<Int>()
         coEvery {
-            terminalPaymentService.sendPaymentToTerminal(any(), capture(monto), any(), any(), any(), any())
+            terminalPaymentService.sendPaymentToTerminal(any(), capture(monto), any(), any(), any(), any(), expectedRemainingCents = any())
         } returns TerminalPaymentResult.Error("Terminal timeout")
 
         paymentViewModel.startPaymentFlow(carritoConPremio)
@@ -275,7 +275,7 @@ class PremioDeCartillaCobroTest {
         paymentViewModel.selectTerminalAndPay("t1")
         advanceUntilIdle()
 
-        io.mockk.coVerify(exactly = 0) { terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any()) }
+        io.mockk.coVerify(exactly = 0) { terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any(), expectedRemainingCents = any()) }
         assertEquals("la cuenta en $0 se cierra con un registro de $0", 0, cobrado.captured)
         assertTrue(paymentViewModel.state.value is PaymentFlowState.Success)
     }
@@ -334,7 +334,7 @@ class PremioDeCartillaCobroTest {
         } returns respuesta(StampRewardOnOrder(applied = true, discountAmount = 30.0))
         val monto = slot<Int>()
         coEvery {
-            terminalPaymentService.sendPaymentToTerminal(any(), capture(monto), any(), any(), any(), any())
+            terminalPaymentService.sendPaymentToTerminal(any(), capture(monto), any(), any(), any(), any(), expectedRemainingCents = any())
         } returns TerminalPaymentResult.Error("Terminal timeout")
 
         paymentViewModel.setSplitConfig(type = "CUSTOMAMOUNT", customAmountCents = 5000)
@@ -352,7 +352,7 @@ class PremioDeCartillaCobroTest {
             orderRepository.createOrder(any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any())
         } returns respuesta(StampRewardOnOrder(applied = true, discountAmount = 25.0))
         coEvery {
-            terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any())
+            terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any(), expectedRemainingCents = any())
         } returns TerminalPaymentResult.Error("Terminal timeout")
 
         paymentViewModel.startPaymentFlow(carritoConPremio)
@@ -380,7 +380,7 @@ class PremioDeCartillaCobroTest {
         } returns Result.success(CreateOrderResponse(success = true, data = OrderData(id = "order-1", total = 1.0)))
         val monto = slot<Int>()
         coEvery {
-            terminalPaymentService.sendPaymentToTerminal(any(), capture(monto), any(), any(), any(), any())
+            terminalPaymentService.sendPaymentToTerminal(any(), capture(monto), any(), any(), any(), any(), expectedRemainingCents = any())
         } returns TerminalPaymentResult.Error("Terminal timeout")
 
         paymentViewModel.startPaymentFlow(CartState(items = listOf(cafe)))
@@ -519,7 +519,7 @@ class PremioDeCartillaCobroTest {
         } returns ordenConTotal(90.0)
         val monto = slot<Int>()
         coEvery {
-            terminalPaymentService.sendPaymentToTerminal(any(), capture(monto), any(), any(), any(), any())
+            terminalPaymentService.sendPaymentToTerminal(any(), capture(monto), any(), any(), any(), any(), expectedRemainingCents = any())
         } returns TerminalPaymentResult.Error("Terminal timeout")
 
         paymentViewModel.startPaymentFlow(carritoConCupon)
@@ -539,7 +539,7 @@ class PremioDeCartillaCobroTest {
         } returns ordenConTotal(80.0)
         val monto = slot<Int>()
         coEvery {
-            terminalPaymentService.sendPaymentToTerminal(any(), capture(monto), any(), any(), any(), any())
+            terminalPaymentService.sendPaymentToTerminal(any(), capture(monto), any(), any(), any(), any(), expectedRemainingCents = any())
         } returns TerminalPaymentResult.Error("Terminal timeout")
 
         paymentViewModel.startPaymentFlow(carritoConCupon)
