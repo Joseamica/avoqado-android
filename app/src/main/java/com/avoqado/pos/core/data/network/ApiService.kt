@@ -491,6 +491,16 @@ interface ApiService {
         @Body request: com.avoqado.pos.tables.data.CompItemRequest,
     ): com.avoqado.pos.tables.data.SimpleSuccessResponse
 
+    // «Anular producto» (TABLE_SERVICE, Flautas 20-nov) — quita UN renglón ya enviado; motivo obligatorio. Sin `orders:void`, el
+    // 403 `overridable` abre el PIN de gerente (ForbiddenInterceptor), igual que la cortesía.
+    @POST("mobile/venues/{venueId}/orders/{orderId}/items/{itemId}/void")
+    suspend fun voidOrderItem(
+        @Path("venueId") venueId: String,
+        @Path("orderId") orderId: String,
+        @Path("itemId") itemId: String,
+        @Body request: com.avoqado.pos.tables.data.VoidItemRequest,
+    ): com.avoqado.pos.tables.data.VoidItemResponse
+
     // "Anular cuenta" (TABLE_SERVICE) — cancels the open order with a required
     // reason; the server releases the bound table (Square's void-check flow).
     @retrofit2.http.HTTP(method = "DELETE", path = "mobile/venues/{venueId}/orders/{orderId}", hasBody = true)
