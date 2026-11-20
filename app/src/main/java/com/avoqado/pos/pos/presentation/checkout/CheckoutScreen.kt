@@ -2858,7 +2858,7 @@ private fun IPhoneCartSheet(
 // MARK: - Cart Item Detail Panel (matching iOS: side panel on tablet, sheet on phone)
 
 @Composable
-private fun CartItemDetailPanel(
+internal fun CartItemDetailPanel(
     item: CartItem,
     isTablet: Boolean,
     onUpdateQuantity: (Int) -> Unit,
