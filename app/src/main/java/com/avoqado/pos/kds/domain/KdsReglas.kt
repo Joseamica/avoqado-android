@@ -172,7 +172,8 @@ data class AvisoDeCocina(val texto: String, val esError: Boolean)
 
 enum class AccionDeCocina(val sinRed: String, val generico: String) {
     LISTO("Sin conexión: la comanda sigue pendiente. Márcala cuando vuelva la red.", "No se pudo marcar la comanda como lista."),
-    DESHACER("Sin conexión: la comanda no regresó. Inténtalo cuando vuelva la red.", "No se pudo regresar la comanda."),
+    // D17 (Codex r18 #6): sin respuesta no se sabe si el servidor alcanzó a regresarla; no se afirma que no.
+    DESHACER("Sin conexión: no se pudo confirmar si la comanda regresó. Revisa el tablero cuando vuelva la red.", "No se pudo regresar la comanda."),
     MARCAR_TODAS("Sin conexión: las comandas siguen pendientes. Inténtalo cuando vuelva la red.", "No se pudieron marcar las comandas."),
     RECIENTES("Sin conexión: no se pueden ver las recientes. Inténtalo cuando vuelva la red.", "No se pudieron cargar las recientes."),
     PANTALLA("Sin conexión: la pantalla no cambió. Inténtalo cuando vuelva la red.", "No se pudo cambiar la pantalla."),

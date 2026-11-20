@@ -331,14 +331,23 @@ fun KDSScreen(
     }
 
     // MARK: - Recientes
+    // D17 (Codex r18 #3): si la estación cambia o la pantalla deja de estar prendida con la hoja abierta, la hoja se cierra (sus
+    // botones eran de otra estación o de una pantalla que ya no está).
+    val estacionDeLaHoja = (vista as? VistaDeCocina.Tablero)?.estacion?.id
+    LaunchedEffect(estacionDeLaHoja) {
+        if (showRecientes) {
+            showRecientes = false
+            viewModel.cerrarRecientes()
+        }
+    }
     if (showRecientes) {
         RecientesSheet(
             recientes = recientes,
             noLeidas = recientesNoLeidas,
-            aviso = avisoDeRecientes,
+            avisos = avisoDeRecientes,
             leyendo = recientesLeyendo,
             onDeshacer = viewModel::deshacer,
-            onDismiss = { showRecientes = false },
+            onDismiss = { showRecientes = false; viewModel.cerrarRecientes() },
         )
     }
 
@@ -761,7 +770,7 @@ private fun TableroDeCocina(
 private fun RecientesSheet(
     recientes: List<KDSOrder>,
     noLeidas: AvisoDeCocina?,
-    aviso: AvisoDeDeshacer? = null,
+    avisos: Map<String, AvisoDeCocina> = emptyMap(),
     leyendo: Boolean = false,
     onDeshacer: (String) -> Unit,
     onDismiss: () -> Unit,
@@ -834,13 +843,15 @@ private fun RecientesSheet(
                             Text(TextosDeCocina.DESHACER)
                         }
                     }
-                    if (aviso != null && aviso.comandaId == orden.id) {
+                    val aviso = avisos[orden.id]
+                    if (aviso != null) {
                         // D17 (Codex r14, r15 y r16): por qué no se pudo «Deshacer» ESTA comanda, justo debajo de su botón, y la hoja
                         // se desliza lo necesario para que se vea aunque el botón estuviera al ras del borde.
                         val aLaVista = remember { BringIntoViewRequester() }
                         LaunchedEffect(aviso) {
                             // Codex r17 #1: si la persona está arrastrando la hoja, el deslizamiento se cancela; se reintenta al soltar.
-                            repeat(3) {
+                            // Sin tope (Codex r18 #1): se reintenta cada vez que suelta, hasta que se vea o cambie el aviso.
+                            while (true) {
                                 snapshotFlow { desplazamiento.isScrollInProgress }.first { !it }
                                 try {
                                     aLaVista.bringIntoView()
@@ -851,9 +862,9 @@ private fun RecientesSheet(
                             }
                         }
                         Text(
-                            text = aviso.aviso.texto,
+                            text = aviso.texto,
                             style = MaterialTheme.typography.bodyMedium,
-                            color = if (aviso.aviso.esError) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                            color = if (aviso.esError) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier
                                 .padding(bottom = AvoqadoTheme.spacing.sm)
                                 .bringIntoViewRequester(aLaVista)

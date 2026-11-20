@@ -378,10 +378,9 @@ class KDSViewModelTest {
         val vm = armar()
         vm.abrirRecientes()
         vm.deshacer("k9")
-        assertEquals("Ya no queda nada listo en esta comanda: se entregó o se canceló.", vm.avisoDeRecientes.value?.aviso?.texto)
-        assertEquals("k9", vm.avisoDeRecientes.value?.comandaId) // debajo de ESA comanda
+        assertEquals("Ya no queda nada listo en esta comanda: se entregó o se canceló.", vm.avisoDeRecientes.value["k9"]?.texto)
         vm.abrirRecientes()
-        assertNull(vm.avisoDeRecientes.value) // al volver a abrir, sin el aviso viejo
+        assertTrue(vm.avisoDeRecientes.value.isEmpty()) // al volver a abrir, sin el aviso viejo
     }
 
     @Test
@@ -463,6 +462,28 @@ class KDSViewModelTest {
     }
 
     @Test
+    fun `D17 cerrar la hoja descarta su lectura tardia y cada comanda guarda su porque`() = runTest {
+        val a1 = comanda("k1", 500).copy(preparationVersion = 1, completedAt = 1_700_000_000_001)
+        val b1 = comanda("k2", 500).copy(preparationVersion = 1, completedAt = 1_700_000_000_002)
+        val lectura = kotlinx.coroutines.CompletableDeferred<Result<List<KDSOrder>>>()
+        coEvery { repo.fetchRecientes("st-barra") } returns Result.success(listOf(a1, b1)) coAndThen { lectura.await() }
+        coEvery { repo.recall("k1", any()) } returns Result.failure(KdsHttpException(409, "KDS_RECALL_STALE", "Otra pantalla ya la cambió."))
+        coEvery { repo.recall("k2", any()) } returns Result.failure(KdsHttpException(409, "KDS_RECALL_EXPIRED", "Pasó más de una hora."))
+        val vm = armar()
+        vm.abrirRecientes()
+        vm.deshacer("k1")
+        vm.deshacer("k2")
+        assertEquals("Otra pantalla ya la cambió.", vm.avisoDeRecientes.value["k1"]?.texto)
+        assertEquals("Pasó más de una hora.", vm.avisoDeRecientes.value["k2"]?.texto)
+        vm.abrirRecientes() // se queda leyendo
+        vm.cerrarRecientes()
+        lectura.complete(Result.failure(java.io.IOException("se cayó")))
+        advanceUntilIdle()
+        assertNull(vm.recientesNoLeidas.value)
+        assertFalse(vm.recientesLeyendo.value)
+    }
+
+    @Test
     fun `D17 la respuesta de un Deshacer de una hoja ya cerrada no se pinta en la hoja nueva`() = runTest {
         val conTiempos = comanda("k9", 500).copy(preparationVersion = 1, completedAt = 1_700_000_000_123)
         coEvery { repo.fetchRecientes("st-barra") } returns Result.success(listOf(conTiempos))
@@ -474,7 +495,7 @@ class KDSViewModelTest {
         vm.abrirRecientes() // la cerró y la volvió a abrir mientras el SERVIDOR contestaba
         respuesta.complete(Result.failure(KdsHttpException(409, "KDS_RECALL_NOTHING_READY", "Ya no queda nada listo en esta comanda.")))
         advanceUntilIdle()
-        assertNull(vm.avisoDeRecientes.value)
+        assertTrue(vm.avisoDeRecientes.value.isEmpty())
     }
 
     @Test

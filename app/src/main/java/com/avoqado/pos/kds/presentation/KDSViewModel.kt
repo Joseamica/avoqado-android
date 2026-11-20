@@ -136,12 +136,18 @@ class KDSViewModel @Inject constructor(
      * la hoja o arriba de la lista no se ve). Sólo la respuesta de un toque de la hoja abierta ahora: una que llega después de
      * cerrarla y volver a abrir no se pinta como si acabara de pasar (`hojaDeRecientes`).
      */
-    private val _avisoDeRecientes = MutableStateFlow<AvisoDeDeshacer?>(null)
-    val avisoDeRecientes: StateFlow<AvisoDeDeshacer?> = _avisoDeRecientes.asStateFlow()
+    private val _avisoDeRecientes = MutableStateFlow<Map<String, AvisoDeCocina>>(emptyMap())
+    val avisoDeRecientes: StateFlow<Map<String, AvisoDeCocina>> = _avisoDeRecientes.asStateFlow()
     private var hojaDeRecientes = 0
 
-    /** Cuántos «Deshacer» confirmó el SERVIDOR (una lectura que empezó antes de uno nuevo se vuelve a pedir). */
-    private var deshechas = 0
+    /** Reloj de eventos de la hoja: cada lectura y cada «Deshacer» confirmado toman su número (qué pasó antes que qué). */
+    private var turno = 0L
+
+    /**
+     * Los «Deshacer» que el SERVIDOR ya confirmó: id → (turno, hora de terminada que se vio; `null` en la de un solo Listo). Una
+     * lectura que empezó ANTES de esa confirmación no vuelve a poner esa fila (Codex r18 #2: sin reintentos ni tope).
+     */
+    private val deshechas = mutableMapOf<String, Pair<Long, Long?>>()
 
     /** D17: la hoja de «Recientes» se está leyendo (no enseña «nada se marcó» ni filas de otra apertura). */
     private val _recientesLeyendo = MutableStateFlow(false)
@@ -697,26 +703,21 @@ class KDSViewModel @Inject constructor(
     fun abrirRecientes() {
         val tablero = _vista.value as? VistaDeCocina.Tablero ?: return
         val hoja = ++hojaDeRecientes
-        _avisoDeRecientes.value = null
+        _avisoDeRecientes.value = emptyMap()
         _recientes.value = emptyList()
         _recientesNoLeidas.value = null
         _recientesLeyendo.value = true
-        leerRecientes(hoja, tablero.estacion.id, intentos = 3)
-    }
-
-    private fun leerRecientes(hoja: Int, estacionId: String, intentos: Int) {
-        val deshechasAlEmpezar = deshechas
+        val empezo = ++turno
         viewModelScope.launch {
-            val leidas = kdsRepository.fetchRecientes(estacionId)
+            val leidas = kdsRepository.fetchRecientes(tablero.estacion.id)
             if (hoja != hojaDeRecientes) return@launch
-            if (deshechasAlEmpezar != deshechas && intentos > 1) {
-                leerRecientes(hoja, estacionId, intentos - 1)
-                return@launch
-            }
             _recientesLeyendo.value = false
             leidas
-                .onSuccess {
-                    _recientes.value = it
+                .onSuccess { filas ->
+                    _recientes.value = filas.filterNot { fila ->
+                        val (cuando, hora) = deshechas[fila.id] ?: return@filterNot false
+                        cuando > empezo && (hora == null || hora == fila.completedAt)
+                    }
                     _recientesNoLeidas.value = null
                 }
                 .onFailure { e ->
@@ -729,6 +730,16 @@ class KDSViewModel @Inject constructor(
         }
     }
 
+    /**
+     * D17 (Codex r18 #3): cerrar la hoja (o perder la estación o la pantalla con ella abierta) la invalida: lo que llegue tarde de
+     * ella —su lectura o el porqué de un «Deshacer»— ya no se pinta en ningún lado como si fuera de ahora.
+     */
+    fun cerrarRecientes() {
+        hojaDeRecientes++
+        _recientesLeyendo.value = false
+        _avisoDeRecientes.value = emptyMap()
+    }
+
     /** «Deshacer»: sin optimismo — la comanda sigue en Recientes hasta que el servidor la regresa. */
     fun deshacer(id: String) {
         val reciente = _recientes.value.firstOrNull { it.id == id }
@@ -737,11 +748,12 @@ class KDSViewModel @Inject constructor(
         val conTiempos = reciente?.preparationVersion == 1
         val terminadaEn = reciente?.takeIf { conTiempos }?.completedAt
         val hoja = hojaDeRecientes
+        val estacion = (_vista.value as? VistaDeCocina.Tablero)?.estacion?.id
         viewModelScope.launch {
-            _avisoDeRecientes.value = null
+            _avisoDeRecientes.value = _avisoDeRecientes.value - id
             kdsRepository.recall(id, terminadaEn)
                 .onSuccess {
-                    deshechas++
+                    deshechas[id] = ++turno to terminadaEn
                     // La de un solo Listo el SERVIDOR la regresa por id (se quita la fila); la de tiempos, sólo si es la misma
                     // terminada que se vio (si otra tablet la volvió a terminar, con otra hora, se queda).
                     _recientes.value = _recientes.value.filterNot { it.id == id && (!conTiempos || it.completedAt == terminadaEn) }
@@ -759,8 +771,12 @@ class KDSViewModel @Inject constructor(
                 .onFailure { e ->
                     if (esSinRed(e)) _sinConexion.value = true
                     val aviso = avisoDeFallo(e, AccionDeCocina.DESHACER)
-                    _aviso.value = aviso
-                    if (hoja == hojaDeRecientes) _avisoDeRecientes.value = AvisoDeDeshacer(id, aviso)
+                    // Codex r18 #3 y #4: en la hoja abierta, cada comanda conserva SU porqué; si ya se cerró, va a la barra del
+                    // tablero sólo si sigue en la MISMA estación (la comanda sigue en «Recientes» al volver a abrir).
+                    when {
+                        hoja == hojaDeRecientes -> _avisoDeRecientes.value = _avisoDeRecientes.value + (id to aviso)
+                        estacion != null && (_vista.value as? VistaDeCocina.Tablero)?.estacion?.id == estacion -> _aviso.value = aviso
+                    }
                 }
         }
     }
@@ -906,6 +922,3 @@ class KDSViewModel @Inject constructor(
  * seguro: otro aparato lo intenta.
  */
 internal fun laComandaSalio(estado: EstadoDeComanda?): Boolean = estado is EstadoDeComanda.Salio
-
-/** D17: por qué no se pudo «Deshacer» [comandaId] (se pinta debajo de esa comanda en «Recientes»). */
-data class AvisoDeDeshacer(val comandaId: String, val aviso: AvisoDeCocina)
