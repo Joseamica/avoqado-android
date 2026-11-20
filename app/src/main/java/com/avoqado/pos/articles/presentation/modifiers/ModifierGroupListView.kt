@@ -54,6 +54,8 @@ import com.avoqado.pos.articles.data.model.ArticleModifier
 import com.avoqado.pos.articles.data.model.ModifierGroup
 import com.avoqado.pos.articles.presentation.ArticlesViewModel
 import com.avoqado.pos.designsystem.components.AvoqadoLoadingState
+import com.avoqado.pos.designsystem.components.BotonDeMasAcciones
+import com.avoqado.pos.designsystem.components.clicDerecho
 import com.avoqado.pos.designsystem.theme.AvoqadoAdaptiveSizeClass
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.designsystem.theme.Info
@@ -260,6 +262,7 @@ private fun ModifierGroupCard(
                 color = MaterialTheme.colorScheme.outlineVariant,
                 shape = RoundedCornerShape(cornerRadius.md),
             )
+            .clicDerecho { showMenu = true }   // mouse: clic derecho = mantener presionado (D9, 20-nov)
             .pointerInput(Unit) {
                 detectTapGestures(onLongPress = { showMenu = true })
             },
@@ -356,6 +359,8 @@ private fun ModifierGroupCard(
                             )
                         }
                     }
+                    // Windows: el mismo menú con un clic, a la vista (D9, 20-nov). En ANDROID no se pinta.
+                    BotonDeMasAcciones(onClick = { showMenu = true })
                 }
             }
 
