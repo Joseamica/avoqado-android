@@ -370,6 +370,20 @@ class KDSViewModelTest {
     }
 
     @Test
+    fun `D17 si Deshacer no puede, el porque sale dentro de la hoja de Recientes`() = runTest {
+        val conTiempos = comanda("k9", 500).copy(preparationVersion = 1, completedAt = 1_700_000_000_123)
+        coEvery { repo.fetchRecientes("st-barra") } returns Result.success(listOf(conTiempos))
+        coEvery { repo.recall(any(), any()) } returns Result.failure(
+            KdsHttpException(409, "KDS_RECALL_NOTHING_READY", "Ya no queda nada listo en esta comanda: se entregó o se canceló."))
+        val vm = armar()
+        vm.abrirRecientes()
+        vm.deshacer("k9")
+        assertEquals("Ya no queda nada listo en esta comanda: se entregó o se canceló.", vm.avisoDeRecientes.value?.texto)
+        vm.abrirRecientes()
+        assertNull(vm.avisoDeRecientes.value) // al volver a abrir, sin el aviso viejo
+    }
+
+    @Test
     fun `D17 Liberar sale en la cocina solo con el permiso de cocina del repositorio`() = runTest {
         val preparacion = mockk<com.avoqado.pos.kds.data.KitchenPreparationRepository>(relaxed = true)
         every { preparacion.capabilities } returns kotlinx.coroutines.flow.MutableStateFlow(com.avoqado.pos.kds.domain.PreparationCapabilities())

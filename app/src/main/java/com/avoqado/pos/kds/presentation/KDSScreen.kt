@@ -115,6 +115,7 @@ fun KDSScreen(
     val comandas by viewModel.comandas.collectAsState()
     val recientes by viewModel.recientes.collectAsState()
     val recientesNoLeidas by viewModel.recientesNoLeidas.collectAsState()
+    val avisoDeRecientes by viewModel.avisoDeRecientes.collectAsState()
     val sinConexion by viewModel.sinConexion.collectAsState()
     val aviso by viewModel.aviso.collectAsState()
     val exito by viewModel.exito.collectAsState()
@@ -325,6 +326,7 @@ fun KDSScreen(
         RecientesSheet(
             recientes = recientes,
             noLeidas = recientesNoLeidas,
+            aviso = avisoDeRecientes,
             onDeshacer = viewModel::deshacer,
             onDismiss = { showRecientes = false },
         )
@@ -749,6 +751,7 @@ private fun TableroDeCocina(
 private fun RecientesSheet(
     recientes: List<KDSOrder>,
     noLeidas: AvisoDeCocina?,
+    aviso: AvisoDeCocina? = null,
     onDeshacer: (String) -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -775,6 +778,16 @@ private fun RecientesSheet(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(bottom = AvoqadoTheme.spacing.lg),
             )
+
+            if (aviso != null) {
+                // D17 (Codex r14): por qué no se pudo «Deshacer» (ya se entregó, pasó la hora, sin red…), aquí y no detrás de la hoja.
+                Text(
+                    text = aviso.texto,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = if (aviso.esError) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(bottom = AvoqadoTheme.spacing.md).testTag("kds-recientes-aviso"),
+                )
+            }
 
             if (noLeidas != null) {
                 // I2: no se pudo leer — nunca se pinta como «no hay nada».
