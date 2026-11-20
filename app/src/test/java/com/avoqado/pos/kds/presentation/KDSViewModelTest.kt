@@ -356,6 +356,10 @@ class KDSViewModelTest {
         vm.refrescar()
         advanceUntilIdle()
         assertEquals(listOf("k5", "k1"), vm.comandas.value.map { it.id })
+        // Codex r3 #2: sigue en la pantalla en los sondeos siguientes mientras tenga trabajo
+        vm.refrescar()
+        advanceUntilIdle()
+        assertEquals(listOf("k5", "k1"), vm.comandas.value.map { it.id })
     }
 
     @Test

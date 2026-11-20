@@ -427,8 +427,15 @@ class KDSViewModel @Inject constructor(
         val ahora = System.currentTimeMillis()
         for (order in todas) {
             if (order.preparationVersion != 1 || esLocal(order.id)) continue
-            if (order.id in visibles) terminadasRecordadas.remove(order.id)
-            else if (order.id !in terminadasRecordadas) terminadasRecordadas[order.id] = order to ahora
+            val recordada = terminadasRecordadas[order.id]
+            when {
+                // Codex r3 #2: la que volvió por una corrección se sigue recordando MIENTRAS tenga trabajo (si no, el siguiente sondeo
+                // sin internet la volvía a esconder). Sólo la quita que el servidor la mande otra vez (`recordadasVigentes`).
+                order.id in visibles -> if (recordada != null) terminadasRecordadas[order.id] = recordada.first to ahora
+                // Se escondió por terminada: se recuerda la copia del servidor. Las que nunca se escondieron no entran (una comanda
+                // que el servidor deja de mandar por otra razón —archivada, anulada— no puede reaparecer sola).
+                recordada == null -> terminadasRecordadas[order.id] = order to ahora
+            }
         }
         while (terminadasRecordadas.size > 100) terminadasRecordadas.remove(terminadasRecordadas.keys.first())
     }
