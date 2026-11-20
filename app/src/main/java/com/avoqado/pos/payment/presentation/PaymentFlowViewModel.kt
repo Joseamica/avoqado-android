@@ -3742,7 +3742,8 @@ class PaymentFlowViewModel @Inject constructor(
                             }
                         }
                         // hz:bdd815fd:D4: la cuenta cambió (412 de D53): no es una pantalla de error, se vuelve al carrito con el saldo nuevo.
-                        if (terminalResult.cuentaCambio) {
+                        // Sólo en el cobro de vales: «Pedidos → Cobrar» (D5, hz:bdd815fd) usa el mismo 412 con su propia pantalla.
+                        if (terminalResult.cuentaCambio && (apartadoDelEnvio != null || esCobroDeVales())) {
                             salirPorCuentaCambiada(terminalResult.message, apartadoDelEnvio)
                             return
                         }
@@ -5136,7 +5137,7 @@ class PaymentFlowViewModel @Inject constructor(
                     undeterminedRequestId = null
                     if (fromPreviousSale) {
                         resolverCobroAnterior("El cobro anterior no se realizó")
-                    } else if (outcome.cuentaCambio) {
+                    } else if (outcome.cuentaCambio && (apartadoDelCobro != null || esCobroDeVales())) {
                         // hz:bdd815fd:D4 (Codex D53 r3 #1): la respuesta del 412 se perdió y la consulta trajo su lápida. Volver al
                         // selector reintentaba con el importe viejo y sin el texto; se sale igual que con el 412 directo.
                         salirPorCuentaCambiada(outcome.message, apartadoDelCobro)

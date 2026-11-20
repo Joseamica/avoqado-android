@@ -1327,6 +1327,25 @@ class PaymentFlowViewModelTest {
     }
 
     @Test
+    fun `D4 la cuenta que cambio fuera de vales (Pedidos, D5) sigue con su pantalla de siempre`() = runTest {
+        // D5 (hz:bdd815fd) usa el mismo 412 ORDER_BALANCE_CHANGED en «Pedidos → Cobrar»: la salida de vales no lo toma.
+        every { areaTicketRepository.session.current() } returns null
+        coEvery {
+            terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any(), any(), any(), any())
+        } returns TerminalPaymentResult.Error(textoDelServidor, requestId = "req-412", noSeCreo = true, cuentaCambio = true)
+        val saldoPendiente = CartItem(id = "saldo", type = CartItemType.CustomAmount, name = "Saldo pendiente", unitPrice = 8000)
+
+        viewModel.startPaymentFlow(CartState(items = listOf(saldoPendiente)), resumeOrderId = "orden-de-pedidos")
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        viewModel.selectTerminalAndPay("t1")
+        advanceUntilIdle()
+
+        assertFalse(viewModel.debeSalir.value)
+        assertNull(viewModel.cuentaDeValesCambio.value)
+        assertEquals(textoDelServidor, (viewModel.state.value as PaymentFlowState.Error).message)
+    }
+
+    @Test
     fun `D4 un rechazo de saldo que no es la cuenta que cambio sigue en su pantalla de error de siempre`() = runTest {
         val sesion = sesionDeVales("0.00", valeDeArea("a", "3.00"))
         every { areaTicketRepository.session.current() } returns sesion
