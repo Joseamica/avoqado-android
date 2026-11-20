@@ -1221,6 +1221,38 @@ class CartViewModel @Inject constructor(
     }
 
     /**
+     * 🔴 DINERO (hz:bdd815fd:D4). El cobro con tarjeta de esta venta de vales se detuvo sin cobrar: la cuenta cambió mientras se cobraba
+     * (alguien abonó en el panel u otra caja) y el SERVIDOR no tocó la terminal. El carrito queda con lo que de verdad falta,
+     * [saldoCents] según el SERVIDOR, como «Saldo pendiente» ligado a [orderId] (igual que tras cobrar una parte), y el siguiente
+     * «Cobrar» cobra eso. Sólo si sigue siendo la venta [venta] y el saldo es > 0; si no, no toca nada y la salida es el aviso fijo
+     * «Cobrar saldo». No suelta el apartado de vales: es la misma venta y ya tiene un abono (el servidor lo negaría). Sólo se llama
+     * cuando la relectura del SERVIDOR confirmó ese abono.
+     *
+     * @return true si el carrito quedó con el saldo.
+     */
+    fun ponerSaldoTrasCuentaCambiada(orderId: String?, saldoCents: Int?, venta: String?): Boolean = delCobro {
+        val orden = orderId?.trim()?.takeIf { it.isNotEmpty() } ?: return@delCobro false
+        val saldo = saldoCents?.takeIf { it > 0 } ?: return@delCobro false
+        val actual = _cartState.value
+        if (venta == null || actual.identidadDeVenta != venta) return@delCobro false
+        if (bloqueoDeEntrega() != null || pagarDespuesTomoLaFoto) return@delCobro false
+        // Codex D4 r3 #2: la venta tiene que seguir viva en la copia de la sesión. Si un latido ya la soltó (otra caja la liquidó, se
+        // canceló o venció) mientras la relectura venía en camino, su saldo ya no vale: el carrito no se toca.
+        if (areaTicketRepository.session.current()?.order?.id != orden) return@delCobro false
+        vaciarCarrito(soltarApartado = false)
+        // La misma venta: conserva su identidad y su copia guardada (Codex D4 r2 #5: sin `carritoGuardadoId`, al cobrar el saldo la
+        // copia no se retiraba y se podía restaurar y cobrar otra vez).
+        _cartState.update {
+            it.copy(identidadDeVenta = actual.identidadDeVenta, creacionIncierta = actual.creacionIncierta,
+                vinoDeCarritoGuardado = actual.vinoDeCarritoGuardado, carritoGuardadoId = actual.carritoGuardadoId)
+        }
+        addCustomAmount(name = "Saldo pendiente", amountCents = saldo)
+        markPendingSplitOrder(orden)
+        Log.d("🛒", "D4: la cuenta $orden cambió a media tarjeta; el carrito queda con su saldo $saldo")
+        true
+    }
+
+    /**
      * Resuelve —y si hace falta ROMPE— la continuidad, justo antes de cobrar, y
      * **congela** el resultado en [chargingAgainstOrderId] para que el cobro
      * abierto sobreviva a que se recree la Activity (girar la tablet).
@@ -2355,10 +2387,16 @@ class CartViewModel @Inject constructor(
             venueId = venueId,
         )
 
-    fun clearCart() {
+    fun clearCart() = vaciarCarrito(soltarApartado = true)
+
+    /**
+     * [clearCart] con [soltarApartado] = false: no le pide al servidor soltar el apartado de vales. Sólo para cuando el carrito sigue
+     * siendo la MISMA venta de vales, ahora por su saldo ([ponerSaldoTrasCuentaCambiada]).
+     */
+    private fun vaciarCarrito(soltarApartado: Boolean) {
         if (cobroLoImpide()) return
         bloqueoDeEntrega()?.let { _avisoDelCarrito.value = it; return }
-        if (areaTicketRepository.session.current() != null) {
+        if (soltarApartado && areaTicketRepository.session.current() != null) {
             viewModelScope.launch {
                 runCatching { areaTicketRepository.cancel() }
                     .onFailure { Log.e("🎟️", "No se pudo liberar la sesión al limpiar el carrito: ${it.message}") }

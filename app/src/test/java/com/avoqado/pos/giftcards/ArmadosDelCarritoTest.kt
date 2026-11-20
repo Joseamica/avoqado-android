@@ -27,8 +27,10 @@ class ArmadosDelCarritoTest {
             // D13: «Agregar al carrito» de una clase pendiente empieza una venta NUEVA (el carrito ya está vacío y sin cliente).
             "com/avoqado/pos/pos/presentation/cart/CartViewModel.kt:agregarClasePendiente:clearCart" to 1,
             "com/avoqado/pos/pos/presentation/cart/CartViewModel.kt:saveCurrentCart:finalizarVenta" to 1,
-            "com/avoqado/pos/pos/presentation/cart/CartViewModel.kt:clearCart:_cartState.value =" to 1,
-            "com/avoqado/pos/pos/presentation/cart/CartViewModel.kt:clearCart:defaultCartState" to 1,
+            // D4 (hz:bdd815fd): el cuerpo de clearCart vive en vaciarCarrito; ponerSaldoTrasCuentaCambiada lo llama sin soltar el
+            // apartado y conserva identidad, creación en duda, origen y copia guardada (CartViewModelWeightTest).
+            "com/avoqado/pos/pos/presentation/cart/CartViewModel.kt:vaciarCarrito:_cartState.value =" to 1,
+            "com/avoqado/pos/pos/presentation/cart/CartViewModel.kt:vaciarCarrito:defaultCartState" to 1,
             "com/avoqado/pos/pos/presentation/cart/CartViewModel.kt:finalizarVenta:clearCart" to 1,
             "com/avoqado/pos/pos/presentation/cart/CartViewModel.kt:aplicarCobroConfirmado:clearCart" to 4, // D10: conserva identidad, creación en duda y origen guardado (U1)
             "com/avoqado/pos/pos/presentation/cart/CartViewModel.kt:restoreSavedCart:_cartState.value =" to 1,
@@ -68,8 +70,8 @@ class ArmadosDelCarritoTest {
             "com/avoqado/pos/pos/presentation/cart/CartViewModel.kt:consumePendingTableCobrar:clearCart" to "borra-o-inicia-vacio / borra-o-inicia-vacio / borra-o-inicia-vacio",
             "com/avoqado/pos/pos/presentation/cart/CartViewModel.kt:agregarClasePendiente:clearCart" to "borra-o-inicia-vacio / borra-o-inicia-vacio / borra-o-inicia-vacio",
             "com/avoqado/pos/pos/presentation/cart/CartViewModel.kt:saveCurrentCart:finalizarVenta" to "guarda-sin-marca-y-finaliza / no-persiste / no-persiste",
-            "com/avoqado/pos/pos/presentation/cart/CartViewModel.kt:clearCart:_cartState.value =" to "borra-o-inicia-vacio / borra-o-inicia-vacio / borra-o-inicia-vacio",
-            "com/avoqado/pos/pos/presentation/cart/CartViewModel.kt:clearCart:defaultCartState" to "borra-o-inicia-vacio / borra-o-inicia-vacio / borra-o-inicia-vacio",
+            "com/avoqado/pos/pos/presentation/cart/CartViewModel.kt:vaciarCarrito:_cartState.value =" to "borra-o-inicia-vacio / borra-o-inicia-vacio / borra-o-inicia-vacio",
+            "com/avoqado/pos/pos/presentation/cart/CartViewModel.kt:vaciarCarrito:defaultCartState" to "borra-o-inicia-vacio / borra-o-inicia-vacio / borra-o-inicia-vacio",
             "com/avoqado/pos/pos/presentation/cart/CartViewModel.kt:finalizarVenta:clearCart" to "borra-o-inicia-vacio / borra-o-inicia-vacio / borra-o-inicia-vacio",
             "com/avoqado/pos/pos/presentation/cart/CartViewModel.kt:aplicarCobroConfirmado:clearCart" to "conserva-en-parcial-o-borra-al-terminar / host-repone-si-debe / conserva-en-parcial",
             "com/avoqado/pos/pos/presentation/cart/CartViewModel.kt:restoreSavedCart:_cartState.value =" to "borra / borra / marca-T6",

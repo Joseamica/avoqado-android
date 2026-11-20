@@ -123,6 +123,7 @@ data class Product(
                         name = group.name,
                         required = group.required,
                         multipleSelect = group.allowMultiple,
+                        allowRepeat = group.allowRepeat,
                         minSelections = group.minSelections,
                         maxSelections = group.maxSelections,
                         sortOrder = entry.displayOrder,
@@ -227,6 +228,8 @@ data class ModifierGroupData(
     val name: String,
     val required: Boolean = false,
     val allowMultiple: Boolean = false,
+    /** La misma opción se puede elegir varias veces (encargo a508f4). Servidores viejos no lo mandan: false, como hasta hoy. */
+    val allowRepeat: Boolean = false,
     val minSelections: Int? = null,
     val maxSelections: Int? = null,
     val modifiers: List<Modifier> = emptyList(),
@@ -240,6 +243,8 @@ data class ProductModifierGroup(
     val name: String,
     val required: Boolean = false,
     val multipleSelect: Boolean = false,
+    /** Sólo cuenta con [multipleSelect]: cada opción lleva un contador (− 2 +) en vez de casilla. */
+    val allowRepeat: Boolean = false,
     val minSelections: Int? = null,
     val maxSelections: Int? = null,
     val sortOrder: Int? = null,
@@ -253,6 +258,8 @@ data class Modifier(
     val price: Double = 0.0,
     val isDefault: Boolean = false,
     val sortOrder: Int? = null,
+    /** Veces que se puede elegir en un grupo que deja repetir; null = hasta el máximo del grupo (encargo a508f4). */
+    val maxQuantity: Int? = null,
 ) {
     val priceInCents: Int get() = price.aCentavos()
 }

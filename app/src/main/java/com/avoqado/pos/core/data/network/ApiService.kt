@@ -450,6 +450,14 @@ interface ApiService {
         @Body request: com.avoqado.pos.tables.data.ApplyOrderDiscountRequest,
     ): com.avoqado.pos.tables.data.SimpleSuccessResponse
 
+    // 7133e3: «Descuento manual» (% o fijo) de la cuenta de MESAS, con su llave anti-duplicado.
+    @POST("mobile/venues/{venueId}/orders/{orderId}/discounts/manual")
+    suspend fun applyManualOrderDiscount(
+        @Path("venueId") venueId: String,
+        @Path("orderId") orderId: String,
+        @Body request: com.avoqado.pos.tables.data.ApplyManualOrderDiscountRequest,
+    ): com.avoqado.pos.tables.data.SimpleSuccessResponse
+
     @retrofit2.http.DELETE("mobile/venues/{venueId}/orders/{orderId}/discounts/{orderDiscountId}")
     suspend fun removeOrderDiscount(
         @Path("venueId") venueId: String,

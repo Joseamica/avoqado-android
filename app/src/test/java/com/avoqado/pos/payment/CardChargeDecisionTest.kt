@@ -200,6 +200,63 @@ class CardChargeDecisionTest {
         assertTrue(out.message, out.message.contains("fondos suficientes"))
     }
 
+    // D53 (Codex r1 #3): si se perdió la respuesta del 412 «la cuenta cambió», la consulta del estado trae la lápida con el texto
+    // del SERVIDOR. Sin esta rama la cajera leía «El cobro fue rechazado» (suena al banco) y no sabía cuánto falta. Igual con D7.
+    @Test
+    fun `P1 D53 la lapida de la cuenta que cambio llega con el texto del servidor por la consulta del estado`() {
+        val json = "{\"status\":\"FAILED\",\"inProgress\":false,\"outcome\":\"NOT_CHARGED\",\"outcomeEvidence\":\"REJECTED_AT_ADMISSION\",\"failureCode\":\"REJECTED_ORDER_BALANCE_CHANGED\",\"errorMessage\":\"La cuenta AREA-80 cambio mientras se cobraba: ahora falta \$79.50. No se cobro la tarjeta.\"}"
+        val dto = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
+            .decodeFromString(TerminalPaymentStatusDto.serializer(), json)
+        val r = CardChargeDecision.decide(dto.aProbe(), isFinalAttempt = true)
+        val out = (r as ProbeDecision.Resolved).outcome as CardChargeOutcome.NotCharged
+        assertTrue(out.message, out.message.startsWith("La cuenta AREA-80 cambio"))
+    }
+
+    @Test
+    fun `D7 la lapida del falta X tambien llega con el texto del servidor`() {
+        val r = CardChargeDecision.decide(
+            ChargeStatusProbe.Known(
+                status = "FAILED", inProgress = false, failureCode = "REJECTED_ORDER_AMOUNT_OVER_BALANCE",
+                errorMessage = "La cuenta X ya tiene un abono: falta \$84.00. Actualiza la cuenta y vuelve a intentar.",
+            ),
+            isFinalAttempt = true,
+        )
+        assertTrue(((r as ProbeDecision.Resolved).outcome as CardChargeOutcome.NotCharged).message.contains("falta \$84.00"))
+    }
+
+    @Test
+    fun `otra lapida sin texto del servidor sigue con el generico`() {
+        val r = CardChargeDecision.decide(
+            ChargeStatusProbe.Known(status = "FAILED", inProgress = false, failureCode = "REJECTED_ORDER_BALANCE_CHANGED"),
+            isFinalAttempt = true,
+        )
+        assertEquals("El cobro fue rechazado. No se cobró la tarjeta.", ((r as ProbeDecision.Resolved).outcome as CardChargeOutcome.NotCharged).message)
+    }
+
+    // hz:bdd815fd:D4: la lápida de la cuenta que cambió lleva a la MISMA salida que el 412 directo (relee y vuelve al carrito con
+    // el saldo nuevo). Sin la marca, la consulta tras un corte largo volvía al selector con el importe viejo (Codex D53 r3 #1).
+    @Test
+    fun `P1 D4 la lapida de la cuenta que cambio marca la salida aunque no traiga texto`() {
+        for (texto in listOf("La cuenta AREA-80 cambió mientras se cobraba: ahora falta \$79.50.", null)) {
+            val r = CardChargeDecision.decide(
+                ChargeStatusProbe.Known(status = "FAILED", inProgress = false, failureCode = "REJECTED_ORDER_BALANCE_CHANGED", errorMessage = texto),
+                isFinalAttempt = true,
+            )
+            assertTrue("$texto", ((r as ProbeDecision.Resolved).outcome as CardChargeOutcome.NotCharged).cuentaCambio)
+        }
+    }
+
+    @Test
+    fun `D4 la lapida del falta X de D7 y un rechazo del banco no son la cuenta que cambio`() {
+        for ((code, evidencia) in listOf("REJECTED_ORDER_AMOUNT_OVER_BALANCE" to null, null to "PROCESSOR_DECLINED")) {
+            val r = CardChargeDecision.decide(
+                ChargeStatusProbe.Known(status = "FAILED", inProgress = false, failureCode = code, outcomeEvidence = evidencia, errorMessage = "x"),
+                isFinalAttempt = true,
+            )
+            assertFalse("$code $evidencia", ((r as ProbeDecision.Resolved).outcome as CardChargeOutcome.NotCharged).cuentaCambio)
+        }
+    }
+
     @Test
     fun `FAILED sin evidencia sigue diciendo rechazado (contrato de siempre)`() {
         val r = CardChargeDecision.decide(ChargeStatusProbe.Known(status = "FAILED", inProgress = false), isFinalAttempt = true)

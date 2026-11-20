@@ -36,6 +36,8 @@ import com.avoqado.pos.pos.data.model.PromotionOption
 import com.avoqado.pos.pos.data.model.ProductModifierGroup
 import com.avoqado.pos.pos.data.model.SelectedModifier
 import com.avoqado.pos.pos.presentation.product.ModifierGroupSection
+import com.avoqado.pos.pos.domain.restarExtra
+import com.avoqado.pos.pos.domain.sumarExtra
 import java.util.Locale
 import com.avoqado.pos.designsystem.components.AvoqadoModalBottomSheet
 
@@ -380,6 +382,9 @@ private fun ExtrasDeLaPieza(
             onModifierToggled = { extra, seleccionado ->
                 onCambio(extras + (grupoDelComboId to alternarExtra(extras[grupoDelComboId].orEmpty(), grupo, extra, seleccionado)))
             },
+            // Pieza con un grupo que deja repetir (encargo a508f4): el SERVIDOR cuenta cada vez en el mínimo y el máximo.
+            onSumar = { extra -> onCambio(extras + (grupoDelComboId to sumarExtra(extras[grupoDelComboId].orEmpty(), grupo, extra))) },
+            onRestar = { extra -> onCambio(extras + (grupoDelComboId to restarExtra(extras[grupoDelComboId].orEmpty(), grupo, extra))) },
         )
     }
 }

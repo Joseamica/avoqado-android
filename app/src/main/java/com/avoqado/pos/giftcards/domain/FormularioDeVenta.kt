@@ -2,12 +2,17 @@ package com.avoqado.pos.giftcards.domain
 
 import com.avoqado.pos.giftcards.data.AjustesDeTarjetas
 import com.avoqado.pos.core.util.aCentavos
+import com.avoqado.pos.core.util.telefonoMx
 import kotlinx.serialization.json.*
 import java.math.BigDecimal
 
+/**
+ * Una tarjeta del formulario. [telefonoDigitos] guarda el teléfono TAL COMO SE ESCRIBIÓ («+52 55 9187 3922»): lo limpia
+ * [telefonoMx] al validar y al armar el cuerpo (Flautas, 19-nov: el «+52» no pasaba). El nombre se conserva por las
+ * ventas guardadas.
+ */
 data class SobreEnFormulario(val montoCents: Int?, val canal: String, val nombre: String, val telefonoDigitos: String, val correo: String, val mensaje: String, val lada: String = "52")
 data class FormularioDeVenta(val sobres: List<SobreEnFormulario>, val deParteDe: String)
-fun telefonoMx(digitos: String): String? = digitos.takeIf { it.length == 10 && it.all { c -> c in '0'..'9' } }?.let { "+52$it" }
 fun FormularioDeVenta.invalidos(a: AjustesDeTarjetas): Set<String> = buildSet {
     if (sobres.size !in 1..20) add("sobres")
     sobres.forEachIndexed { i, s ->
@@ -36,3 +41,26 @@ fun FormularioDeVenta.cuerpo(llave: String, iniciadoPor: String, iniciadoPorNomb
         }) }
     }
 }.toString()
+
+/**
+ * Por qué «Cobrar» está gris, en palabras, para el renglón de abajo del encabezado: «Revisa el celular y «De parte de»».
+ * Antes decía sólo «Revisa los campos de la tarjeta» y «De parte de» quedaba hasta abajo, fuera de la vista (Flautas, 19-nov).
+ * Con varias tarjetas dice cuál. null = no hay nada que revisar.
+ */
+fun motivoDeCobrarApagado(invalidos: Set<String>, tarjetas: Int): String? {
+    if (invalidos.isEmpty()) return null
+    val campos = listOf(
+        "monto" to "el monto", "canal" to "cómo la entregas", "telefono" to "el celular", "correo" to "el correo",
+        "nombre" to "el nombre", "mensaje" to "el mensaje",
+    )
+    val partes = buildList {
+        if ("sobres" in invalidos) add("cuántas tarjetas")
+        for (i in 0 until tarjetas) for ((clave, texto) in campos) {
+            if ("$clave$i" in invalidos) add(if (tarjetas > 1) "$texto (tarjeta ${i + 1})" else texto)
+        }
+        if ("deParteDe" in invalidos) add("«${TextosDeTarjetas.DE_PARTE_DE}»")
+        if ("total" in invalidos) add("el total")
+    }.ifEmpty { return TextosDeTarjetas.REVISA_LOS_CAMPOS }
+    val lista = if (partes.size == 1) partes[0] else partes.dropLast(1).joinToString(", ") + " y " + partes.last()
+    return "Revisa $lista"
+}

@@ -12,6 +12,18 @@ import org.junit.Test
 import org.junit.Assert.*
 
 class CuentasAbiertasConSaldoTest {
+    /** hz:bdd815fd:D5: «Pedidos → Cobrar» manda lo que faltaba sólo si lo dijo el SERVIDOR y es lo que cobra la pantalla. */
+    @Test fun saldoLeidoDelServidorSoloSiLoDijoElServidorYEsLoQueSeCobra() {
+        val json = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
+        val conSaldo = json.decodeFromString<OrderDetail>(
+            """{"id":"o","total":50.0,"preBillBalance":{"orderTotalCents":6000,"totalPaidCents":3500,"remainingBalanceCents":2500}}""")
+        assertEquals(2500, com.avoqado.pos.payment.presentation.saldoLeidoDelServidor(conSaldo, restanteCents(conSaldo)!!))
+        assertNull(com.avoqado.pos.payment.presentation.saldoLeidoDelServidor(conSaldo, 2400))
+        // SERVIDOR viejo, sin `preBillBalance`: el importe sale de `total` y el cobro va sin el dato.
+        val sinSaldo = json.decodeFromString<OrderDetail>("""{"id":"o","total":50.0}""")
+        assertNull(com.avoqado.pos.payment.presentation.saldoLeidoDelServidor(sinSaldo, restanteCents(sinSaldo)!!))
+    }
+
     @Test fun saldoCanonicoSinPropinaConservaElResto() {
         val lectura = runCatching { kotlinx.serialization.json.Json { ignoreUnknownKeys = true }.decodeFromString<OrderDetail>(
             """{"id":"o","total":1000.0,"preBillBalance":{"orderTotalCents":100000,"totalPaidCents":20000,"remainingBalanceCents":80000}}"""

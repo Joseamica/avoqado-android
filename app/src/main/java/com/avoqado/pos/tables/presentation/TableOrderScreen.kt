@@ -1,5 +1,6 @@
 package com.avoqado.pos.tables.presentation
 
+import com.avoqado.pos.pos.domain.juntarExtrasRepetidos
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.tween
@@ -282,6 +283,8 @@ fun TableOrderScreen(
     var showDiscountsDialog by remember { mutableStateOf(false) }
     // f998c8: el descuento de la mesa que espera su motivo (id y si pide aprobación).
     var descuentoDeMesaEsperandoMotivo by remember { mutableStateOf<Pair<String, Boolean>?>(null) }
+    // 7133e3: el descuento manual de la mesa que espera su motivo.
+    var descuentoManualEsperandoMotivo by remember { mutableStateOf<DescuentoManualPendiente?>(null) }
     var showSplitCheckDialog by remember { mutableStateOf(false) }
     var showSortCartDialog by remember { mutableStateOf(false) }
     var showCalculator by remember { mutableStateOf(false) }
@@ -1450,6 +1453,25 @@ fun TableOrderScreen(
             },
             onRemove = { id -> viewModel.removeDiscount(id) },
             onDismiss = { showDiscountsDialog = false },
+            // 7133e3: con «Pedir motivo», primero el motivo (como el del catálogo y como MOSTRADOR).
+            onManual = { name, value, isPercentage ->
+                val manual = DescuentoManualPendiente(if (isPercentage) "PERCENTAGE" else "FIXED_AMOUNT", value, name)
+                if (viewModel.motivosDeDescuento.sePide) descuentoManualEsperandoMotivo = manual
+                else viewModel.applyManualDiscount(manual.type, manual.value, manual.name)
+            },
+        )
+    }
+    descuentoManualEsperandoMotivo?.let { manual ->
+        com.avoqado.pos.pos.presentation.components.DialogoMotivoDeDescuento(
+            motivos = viewModel.motivosDeDescuento.lista,
+            titulo = "Motivo del descuento",
+            detalle = listOf(manual.name.trim().ifBlank { "Descuento manual" }),
+            textoConfirmar = "Aplicar descuento",
+            onConfirmar = { motivo ->
+                viewModel.applyManualDiscount(manual.type, manual.value, manual.name, motivo)
+                descuentoManualEsperandoMotivo = null
+            },
+            onCancelar = { descuentoManualEsperandoMotivo = null },
         )
     }
     descuentoDeMesaEsperandoMotivo?.let { (id, pide) ->
@@ -2020,7 +2042,7 @@ private fun SentCard(
                             Text(item.productName ?: "Artículo", maxLines = 1, overflow = TextOverflow.Ellipsis)
                             if (item.modifiers.isNotEmpty()) {
                                 Text(
-                                    text = item.modifiers.joinToString(", ") { it.name },
+                                    text = juntarExtrasRepetidos(item.modifiers.map { it.name }).joinToString(", "),
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
@@ -3241,6 +3263,9 @@ private fun FulfillmentDialog(
 
 // MARK: - Descuentos de orden en el cheque
 
+/** 7133e3: el descuento manual que tecleó la caja, mientras elige su motivo. */
+private data class DescuentoManualPendiente(val type: String, val value: Double, val name: String)
+
 @Composable
 private fun OrderDiscountsDialog(
     available: List<com.avoqado.pos.pos.data.model.Discount>,
@@ -3248,7 +3273,10 @@ private fun OrderDiscountsDialog(
     onApply: (String) -> Unit,
     onRemove: (String) -> Unit,
     onDismiss: () -> Unit,
+    /** 7133e3: «Descuento manual» (% o $), como en MOSTRADOR. Recibe nombre, valor y si es %. */
+    onManual: (name: String, value: Double, isPercentage: Boolean) -> Unit = { _, _, _ -> },
 ) {
+    var conManual by remember { mutableStateOf(false) }
     AvoqadoDialog(
         title = "Descuentos",
         onDismiss = onDismiss,
@@ -3300,6 +3328,24 @@ private fun OrderDiscountsDialog(
                     }
                     Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
                 }
+                // 7133e3 (hz:0555ee15:D2): el descuento a mano de la cuenta, con el MISMO formulario de MOSTRADOR.
+                OutlinedButton(
+                    onClick = { conManual = !conManual },
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(AvoqadoTheme.cornerRadius.lg),
+                ) {
+                    Text("Descuento manual")
+                }
+                if (conManual) {
+                    Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
+                    com.avoqado.pos.pos.presentation.checkout.ManualDiscountEntry(
+                        onApply = { name, value, isPercentage ->
+                            onManual(name, value, isPercentage)
+                            conManual = false
+                        },
+                    )
+                }
+                Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
                 Text("Disponibles", fontWeight = FontWeight.SemiBold)
                 if (available.isEmpty()) {
                     Text(

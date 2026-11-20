@@ -1,5 +1,6 @@
 package com.avoqado.pos.printing.data
 
+import com.avoqado.pos.pos.domain.juntarExtrasRepetidos
 import com.avoqado.pos.inventory.data.ConteoNoAplicado
 import com.avoqado.pos.printing.data.model.AreaTicketData
 import com.avoqado.pos.printing.data.model.KitchenTicketData
@@ -742,7 +743,7 @@ class ESCPOSPrinter(
             )
             setDoubleHeight(false)
 
-            item.modifiers?.forEach { modifier ->
+            item.modifiers?.let(::juntarExtrasRepetidos)?.forEach { modifier ->
                 printLine("   -> $modifier")
             }
             item.note?.let {
@@ -892,7 +893,7 @@ class ESCPOSPrinter(
      * leen ni caen al texto. Tres renglones en blanco entre códigos para que la pistola no lea dos.
      */
     private fun printExternalLineCodes(item: ReceiptItem) {
-        item.modifiers?.forEach { printLine("   + $it") }
+        item.modifiers?.let(::juntarExtrasRepetidos)?.forEach { printLine("   + $it") }
         if (item.externalCodes.isEmpty()) return
         setAlignment(TextAlignment.CENTER)
         for (code in item.externalCodes) {

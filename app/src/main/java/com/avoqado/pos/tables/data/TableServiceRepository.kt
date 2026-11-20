@@ -812,6 +812,54 @@ class TableServiceRepository @Inject constructor(
         return resultado.onFailure { Log.e(TAG, "❌ applyOrderDiscount failed: ${it.message}") }
     }
 
+    /**
+     * Encargo 7133e3 (hz:0555ee15:D2): «Descuento manual» (% o fijo) en la cuenta de MESAS, con los candados de MOSTRADOR (el SERVIDOR
+     * pide `discounts:apply`; sin él, el PIN del gerente lo pone el `ForbiddenInterceptor` y reenvía el MISMO cuerpo).
+     *
+     * 🔴 La [manual].llave viaja en el POST y en el intent: si el POST sí aterrizó y se perdió la respuesta, la cola sube la misma llave
+     * y el SERVIDOR contesta la fila que ya existe (la trampa D21 de la TPV no se repite aquí).
+     *
+     * [encolarSinRed] = quien lo da no necesita PIN (sin red no hay PIN: la cola lo subiría sin autorizar). Una cuenta abierta sin red
+     * en este aparato ([provisional]) todavía no existe en el SERVIDOR: va directo a la cola, detrás de su apertura y sus rondas.
+     */
+    suspend fun applyManualOrderDiscount(
+        venueId: String,
+        orderId: String,
+        manual: DescuentoManualDeMesa,
+        motivo: com.avoqado.pos.pos.domain.MotivoElegido?,
+        encolarSinRed: Boolean,
+        provisional: Boolean,
+    ): Result<DesenlaceDelManual> {
+        val enLinea: Result<DesenlaceDelManual> = if (provisional && encolarSinRed) {
+            Result.failure(java.io.IOException("Cuenta abierta sin red: el descuento va detrás de su apertura en la cola"))
+        } else {
+            runCatching {
+                apiService.applyManualOrderDiscount(
+                    venueId,
+                    orderId,
+                    ApplyManualOrderDiscountRequest(
+                        type = manual.type,
+                        value = manual.value,
+                        name = manual.name.ifBlank { null },
+                        llave = manual.llave,
+                        reason = motivo?.motivo,
+                        reasonComment = motivo?.comentario,
+                    ),
+                )
+                DesenlaceDelManual.APLICADO
+            }
+        }
+        val resultado = if (!encolarSinRed) enLinea else enLinea.orQueueOffline(venueId, "APPLY_DISCOUNT", DesenlaceDelManual.GUARDADO_SIN_RED) {
+            putOrderRef(orderId)
+            put("manual", payloadDelManual(manual))
+            motivo?.let { m ->
+                put("reason", kotlinx.serialization.json.JsonPrimitive(m.motivo))
+                m.comentario?.let { put("reasonComment", kotlinx.serialization.json.JsonPrimitive(it)) }
+            }
+        }
+        return resultado.onFailure { Log.e(TAG, "❌ applyManualOrderDiscount failed: ${it.message}") }
+    }
+
     /** D4: ¿el fallo fue de red? (para decir «necesita internet» en vez de un error genérico). */
     fun esFalloDeRed(e: Throwable): Boolean = isNetworkError(e)
 
@@ -884,3 +932,12 @@ class TableServiceRepository @Inject constructor(
         Unit
     }.onFailure { Log.e(TAG, "❌ clearTable failed: ${it.message}") }
 }
+
+/** 7133e3: el `manual` del intent `APPLY_DISCOUNT` (los mismos nombres que el POST; el nombre vacío no viaja). */
+internal fun payloadDelManual(m: DescuentoManualDeMesa): kotlinx.serialization.json.JsonObject =
+    kotlinx.serialization.json.buildJsonObject {
+        put("type", kotlinx.serialization.json.JsonPrimitive(m.type))
+        put("value", kotlinx.serialization.json.JsonPrimitive(m.value))
+        if (m.name.isNotBlank()) put("name", kotlinx.serialization.json.JsonPrimitive(m.name))
+        put("llave", kotlinx.serialization.json.JsonPrimitive(m.llave))
+    }

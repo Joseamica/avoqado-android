@@ -1,5 +1,6 @@
 package com.avoqado.pos.transactions.presentation
 
+import com.avoqado.pos.pos.domain.juntarExtrasRepetidos
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -840,7 +841,7 @@ private fun ItemsSection(transaction: Transaction) {
                     }
                     if (item.modifiers.isNotEmpty()) {
                         Text(
-                            text = item.modifiers.mapNotNull { it.name }.filter { it.isNotBlank() }.joinToString(", "),
+                            text = juntarExtrasRepetidos(item.modifiers.mapNotNull { it.name }.filter { it.isNotBlank() }).joinToString(", "),
                             fontSize = metrics.smallSize,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
