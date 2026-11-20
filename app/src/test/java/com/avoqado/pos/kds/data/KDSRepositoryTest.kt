@@ -178,6 +178,15 @@ class KDSRepositoryTest {
     }
 
     @Test
+    fun `D17 deshacer de una comanda con tiempos manda la hora que vio, con milisegundos y en UTC`() = runTest {
+        server.enqueue(MockResponse().setBody("{\"success\":true,\"data\":{}}"))
+        repo.recall("k1", 1_763_669_400_123).getOrThrow()
+        val deshacer = server.takeRequest(1, TimeUnit.SECONDS)!!
+        assertEquals("/api/v1/mobile/venues/v1/kds/orders/k1/recall", deshacer.path)
+        assertEquals("2025-11-20T20:10:00.123Z", JSONObject(deshacer.body.readUtf8()).getString("expectedDoneAt"))
+    }
+
+    @Test
     fun `recientes, deshacer y marcar todas usan sus rutas y sus cuerpos`() = runTest {
         server.enqueue(MockResponse().setBody(lista(comanda())))
         server.enqueue(MockResponse().setBody("{\"success\":true,\"data\":{}}"))

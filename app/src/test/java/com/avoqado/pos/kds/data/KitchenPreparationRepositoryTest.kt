@@ -240,4 +240,15 @@ class KitchenPreparationRepositoryTest {
             refresh.join()
         }
     }
+
+    @Test fun `D17 con el interruptor prendido la cocina libera con orders update, apagado sigue pidiendo orders create`() = runTest {
+        every { roles.hasVenuePermission("orders:create") } returns false
+        val apagado = repository(capability = """{"version":1,"enabled":true}""")
+        org.junit.Assert.assertFalse(apagado.can(PreparationAction.RELEASE))
+        val prendido = repository(capability = """{"version":1,"enabled":true,"kitchenCanRelease":true,"kitchenDoneVersion":1}""")
+        assertTrue(prendido.can(PreparationAction.RELEASE))
+        assertEquals(listOf("orders:update"), prendido.permissionsFor(PreparationAction.RELEASE))
+        assertEquals(listOf("orders:update", "orders:create"), prendido.permissionsFor(PreparationAction.DELIVER))
+        assertEquals(1, prendido.capabilities.value.kitchenDoneVersion)
+    }
 }

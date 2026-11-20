@@ -154,7 +154,9 @@ fun KDSOrderCard(
                         item.preparation?.let { counts ->
                             PreparationBadges(counts, item.pendingPreparation, pulseUrgent = true)
                             if (!order.needsAcceptance) PreparationControls(item.productName, counts,
-                                listOf(com.avoqado.pos.kds.domain.PreparationAction.START, com.avoqado.pos.kds.domain.PreparationAction.READY, com.avoqado.pos.kds.domain.PreparationAction.ACK_URGENT),
+                                // D17: «Liberar» sólo aparece si el negocio dejó a la cocina liberar (`canPreparation` lo decide).
+                                listOf(com.avoqado.pos.kds.domain.PreparationAction.RELEASE, com.avoqado.pos.kds.domain.PreparationAction.START,
+                                    com.avoqado.pos.kds.domain.PreparationAction.READY, com.avoqado.pos.kds.domain.PreparationAction.ACK_URGENT),
                                 can = canPreparation,
                                 onAction = { action, quantity, from, reason -> onPreparation(item, action, quantity, from, reason) })
                         }

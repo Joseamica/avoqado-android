@@ -105,7 +105,14 @@ class KitchenPreparationRepository @Inject constructor(
     }
 
     fun can(action: PreparationAction) = (!action.priority || (_capabilities.value.enabled && _capabilities.value.version == 1 && _capabilities.value.urgencyVersion == 1)) &&
-        action.permissions.all { roles.hasVenuePermission(it) }
+        permissionsFor(action).all { roles.hasVenuePermission(it) }
+
+    /**
+     * D17: con «La cocina puede liberar tiempos» prendido, liberar sólo pide `orders:update` (el rol de cocina), igual que el
+     * SERVIDOR al reproducirlo. El valor es el último confirmado en este aparato (también sin red).
+     */
+    fun permissionsFor(action: PreparationAction): List<String> =
+        if (action == PreparationAction.RELEASE && _capabilities.value.kitchenCanRelease) listOf("orders:update") else action.permissions
     fun negotiated(venueId: String) = venue == venueId && _capabilities.value.version == 1 && _capabilities.value.enabled
 
     private data class RoundProof(val localOrderId: String? = null, val reason: String? = null)
@@ -300,7 +307,9 @@ class KitchenPreparationRepository @Inject constructor(
 
     /** Always enqueue, even online: same permission, CAS and replay contract in both modes. */
     suspend fun act(venueId: String, selected: List<PreparationLine>, action: PreparationAction,
-        quantity: Int, from: PreparationState? = null, reason: String? = null): List<PreparationLine> {
+        quantity: Int, from: PreparationState? = null, reason: String? = null,
+        /** D17: la cocina que libera desde su pantalla ya lo está viendo: sin el papel «LIBERAR» de la caja. */
+        withPaper: Boolean = true): List<PreparationLine> {
         val actor = storage.userId?.takeIf { it.isNotBlank() } ?: error("Inicia sesión antes de cambiar la preparación.")
         fun checkOrigin() {
             check(storage.userId == actor && storage.venueId == venueId) { "Cambió la sesión o la sucursal. Revisa el producto antes de continuar." }
@@ -356,7 +365,7 @@ class KitchenPreparationRepository @Inject constructor(
                 val order = selected.first().orderId ?: return@let null
                 draftStore?.load(venueId, order)?.preparationRouting?.get(round)
             }
-            val job = delivery?.makeJob(venueId, actor, id, selected, action, quantity, from, reason, frozen)
+            val job = delivery?.makeJob(venueId, actor, id, selected, action, quantity, from, reason, frozen, withPaper)
             checkOrigin()
             outbox.enqueue(venueId, SyncIntentTypes.KDS_ITEM_PROGRESS, payload, id = id,
                 preparationSnapshots = snapshots.map { cached(venueId, it) } + listOfNotNull(job), expectedActorStaffId = actor)

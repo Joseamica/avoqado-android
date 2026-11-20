@@ -316,6 +316,42 @@ class KDSViewModelTest {
     }
 
     @Test
+    fun `D17 deshacer una comanda con tiempos manda la hora en que la cocina la termino`() = runTest {
+        val conTiempos = comanda("k9", 500).copy(preparationVersion = 1, completedAt = 1_700_000_000_123)
+        coEvery { repo.fetchRecientes("st-barra") } returns Result.success(listOf(conTiempos, comanda("k8", 400)))
+        coEvery { repo.recall(any(), any()) } returns Result.success(Unit)
+        val vm = armar()
+
+        vm.abrirRecientes()
+        vm.deshacer("k9")
+        vm.abrirRecientes()
+        vm.deshacer("k8")
+
+        coVerify { repo.recall("k9", 1_700_000_000_123) }
+        coVerify { repo.recall("k8", null) } // la de un solo Listo, como siempre
+    }
+
+    @Test
+    fun `D17 Liberar sale en la cocina solo con el interruptor del negocio, aunque quien mire sea gerente`() = runTest {
+        val preparacion = mockk<com.avoqado.pos.kds.data.KitchenPreparationRepository>(relaxed = true)
+        val capacidades = kotlinx.coroutines.flow.MutableStateFlow(com.avoqado.pos.kds.domain.PreparationCapabilities(version = 1, enabled = true))
+        every { preparacion.capabilities } returns capacidades
+        every { preparacion.can(any()) } returns true
+        every { repo.venueIdActual() } returns "v1"
+        val vm = KDSViewModel(
+            repo, mockk(relaxed = true), mockk(relaxed = true), printConfig, Provider { cola },
+            prefs, roleManager, planManager, mockk(relaxed = true),
+            receptor, ticketsLocales, preparationRepository = preparacion,
+        )
+        org.junit.Assert.assertFalse(vm.canPreparation(com.avoqado.pos.kds.domain.PreparationAction.RELEASE))
+        assertTrue(vm.canPreparation(com.avoqado.pos.kds.domain.PreparationAction.START))
+        capacidades.value = capacidades.value.copy(kitchenCanRelease = true)
+        assertTrue(vm.canPreparation(com.avoqado.pos.kds.domain.PreparationAction.RELEASE))
+        every { preparacion.can(com.avoqado.pos.kds.domain.PreparationAction.RELEASE) } returns false
+        org.junit.Assert.assertFalse(vm.canPreparation(com.avoqado.pos.kds.domain.PreparationAction.RELEASE))
+    }
+
+    @Test
     fun `deshacer regresa la comanda a la cocina y la saca de Recientes`() = runTest {
         coEvery { repo.fetchRecientes("st-barra") } returns Result.success(listOf(comanda("k9", 500)))
         coEvery { repo.recall("k9") } returns Result.success(Unit)

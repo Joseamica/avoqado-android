@@ -109,9 +109,9 @@ class PreparationDeliveryService @Inject constructor(
 
     suspend fun makeJob(venueId: String, actor: String, intentId: String, selected: List<PreparationLine>,
         action: PreparationAction, quantity: Int, from: PreparationState?, reason: String?,
-        frozen: com.avoqado.pos.printing.routing.PrintConfig? = null): CachedPayloadEntity {
+        frozen: com.avoqado.pos.printing.routing.PrintConfig? = null, withPaper: Boolean = true): CachedPayloadEntity {
         val config = frozen ?: configRepository.savedConfig(venueId)
-        val job = preparationDeliveryJob(venueId, actor, transport.deviceId, intentId, selected, action, quantity, from, reason, config)
+        val job = preparationDeliveryJob(venueId, actor, transport.deviceId, intentId, selected, action, quantity, from, reason, config, withPaper)
         return CachedPayloadEntity("preparation:$venueId:delivery:$intentId", venueId,
             json.encodeToString(PreparationDeliveryJob.serializer(), job), System.currentTimeMillis())
     }

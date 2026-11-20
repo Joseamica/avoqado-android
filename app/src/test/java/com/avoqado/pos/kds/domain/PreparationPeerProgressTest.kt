@@ -153,4 +153,15 @@ class PreparationPeerProgressTest {
             move.copy(version = 2)) }.exceptionOrNull())
     }
 
+
+    @Test fun `D17 la cocina que libera desde su pantalla no manda el papel LIBERAR, la caja si`() {
+        val config = com.avoqado.pos.printing.routing.PrintConfig()
+        val caja = preparationDeliveryJob("v1", "staff1", "d1", "a1", listOf(row), PreparationAction.RELEASE, 1, null, null, config)
+        val cocina = preparationDeliveryJob("v1", "staff1", "d1", "a2", listOf(row), PreparationAction.RELEASE, 1, null, null, config,
+            withPaper = false)
+        assertNotNull(caja.paper)
+        assertEquals(null, cocina.paper)
+        assertEquals("NONE", cocina.paperState)
+        assertEquals(caja.commands.size, cocina.commands.size) // las otras pantallas se enteran igual por el WiFi
+    }
 }

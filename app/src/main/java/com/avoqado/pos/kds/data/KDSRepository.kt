@@ -174,11 +174,21 @@ class KDSRepository @Inject constructor(
         return ejecutar(accion(ruta(venueId, "kds/orders/$orderId/bump"), token, "POST")).map { }
     }
 
-    /** «Deshacer»: la comanda terminada vuelve a la cocina. */
-    suspend fun recall(kdsId: String): Result<Unit> {
+    /**
+     * «Deshacer»: la comanda terminada vuelve a la cocina. En una comanda con tiempos (D17) viaja la hora en que la cocina la
+     * terminó, tal como se vio en «Recientes»: si otra pantalla ya la regresó y la volvieron a terminar, el SERVIDOR no deshace
+     * ese Listo nuevo (Codex r1 #4).
+     */
+    suspend fun recall(kdsId: String, terminadaEnMillis: Long? = null): Result<Unit> {
         val (venueId, token) = sesion() ?: return sinSesion()
-        return ejecutar(accion(ruta(venueId, "kds/orders/$kdsId/recall"), token, "POST")).map { }
+        val cuerpo = terminadaEnMillis?.let { JSONObject().put("expectedDoneAt", isoUtc(it)) }
+        return ejecutar(accion(ruta(venueId, "kds/orders/$kdsId/recall"), token, "POST", cuerpo)).map { }
     }
+
+    private fun isoUtc(millis: Long): String =
+        java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", java.util.Locale.US).apply {
+            timeZone = java.util.TimeZone.getTimeZone("UTC")
+        }.format(java.util.Date(millis))
 
     /** «Marcar todas listas». Devuelve cuántas terminó el servidor. Tope del servidor: 100 ids. */
     suspend fun bumpBatch(ids: List<String>): Result<Int> {

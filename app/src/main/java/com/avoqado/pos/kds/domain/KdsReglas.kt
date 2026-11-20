@@ -90,6 +90,23 @@ const val TOPE_DEL_TABLERO = 100
 fun idsParaMarcarTodas(comandas: List<KDSOrder>): List<String> =
     comandas.filterNot { it.needsAcceptance || it.preparationVersion == 1 }.map { it.id }.take(TOPE_DEL_TABLERO)
 
+// MARK: - D17: la comanda con tiempos sale cuando la cocina termina
+
+/**
+ * La cocina ya terminó su parte de una comanda por producto (v1): ningún producto tiene algo retenido, pendiente ni
+ * preparando. Espejo de `cocinaTermino` del SERVIDOR. Una comanda vieja (v0) o con un producto sin avance no cuenta.
+ */
+fun terminadaEnCocina(comanda: KDSOrder): Boolean =
+    comanda.preparationVersion == 1 && comanda.items.isNotEmpty() &&
+        comanda.items.all { item -> item.preparation?.let { it.unfinished == 0 } == true }
+
+/**
+ * Lo que el tablero ya no enseña (D17, founder 20-nov): lo que la cocina terminó pasa a «Recientes». Sólo si el SERVIDOR
+ * hace lo mismo (`kitchenDoneVersion`): contra uno viejo, esconderla la dejaba sin «Deshacer» (Codex r1 #7).
+ */
+fun sinTerminadasEnCocina(comandas: List<KDSOrder>, capacidades: PreparationCapabilities): List<KDSOrder> =
+    if (capacidades.kitchenDoneVersion >= 1) comandas.filterNot(::terminadaEnCocina) else comandas
+
 // MARK: - KDS 3.6: los tiempos de una mesa
 
 /** Los platillos de UN tiempo de la tarjeta. [tiempo] `null` = sin encabezado. */

@@ -24,6 +24,7 @@ import com.avoqado.pos.kds.domain.KdsTicketLocal
 import com.avoqado.pos.kds.domain.TextosDeCocina
 import com.avoqado.pos.kds.domain.avisoDeFallo
 import com.avoqado.pos.kds.domain.esLocal
+import com.avoqado.pos.kds.domain.sinTerminadasEnCocina
 import com.avoqado.pos.kds.domain.esSinRed
 import com.avoqado.pos.kds.domain.estacionElegida
 import com.avoqado.pos.kds.domain.estacionesParaElegir
@@ -217,7 +218,12 @@ class KDSViewModel @Inject constructor(
                 // La config cada minuto en CUALQUIER vista (¿prendieron o apagaron la pantalla desde el dashboard?): el
                 // tablero aparece a lo más un minuto después; prenderla desde esta tablet refresca al instante. Entre
                 // vueltas, sólo las comandas (no hace nada fuera del tablero).
-                if (vuelta % 6 == 0) refrescar() else refrescarTablero()
+                if (vuelta % 6 == 0) {
+                    // D17 (Codex r1 #9): el interruptor «La cocina puede liberar» se prende en el DASHBOARD con el tablero
+                    // abierto; sin esto «Liberar» no aparecía hasta reabrir la pantalla.
+                    kdsRepository.venueIdActual()?.let { preparationRepository?.refreshCapabilities(it) }
+                    refrescar()
+                } else refrescarTablero()
                 fetchCanalesReparto()
             }
         } finally {
@@ -352,6 +358,7 @@ class KDSViewModel @Inject constructor(
      */
     private fun publicar(desdeServidor: Boolean, sonar: Boolean = true) {
         val juntas = juntarPorFolio(delServidor, locales).filterNot { it.id in bumpsVigentes() }
+            .let { sinTerminadasEnCocina(it, capacidadesDePreparacion()) }
         val claves = juntas.map { it.sourceKey ?: it.id }.toSet()
         if (sonar && hasLoadedFromAPI && (claves - previousOrderIds).isNotEmpty()) playNotificationSound()
         previousOrderIds = claves
@@ -370,12 +377,13 @@ class KDSViewModel @Inject constructor(
             val projected = raw.chunked(100).flatMap { repository.merge(venueId, it, acceptBaseline = desdeServidor) }.associateBy { it.stableKey }
             val pending = repository.pendingKeys(venueId, projected.values.toList())
             if (epoch != preparationEpoch || kdsRepository.venueIdActual() != venueId) return@launch
-            _comandas.value = juntas.map { order -> order.copy(items = order.items.map { item ->
+            // D17: la proyección local (lo que la cocina hizo aquí, también sin red) decide si ya terminó: sale del tablero.
+            _comandas.value = sinTerminadasEnCocina(juntas.map { order -> order.copy(items = order.items.map { item ->
                 val baseline = preparationLine(order, item)
                 val row = baseline?.let { projected[it.stableKey] }
                 if (row == null) item else item.copy(preparation = row.preparation,
                     preparationRevision = row.preparationRevision, pendingPreparation = row.stableKey in pending)
-            }) }
+            }) }, capacidadesDePreparacion())
             repository.notice.value?.let { _aviso.value = AvisoDeCocina(it, esError = false) }
             } catch (e: kotlinx.coroutines.CancellationException) { throw e }
             catch (e: Exception) {
@@ -386,6 +394,10 @@ class KDSViewModel @Inject constructor(
             }
         }
     }
+
+    /** Las capacidades confirmadas (sin red, las guardadas). Función y no la propiedad: `publicar` puede correr antes de inicializarla. */
+    private fun capacidadesDePreparacion(): com.avoqado.pos.kds.domain.PreparationCapabilities =
+        preparationRepository?.capabilities?.value ?: com.avoqado.pos.kds.domain.PreparationCapabilities()
 
     private var preparationEpoch = 0L
     @OptIn(kotlinx.coroutines.FlowPreview::class)
@@ -412,7 +424,14 @@ class KDSViewModel @Inject constructor(
     val preparationCapabilities = preparationRepository?.capabilities
         ?: MutableStateFlow(com.avoqado.pos.kds.domain.PreparationCapabilities()).asStateFlow()
 
-    fun canPreparation(action: com.avoqado.pos.kds.domain.PreparationAction): Boolean = preparationRepository?.can(action) == true
+    /**
+     * D17: «Liberar» sale en la pantalla de cocina SÓLO con el interruptor del negocio prendido (aunque quien mire sea gerente:
+     * apagado, liberar es de la caja). El permiso sigue siendo el del SERVIDOR (`permissionsFor`).
+     */
+    fun canPreparation(action: com.avoqado.pos.kds.domain.PreparationAction): Boolean = preparationRepository?.let { repository ->
+        (action != com.avoqado.pos.kds.domain.PreparationAction.RELEASE || repository.capabilities.value.kitchenCanRelease) &&
+            repository.can(action)
+    } == true
 
     fun progress(orderId: String, item: com.avoqado.pos.kds.domain.KDSOrderItem,
         action: com.avoqado.pos.kds.domain.PreparationAction, quantity: Int,
@@ -424,7 +443,8 @@ class KDSViewModel @Inject constructor(
             try {
                 val repository = preparationRepository ?: error("Actualiza la app para usar preparación por producto")
                 if (!repository.negotiated(venueId)) repository.refreshCapabilities(venueId)
-                repository.act(venueId, listOf(row), action, quantity, from, reason)
+                // D17: lo que se libera desde la cocina no imprime el papel «LIBERAR» (la cocina ya lo ve en su pantalla).
+                repository.act(venueId, listOf(row), action, quantity, from, reason, withPaper = false)
                 publicar(desdeServidor = false, sonar = false)
                 _exito.value = "${action.label}: $quantity · ${item.productName}"
             } catch (e: kotlinx.coroutines.CancellationException) { throw e }
@@ -643,9 +663,12 @@ class KDSViewModel @Inject constructor(
 
     /** «Deshacer»: sin optimismo — la comanda sigue en Recientes hasta que el servidor la regresa. */
     fun deshacer(id: String) {
-        val folio = _recientes.value.firstOrNull { it.id == id }?.sourceKey
+        val reciente = _recientes.value.firstOrNull { it.id == id }
+        val folio = reciente?.sourceKey
+        // D17: con tiempos, el SERVIDOR sólo la regresa si sigue siendo la que se vio terminada (su hora de terminada).
+        val terminadaEn = reciente?.takeIf { it.preparationVersion == 1 }?.completedAt
         viewModelScope.launch {
-            kdsRepository.recall(id)
+            kdsRepository.recall(id, terminadaEn)
                 .onSuccess {
                     _recientes.value = _recientes.value.filterNot { it.id == id }
                     // Ronda 4: LISTO + Deshacer inmediato (antes de que un sondeo confirme el bump) no puede
