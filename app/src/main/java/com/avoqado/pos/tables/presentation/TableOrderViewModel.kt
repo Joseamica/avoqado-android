@@ -165,17 +165,41 @@ internal const val DESCUENTO_MANUAL_GUARDADO_SIN_RED =
 internal const val DESCUENTO_MANUAL_SIN_RESPUESTA =
     "Sin conexión: no supimos si el descuento se aplicó. Revisa la cuenta al volver la red; si lo vuelves a dar igual, no se duplica."
 
+/** 7133e3 (Codex r2 #4): sin `discounts:apply` NI permiso de cortesía harían falta dos PIN; la caja sólo pide uno. */
+internal const val DESCUENTO_MANUAL_ES_CORTESIA =
+    "Este descuento deja la cuenta en $0: es una cortesía. Usa «Cortesía» o pide a un gerente que lo aplique."
+
+/** 7133e3: el valor como lo guarda el SERVIDOR (2 decimales, mitad hacia arriba). */
+internal fun valorDelManual(value: Double): Double =
+    java.math.BigDecimal(value.toString()).setScale(2, java.math.RoundingMode.HALF_UP).toDouble()
+
 /**
- * 7133e3: ¿el manual dejaría en $0 lo que queda de los productos? (en centavos, como el SERVIDOR: hz:e0b12f00:D1). Entonces es una
- * cortesía y pide el permiso de cortesía. Sin la cuenta leída no se sabe: se trata como si sí (pide el PIN, nunca se encola a ciegas).
+ * 7133e3: ¿el manual dejaría en $0 lo que queda de los productos? Con la MISMA cuenta que el SERVIDOR (hz:e0b12f00:D1): centavos
+ * enteros, el % con mitad hacia arriba sobre el subtotal, el valor a 2 decimales (Codex r2 #1 y #6). Entonces es una cortesía y pide
+ * su permiso. Sin la cuenta no se sabe: se trata como si sí (pide el PIN, nunca se encola a ciegas).
  */
 internal fun manualDejaLaCuentaEnCero(type: String, value: Double, subtotal: Double?, yaDescontado: Double?): Boolean {
     if (subtotal == null || yaDescontado == null) return true
-    val quedaCents = kotlin.math.round((subtotal - yaDescontado) * 100).toLong()
+    fun centavos(pesos: Double) = java.math.BigDecimal(pesos.toString()).movePointRight(2).setScale(0, java.math.RoundingMode.HALF_UP).toLong()
+    val subtotalCents = centavos(subtotal)
+    val quedaCents = maxOf(0L, subtotalCents - centavos(yaDescontado))
     if (quedaCents <= 0) return false
-    val montoCents = if (type == "PERCENTAGE") kotlin.math.round(subtotal * value).toLong() else kotlin.math.round(value * 100).toLong()
-    return montoCents >= quedaCents
+    val v = java.math.BigDecimal(valorDelManual(value).toString())
+    val brutoCents = if (type == "PERCENTAGE") {
+        java.math.BigDecimal(subtotalCents).multiply(v).divide(java.math.BigDecimal(100), 0, java.math.RoundingMode.HALF_UP).toLong()
+    } else minOf(v.movePointRight(2).setScale(0, java.math.RoundingMode.HALF_UP).toLong(), subtotalCents)
+    return minOf(brutoCents, quedaCents) >= quedaCents
 }
+
+/** 7133e3 (Codex r2 #9): la firma de un manual, sin confundir un valor ausente con el texto «null». */
+internal fun firmaDelManual(venueId: String, orderId: String, type: String, value: Double, name: String, motivo: com.avoqado.pos.pos.domain.MotivoElegido?): String =
+    kotlinx.serialization.json.buildJsonArray {
+        add(kotlinx.serialization.json.JsonPrimitive(venueId)); add(kotlinx.serialization.json.JsonPrimitive(orderId))
+        add(kotlinx.serialization.json.JsonPrimitive(type)); add(kotlinx.serialization.json.JsonPrimitive(valorDelManual(value)))
+        add(kotlinx.serialization.json.JsonPrimitive(name))
+        add(motivo?.motivo?.let { kotlinx.serialization.json.JsonPrimitive(it) } ?: kotlinx.serialization.json.JsonNull)
+        add(motivo?.comentario?.let { kotlinx.serialization.json.JsonPrimitive(it) } ?: kotlinx.serialization.json.JsonNull)
+    }.toString()
 
 /** No changes to Cart formulas: reject nonrepresentable intermediates before reading its Int total. */
 internal fun valorRondaSinRedComprobado(items: List<CartItem>): Int = items.fold(0) { total, item ->
@@ -1775,13 +1799,6 @@ class TableOrderViewModel @Inject constructor(
     }
 
     /**
-     * 7133e3 (hz:0555ee15:D2): la llave de cada manual que todavía no se confirmó, por su firma (cuenta, tipo, valor, nombre, motivo).
-     * Volver a dar EL MISMO descuento tras un «no supimos» reusa la llave: el SERVIDOR contesta la fila que ya existía en vez de crear
-     * otra. Se suelta sólo con la respuesta buena; dos descuentos iguales dados a propósito, ya confirmado el primero, son dos.
-     */
-    private val llavesDelManual = mutableMapOf<String, String>()
-
-    /**
      * Encargo 7133e3 (hz:0555ee15:D2): «Descuento manual» (% o fijo) de la cuenta de MESAS, con los candados de MOSTRADOR:
      * `discounts:apply` (sin él, el PIN de un gerente), el motivo si el negocio lo pide (lo elige la pantalla antes), y el tope contra
      * lo que la cuenta debe (lo aplica el SERVIDOR). Dejar la cuenta en $0 es una cortesía y pide su permiso (como la TPV).
@@ -1794,26 +1811,36 @@ class TableOrderViewModel @Inject constructor(
         val vId = venueId ?: return
         bloqueoDeSaldo(vId, session)?.let { showBlockedReason(it); return }
         if (type != "PERCENTAGE" && type != "FIXED_AMOUNT") return
-        if (!value.isFinite() || value <= 0) { showError("El descuento debe ser mayor a cero"); return }
-        if (type == "PERCENTAGE" && value > 100) { showError("El porcentaje no puede ser mayor a 100"); return }
+        if (!value.isFinite()) { showError("El descuento debe ser mayor a cero"); return }
+        val valor = valorDelManual(value)
+        if (valor <= 0) { showError("El descuento debe ser mayor a cero"); return }
+        if (type == "PERCENTAGE" && valor > 100) { showError("El porcentaje no puede ser mayor a 100"); return }
         val roles = com.avoqado.pos.core.domain.RoleManager(secureStorage)
+        // Codex r2 #5: una cuenta abierta sin red en este aparato no tiene cuenta del SERVIDOR; su subtotal es el de sus rondas guardadas.
         val cuenta = _check.value?.takeIf { it.id == session.orderId }
-        val regala = manualDejaLaCuentaEnCero(type, value, cuenta?.subtotal, cuenta?.discountAmount)
+        val (subtotal, descontado) = when {
+            cuenta != null -> cuenta.subtotal to cuenta.discountAmount
+            session.isProvisional && session.saldoSinRedConocido -> session.valorRondasSinRedCents / 100.0 to 0.0
+            else -> null to null
+        }
+        val regala = manualDejaLaCuentaEnCero(type, valor, subtotal, descontado)
+        if (regala && !roles.canApplyDiscounts && !roles.canCompOrders) { showError(DESCUENTO_MANUAL_ES_CORTESIA); return }
         val sinPin = roles.canApplyDiscounts && (!regala || roles.canCompOrders)
         if (!sinPin && (!connectivityMonitor.isConnected.value || session.isProvisional)) {
             showSinRed(DESCUENTO_MANUAL_CON_PIN_SIN_RED_MESA)
             return
         }
         val nombre = name.trim()
-        val firma = listOf(vId, session.orderId, type, value.toString(), nombre, motivo?.motivo, motivo?.comentario).joinToString("|")
-        val llave = llavesDelManual.getOrPut(firma) { java.util.UUID.randomUUID().toString() }
+        val firma = firmaDelManual(vId, session.orderId, type, valor, nombre, motivo)
+        // Codex r2 #2: la llave vive en el repositorio (uno por app), no en esta pantalla: salir de la mesa y volver no la pierde.
+        val llave = repository.llaveDelManual(firma)
         viewModelScope.launch {
             mutarCuenta(vId, session) {
                 mutar {
                     repository.applyManualOrderDiscount(
                         vId,
                         session.orderId,
-                        com.avoqado.pos.tables.data.DescuentoManualDeMesa(type, value, nombre, llave),
+                        com.avoqado.pos.tables.data.DescuentoManualDeMesa(type, valor, nombre, llave),
                         motivo,
                         encolarSinRed = sinPin,
                         provisional = session.isProvisional,
@@ -1821,7 +1848,7 @@ class TableOrderViewModel @Inject constructor(
                 }
             }.fold(
                 onSuccess = { desenlace ->
-                    llavesDelManual.remove(firma)
+                    repository.soltarLlaveDelManual(firma)
                     if (desenlace == com.avoqado.pos.tables.data.DesenlaceDelManual.GUARDADO_SIN_RED) showSinRed(DESCUENTO_MANUAL_GUARDADO_SIN_RED)
                     else showMessage("Descuento aplicado")
                     repository.refresh(vId)

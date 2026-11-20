@@ -5,7 +5,9 @@ import com.avoqado.pos.core.data.local.database.CachedPayloadDao
 import com.avoqado.pos.core.data.network.ApiService
 import com.avoqado.pos.core.data.sync.SyncOutbox
 import com.avoqado.pos.pos.domain.MotivoElegido
+import com.avoqado.pos.tables.presentation.firmaDelManual
 import com.avoqado.pos.tables.presentation.manualDejaLaCuentaEnCero
+import com.avoqado.pos.tables.presentation.valorDelManual
 import io.mockk.*
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.JsonObject
@@ -107,6 +109,32 @@ class DescuentoManualDeMesaTest {
         assertTrue(manualDejaLaCuentaEnCero("FIXED_AMOUNT", 80.0, 100.0, 20.0))
         // Sin la cuenta leída no se sabe: se trata como cortesía (pide el PIN, nunca se encola a ciegas).
         assertTrue(manualDejaLaCuentaEnCero("PERCENTAGE", 10.0, null, null))
+    }
+
+    @Test fun `Codex r2 6 - el % redondea mitad hacia arriba como el SERVIDOR`() {
+        // $1.25 con $0.22 ya descontados: quedan 103 centavos; 82 % de 125 = 102.5 → 103 ⇒ deja la cuenta en cero.
+        assertTrue(manualDejaLaCuentaEnCero("PERCENTAGE", 82.0, 1.25, 0.22))
+        // Codex r2 1: el valor se normaliza a 2 decimales antes de decidir (99.99996 % → 100 %).
+        assertEquals(100.0, valorDelManual(99.99996), 0.0)
+        assertTrue(manualDejaLaCuentaEnCero("PERCENTAGE", 99.99996, 20000.0, 0.0))
+        assertTrue(manualDejaLaCuentaEnCero("FIXED_AMOUNT", 1.005, 1.01, 0.0))
+    }
+
+    @Test fun `Codex r2 9 - la firma no confunde un comentario ausente con el texto null`() {
+        val sin = firmaDelManual("v", "o", "PERCENTAGE", 10.0, "", MotivoElegido("Queja", null))
+        val conTexto = firmaDelManual("v", "o", "PERCENTAGE", 10.0, "", MotivoElegido("Queja", "null"))
+        assertNotEquals(sin, conTexto)
+        assertEquals(sin, firmaDelManual("v", "o", "PERCENTAGE", 10.0, "", MotivoElegido("Queja", null)))
+        assertNotEquals(sin, firmaDelManual("v", "otra", "PERCENTAGE", 10.0, "", MotivoElegido("Queja", null)))
+    }
+
+    @Test fun `Codex r2 2 - la llave del manual vive en el repositorio hasta la respuesta buena`() {
+        val m = mundo()
+        val firma = firmaDelManual(venue, "orden-1", "FIXED_AMOUNT", 20.0, "Amigo", null)
+        val primera = m.repo.llaveDelManual(firma)
+        assertEquals(primera, m.repo.llaveDelManual(firma)) // otro toque igual (o volver a la mesa): la misma
+        m.repo.soltarLlaveDelManual(firma)
+        assertNotEquals(primera, m.repo.llaveDelManual(firma)) // ya confirmado: otro descuento igual es otro
     }
 
     @Test fun `la pantalla de MESAS ofrece el descuento manual con el formulario de MOSTRADOR y su motivo`() {

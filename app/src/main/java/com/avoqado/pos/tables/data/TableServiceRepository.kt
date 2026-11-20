@@ -813,6 +813,16 @@ class TableServiceRepository @Inject constructor(
     }
 
     /**
+     * 7133e3 (hz:0555ee15:D2, Codex r2 #2): la llave de cada manual que todavía no se confirmó, por su firma (negocio, cuenta, tipo,
+     * valor, nombre y motivo). Vive aquí (uno por app) y no en la pantalla: volver a dar EL MISMO descuento tras un «no supimos»,
+     * aunque se haya salido de la mesa, reusa la llave y el SERVIDOR contesta la fila que ya existía. Se suelta con la respuesta
+     * buena; dos descuentos iguales dados a propósito, ya confirmado el primero, son dos. Límite declarado: reiniciar la app la pierde.
+     */
+    private val llavesDelManual = java.util.concurrent.ConcurrentHashMap<String, String>()
+    fun llaveDelManual(firma: String): String = llavesDelManual.getOrPut(firma) { java.util.UUID.randomUUID().toString() }
+    fun soltarLlaveDelManual(firma: String) { llavesDelManual.remove(firma) }
+
+    /**
      * Encargo 7133e3 (hz:0555ee15:D2): «Descuento manual» (% o fijo) en la cuenta de MESAS, con los candados de MOSTRADOR (el SERVIDOR
      * pide `discounts:apply`; sin él, el PIN del gerente lo pone el `ForbiddenInterceptor` y reenvía el MISMO cuerpo).
      *
