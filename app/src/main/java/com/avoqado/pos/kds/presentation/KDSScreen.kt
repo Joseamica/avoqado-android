@@ -64,6 +64,11 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.repeatOnLifecycle
+// D14: aquí y no en orden alfabético, para no chocar con los imports de la rama de D17.
+import com.avoqado.pos.onlineorders.data.VentanaALaVista
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.launch
 import com.avoqado.pos.designsystem.components.AvoqadoDialog
 import com.avoqado.pos.designsystem.components.AvoqadoSuccessToast
 import com.avoqado.pos.designsystem.components.CircleBackButton
@@ -81,14 +86,10 @@ import com.avoqado.pos.kds.domain.TextosDeCocina
 import com.avoqado.pos.kds.domain.etiquetaDeEstacion
 import com.avoqado.pos.kds.domain.idsParaMarcarTodas
 import com.avoqado.pos.kds.domain.puedeApagar
-import com.avoqado.pos.onlineorders.data.VentanaALaVista
 import com.avoqado.pos.printing.routing.PrintConfig
 import com.avoqado.pos.printing.routing.PrinterInfo
 import com.avoqado.pos.printing.routing.StationInfo
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.launch
 
 // MARK: - Entry Point
 
