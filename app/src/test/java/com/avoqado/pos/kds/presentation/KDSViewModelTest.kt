@@ -447,9 +447,13 @@ class KDSViewModelTest {
     }
 
     @Test
-    fun `D17 la de un solo Listo se quita al deshacerla aunque otra tablet le cambiara la hora`() = runTest {
+    fun `D17 un Deshacer confirmado vuelve a leer la hoja abierta y enseña lo que tiene el servidor`() = runTest {
         val v0 = comanda("k8", 400).copy(completedAt = 1_700_000_000_000)
-        coEvery { repo.fetchRecientes("st-barra") } returnsMany listOf(Result.success(listOf(v0)), Result.success(listOf(v0.copy(completedAt = 1_700_000_500_000))))
+        coEvery { repo.fetchRecientes("st-barra") } returnsMany listOf(
+            Result.success(listOf(v0)),
+            Result.success(listOf(v0.copy(completedAt = 1_700_000_500_000))),
+            Result.success(emptyList()),
+        )
         val respuesta = kotlinx.coroutines.CompletableDeferred<Result<Unit>>()
         coEvery { repo.recall(any(), any()) } coAnswers { respuesta.await() }
         val vm = armar()

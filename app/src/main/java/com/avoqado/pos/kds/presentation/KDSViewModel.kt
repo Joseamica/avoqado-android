@@ -134,20 +134,29 @@ class KDSViewModel @Inject constructor(
     /**
      * D17 (Codex r14 y r15): por qué no se pudo «Deshacer», DENTRO de la hoja de «Recientes» y debajo de ESA comanda (detrás de
      * la hoja o arriba de la lista no se ve). Sólo la respuesta de un toque de la hoja abierta ahora: una que llega después de
-     * cerrarla y volver a abrir no se pinta como si acabara de pasar (`hojaDeRecientes`).
+     * cerrarla y volver a abrir no se pinta como si acabara de pasar (`aperturaDeRecientes`).
      */
     private val _avisoDeRecientes = MutableStateFlow<Map<String, AvisoDeCocina>>(emptyMap())
     val avisoDeRecientes: StateFlow<Map<String, AvisoDeCocina>> = _avisoDeRecientes.asStateFlow()
-    private var hojaDeRecientes = 0
-
-    /** Reloj de eventos de la hoja: cada lectura y cada «Deshacer» confirmado toman su número (qué pasó antes que qué). */
-    private var turno = 0L
 
     /**
-     * Los «Deshacer» que el SERVIDOR ya confirmó: id → (turno, hora de terminada que se vio; `null` en la de un solo Listo). Una
-     * lectura que empezó ANTES de esa confirmación no vuelve a poner esa fila (Codex r18 #2: sin reintentos ni tope).
+     * D17 (rediseño tras Codex r19): la hoja de «Recientes» vive AQUÍ, no en la pantalla. Abierta = `estacionDeLaHoja` no nula.
+     * `aperturaDeRecientes` sube al abrir y al cerrar (el porqué de un toque sólo entra a SU apertura); `lecturaDeRecientes` sube con
+     * cada lectura (sólo se publica la última, y sólo si la hoja sigue abierta en esa estación).
      */
-    private val deshechas = mutableMapOf<String, Pair<Long, Long?>>()
+    private val _recientesAbierta = MutableStateFlow(false)
+    val recientesAbierta: StateFlow<Boolean> = _recientesAbierta.asStateFlow()
+    private var aperturaDeRecientes = 0
+    private var lecturaDeRecientes = 0
+    private var estacionDeLaHoja: String? = null
+
+    /** Cambiar la vista (otra estación, elegir estación, pantalla apagada) cierra la hoja abierta de otra estación. */
+    private fun ponerVista(v: VistaDeCocina) {
+        _vista.value = v
+        if (estacionDeLaHoja != null && (v as? VistaDeCocina.Tablero)?.estacion?.id != estacionDeLaHoja) cerrarRecientes()
+    }
+
+    private fun lecturaVigente(lectura: Int, estacionId: String) = lectura == lecturaDeRecientes && estacionDeLaHoja == estacionId
 
     /** D17: la hoja de «Recientes» se está leyendo (no enseña «nada se marcó» ni filas de otra apertura). */
     private val _recientesLeyendo = MutableStateFlow(false)
@@ -286,12 +295,12 @@ class KDSViewModel @Inject constructor(
         val venueId = kdsRepository.venueIdActual() ?: return
         // Cache-first: primero lo que el aparato ya sabe, sin esperar a la red…
         _config.value = printConfigRepository.getCurrentConfig()
-        if (!eligiendoAMano && _config.value.version.isNotEmpty()) _vista.value = vistaPara(prefs.estacion(venueId))
+        if (!eligiendoAMano && _config.value.version.isNotEmpty()) ponerVista(vistaPara(prefs.estacion(venueId)))
         sincronizarReceptor()
         // …y luego la verdad del servidor.
         printConfigRepository.refresh(venueId)
         _config.value = printConfigRepository.getCurrentConfig()
-        if (!eligiendoAMano) _vista.value = vistaPara(prefs.estacion(venueId))
+        if (!eligiendoAMano) ponerVista(vistaPara(prefs.estacion(venueId)))
         sincronizarReceptor()
         // En el tablero sólo el fetch de comandas decide si hay red (abajo); fuera de él, si nunca vio la config
         // (`version` vacía = sin red desde que se instaló: se dice, en vez de afirmar que no hay estaciones).
@@ -569,7 +578,7 @@ class KDSViewModel @Inject constructor(
         _comandas.value = emptyList()
         previousOrderIds = emptySet()
         hasLoadedFromAPI = false
-        _vista.value = vistaPara(id)
+        ponerVista(vistaPara(id))
         delServidor = emptyList()
         estacionDelServidor = null
         sincronizarReceptor()
@@ -578,7 +587,7 @@ class KDSViewModel @Inject constructor(
 
     fun cambiarEstacion() {
         eligiendoAMano = true
-        _vista.value = VistaDeCocina.ElegirEstacion(estacionesParaElegir(_config.value.stations), laGuardadaYaNoExiste = false)
+        ponerVista(VistaDeCocina.ElegirEstacion(estacionesParaElegir(_config.value.stations), laGuardadaYaNoExiste = false))
         sincronizarReceptor()
     }
 
@@ -695,47 +704,47 @@ class KDSViewModel @Inject constructor(
     }
 
     /**
-     * D17 (rediseño tras Codex r17, una sola regla para la hoja de «Recientes»): cada apertura es una hoja NUEVA (`hojaDeRecientes`)
-     * que arranca vacía y «leyendo» (nunca enseña botones de otra estación ni de otra apertura). Lo que llega tarde se descarta:
-     * la lectura de una hoja ya cerrada, el aviso de un toque de otra hoja, y una lectura que empezó ANTES de que se confirmara un
-     * «Deshacer» (`deshechas`): ésa se vuelve a pedir, porque puede traer la comanda que ya regresó a la cocina.
+     * D17 (rediseño tras Codex r19, una sola regla y sin filtros en la tablet): la hoja enseña lo que el SERVIDOR contestó a la
+     * ÚLTIMA lectura de la hoja abierta. Abrir y cada «Deshacer» confirmado vuelven a leer (la lista vieja se quita y dice
+     * «Leyendo…»); toda respuesta de una lectura anterior, de una hoja cerrada o de otra estación se descarta.
      */
     fun abrirRecientes() {
         val tablero = _vista.value as? VistaDeCocina.Tablero ?: return
-        val hoja = ++hojaDeRecientes
+        aperturaDeRecientes++
+        estacionDeLaHoja = tablero.estacion.id
+        _recientesAbierta.value = true
         _avisoDeRecientes.value = emptyMap()
+        leerHoja()
+    }
+
+    private fun leerHoja() {
+        val estacionId = estacionDeLaHoja ?: return
+        val lectura = ++lecturaDeRecientes
         _recientes.value = emptyList()
         _recientesNoLeidas.value = null
         _recientesLeyendo.value = true
-        val empezo = ++turno
         viewModelScope.launch {
-            val leidas = kdsRepository.fetchRecientes(tablero.estacion.id)
-            if (hoja != hojaDeRecientes) return@launch
+            val leidas = kdsRepository.fetchRecientes(estacionId)
+            if (!lecturaVigente(lectura, estacionId)) return@launch
             _recientesLeyendo.value = false
             leidas
-                .onSuccess { filas ->
-                    _recientes.value = filas.filterNot { fila ->
-                        val (cuando, hora) = deshechas[fila.id] ?: return@filterNot false
-                        cuando > empezo && (hora == null || hora == fila.completedAt)
-                    }
+                .onSuccess {
+                    _recientes.value = it
                     _recientesNoLeidas.value = null
                 }
                 .onFailure { e ->
-                    // I2: la UI no puede mentir — sin esto la hoja decía «nada se marcó como listo» cuando en
-                    // realidad no se pudo leer. La barra de atrás se queda igual, por si se cierra la hoja sin leerlo.
-                    val aviso = avisoDeFallo(e, AccionDeCocina.RECIENTES)
-                    _recientesNoLeidas.value = aviso
-                    _aviso.value = aviso
+                    // I2: la UI no puede mentir — la hoja dice que no se pudo leer, nunca «nada se marcó como listo».
+                    _recientesNoLeidas.value = avisoDeFallo(e, AccionDeCocina.RECIENTES)
                 }
         }
     }
 
-    /**
-     * D17 (Codex r18 #3): cerrar la hoja (o perder la estación o la pantalla con ella abierta) la invalida: lo que llegue tarde de
-     * ella —su lectura o el porqué de un «Deshacer»— ya no se pinta en ningún lado como si fuera de ahora.
-     */
+    /** Cerrar la hoja (o perder su estación) la invalida: nada de ella se pinta después. */
     fun cerrarRecientes() {
-        hojaDeRecientes++
+        aperturaDeRecientes++
+        lecturaDeRecientes++
+        estacionDeLaHoja = null
+        _recientesAbierta.value = false
         _recientesLeyendo.value = false
         _avisoDeRecientes.value = emptyMap()
     }
@@ -745,18 +754,13 @@ class KDSViewModel @Inject constructor(
         val reciente = _recientes.value.firstOrNull { it.id == id }
         val folio = reciente?.sourceKey
         // D17: con tiempos, el SERVIDOR sólo la regresa si sigue siendo la que se vio terminada (su hora de terminada).
-        val conTiempos = reciente?.preparationVersion == 1
-        val terminadaEn = reciente?.takeIf { conTiempos }?.completedAt
-        val hoja = hojaDeRecientes
-        val estacion = (_vista.value as? VistaDeCocina.Tablero)?.estacion?.id
+        val terminadaEn = reciente?.takeIf { it.preparationVersion == 1 }?.completedAt
+        val estacion = estacionDeLaHoja
+        val apertura = aperturaDeRecientes
         viewModelScope.launch {
             _avisoDeRecientes.value = _avisoDeRecientes.value - id
             kdsRepository.recall(id, terminadaEn)
                 .onSuccess {
-                    deshechas[id] = ++turno to terminadaEn
-                    // La de un solo Listo el SERVIDOR la regresa por id (se quita la fila); la de tiempos, sólo si es la misma
-                    // terminada que se vio (si otra tablet la volvió a terminar, con otra hora, se queda).
-                    _recientes.value = _recientes.value.filterNot { it.id == id && (!conTiempos || it.completedAt == terminadaEn) }
                     // Ronda 4: LISTO + Deshacer inmediato (antes de que un sondeo confirme el bump) no puede
                     // quedar tapado por el blindaje de M4 — el servidor SÍ va a volver a mandar esta comanda.
                     bumpsRecientes.remove(id)
@@ -767,16 +771,17 @@ class KDSViewModel @Inject constructor(
                         ticketsLocales.quitarLista(folio)
                     }
                     refrescarTablero()
+                    // La hoja abierta de esa estación (ésta u otra apertura) se vuelve a leer: lo que enseña es lo que el SERVIDOR
+                    // tiene DESPUÉS del cambio; la lectura que iba en el aire queda vieja y se descarta.
+                    if (estacion != null && estacionDeLaHoja == estacion) leerHoja()
                 }
                 .onFailure { e ->
                     if (esSinRed(e)) _sinConexion.value = true
                     val aviso = avisoDeFallo(e, AccionDeCocina.DESHACER)
-                    // Codex r18 #3 y #4: en la hoja abierta, cada comanda conserva SU porqué; si ya se cerró, va a la barra del
-                    // tablero sólo si sigue en la MISMA estación (la comanda sigue en «Recientes» al volver a abrir).
-                    when {
-                        hoja == hojaDeRecientes -> _avisoDeRecientes.value = _avisoDeRecientes.value + (id to aviso)
-                        estacion != null && (_vista.value as? VistaDeCocina.Tablero)?.estacion?.id == estacion -> _aviso.value = aviso
-                    }
+                    // El porqué va debajo de su comanda en la hoja abierta y, como siempre, en la barra del tablero de ESA estación
+                    // (si se cierra la hoja, no se pierde).
+                    if (apertura == aperturaDeRecientes && estacionDeLaHoja != null) _avisoDeRecientes.value = _avisoDeRecientes.value + (id to aviso)
+                    if (estacion != null && (_vista.value as? VistaDeCocina.Tablero)?.estacion?.id == estacion) _aviso.value = aviso
                 }
         }
     }

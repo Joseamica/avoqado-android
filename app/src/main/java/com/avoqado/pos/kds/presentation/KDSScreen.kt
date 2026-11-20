@@ -155,7 +155,7 @@ fun KDSScreen(
     val recibiendoPorWifi by viewModel.recibiendoPorWifi.collectAsState()
 
     var showSettings by remember { mutableStateOf(false) }
-    var showRecientes by remember { mutableStateOf(false) }
+    val showRecientes by viewModel.recientesAbierta.collectAsState()
     var confirmacion by remember { mutableStateOf<Confirmacion?>(null) }
     // Qué canal está eligiendo duración. `null` = el diálogo está cerrado.
     var pausando by remember { mutableStateOf<CanalReparto?>(null) }
@@ -222,7 +222,7 @@ fun KDSScreen(
                 isLargeFont = settings.largeFontEnabled,
                 canalesReparto = canalesReparto,
                 onDismiss = onDismiss,
-                onAbrirRecientes = { showRecientes = true; viewModel.abrirRecientes() },
+                onAbrirRecientes = viewModel::abrirRecientes,
                 onMarcarTodas = { confirmacion = Confirmacion.MARCAR_TODAS },
                 onSettings = { showSettings = true },
                 onListo = viewModel::listo,
@@ -330,16 +330,7 @@ fun KDSScreen(
         )
     }
 
-    // MARK: - Recientes
-    // D17 (Codex r18 #3): si la estación cambia o la pantalla deja de estar prendida con la hoja abierta, la hoja se cierra (sus
-    // botones eran de otra estación o de una pantalla que ya no está).
-    val estacionDeLaHoja = (vista as? VistaDeCocina.Tablero)?.estacion?.id
-    LaunchedEffect(estacionDeLaHoja) {
-        if (showRecientes) {
-            showRecientes = false
-            viewModel.cerrarRecientes()
-        }
-    }
+    // MARK: - Recientes (D17: abierta o cerrada lo decide el ViewModel; se cierra sola si cambia la estación o la pantalla)
     if (showRecientes) {
         RecientesSheet(
             recientes = recientes,
@@ -347,7 +338,7 @@ fun KDSScreen(
             avisos = avisoDeRecientes,
             leyendo = recientesLeyendo,
             onDeshacer = viewModel::deshacer,
-            onDismiss = { showRecientes = false; viewModel.cerrarRecientes() },
+            onDismiss = viewModel::cerrarRecientes,
         )
     }
 
