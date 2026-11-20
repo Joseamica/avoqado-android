@@ -219,18 +219,16 @@ class ComandaDeLaRondaSinRedTest {
         org.junit.Assert.assertEquals(REIMPRIMIR_RONDA_SIN_CONEXION, mesa.actionMessage.value)
     }
 
-    /** Codex r6 #4: el acuse llega mientras sale la hoja de la cuenta; la hoja de la ronda ya no sale de lo que tenía el aparato. */
-    @Test fun `si la ronda se confirma a media reimpresion su hoja no sale y la pantalla lo dice`() = runTest {
+    /**
+     * Codex r8 #1 y #3 (rediseño): CON la cuenta leída nada sale de la cola. La ronda que todavía no llega (o cuya respuesta se perdió
+     * y otra caja anuló algo) no sale de lo guardado en el aparato: se pide volver a tocar para sacarla de la cuenta.
+     */
+    @Test fun `con internet la ronda en cola no sale del aparato y se pide volver a tocar`() = runTest {
         cuentaConCafeEnRonda("PENDING")
         coEvery { repository.getOrderDetail(any(), any()) } returns Result.success(com.avoqado.pos.tables.data.OrderDetail("o-1",
             total = 100.0, version = 4, items = listOf(flautas())))
         val mesa = vm(keepSession = true, enLinea = true)
         mesa.loadCheck(); advanceUntilIdle()
-        coEvery { impresora.printComandas(any(), any(), any(), any(), any(), any(), any(), any()) } answers {
-            val i = cola.indexOfFirst { it.id == "r1" }
-            cola[i] = cola[i].copy(estado = "ACKED")
-            ComandaPrinter.Result(attempted = 1, printed = 1, skippedNoPrinter = 0, lastError = null)
-        }
 
         mesa.reprintComandas(); advanceUntilIdle()
 
@@ -238,8 +236,27 @@ class ComandaDeLaRondaSinRedTest {
         io.mockk.coVerify(exactly = 1) { impresora.printComandas(capture(planes), any(), any(), any(), any(), any(), any(), any()) }
         val impreso = planes.flatten().toString()
         assertTrue("sale lo de la cuenta: $impreso", impreso.contains("Flautas"))
-        assertTrue("no sale el Café de la ronda recién confirmada: $impreso", !impreso.contains("Café"))
-        org.junit.Assert.assertEquals("Comanda reimpresa. $REIMPRIMIR_RONDA_RECIEN_CONFIRMADA", mesa.actionMessage.value)
+        assertTrue("no sale el Café de la cola: $impreso", !impreso.contains("Café"))
+        org.junit.Assert.assertEquals("Comanda reimpresa. $REIMPRIMIR_RONDA_POR_LLEGAR", mesa.actionMessage.value)
+    }
+
+    /** Codex r8 #7: un tiempo moderno retenido (STANDARD) que la cuenta trae no sale en la reimpresión, como en su primer papel. */
+    @Test fun `la reimpresion con la cuenta leida no saca un tiempo retenido`() = runTest {
+        session.start(TableSession.Active("t1", "5", "Patio", "o-1", "ORD", 3, 0, TableSession.Mode.ORDERING))
+        val fuerte = com.avoqado.pos.tables.data.OrderDetailItem(id = "line-f", productName = "Arrachera", total = 200.0, productId = "p-arr",
+            serviceCourse = com.avoqado.pos.pos.data.model.ServiceCourseSnapshot("mains", "Principales", "STANDARD", preparationVersion = 1))
+        coEvery { repository.getOrderDetail(any(), any()) } returns Result.success(com.avoqado.pos.tables.data.OrderDetail("o-1",
+            total = 300.0, version = 4, items = listOf(flautas(), fuerte)))
+        val mesa = vm(keepSession = true, enLinea = true)
+        mesa.loadCheck(); advanceUntilIdle()
+
+        mesa.reprintComandas(); advanceUntilIdle()
+
+        val planes = mutableListOf<List<TicketPlan>>()
+        io.mockk.coVerify { impresora.printComandas(capture(planes), any(), any(), any(), any(), any(), any(), any()) }
+        val impreso = planes.flatten().toString()
+        assertTrue("sale la entrada: $impreso", impreso.contains("Flautas"))
+        assertTrue("no sale el plato retenido: $impreso", !impreso.contains("Arrachera"))
     }
 
     /**
