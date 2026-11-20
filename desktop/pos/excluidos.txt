@@ -11,7 +11,7 @@ com/avoqado/pos/MainActivity.kt                                 # sin reemplazo:
 com/avoqado/pos/customerdisplay/CustomerDisplayActivity.kt      # sin reemplazo: Activity de la segunda pantalla | huella: 9048af0c6480c4e09530def9a51ddb11e90736a6504492898e330c488e8ce06b
 com/avoqado/pos/kiosk/system/KioskBootReceiver.kt               # sin reemplazo: arranque al encender la tablet | huella: f92c93d636048e972628ef4629f97bf3c1d8cc2c769ee095d8dd2f2232f715d8
 com/avoqado/pos/core/data/local/database/AvoqadoDatabaseMigrations.kt   # reemplazo: copia generada con los imports cambiados (build/generated/migraciones) | huella: 8c97b70222ba27f7781311a8ea9f9d4f61b004e45595e6b403d41286e66e560d
-com/avoqado/pos/core/di/DatabaseModule.kt                       # reemplazo: Room con BundledSQLiteDriver en la carpeta de datos, con las migraciones de Android y respaldo previo | huella: e1ca3c356b791b12cefd5d2a75dd28179500099bf4c2ebdb8bf03e63191d041b
+com/avoqado/pos/core/di/DatabaseModule.kt                       # reemplazo: Room con BundledSQLiteDriver en la carpeta de datos, con las migraciones de Android y respaldo previo | huella: f63fa21a9c9131ba20471db02c37e40a693e900441bbc181b9d0b9f1413f8191
 com/avoqado/pos/auth/data/BiometricAuthManager.kt               # reemplazo: sin biometría en escritorio | huella: e0ccd4d268b356bb4d0b4765510c62ebaa8f53252ec3fae247808c7679723cb2
 com/avoqado/pos/auth/presentation/LandingScreen.kt              # reemplazo: fondo fijo en vez del video (VideoView) | huella: 26090b8c018e6549408d185ca7ae260508cc64d0abba072bbb5198bdb8acd230
 com/avoqado/pos/customerdisplay/CustomerDisplayPresentation.kt  # sin reemplazo: Presentation de Android (segunda pantalla); sólo la usa CustomerDisplayManager | huella: 8f212a0724fff66aa578d5887bc2e2746bebfc132fc642b4c8f6eedce9ca0a78
@@ -36,3 +36,5 @@ com/avoqado/pos/giftcards/presentation/CompartirLiga.kt # reemplazo: portapapele
 com/avoqado/pos/giftcards/presentation/LectorHidDeLaVentana.kt # RULING-r3: ventana Android; Windows conserva PistolaDeLaVentana | huella: d7dd26d9a6408dfcdade8b92ef1d193901a82ca64d6bddb2e8f75aebbc5e762e
 
 com/avoqado/pos/announcements/presentation/VisorDeFoto.kt # reemplazo: ComponentDialog y AbstractComposeView no existen en escritorio; allá es un Dialog de Compose a toda la ventana | huella: d4d14c1a22e98fd84c5f7a9c497c61270d633ddcdb09445d7a1111f1a5310f85
+
+com/avoqado/pos/maquina/di/MaquinaModule.kt # reemplazo: la credencial de la máquina de efectivo con DPAPI de MÁQUINA (Crypt32, CRYPTPROTECT_LOCAL_MACHINE) en la carpeta de datos; Android usa EncryptedSharedPreferences | huella: c9b2e7f1e96e8ed48afa0675a14848b351a72c1e4dbde8cdd0a857ee1aeac4b1
