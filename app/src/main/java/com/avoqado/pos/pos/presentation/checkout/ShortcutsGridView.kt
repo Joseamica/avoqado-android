@@ -752,8 +752,9 @@ internal fun OrderDiscountsContent(
     }
 }
 
+/** El formulario del descuento manual (nombre, % o $, valor). Lo reusan MOSTRADOR (aquí) y MESAS (`TableOrderScreen`, 7133e3). */
 @Composable
-private fun ManualDiscountEntry(
+internal fun ManualDiscountEntry(
     onApply: (name: String, value: Double, isPercentage: Boolean) -> Unit,
 ) {
     var name by remember { mutableStateOf("") }

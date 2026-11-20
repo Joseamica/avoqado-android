@@ -153,6 +153,30 @@ private const val IMPORTE_RONDA_FUERA_DE_LIMITE = "El importe de esta ronda exce
 internal const val DESCUENTO_CON_APROBACION_SIN_RED_MESA =
     "Sin conexión: este descuento necesita internet para que lo apruebe un gerente. Aplícalo cuando vuelva la red."
 
+/** 7133e3: el manual que pide el PIN del gerente (sin el permiso, o dejaría la cuenta en $0) no se encola: sin red no hay PIN. */
+internal const val DESCUENTO_MANUAL_CON_PIN_SIN_RED_MESA =
+    "Sin conexión: este descuento necesita internet para que lo autorice un gerente. Aplícalo cuando vuelva la red."
+
+/** 7133e3: quedó en la cola del aparato (la mesa ya lo dio); el SERVIDOR lo aplica al volver la conexión. */
+internal const val DESCUENTO_MANUAL_GUARDADO_SIN_RED =
+    "Sin conexión: el descuento quedó guardado en el aparato y se aplica al volver la conexión."
+
+/** 7133e3: con PIN y la red cayó a media llamada: no se sabe si llegó. Volver a darlo igual reusa la llave y no se duplica. */
+internal const val DESCUENTO_MANUAL_SIN_RESPUESTA =
+    "Sin conexión: no supimos si el descuento se aplicó. Revisa la cuenta al volver la red; si lo vuelves a dar igual, no se duplica."
+
+/**
+ * 7133e3: ¿el manual dejaría en $0 lo que queda de los productos? (en centavos, como el SERVIDOR: hz:e0b12f00:D1). Entonces es una
+ * cortesía y pide el permiso de cortesía. Sin la cuenta leída no se sabe: se trata como si sí (pide el PIN, nunca se encola a ciegas).
+ */
+internal fun manualDejaLaCuentaEnCero(type: String, value: Double, subtotal: Double?, yaDescontado: Double?): Boolean {
+    if (subtotal == null || yaDescontado == null) return true
+    val quedaCents = kotlin.math.round((subtotal - yaDescontado) * 100).toLong()
+    if (quedaCents <= 0) return false
+    val montoCents = if (type == "PERCENTAGE") kotlin.math.round(subtotal * value).toLong() else kotlin.math.round(value * 100).toLong()
+    return montoCents >= quedaCents
+}
+
 /** No changes to Cart formulas: reject nonrepresentable intermediates before reading its Int total. */
 internal fun valorRondaSinRedComprobado(items: List<CartItem>): Int = items.fold(0) { total, item ->
     val line = if (item.isCortesia) 0 else {
@@ -1744,6 +1768,67 @@ class TableOrderViewModel @Inject constructor(
                 onSuccess = { showMessage("Descuento aplicado"); repository.refresh(vId) },
                 onFailure = { e ->
                     if (pideAprobacion && repository.esFalloDeRed(e)) showSinRed(DESCUENTO_CON_APROBACION_SIN_RED_MESA)
+                    else showError(com.avoqado.pos.core.data.network.ServerErrorText.humanize(e, "No se pudo aplicar el descuento"))
+                },
+            )
+        }
+    }
+
+    /**
+     * 7133e3 (hz:0555ee15:D2): la llave de cada manual que todavía no se confirmó, por su firma (cuenta, tipo, valor, nombre, motivo).
+     * Volver a dar EL MISMO descuento tras un «no supimos» reusa la llave: el SERVIDOR contesta la fila que ya existía en vez de crear
+     * otra. Se suelta sólo con la respuesta buena; dos descuentos iguales dados a propósito, ya confirmado el primero, son dos.
+     */
+    private val llavesDelManual = mutableMapOf<String, String>()
+
+    /**
+     * Encargo 7133e3 (hz:0555ee15:D2): «Descuento manual» (% o fijo) de la cuenta de MESAS, con los candados de MOSTRADOR:
+     * `discounts:apply` (sin él, el PIN de un gerente), el motivo si el negocio lo pide (lo elige la pantalla antes), y el tope contra
+     * lo que la cuenta debe (lo aplica el SERVIDOR). Dejar la cuenta en $0 es una cortesía y pide su permiso (como la TPV).
+     *
+     * Sin red: quien no necesita PIN lo da y queda en la cola (sube solo, con la misma llave); quien lo necesita ve que hace falta
+     * internet y no se encola.
+     */
+    fun applyManualDiscount(type: String, value: Double, name: String, motivo: com.avoqado.pos.pos.domain.MotivoElegido? = null) {
+        val session = tableSession.current() ?: return
+        val vId = venueId ?: return
+        bloqueoDeSaldo(vId, session)?.let { showBlockedReason(it); return }
+        if (type != "PERCENTAGE" && type != "FIXED_AMOUNT") return
+        if (!value.isFinite() || value <= 0) { showError("El descuento debe ser mayor a cero"); return }
+        if (type == "PERCENTAGE" && value > 100) { showError("El porcentaje no puede ser mayor a 100"); return }
+        val roles = com.avoqado.pos.core.domain.RoleManager(secureStorage)
+        val cuenta = _check.value?.takeIf { it.id == session.orderId }
+        val regala = manualDejaLaCuentaEnCero(type, value, cuenta?.subtotal, cuenta?.discountAmount)
+        val sinPin = roles.canApplyDiscounts && (!regala || roles.canCompOrders)
+        if (!sinPin && (!connectivityMonitor.isConnected.value || session.isProvisional)) {
+            showSinRed(DESCUENTO_MANUAL_CON_PIN_SIN_RED_MESA)
+            return
+        }
+        val nombre = name.trim()
+        val firma = listOf(vId, session.orderId, type, value.toString(), nombre, motivo?.motivo, motivo?.comentario).joinToString("|")
+        val llave = llavesDelManual.getOrPut(firma) { java.util.UUID.randomUUID().toString() }
+        viewModelScope.launch {
+            mutarCuenta(vId, session) {
+                mutar {
+                    repository.applyManualOrderDiscount(
+                        vId,
+                        session.orderId,
+                        com.avoqado.pos.tables.data.DescuentoManualDeMesa(type, value, nombre, llave),
+                        motivo,
+                        encolarSinRed = sinPin,
+                        provisional = session.isProvisional,
+                    )
+                }
+            }.fold(
+                onSuccess = { desenlace ->
+                    llavesDelManual.remove(firma)
+                    if (desenlace == com.avoqado.pos.tables.data.DesenlaceDelManual.GUARDADO_SIN_RED) showSinRed(DESCUENTO_MANUAL_GUARDADO_SIN_RED)
+                    else showMessage("Descuento aplicado")
+                    repository.refresh(vId)
+                },
+                onFailure = { e ->
+                    // La llave se queda: si fue la red, otro toque igual no lo duplica; si fue un rechazo, no se creó nada.
+                    if (repository.esFalloDeRed(e)) showSinRed(DESCUENTO_MANUAL_SIN_RESPUESTA)
                     else showError(com.avoqado.pos.core.data.network.ServerErrorText.humanize(e, "No se pudo aplicar el descuento"))
                 },
             )
