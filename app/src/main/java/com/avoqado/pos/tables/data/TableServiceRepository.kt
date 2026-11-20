@@ -822,15 +822,6 @@ class TableServiceRepository @Inject constructor(
     private val llavesDelManual = java.util.concurrent.ConcurrentHashMap<String, String>()
     fun llaveDelManual(firma: String): String = llavesDelManual.getOrPut(firma) { java.util.UUID.randomUUID().toString() }
     fun soltarLlaveDelManual(firma: String) { llavesDelManual.remove(firma) }
-    fun hayLlaveDelManual(firma: String): Boolean = llavesDelManual.containsKey(firma)
-    /** Codex r3 #3: ¿hay OTRO manual de esta cuenta sin confirmar (en la cola o sin respuesta)? La firma empieza con negocio y cuenta. */
-    fun hayOtrosManualesSinConfirmar(venueId: String, orderId: String, firma: String): Boolean {
-        val prefijo = kotlinx.serialization.json.buildJsonArray {
-            add(kotlinx.serialization.json.JsonPrimitive(venueId)); add(kotlinx.serialization.json.JsonPrimitive(orderId))
-        }.toString().removeSuffix("]") + ","
-        return llavesDelManual.keys.any { it != firma && it.startsWith(prefijo) }
-    }
-
     /**
      * Encargo 7133e3 (hz:0555ee15:D2): «Descuento manual» (% o fijo) en la cuenta de MESAS, con los candados de MOSTRADOR (el SERVIDOR
      * pide `discounts:apply`; sin él, el PIN del gerente lo pone el `ForbiddenInterceptor` y reenvía el MISMO cuerpo).

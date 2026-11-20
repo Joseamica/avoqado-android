@@ -6,7 +6,6 @@ import com.avoqado.pos.core.data.network.ApiService
 import com.avoqado.pos.core.data.sync.SyncOutbox
 import com.avoqado.pos.pos.domain.MotivoElegido
 import com.avoqado.pos.tables.presentation.firmaDelManual
-import com.avoqado.pos.tables.presentation.manualDejaLaCuentaEnCero
 import com.avoqado.pos.tables.presentation.valorDelManual
 import io.mockk.*
 import kotlinx.coroutines.test.runTest
@@ -22,7 +21,7 @@ import java.io.File
  * Encargo 7133e3 (hz:0555ee15:D2): «Descuento manual» en la cuenta de MESAS.
  * - La MISMA llave viaja en el POST y en el intent de la cola: si el POST sí llegó y se perdió la respuesta, el SERVIDOR no lo duplica.
  * - Quien necesita el PIN no se encola (sin red no hay PIN); una cuenta abierta sin red va directo a la cola.
- * - Dejar la cuenta en $0 es una cortesía (como el SERVIDOR, en centavos).
+ * - Si deja la cuenta en $0 (cortesía) lo decide sólo el SERVIDOR: la caja no lo calcula (rediseño tras Codex r4).
  */
 class DescuentoManualDeMesaTest {
     private val venue = "venue-7133"
@@ -99,27 +98,6 @@ class DescuentoManualDeMesaTest {
         assertEquals("local-1", m.encolados.single().second["localOrderId"]!!.jsonPrimitive.content)
     }
 
-    @Test fun `dejar la cuenta en cero es cortesia - en centavos, contra lo que queda`() {
-        // Cuenta de $100 sin descuento.
-        assertTrue(manualDejaLaCuentaEnCero("PERCENTAGE", 100.0, 100.0, 0.0))
-        assertFalse(manualDejaLaCuentaEnCero("PERCENTAGE", 99.0, 100.0, 0.0))
-        assertTrue(manualDejaLaCuentaEnCero("FIXED_AMOUNT", 500.0, 100.0, 0.0))
-        assertFalse(manualDejaLaCuentaEnCero("FIXED_AMOUNT", 99.99, 100.0, 0.0))
-        // Con $20 ya descontados, $80 la deja en cero.
-        assertTrue(manualDejaLaCuentaEnCero("FIXED_AMOUNT", 80.0, 100.0, 20.0))
-        // Sin la cuenta leída no se sabe: se trata como cortesía (pide el PIN, nunca se encola a ciegas).
-        assertTrue(manualDejaLaCuentaEnCero("PERCENTAGE", 10.0, null, null))
-    }
-
-    @Test fun `Codex r2 6 - el % redondea mitad hacia arriba como el SERVIDOR`() {
-        // $1.25 con $0.22 ya descontados: quedan 103 centavos; 82 % de 125 = 102.5 → 103 ⇒ deja la cuenta en cero.
-        assertTrue(manualDejaLaCuentaEnCero("PERCENTAGE", 82.0, 1.25, 0.22))
-        // Codex r2 1: el valor se normaliza a 2 decimales antes de decidir (99.99996 % → 100 %).
-        assertEquals(100.0, valorDelManual(99.99996), 0.0)
-        assertTrue(manualDejaLaCuentaEnCero("PERCENTAGE", 99.99996, 20000.0, 0.0))
-        assertTrue(manualDejaLaCuentaEnCero("FIXED_AMOUNT", 1.005, 1.01, 0.0))
-    }
-
     @Test fun `Codex r2 9 - la firma no confunde un comentario ausente con el texto null`() {
         val sin = firmaDelManual("v", "o", "PERCENTAGE", 10.0, "", MotivoElegido("Queja", null))
         val conTexto = firmaDelManual("v", "o", "PERCENTAGE", 10.0, "", MotivoElegido("Queja", "null"))
@@ -137,17 +115,20 @@ class DescuentoManualDeMesaTest {
         assertNotEquals(primera, m.repo.llaveDelManual(firma)) // ya confirmado: otro descuento igual es otro
     }
 
-    @Test fun `Codex r3 3 - otro manual de la misma cuenta sin confirmar se ve, uno de otra cuenta no`() {
-        val m = mundo()
-        val a = firmaDelManual(venue, "orden-1", "FIXED_AMOUNT", 60.0, "", null)
-        val b = firmaDelManual(venue, "orden-1", "FIXED_AMOUNT", 50.0, "", null)
-        val otraCuenta = firmaDelManual(venue, "orden-10", "FIXED_AMOUNT", 50.0, "", null)
-        assertFalse(m.repo.hayOtrosManualesSinConfirmar(venue, "orden-1", b))
-        m.repo.llaveDelManual(a)
-        assertTrue(m.repo.hayOtrosManualesSinConfirmar(venue, "orden-1", b))
-        assertFalse(m.repo.hayOtrosManualesSinConfirmar(venue, "orden-1", a)) // la misma firma no cuenta como «otro»
-        assertFalse(m.repo.hayOtrosManualesSinConfirmar(venue, "orden-10", otraCuenta)) // "orden-1" no es prefijo de "orden-10"
-        assertTrue(m.repo.hayLlaveDelManual(a))
+    @Test fun `el valor se guarda a 2 decimales como en el SERVIDOR`() {
+        assertEquals(100.0, valorDelManual(99.99996), 0.0)
+        assertEquals(12.35, valorDelManual(12.345), 0.0)
+        assertEquals(1.01, valorDelManual(1.005), 0.0)
+    }
+
+    @Test fun `la caja ya no adivina la cortesia - el SERVIDOR decide (sin calculo local en el ViewModel)`() {
+        val path = "src/main/java/com/avoqado/pos/tables/presentation/TableOrderViewModel.kt"
+        val source = listOf(File(path), File("app/$path")).first { it.exists() }.readText()
+        assertFalse(source.contains("manualDejaLaCuentaEnCero"))
+        // La firma usa el id de apertura sin red: no cambia al subir la mesa (Codex r4 #3).
+        assertTrue(source.contains("firmaDelManual(vId, session.localOrderId ?: session.orderId,"))
+        // Sólo la respuesta buena del SERVIDOR suelta la llave (la cola no).
+        assertTrue(source.contains("else { repository.soltarLlaveDelManual(firma); showMessage(\"Descuento aplicado\") }"))
     }
 
     @Test fun `la pantalla de MESAS ofrece el descuento manual con el formulario de MOSTRADOR y su motivo`() {

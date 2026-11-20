@@ -153,7 +153,7 @@ private const val IMPORTE_RONDA_FUERA_DE_LIMITE = "El importe de esta ronda exce
 internal const val DESCUENTO_CON_APROBACION_SIN_RED_MESA =
     "Sin conexión: este descuento necesita internet para que lo apruebe un gerente. Aplícalo cuando vuelva la red."
 
-/** 7133e3: el manual que pide el PIN del gerente (sin el permiso, o dejaría la cuenta en $0) no se encola: sin red no hay PIN. */
+/** 7133e3: sin `discounts:apply` el manual pide el PIN del gerente y no se encola: sin red no hay PIN. */
 internal const val DESCUENTO_MANUAL_CON_PIN_SIN_RED_MESA =
     "Sin conexión: este descuento necesita internet para que lo autorice un gerente. Aplícalo cuando vuelva la red."
 
@@ -165,31 +165,9 @@ internal const val DESCUENTO_MANUAL_GUARDADO_SIN_RED =
 internal const val DESCUENTO_MANUAL_SIN_RESPUESTA =
     "Sin conexión: no supimos si el descuento se aplicó. Revisa la cuenta al volver la red; si lo vuelves a dar igual, no se duplica."
 
-/** 7133e3 (Codex r2 #4): sin `discounts:apply` NI permiso de cortesía harían falta dos PIN; la caja sólo pide uno. */
-internal const val DESCUENTO_MANUAL_ES_CORTESIA =
-    "Este descuento deja la cuenta en $0: es una cortesía. Usa «Cortesía» o pide a un gerente que lo aplique."
-
 /** 7133e3: el valor como lo guarda el SERVIDOR (2 decimales, mitad hacia arriba). */
 internal fun valorDelManual(value: Double): Double =
     java.math.BigDecimal(value.toString()).setScale(2, java.math.RoundingMode.HALF_UP).toDouble()
-
-/**
- * 7133e3: ¿el manual dejaría en $0 lo que queda de los productos? Con la MISMA cuenta que el SERVIDOR (hz:e0b12f00:D1): centavos
- * enteros, el % con mitad hacia arriba sobre el subtotal, el valor a 2 decimales (Codex r2 #1 y #6). Entonces es una cortesía y pide
- * su permiso. Sin la cuenta no se sabe: se trata como si sí (pide el PIN, nunca se encola a ciegas).
- */
-internal fun manualDejaLaCuentaEnCero(type: String, value: Double, subtotal: Double?, yaDescontado: Double?): Boolean {
-    if (subtotal == null || yaDescontado == null) return true
-    fun centavos(pesos: Double) = java.math.BigDecimal(pesos.toString()).movePointRight(2).setScale(0, java.math.RoundingMode.HALF_UP).toLong()
-    val subtotalCents = centavos(subtotal)
-    val quedaCents = maxOf(0L, subtotalCents - centavos(yaDescontado))
-    if (quedaCents <= 0) return false
-    val v = java.math.BigDecimal(valorDelManual(value).toString())
-    val brutoCents = if (type == "PERCENTAGE") {
-        java.math.BigDecimal(subtotalCents).multiply(v).divide(java.math.BigDecimal(100), 0, java.math.RoundingMode.HALF_UP).toLong()
-    } else minOf(v.movePointRight(2).setScale(0, java.math.RoundingMode.HALF_UP).toLong(), subtotalCents)
-    return minOf(brutoCents, quedaCents) >= quedaCents
-}
 
 /** 7133e3 (Codex r2 #9): la firma de un manual, sin confundir un valor ausente con el texto «null». */
 internal fun firmaDelManual(venueId: String, orderId: String, type: String, value: Double, name: String, motivo: com.avoqado.pos.pos.domain.MotivoElegido?): String =
@@ -1816,30 +1794,19 @@ class TableOrderViewModel @Inject constructor(
         if (type == "PERCENTAGE" && value > 100) { showError("El porcentaje no puede ser mayor a 100"); return }
         val valor = valorDelManual(value)
         if (valor <= 0) { showError("El descuento debe ser mayor a cero"); return }
-        val roles = com.avoqado.pos.core.domain.RoleManager(secureStorage)
-        // Codex r2 #5: una cuenta abierta sin red en este aparato no tiene cuenta del SERVIDOR; su subtotal es el de sus rondas guardadas.
-        val cuenta = _check.value?.takeIf { it.id == session.orderId }
-        val (subtotal, descontado) = when {
-            cuenta != null -> cuenta.subtotal to cuenta.discountAmount
-            session.isProvisional && session.saldoSinRedConocido -> session.valorRondasSinRedCents / 100.0 to 0.0
-            else -> null to null
-        }
-        val nombre = name.trim()
-        val firma = firmaDelManual(vId, session.orderId, type, valor, nombre, motivo)
-        // Codex r3 #2: un envío IGUAL sin confirmar se reintenta con su llave (el SERVIDOR contesta la fila que ya hizo), aunque la
-        // cuenta que se ve ahora ya traiga ese descuento y parezca una cortesía.
-        val reintento = repository.hayLlaveDelManual(firma)
-        // Codex r3 #3: otros manuales de esta cuenta que todavía no confirma el SERVIDOR no están en la cuenta que se ve: no se sabe
-        // cuánto queda, así que se trata como si dejara la cuenta en $0 (pide el permiso de cortesía o internet).
-        val otrosSinConfirmar = repository.hayOtrosManualesSinConfirmar(vId, session.orderId, firma)
-        val regala = !reintento && (otrosSinConfirmar || manualDejaLaCuentaEnCero(type, valor, subtotal, descontado))
-        if (regala && !roles.canApplyDiscounts && !roles.canCompOrders) { showError(DESCUENTO_MANUAL_ES_CORTESIA); return }
-        val sinPin = roles.canApplyDiscounts && (!regala || roles.canCompOrders)
+        // Rediseño tras Codex r4 (la misma familia en r2, r3 y r4): la caja ya NO calcula si el manual deja la cuenta en $0. Eso lo decide
+        // el SERVIDOR con su importe y bajo su candado: en línea, sin permiso de cortesía contesta 403 y el `ForbiddenInterceptor` pide el
+        // PIN; sin red, un regalo sin permiso queda «por revisar» al subir (igual que una cortesía del catálogo dada sin red, D1).
+        val sinPin = com.avoqado.pos.core.domain.RoleManager(secureStorage).canApplyDiscounts
         if (!sinPin && (!connectivityMonitor.isConnected.value || session.isProvisional)) {
             showSinRed(DESCUENTO_MANUAL_CON_PIN_SIN_RED_MESA)
             return
         }
-        // Codex r2 #2: la llave vive en el repositorio (uno por app), no en esta pantalla: salir de la mesa y volver no la pierde.
+        val nombre = name.trim()
+        // La cuenta se nombra por su id de apertura sin red si lo tiene: no cambia cuando la mesa abierta sin red sube (Codex r4 #3).
+        val firma = firmaDelManual(vId, session.localOrderId ?: session.orderId, type, valor, nombre, motivo)
+        // La llave vive en el repositorio (uno por app) y se suelta SÓLO con la respuesta buena del SERVIDOR: salir de la mesa, la cola
+        // o un «no supimos» no la sueltan, y otro toque igual la reusa (el SERVIDOR contesta la fila que ya hizo).
         val llave = repository.llaveDelManual(firma)
         viewModelScope.launch {
             mutarCuenta(vId, session) {
