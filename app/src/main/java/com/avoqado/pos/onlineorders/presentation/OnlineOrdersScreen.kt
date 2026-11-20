@@ -145,7 +145,8 @@ fun OnlineOrdersScreen(
     val puedeCancelar = viewModel.puedeCancelar
     val dialogo = rememberDialogoDePedido()
     // La sección sale si el servidor la tiene (aunque haya algo guardado, un «no disponible» la esconde) y hay algo que decir.
-    val seccionFolios = folios?.takeIf { it.disponible && (it.showTile || it.porPagar.isNotEmpty() || it.porEntregar.isNotEmpty()) }
+    // D661: también mientras haya pagados en línea por abrir, aunque el negocio haya cambiado de modo (`seccionDeFoliosVisible`).
+    val seccionFolios = folios?.takeIf { seccionDeFoliosVisible(it) }
     val foliosEnPantalla = remember(seccionFolios, cobradosEnElAparato, cobradosConTarjeta, ocultos) {
         seccionFolios?.let { conLoCobradoEnElAparato(sinLosYaAtendidos(it, ocultos), cobradosEnElAparato.keys + cobradosConTarjeta.keys) }
     }
@@ -249,6 +250,7 @@ fun OnlineOrdersScreen(
                                         puedeCancelar = puedeCancelar,
                                         onCobrar = viewModel::cobrarFolio,
                                         onCancelar = { dialogo.abrir(it, TipoDeDialogo.CANCELAR_FOLIO) },
+                                        onAbrirYCobrar = viewModel::abrirYCobrar,
                                     )
                                 }
                             },

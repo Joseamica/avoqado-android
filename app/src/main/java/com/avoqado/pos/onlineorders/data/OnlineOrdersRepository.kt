@@ -138,11 +138,15 @@ class OnlineOrdersRepository @Inject constructor(
     private fun JSONObject.textoONulo(k: String): String? =
         if (isNull(k)) null else optString(k).takeIf { it.isNotBlank() }
 
-    private fun get(url: String, token: String, fondo: Boolean = false, bandeja: Boolean = false, rapida: Boolean = false, latido: Boolean = false): Request =
+    private fun get(
+        url: String, token: String, fondo: Boolean = false, bandeja: Boolean = false, rapida: Boolean = false, latido: Boolean = false,
+        avisaTarjetas: Boolean = false,
+    ): Request =
         Request.Builder().url(url).header("Authorization", "Bearer $token").apply {
             if (fondo) header(ForbiddenInterceptor.BACKGROUND_HEADER, "1")
             if (bandeja) header(TRAY_HEADER, "1")
             if (latido) header(TO_PAY_HEADER, "1")
+            if (avisaTarjetas) header(CARD_ALERT_HEADER, "1")
             // La ruta del dinero no espera un PIN dentro de su plazo corto: el 403 vuelve como respuesta, no como `IOException`.
             if (rapida) header(ForbiddenInterceptor.FAIL_FAST_HEADER, "1")
         }.get().build()
@@ -311,14 +315,39 @@ class OnlineOrdersRepository @Inject constructor(
     suspend fun claimPrint(orderId: String, deviceId: String): Boolean = reclamarComanda(orderId, deviceId).reclamado
 
     /** El reclamo con lo que dijo el servidor (Ruling 9: `posibleRepetida`). Cualquier fallo = no reclamado. */
-    suspend fun reclamarComanda(orderId: String, deviceId: String): ReclamoDeImpresion =
-        ReclamoDeImpresion(impresion("$orderId/print/claim", deviceId, "claimed"))
+    suspend fun reclamarComanda(orderId: String, deviceId: String): ReclamoDeImpresion {
+        val (venueId, token) = sesion() ?: return ReclamoDeImpresion(false)
+        return ejecutar(post(ruta(venueId, "online-orders/$orderId/print/claim"), token, deviceId = deviceId))
+            .mapCatching { cuerpo ->
+                val data = JSONObject(cuerpo).optJSONObject("data")
+                ReclamoDeImpresion(
+                    reclamado = data?.optBoolean("claimed", false) ?: false,
+                    posibleRepetida = data?.optBoolean("posibleRepetida", false) ?: false,
+                )
+            }
+            .getOrDefault(ReclamoDeImpresion(false))
+    }
 
-    /** D661: «Abrir y cobrar» un pedido pagado con tarjeta en línea (la aceptación de siempre, con la apertura explícita). */
-    suspend fun abrirPagadoEnLinea(orderId: String): AccionResultado = AccionResultado.Error("pendiente")
+    /**
+     * D661: «Abrir y cobrar» un pedido pagado con tarjeta en línea en «No, entran solos». Es la aceptación de siempre con la apertura
+     * explícita (`{ "abrirPagadoEnLinea": true }`, task-3b-report «Contract»): el SERVIDOR cobra la tarjeta apartada y lo pasa a «Por
+     * entregar». Un 409 con el pedido ya `ACCEPTED` (otra caja lo abrió) es [AccionResultado.Hecho]; «confirmando el pago» (otra caja lo
+     * está cobrando) es [AccionResultado.ConfirmandoPago]. Sólo en línea: es un cobro con tarjeta y NUNCA se encola.
+     */
+    suspend fun abrirPagadoEnLinea(orderId: String): AccionResultado =
+        accion("$orderId/accept", OnlineOrderStatus.ACCEPTED, JSONObject().put("abrirPagadoEnLinea", true))
 
-    /** D661 (Ruling 14): UN pedido en línea leído por su propio camino (para la comanda de uno que no está en la página). */
-    suspend fun pedidoEnLinea(orderId: String): Result<OnlineOrder> = Result.failure(IllegalStateException("pendiente"))
+    /**
+     * D661 (Ruling 14): UN pedido en línea por su propio camino (`GET …/mobile/venues/:venueId/online-orders/:orderId`, `orders:read`), con
+     * sus renglones y `needsPrint`. Para la comanda de un pedido de `comandasPorImprimir` que no está en la página de «Por entregar» (otra
+     * página, o ya cerrado por el corte del día). Un 404 es «no es un pedido en línea de esta sucursal»: falla, nunca un pedido inventado.
+     */
+    suspend fun pedidoEnLinea(orderId: String): Result<OnlineOrder> {
+        val (venueId, token) = sesion() ?: return sinSesion()
+        return ejecutar(get(ruta(venueId, "online-orders/${URLEncoder.encode(orderId, "UTF-8")}"), token, fondo = true))
+            .mapCatching { parseOrder(JSONObject(it).getJSONObject("data")) }
+            .onFailure { Log.d(TAG, "Pedido $orderId no leído: ${it.message}") }
+    }
 
     /** `true` = quedó sellada. `false` = ya estaba sellada o este aparato perdió el reclamo (NO significa «reimprime»). */
     suspend fun confirmPrint(orderId: String, deviceId: String): Boolean = impresion("$orderId/print/confirm", deviceId, "ok")
@@ -425,7 +454,11 @@ class OnlineOrdersRepository @Inject constructor(
             cursor?.let { "cursor=" + URLEncoder.encode(it, "UTF-8") },
         ).joinToString("&").let { if (it.isEmpty()) "" else "?$it" }
         val cliente = client.newBuilder().callTimeout(plazoTotalDeFoliosMs, java.util.concurrent.TimeUnit.MILLISECONDS).build()
-        val leido = ejecutarCancelable(get(ruta(venueId, "online-orders/to-pay$consulta"), token, fondo = true, latido = conLatido), cliente)
+        // D661: esta app suena y abre los pagados en línea (el vigilante corre siempre que la app está al frente), así que toda lectura
+        // de «Por pagar» se anuncia como caja que avisa. El SERVIDOR sólo la cuenta con `orders:update` (task-3b-report, «Contract»).
+        val leido = ejecutarCancelable(
+            get(ruta(venueId, "online-orders/to-pay$consulta"), token, fondo = true, latido = conLatido, avisaTarjetas = true), cliente,
+        )
         val rechazo = (leido.exceptionOrNull() as? RechazoException)?.rechazo
         if (rechazo != null && rechazo.status in setOf(403, 404)) {
             val vieja = seccion == null && cursor == null && copiaDeFolios.withLock { numero <= (secuenciaDeLaCopia[venueId] ?: 0L) }
@@ -555,7 +588,30 @@ class OnlineOrdersRepository @Inject constructor(
             porPagar = folios("toPay"),
             porEntregar = folios("toDeliver"),
             nextCursors = CursoresPorPagar(cursores?.textoONulo("toPay"), cursores?.textoONulo("toDeliver")),
+            tarjetasPorAbrir = renglones(data, "tarjetasPorAbrir") { t ->
+                TarjetaPorAbrir(
+                    orderId = t.getString("orderId"),
+                    orderNumber = t.getString("orderNumber"),
+                    customerName = t.textoONulo("customerName"),
+                    // Ruling 13: PESOS (no existe `totalCents`), con decimal exacto.
+                    totalCents = pesosACentavos(t, "total"),
+                    createdAt = Instant.parse(t.getString("createdAt")),
+                    cobrando = t.optBoolean("cobrando", false),
+                )
+            },
+            comandasPorImprimir = renglones(data, "comandasPorImprimir") { c ->
+                ComandaPorImprimir(c.getString("orderId"), c.optString("orderNumber"))
+            },
         )
+    }
+
+    /** D661: una lista opcional del SERVIDOR; un servidor viejo no la manda (vacía) y un renglón dañado se salta sin tumbar la lista. */
+    private fun <T> renglones(data: JSONObject, clave: String, leer: (JSONObject) -> T): List<T> {
+        val lista = data.optJSONArray(clave) ?: return emptyList()
+        return (0 until lista.length()).mapNotNull { i ->
+            runCatching { leer(lista.getJSONObject(i)) }
+                .onFailure { Log.w(TAG, "$clave #$i ignorado por malformado: ${it.message}") }.getOrNull()
+        }
     }
 
     // MARK: - Saldo
@@ -619,6 +675,8 @@ class OnlineOrdersRepository @Inject constructor(
         const val TRAY_HEADER = "x-online-orders-tray"
         const val DEVICE_HEADER = "x-device-id"
         const val TO_PAY_HEADER = "x-online-orders-to-pay"
+        /** D661: la caja suena y abre los pagados en línea (el SERVIDOR la cuenta como «caja que avisa» sólo con `orders:update`). */
+        const val CARD_ALERT_HEADER = "x-online-orders-card-alert"
         const val CACHE_POR_PAGAR = "to_pay"
         /** R101: llaves que el aparato agrega a su copia de «Por pagar» (el SERVIDOR nunca las manda). */
         const val OCULTOS = "ocultosDelAparato"

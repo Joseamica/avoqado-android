@@ -58,6 +58,8 @@ private const val DESCANSO_TRAS_NO_SALIO_MS = 3 * 60 * 1000L
  *   servidor decide quién la saca.
  * - `confirmPrint` SÓLO si la comanda salió de verdad ([laComandaSalio]); si no, no se confirma y a los 90 s otro aparato la
  *   saca. Límite aceptado (R20): si una estación imprimió y otra falló, a los 90 s se reimprime el pedido completo.
+ * - Ruling 9 (D661): el reclamo es «al menos una vez». Si se concede sobre otro que venció sin confirmarse (`posibleRepetida`), la
+ *   comanda dice arriba «POSIBLE REPETIDA: revisa si ya salió» (también en «Mi equipo»: la regla del SERVIDOR es de todo reclamo).
  * - Nunca dos veces a la vez el mismo pedido en este aparato ([ResultadoImpresion.YaEnCurso]); y el trabajo corre en
  *   `NonCancellable`: cerrar la pantalla a media impresión no deja un reclamo colgado sin imprimir.
  */
@@ -122,7 +124,8 @@ class ImpresionDePedidoEnLinea internal constructor(
                     val reclamo = repositorio.reclamarComanda(order.orderId, deviceId)
                     if (!reclamo.reclamado) return@run ResultadoImpresion.OtroAparato
                     if (venueId() != sucursal) return@run ResultadoImpresion.NoSalio
-                    if (!sacarComanda(order, sucursal)) return@run ResultadoImpresion.NoSalio
+                    // Ruling 9: el reclamo se concedió sobre otro que venció sin confirmarse; el papel pudo haber salido ya.
+                    if (!sacarComanda(order, sucursal, posibleRepetida = reclamo.posibleRepetida)) return@run ResultadoImpresion.NoSalio
                     // Si la confirmación se pierde, el papel ya salió: a los 90 s otro aparato puede repetirla (límite aceptado, R20).
                     if (venueId() == sucursal) repositorio.confirmPrint(order.orderId, deviceId)
                     ResultadoImpresion.Impresa
@@ -150,9 +153,11 @@ class ImpresionDePedidoEnLinea internal constructor(
     }
 
     /** `dispatch` nunca lanza ante una impresora caída: devuelve el estado. «No lanzó» NO es «salió». */
-    private suspend fun sacarComanda(order: OnlineOrder, sucursal: String): Boolean {
+    private suspend fun sacarComanda(order: OnlineOrder, sucursal: String, posibleRepetida: Boolean = false): Boolean {
+        val encabezado = (if (posibleRepetida) listOf(MARCA_NEGRITA_ENCABEZADO + TextosPedidosEnLinea.POSIBLE_REPETIDA) else emptyList()) +
+            encabezadoDeComanda(order)
         val estado = try {
-            despachar(sucursal, lineasDeComanda(order), order.orderNumber, TextosPedidosEnLinea.PARA_RECOGER, order.orderId, encabezadoDeComanda(order))
+            despachar(sucursal, lineasDeComanda(order), order.orderNumber, TextosPedidosEnLinea.PARA_RECOGER, order.orderId, encabezado)
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (e: Exception) {

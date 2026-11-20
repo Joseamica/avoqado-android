@@ -169,6 +169,7 @@ class OnlineOrdersViewModel internal constructor(
         tienePlan = { planManager.hasFeature("ONLINE_ORDERING") },
         hayPedidosAbiertos = { vigilante.hayPedidosAbiertos.value },
         sondearVigilante = vigilante::sondearYa,
+        sondearFoliosDelVigilante = vigilante::sondearFoliosYa,
         // El deviceId del outbox, NO uno nuevo (regla de offline-first): sin él no se reclama nada.
         imprimirSiToca = { pedido ->
             val deviceId = try { syncOutbox.get().deviceId } catch (e: Exception) { null }
@@ -860,8 +861,24 @@ class OnlineOrdersViewModel internal constructor(
         _secciones.value = s.copy(porAceptar = s.porAceptar.map { if (it.orderId == orderId) it.copy(cardStatus = "CONFIRMING") else it })
     }
 
-    /** D661: «Abrir y cobrar» un pedido pagado con tarjeta en línea. */
-    fun abrirYCobrar(orderId: String) {}
+    /**
+     * D661 (Task 11): «Abrir y cobrar» un pedido pagado con tarjeta en línea en «No, entran solos». Abrir ES cobrar (el SERVIDOR cobra la
+     * tarjeta apartada y lo pasa a «Por entregar»), así que sale SÓLO de este toque: entrar a la pantalla, releer o «Cargar más» nunca abren
+     * nada. Sólo un pedido que la lista de ahora trae por abrir, que otra caja no está cobrando y con `orders:update`. Sólo en línea: nunca
+     * se encola. Pase lo que pase se relee: el SERVIDOR dice dónde quedó (otra caja lo abrió = ya está en «Por entregar»; se está cobrando =
+     * «Cobrándose en otra caja…»; se liberó = «ya no está disponible»). La comanda NO sale de la respuesta: la saca el vigilante de una
+     * lectura fresca (`comandasPorImprimir`), y el vigilante relee ya para que el sonido pare en esta lectura.
+     */
+    fun abrirYCobrar(orderId: String) {
+        val tarjeta = _porPagar.value?.takeIf { it.disponible }?.tarjetasPorAbrir?.firstOrNull { it.orderId == orderId } ?: return
+        if (tarjeta.cobrando) return
+        ejecutar(
+            orderId, permisoActualizar(),
+            textoExito = TextosPedidosEnLinea.abiertoEnPorEntregar(tarjeta.orderNumber),
+            textoSinConexion = TextosPedidosEnLinea.ABRIR_SIN_CONEXION,
+            alResponder = sondearFoliosDelVigilante,
+        ) { repositorio.abrirPagadoEnLinea(orderId) }
+    }
 
     /** [motivo] es el código del servidor (`OUT_OF_ITEMS`, `CLOSED`, `TOO_BUSY`, `OTHER`). */
     fun rechazar(orderId: String, motivo: String) =
@@ -1258,6 +1275,10 @@ class OnlineOrdersViewModel internal constructor(
         alHechoYReleido: () -> Unit = {},
         /** R100: la huella del folio tomada ANTES de la petición; con la acción confirmada se esconde hasta que el SERVIDOR cambie. */
         huella: HuellaDeFolio? = null,
+        /** El texto neutro de «sin red» de esta acción. */
+        textoSinConexion: String = TextosPedidosEnLinea.REINTENTA,
+        /** Lo que corre en cuanto llega la respuesta, sea cual sea (D661: el vigilante relee «Por pagar»). */
+        alResponder: () -> Unit = {},
         llamada: suspend () -> AccionResultado,
     ) {
         if (!permitido) return
@@ -1289,10 +1310,11 @@ class OnlineOrdersViewModel internal constructor(
                 _aviso.value = when (resultado) {
                     AccionResultado.Hecho -> textoExito
                     is AccionResultado.YaNoDisponible -> TextosPedidosEnLinea.YA_NO_DISPONIBLE
-                    AccionResultado.SinConexion -> TextosPedidosEnLinea.REINTENTA
+                    AccionResultado.SinConexion -> textoSinConexion
                     is AccionResultado.ConfirmandoPago -> resultado.mensaje
                     is AccionResultado.Error -> resultado.mensaje
                 }
+                alResponder()
                 // Siempre se relee: el servidor es el que dice dónde quedó el pedido.
                 // El pedido salió de «por aceptar» (o ya no estaba): el aviso global para en ESTA petición, no en el siguiente compás.
                 if (resultado is AccionResultado.Hecho || resultado is AccionResultado.YaNoDisponible) {

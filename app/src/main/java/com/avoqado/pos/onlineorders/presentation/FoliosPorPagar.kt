@@ -26,20 +26,27 @@ internal fun yaPagadoCents(pedido: OnlineOrder): Long = (pedido.totalCents - ped
 fun numeroDeSeccion(conteo: Int, mostrados: Int, hayMas: Boolean): Int = if (hayMas) max(conteo, mostrados) else mostrados
 
 /** La insignia de «Pedidos en línea» en «Más»: lo que espera una persona (aceptar, cobrar o, D661, abrir un pagado en línea). */
-fun numeroDelMenu(porAceptar: Int, porPagar: Int, porAbrir: Int = 0): Int = porAceptar + porPagar
+fun numeroDelMenu(porAceptar: Int, porPagar: Int, porAbrir: Int = 0): Int = porAceptar + porPagar + porAbrir
 
 /**
  * La sección de folios sale si el servidor la tiene (un «no disponible» la esconde aunque haya algo guardado) y hay algo que decir.
- * PURA.
+ * D661: un pagado en línea por abrir la mantiene a la vista aunque el negocio cambie a «Mi equipo» o apague la tienda. PURA.
  */
 fun seccionDeFoliosVisible(lista: ListaPorPagar): Boolean =
-    lista.disponible && (lista.showTile || lista.porPagar.isNotEmpty() || lista.porEntregar.isNotEmpty())
+    lista.disponible &&
+        (lista.showTile || lista.porPagar.isNotEmpty() || lista.porEntregar.isNotEmpty() || lista.tarjetasPorAbrir.isNotEmpty())
 
-/** D661: el botón de un pagado en línea por abrir. Abrir es cobrar una tarjeta: pide conexión. PURA. */
-fun sePuedeAbrir(tarjeta: TarjetaPorAbrir, sinConexion: Boolean, ocupado: Boolean): Boolean = true
+/** D661: el botón de un pagado en línea por abrir. Abrir es cobrar una tarjeta: pide conexión, y otra caja no lo está cobrando. PURA. */
+fun sePuedeAbrir(tarjeta: TarjetaPorAbrir, sinConexion: Boolean, ocupado: Boolean): Boolean =
+    !sinConexion && !tarjeta.cobrando && !ocupado
 
 /** D661: lo que dice ese botón (lo que se puede, o por qué no). PURA. */
-fun textoDeAbrir(tarjeta: TarjetaPorAbrir, sinConexion: Boolean, ocupado: Boolean): String = TextosPedidosEnLinea.ABRIR_Y_COBRAR
+fun textoDeAbrir(tarjeta: TarjetaPorAbrir, sinConexion: Boolean, ocupado: Boolean): String = when {
+    tarjeta.cobrando -> TextosPedidosEnLinea.COBRANDO_EN_OTRA_CAJA
+    ocupado -> TextosPedidosEnLinea.ABRIENDO
+    sinConexion -> TextosPedidosEnLinea.ABRIR_NECESITA_CONEXION
+    else -> TextosPedidosEnLinea.ABRIR_Y_COBRAR
+}
 
 private fun normalizar(texto: String): String =
     Normalizer.normalize(texto, Normalizer.Form.NFD).replace(Regex("\\p{Mn}+"), "").lowercase()

@@ -46,6 +46,7 @@ import com.avoqado.pos.designsystem.theme.Success
 import com.avoqado.pos.designsystem.theme.Warning
 import com.avoqado.pos.onlineorders.domain.ListaPorPagar
 import com.avoqado.pos.onlineorders.domain.OnlineOrder
+import com.avoqado.pos.onlineorders.domain.TarjetaPorAbrir
 import java.time.Instant
 
 /** Claves de las filas de los folios (la lista las usa para «si estabas hasta arriba, te quedas hasta arriba»). */
@@ -277,6 +278,8 @@ internal fun LazyListScope.seccionesDeFolios(
     puedeCancelar: Boolean = false,
     onCobrar: (OnlineOrder) -> Unit = {},
     onCancelar: (orderId: String) -> Unit = {},
+    // D661: «Abrir y cobrar» un pagado con tarjeta en línea (sólo con `orders:update`, igual que aceptar).
+    onAbrirYCobrar: (orderId: String) -> Unit = {},
 ) {
     if (lista == null) {
         if (!error && leyendo) {
@@ -297,6 +300,23 @@ internal fun LazyListScope.seccionesDeFolios(
         return
     }
     item(key = CLAVE_BUSCADOR_FOLIOS) { BuscadorDeFolios(busqueda, onBuscar) }
+
+    // D661: lo que suena va primero, debajo del buscador (que sigue siendo la primera fila: «si estabas hasta arriba, te quedas arriba»).
+    // No se filtra con la búsqueda: son pocos y cada minuto cuenta (si nadie lo abre en 10 min se libera sin cobrar).
+    if (lista.tarjetasPorAbrir.isNotEmpty()) {
+        item(key = "h-pagados-en-linea") {
+            CabeceraDeFolios(TextosPedidosEnLinea.SECCION_PAGADOS_EN_LINEA, lista.tarjetasPorAbrir.size, lista.guardadoHaceMin, "seccion-pagados-en-linea")
+        }
+        items(lista.tarjetasPorAbrir, key = { "pagado-en-linea-${it.orderId}" }) { tarjeta ->
+            PagadoEnLineaCard(
+                tarjeta = tarjeta,
+                sinConexion = sinConexion,
+                puedeAbrir = puedeActualizar,
+                ocupado = tarjeta.orderId in ocupados,
+                onAbrir = { onAbrirYCobrar(tarjeta.orderId) },
+            )
+        }
+    }
 
     val busca = busqueda.replace("-", "").replace(" ", "").length >= 3
     val porPagar = if (busca) filtrarFolios(lista.porPagar, busqueda) else lista.porPagar
@@ -360,6 +380,61 @@ internal fun LazyListScope.seccionesDeFolios(
         if (hayMasPorEntregar) {
             item(key = "folios-entregar-mas") {
                 CargarMas(lista.porEntregar.size, lista.counts.toDeliver, sinConexion || cargandoMas, "cargar-mas-por-entregar") { onCargarMas(OnlineOrdersViewModel.SECCION_POR_ENTREGAR) }
+            }
+        }
+    }
+}
+
+/**
+ * D661: un pedido pagado con tarjeta en línea en «No, entran solos» que espera que una caja lo abra. El dinero está apartado: «Abrir y
+ * cobrar» lo cobra, lo pasa a «Por entregar» y su comanda sale sola. Sin red el botón lo dice (es un cobro con tarjeta); si otra caja lo
+ * está cobrando, «Cobrándose en otra caja…». Sin `orders:update` no hay botón: se dice a quién pedírselo.
+ */
+@Composable
+private fun PagadoEnLineaCard(
+    tarjeta: TarjetaPorAbrir,
+    sinConexion: Boolean,
+    puedeAbrir: Boolean,
+    ocupado: Boolean,
+    onAbrir: () -> Unit,
+) {
+    val espacio = AvoqadoTheme.spacing
+    Card(
+        modifier = Modifier.fillMaxWidth().testTag("pagado-en-linea-${tarjeta.orderId}"),
+        shape = RoundedCornerShape(AvoqadoTheme.cornerRadius.lg),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+    ) {
+        Column(Modifier.padding(espacio.lg), verticalArrangement = Arrangement.spacedBy(espacio.sm)) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    buildAnnotatedString {
+                        append("Folio ")
+                        withStyle(SpanStyle(fontSize = 22.sp, fontWeight = FontWeight.Bold, letterSpacing = 2.sp)) { append(tarjeta.orderNumber) }
+                    },
+                    style = MaterialTheme.typography.titleMedium,
+                )
+                Text(horaDelNegocio(tarjeta.createdAt), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            tarjeta.customerName?.takeIf { it.isNotBlank() }?.let { Text(it, style = MaterialTheme.typography.bodyLarge) }
+            Text(TextosPedidosEnLinea.PAGADO_EN_LINEA_AYUDA, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(espacio.md)) {
+                Text(
+                    TextosPedidosEnLinea.totalPagadoEnLinea(formatoPesos(tarjeta.totalCents)),
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.weight(1f),
+                )
+                if (puedeAbrir) {
+                    Button(
+                        onClick = onAbrir,
+                        enabled = sePuedeAbrir(tarjeta, sinConexion, ocupado),
+                        modifier = Modifier.heightIn(min = ALTO_MINIMO).testTag("pagado-en-linea-abrir-${tarjeta.orderId}"),
+                    ) { Text(textoDeAbrir(tarjeta, sinConexion, ocupado)) }
+                }
+            }
+            if (!puedeAbrir) {
+                Text(TextosPedidosEnLinea.PAGADOS_EN_LINEA_SIN_PERMISO, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
     }
