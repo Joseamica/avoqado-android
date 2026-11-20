@@ -161,23 +161,13 @@ internal const val DESCUENTO_MANUAL_CON_PIN_SIN_RED_MESA =
 internal const val DESCUENTO_MANUAL_GUARDADO_SIN_RED =
     "Sin conexión: el descuento quedó guardado en el aparato y se aplica al volver la conexión."
 
-/** 7133e3: con PIN y la red cayó a media llamada: no se sabe si llegó. Volver a darlo igual reusa la llave y no se duplica. */
+/** 7133e3: con PIN y la red cayó a media llamada: no se sabe si llegó. La cuenta se relee; antes de darlo otra vez, que se revise. */
 internal const val DESCUENTO_MANUAL_SIN_RESPUESTA =
-    "Sin conexión: no supimos si el descuento se aplicó. Revisa la cuenta al volver la red; si lo vuelves a dar igual, no se duplica."
+    "Sin conexión: no supimos si el descuento se aplicó. Revisa «Aplicados» al volver la red antes de darlo otra vez."
 
 /** 7133e3: el valor como lo guarda el SERVIDOR (2 decimales, mitad hacia arriba). */
 internal fun valorDelManual(value: Double): Double =
     java.math.BigDecimal(value.toString()).setScale(2, java.math.RoundingMode.HALF_UP).toDouble()
-
-/** 7133e3 (Codex r2 #9): la firma de un manual, sin confundir un valor ausente con el texto «null». */
-internal fun firmaDelManual(venueId: String, orderId: String, type: String, value: Double, name: String, motivo: com.avoqado.pos.pos.domain.MotivoElegido?): String =
-    kotlinx.serialization.json.buildJsonArray {
-        add(kotlinx.serialization.json.JsonPrimitive(venueId)); add(kotlinx.serialization.json.JsonPrimitive(orderId))
-        add(kotlinx.serialization.json.JsonPrimitive(type)); add(kotlinx.serialization.json.JsonPrimitive(valorDelManual(value)))
-        add(kotlinx.serialization.json.JsonPrimitive(name))
-        add(motivo?.motivo?.let { kotlinx.serialization.json.JsonPrimitive(it) } ?: kotlinx.serialization.json.JsonNull)
-        add(motivo?.comentario?.let { kotlinx.serialization.json.JsonPrimitive(it) } ?: kotlinx.serialization.json.JsonNull)
-    }.toString()
 
 /** No changes to Cart formulas: reject nonrepresentable intermediates before reading its Int total. */
 internal fun valorRondaSinRedComprobado(items: List<CartItem>): Int = items.fold(0) { total, item ->
@@ -1803,11 +1793,10 @@ class TableOrderViewModel @Inject constructor(
             return
         }
         val nombre = name.trim()
-        // La cuenta se nombra por su id de apertura sin red si lo tiene: no cambia cuando la mesa abierta sin red sube (Codex r4 #3).
-        val firma = firmaDelManual(vId, session.localOrderId ?: session.orderId, type, valor, nombre, motivo)
-        // La llave vive en el repositorio (uno por app) y se suelta SÓLO con la respuesta buena del SERVIDOR: salir de la mesa, la cola
-        // o un «no supimos» no la sueltan, y otro toque igual la reusa (el SERVIDOR contesta la fila que ya hizo).
-        val llave = repository.llaveDelManual(firma)
+        // Rediseño tras Codex r5 (la familia de r2–r5 era la memoria de llaves ENTRE toques): una llave NUEVA por toque, compartida
+        // sólo entre su POST y su copia en la cola. Si el POST llegó y se perdió la respuesta, la cola sube la misma llave y el SERVIDOR
+        // no lo duplica (D21). Dos toques son dos descuentos, como en MOSTRADOR; un «no supimos» relee la cuenta para que se vea si llegó.
+        val llave = java.util.UUID.randomUUID().toString()
         viewModelScope.launch {
             mutarCuenta(vId, session) {
                 mutar {
@@ -1822,13 +1811,12 @@ class TableOrderViewModel @Inject constructor(
                 }
             }.fold(
                 onSuccess = { desenlace ->
-                    // Codex r3 #1: sólo la respuesta del SERVIDOR suelta la llave; en la cola sigue sin confirmar (otro toque igual la reusa).
                     if (desenlace == com.avoqado.pos.tables.data.DesenlaceDelManual.GUARDADO_SIN_RED) showSinRed(DESCUENTO_MANUAL_GUARDADO_SIN_RED)
-                    else { repository.soltarLlaveDelManual(firma); showMessage("Descuento aplicado") }
+                    else showMessage("Descuento aplicado")
                     repository.refresh(vId)
                 },
                 onFailure = { e ->
-                    // La llave se queda: si fue la red, otro toque igual no lo duplica; si fue un rechazo, no se creó nada.
+                    // Con PIN no se encola: si fue la red, no se sabe si llegó. `mutar` ya relee la cuenta: si llegó, se ve en «Aplicados».
                     if (repository.esFalloDeRed(e)) showSinRed(DESCUENTO_MANUAL_SIN_RESPUESTA)
                     else showError(com.avoqado.pos.core.data.network.ServerErrorText.humanize(e, "No se pudo aplicar el descuento"))
                 },

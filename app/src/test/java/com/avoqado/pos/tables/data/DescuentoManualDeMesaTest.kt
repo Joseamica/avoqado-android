@@ -5,7 +5,6 @@ import com.avoqado.pos.core.data.local.database.CachedPayloadDao
 import com.avoqado.pos.core.data.network.ApiService
 import com.avoqado.pos.core.data.sync.SyncOutbox
 import com.avoqado.pos.pos.domain.MotivoElegido
-import com.avoqado.pos.tables.presentation.firmaDelManual
 import com.avoqado.pos.tables.presentation.valorDelManual
 import io.mockk.*
 import kotlinx.coroutines.test.runTest
@@ -98,37 +97,19 @@ class DescuentoManualDeMesaTest {
         assertEquals("local-1", m.encolados.single().second["localOrderId"]!!.jsonPrimitive.content)
     }
 
-    @Test fun `Codex r2 9 - la firma no confunde un comentario ausente con el texto null`() {
-        val sin = firmaDelManual("v", "o", "PERCENTAGE", 10.0, "", MotivoElegido("Queja", null))
-        val conTexto = firmaDelManual("v", "o", "PERCENTAGE", 10.0, "", MotivoElegido("Queja", "null"))
-        assertNotEquals(sin, conTexto)
-        assertEquals(sin, firmaDelManual("v", "o", "PERCENTAGE", 10.0, "", MotivoElegido("Queja", null)))
-        assertNotEquals(sin, firmaDelManual("v", "otra", "PERCENTAGE", 10.0, "", MotivoElegido("Queja", null)))
-    }
-
-    @Test fun `Codex r2 2 - la llave del manual vive en el repositorio hasta la respuesta buena`() {
-        val m = mundo()
-        val firma = firmaDelManual(venue, "orden-1", "FIXED_AMOUNT", 20.0, "Amigo", null)
-        val primera = m.repo.llaveDelManual(firma)
-        assertEquals(primera, m.repo.llaveDelManual(firma)) // otro toque igual (o volver a la mesa): la misma
-        m.repo.soltarLlaveDelManual(firma)
-        assertNotEquals(primera, m.repo.llaveDelManual(firma)) // ya confirmado: otro descuento igual es otro
-    }
-
     @Test fun `el valor se guarda a 2 decimales como en el SERVIDOR`() {
         assertEquals(100.0, valorDelManual(99.99996), 0.0)
         assertEquals(12.35, valorDelManual(12.345), 0.0)
         assertEquals(1.01, valorDelManual(1.005), 0.0)
     }
 
-    @Test fun `la caja ya no adivina la cortesia - el SERVIDOR decide (sin calculo local en el ViewModel)`() {
+    @Test fun `una llave NUEVA por toque y la caja no adivina la cortesia (rediseño tras Codex r4 y r5)`() {
         val path = "src/main/java/com/avoqado/pos/tables/presentation/TableOrderViewModel.kt"
         val source = listOf(File(path), File("app/$path")).first { it.exists() }.readText()
+        val cuerpo = source.substringAfter("fun applyManualDiscount(").substringBefore("/** Quita un descuento aplicado del cheque. */")
+        assertTrue(cuerpo.contains("val llave = java.util.UUID.randomUUID().toString()"))
+        assertFalse(cuerpo.contains("llaveDelManual"))
         assertFalse(source.contains("manualDejaLaCuentaEnCero"))
-        // La firma usa el id de apertura sin red: no cambia al subir la mesa (Codex r4 #3).
-        assertTrue(source.contains("firmaDelManual(vId, session.localOrderId ?: session.orderId,"))
-        // Sólo la respuesta buena del SERVIDOR suelta la llave (la cola no).
-        assertTrue(source.contains("else { repository.soltarLlaveDelManual(firma); showMessage(\"Descuento aplicado\") }"))
     }
 
     @Test fun `la pantalla de MESAS ofrece el descuento manual con el formulario de MOSTRADOR y su motivo`() {
