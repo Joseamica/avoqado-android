@@ -780,10 +780,9 @@ class KDSViewModel @Inject constructor(
         val estacion = estacionDeLaHoja
         val apertura = aperturaDeRecientes
         _deshaciendo.value = true
-        _avisoDeRecientes.value = emptyMap()
+        _avisoDeRecientes.value = _avisoDeRecientes.value - id
         viewModelScope.launch {
             val resultado = kdsRepository.recall(id, terminadaEn)
-            _deshaciendo.value = false
             resultado
                 .onSuccess {
                     // Ronda 4: LISTO + Deshacer inmediato (antes de que un sondeo confirme el bump) no puede
@@ -800,19 +799,20 @@ class KDSViewModel @Inject constructor(
                     refrescarTablero()
                 }
                 .onFailure { e ->
-                    if (esSinRed(e)) _sinConexion.value = true
+                    val enSuEstacion = estacion != null && (_vista.value as? VistaDeCocina.Tablero)?.estacion?.id == estacion
+                    // Codex r21 #7: el «sin red» de un intento de otra estación no pinta el banner de ésta.
+                    if (esSinRed(e) && enSuEstacion) _sinConexion.value = true
                     val aviso = avisoDeFallo(e, AccionDeCocina.DESHACER)
-                    // El porqué va debajo de su comanda si su hoja sigue abierta; si ya se cerró, a la barra del tablero de ESA
-                    // estación (nunca a la de otra).
-                    when {
-                        apertura == aperturaDeRecientes && estacionDeLaHoja != null ->
-                            _avisoDeRecientes.value = mapOf(id to aviso)
-                        estacion != null && (_vista.value as? VistaDeCocina.Tablero)?.estacion?.id == estacion -> {
-                            _aviso.value = aviso
-                            avisoEsDeDeshacer = true
-                        }
+                    // El porqué va debajo de SU comanda si su hoja sigue abierta (cada comanda conserva el suyo) y, en la misma
+                    // estación, también en la barra del tablero: cerrar la hoja (aunque sea a media animación) no lo pierde.
+                    if (apertura == aperturaDeRecientes && estacionDeLaHoja != null) _avisoDeRecientes.value = _avisoDeRecientes.value + (id to aviso)
+                    if (enSuEstacion) {
+                        _aviso.value = aviso
+                        avisoEsDeDeshacer = true
                     }
                 }
+            // Codex r21 #1: los botones vuelven hasta que terminó TODO lo del resultado (también lo guardado en el aparato).
+            _deshaciendo.value = false
         }
     }
 

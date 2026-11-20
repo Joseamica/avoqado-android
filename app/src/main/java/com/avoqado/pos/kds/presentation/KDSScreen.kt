@@ -126,8 +126,17 @@ fun KDSScreen(
     val avisoDeRecientes by viewModel.avisoDeRecientes.collectAsState()
     val recientesLeyendo by viewModel.recientesLeyendo.collectAsState()
     val deshaciendo by viewModel.deshaciendo.collectAsState()
-    // D17 (Codex r20): salir de la cocina (o rotar) cierra «Recientes»: al volver no reaparece sola con lo de antes.
-    DisposableEffect(Unit) { onDispose { viewModel.cerrarRecientes() } }
+    // D17 (Codex r20 y r21): salir de la cocina, rotar o mandar la app atrás (Inicio) cierra «Recientes»: al volver no reaparece
+    // sola con lo de antes.
+    val ciclo = LocalLifecycleOwner.current
+    DisposableEffect(ciclo) {
+        val alParar = LifecycleEventObserver { _, evento -> if (evento == Lifecycle.Event.ON_STOP) viewModel.cerrarRecientes() }
+        ciclo.lifecycle.addObserver(alParar)
+        onDispose {
+            ciclo.lifecycle.removeObserver(alParar)
+            viewModel.cerrarRecientes()
+        }
+    }
     val sinConexion by viewModel.sinConexion.collectAsState()
     val aviso by viewModel.aviso.collectAsState()
     val exito by viewModel.exito.collectAsState()
