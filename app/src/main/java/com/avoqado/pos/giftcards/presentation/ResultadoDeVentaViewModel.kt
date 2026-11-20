@@ -3,6 +3,7 @@ package com.avoqado.pos.giftcards.presentation
 import androidx.lifecycle.ViewModel
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.util.ConnectivityMonitor
+import com.avoqado.pos.core.util.telefonoMx
 import com.avoqado.pos.giftcards.data.*
 import com.avoqado.pos.giftcards.domain.*
 import com.avoqado.pos.printing.data.CertificadoDeTarjeta
@@ -300,7 +301,7 @@ data class SobreEnResultado(val sobre: SobreDeLaCuenta?, val activando: Boolean,
             "EMAIL"->correo.trim().takeIf {it.length<=120 && it.matches(Regex("[^@\\s]+@[^@\\s]+\\.[^@\\s]+"))}?.let {Triple(canal,null,it)}
             else->null
         }
-        if(datos==null) {avisoValor.value=if(canal=="WHATSAPP") "Escribe 10 dígitos de México (+52)" else "Revisa el correo";return@accion}
+        if(datos==null) {avisoValor.value=if(canal=="WHATSAPP") TextosDeTarjetas.CELULAR_INVALIDO else "Revisa el correo";return@accion}
         datosCambio=datos;fijado.value=true;codigoValor.value=null;valor.value=valor.value.map {it.copy(qr=null)}
         when(val r=repo.cambiarDestino(venue!!,id,key,datos.first,datos.second,datos.third)) {
             is Respuesta.Ok -> if(vigente(g) && versionDialogo==vd) {dialogoTerminado=true;primeraRevelacion=true;sinLigas.remove(id);revisionSondeo++;exitoValor.value="Destino actualizado";refrescarDentro()}

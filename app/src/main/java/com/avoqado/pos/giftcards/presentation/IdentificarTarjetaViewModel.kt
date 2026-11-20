@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.util.ConnectivityMonitor
+import com.avoqado.pos.core.util.telefonoMx
 import com.avoqado.pos.core.domain.RoleManager
 import com.avoqado.pos.pos.data.LectorHidBus
 import com.avoqado.pos.giftcards.data.*
@@ -185,7 +186,7 @@ class IdentificarTarjetaViewModel @Inject constructor(
     }
     suspend fun pedirCodigo(telefonoDigitos: String) {
         if (!contextoVigente() || ocupada || ajustes?.porTelefono != true) return
-        val phone = telefonoMx(telefonoDigitos) ?: run { mutableEstado.value = EstadoDeIdentificacion.Error("Escribe 10 dígitos de México (+52)"); return }
+        val phone = telefonoMx(telefonoDigitos) ?: run { mutableEstado.value = EstadoDeIdentificacion.Error(TextosDeTarjetas.CELULAR_INVALIDO); return }
         telefonoActual = phone; telefonoVerificado = null; ultimaPrueba = null
         pedir({ repo.pedirCodigo(it, phone) }) { telefonoVerificado = phone; mutableEstado.value = EstadoDeIdentificacion.CodigoPedido }
     }

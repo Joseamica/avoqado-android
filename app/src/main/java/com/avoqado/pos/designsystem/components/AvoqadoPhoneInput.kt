@@ -38,6 +38,9 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
+import com.avoqado.pos.core.util.digitosNacionales
+import com.avoqado.pos.core.util.filtrarTecleoDelCampoConBandera
+import com.avoqado.pos.core.util.textoVisibleDelCampo
 
 /**
  * International phone input with country selector.
@@ -71,6 +74,7 @@ fun AvoqadoPhoneInput(
     placeholder: String = "Número",
 ) {
     var showPicker by remember { mutableStateOf(false) }
+    var escrito by remember { mutableStateOf(digits) }
 
     Row(
         modifier = modifier
@@ -128,7 +132,9 @@ fun AvoqadoPhoneInput(
                 modifier = Modifier.weight(1f),
                 contentAlignment = Alignment.CenterStart,
             ) {
-                if (digits.isEmpty()) {
+                val visible = textoVisibleDelCampo(escrito, digits, country.dialCode)
+                // La ayuda sale sólo con el campo vacío: con «+52 1» escrito todavía no hay dígitos, pero sí texto (Codex r5).
+                if (visible.isEmpty()) {
                     Text(
                         text = placeholder,
                         style = MaterialTheme.typography.bodyLarge,
@@ -136,8 +142,14 @@ fun AvoqadoPhoneInput(
                     )
                 }
                 BasicTextField(
-                    value = digits,
-                    onValueChange = { onDigitsChange(it.filter { c -> c.isDigit() }) },
+                    // Se ve lo escrito (con su «+»); a quien lo usa le llegan sólo los dígitos, sin la lada repetida: con México
+                    // elegido, «+52 55 9187 3922» da «5591873922» (antes «525591873922» y el WhatsApp salía a «+52525591873922»),
+                    // igual pegado que tecleado. Regla en core/util/Telefono.kt.
+                    value = visible,
+                    onValueChange = { nuevo ->
+                        escrito = filtrarTecleoDelCampoConBandera(nuevo)
+                        onDigitsChange(digitosNacionales(escrito, country.dialCode))
+                    },
                     singleLine = true,
                     enabled = enabled,
                     textStyle = MaterialTheme.typography.bodyLarge.copy(
@@ -155,7 +167,12 @@ fun AvoqadoPhoneInput(
         CountryPickerSheet(
             selected = country,
             onSelect = {
+                // Con lo escrito se vuelven a sacar los dígitos con la lada nueva: con EE. UU. «15123456789» quedaba en
+                // «5123456789» y al pasar a Alemania se mandaba «+495123456789» (Codex r3).
+                val visible = textoVisibleDelCampo(escrito, digits, country.dialCode)
+                escrito = visible
                 onCountryChange(it)
+                onDigitsChange(digitosNacionales(visible, it.dialCode))
                 showPicker = false
             },
             onDismiss = { showPicker = false },
