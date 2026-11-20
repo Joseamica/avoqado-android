@@ -1,11 +1,23 @@
 package com.avoqado.pos.pos.presentation.product
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Remove
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.ui.semantics.Role
 import androidx.compose.material3.Checkbox
@@ -20,6 +32,9 @@ import com.avoqado.pos.core.util.formatMoney
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.pos.data.model.ProductModifierGroup
 import com.avoqado.pos.pos.data.model.SelectedModifier
+import com.avoqado.pos.pos.domain.dejaRepetir
+import com.avoqado.pos.pos.domain.puedeSumar
+import com.avoqado.pos.pos.domain.vecesElegida
 import com.avoqado.pos.pos.data.model.Modifier as ProductModifier
 
 @Composable
@@ -27,7 +42,14 @@ fun ModifierGroupSection(
     group: ProductModifierGroup,
     selectedModifiers: List<SelectedModifier>,
     onModifierToggled: (ProductModifier, Boolean) -> Unit,
+    /**
+     * Grupo que deja repetir la misma opción (encargo a508f4): cada opción lleva − n + en vez de casilla. Sin estos dos (o con
+     * un grupo que no repite) se ve como siempre.
+     */
+    onSumar: ((ProductModifier) -> Unit)? = null,
+    onRestar: ((ProductModifier) -> Unit)? = null,
 ) {
+    val conContador = group.dejaRepetir && onSumar != null && onRestar != null
     val requiredCount = if (group.required) {
         (group.minSelections ?: 0).coerceAtLeast(1)
     } else {
@@ -64,7 +86,17 @@ fun ModifierGroupSection(
 
         Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
 
-        group.modifiers.forEach { modifier ->
+        if (conContador) {
+            group.modifiers.forEach { modifier ->
+                FilaConContador(
+                    modifier = modifier,
+                    veces = vecesElegida(selectedModifiers, group, modifier),
+                    puedeSumar = puedeSumar(selectedModifiers, group, modifier),
+                    onSumar = { onSumar!!(modifier) },
+                    onRestar = { onRestar!!(modifier) },
+                )
+            }
+        } else group.modifiers.forEach { modifier ->
             val isSelected = selectedModifiers.any {
                 it.groupId == group.id && it.modifierId == modifier.id
             }
@@ -115,5 +147,66 @@ fun ModifierGroupSection(
         }
 
         Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))
+    }
+}
+
+/**
+ * Una opción de un grupo que deja repetir: nombre, precio y «− n +». Tocar la fila suma una vez (como la casilla de siempre, la
+ * fila entera responde al dedo); el «+» se apaga al llegar al máximo del grupo o al de la opción, y el «−» quita una.
+ */
+@Composable
+private fun FilaConContador(
+    modifier: ProductModifier,
+    veces: Int,
+    puedeSumar: Boolean,
+    onSumar: () -> Unit,
+    onRestar: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .selectable(
+                selected = veces > 0,
+                enabled = puedeSumar,
+                role = Role.Button,
+                onClick = onSumar,
+            )
+            .semantics { contentDescription = "${modifier.name}: $veces" }
+            .padding(vertical = AvoqadoTheme.spacing.xxs),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = modifier.name,
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = if (veces > 0) FontWeight.SemiBold else null,
+            modifier = Modifier.weight(1f),
+        )
+        if (modifier.price > 0) {
+            Text(
+                text = "+${formatMoney(modifier.price)}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(end = AvoqadoTheme.spacing.sm),
+            )
+        }
+        Row(
+            modifier = Modifier.background(
+                MaterialTheme.colorScheme.surfaceVariant,
+                RoundedCornerShape(AvoqadoTheme.cornerRadius.md),
+            ),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            IconButton(onClick = onRestar, enabled = veces > 0, modifier = Modifier.size(36.dp)) {
+                Icon(Icons.Filled.Remove, contentDescription = "Uno menos de ${modifier.name}", modifier = Modifier.size(18.dp))
+            }
+            Text(
+                text = veces.toString(),
+                style = MaterialTheme.typography.titleSmall,
+                color = if (veces > 0) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            IconButton(onClick = onSumar, enabled = puedeSumar, modifier = Modifier.size(36.dp)) {
+                Icon(Icons.Filled.Add, contentDescription = "Uno más de ${modifier.name}", modifier = Modifier.size(18.dp))
+            }
+        }
     }
 }

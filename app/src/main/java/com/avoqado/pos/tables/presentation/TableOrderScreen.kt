@@ -1,5 +1,6 @@
 package com.avoqado.pos.tables.presentation
 
+import com.avoqado.pos.pos.domain.juntarExtrasRepetidos
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.tween
@@ -2020,7 +2021,7 @@ private fun SentCard(
                             Text(item.productName ?: "Artículo", maxLines = 1, overflow = TextOverflow.Ellipsis)
                             if (item.modifiers.isNotEmpty()) {
                                 Text(
-                                    text = item.modifiers.joinToString(", ") { it.name },
+                                    text = juntarExtrasRepetidos(item.modifiers.map { it.name }).joinToString(", "),
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )

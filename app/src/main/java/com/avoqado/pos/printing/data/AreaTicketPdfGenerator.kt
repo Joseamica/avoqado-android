@@ -1,5 +1,6 @@
 package com.avoqado.pos.printing.data
 
+import com.avoqado.pos.pos.domain.juntarExtrasRepetidos
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
@@ -44,7 +45,7 @@ class AreaTicketPdfGenerator @Inject constructor() {
         val extraPaint = paint(size = 8f)
         val itemExtraLines = ticket.items.map { item ->
             if (ticket.externalRoute) {
-                item.modifiers.orEmpty().flatMap { extra -> wrapText("+ $extra", extraPaint, nameWidth) }
+                juntarExtrasRepetidos(item.modifiers.orEmpty()).flatMap { extra -> wrapText("+ $extra", extraPaint, nameWidth) }
             } else {
                 emptyList()
             }

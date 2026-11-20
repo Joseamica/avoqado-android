@@ -1,5 +1,6 @@
 package com.avoqado.pos.printing.receiptlayout
 
+import com.avoqado.pos.pos.domain.juntarExtrasRepetidos
 import kotlin.math.abs
 import com.avoqado.pos.transactions.presentation.exchange.TextosCambio
 import com.avoqado.pos.transactions.presentation.exchange.storeCreditLine
@@ -159,7 +160,7 @@ object ReceiptLayoutInterpreter {
                 .map { text(it, bold = item.isComboHeader == true) }
             if (item.weightSummary.present()) lines += aux(T.force(item.weightSummary!!))
             if (item.areaSourceLabel.present()) lines += aux(T.force(item.areaSourceLabel!!))
-            if (block.showModifiers) item.modifiers.orEmpty().forEach { lines += aux("+ ${T.force(it)}") }
+            if (block.showModifiers) juntarExtrasRepetidos(item.modifiers.orEmpty()).forEach { lines += aux("+ ${T.force(it)}") }
             if (block.showNotes && item.note.present()) lines += aux("${L.NOTA} ${T.force(item.note!!)}")
         }
         return lines

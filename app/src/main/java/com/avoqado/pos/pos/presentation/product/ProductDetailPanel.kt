@@ -79,6 +79,8 @@ import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.pos.data.model.Discount
 import com.avoqado.pos.pos.data.model.Product
 import com.avoqado.pos.pos.data.model.SelectedModifier
+import com.avoqado.pos.pos.domain.restarExtra
+import com.avoqado.pos.pos.domain.sumarExtra
 import com.avoqado.pos.pos.domain.MENSAJE_SUBIR_PRECIO
 import com.avoqado.pos.pos.domain.ajusteAGuardar
 import com.avoqado.pos.pos.domain.AccesoAlAjuste
@@ -268,6 +270,17 @@ private fun ProductDetailContent(
                                 }
                             }
                         },
+                        // Grupo que deja repetir (encargo a508f4): − n + por opción. La lista guarda una entrada por vez.
+                        onSumarExtra = { modifier, group ->
+                            val nueva = sumarExtra(selectedModifiers.toList(), group, modifier)
+                            selectedModifiers.clear()
+                            selectedModifiers.addAll(nueva)
+                        },
+                        onRestarExtra = { modifier, group ->
+                            val nueva = restarExtra(selectedModifiers.toList(), group, modifier)
+                            selectedModifiers.clear()
+                            selectedModifiers.addAll(nueva)
+                        },
                         onNavigate = { currentSubView = it },
                         onAddToCart = {
                             val now = SystemClock.elapsedRealtime()
@@ -401,6 +414,8 @@ private fun MainDetailView(
     ajusteDePrecio: AccesoAlAjuste = AccesoAlAjuste.LIBRE,
     onQuantityChange: (Int) -> Unit,
     onModifierToggled: (com.avoqado.pos.pos.data.model.Modifier, Boolean, com.avoqado.pos.pos.data.model.ProductModifierGroup) -> Unit,
+    onSumarExtra: (com.avoqado.pos.pos.data.model.Modifier, com.avoqado.pos.pos.data.model.ProductModifierGroup) -> Unit,
+    onRestarExtra: (com.avoqado.pos.pos.data.model.Modifier, com.avoqado.pos.pos.data.model.ProductModifierGroup) -> Unit,
     onNavigate: (DetailSubView) -> Unit,
     onAddToCart: () -> Unit,
 ) {
@@ -495,6 +510,8 @@ private fun MainDetailView(
                     onModifierToggled = { modifier, isSelected ->
                         onModifierToggled(modifier, isSelected, group)
                     },
+                    onSumar = { modifier -> onSumarExtra(modifier, group) },
+                    onRestar = { modifier -> onRestarExtra(modifier, group) },
                 )
             }
 
