@@ -2411,11 +2411,11 @@ class TableOrderViewModel @Inject constructor(
             printConfigRepository.refresh(vId)
             // Codex r1 (R3), r2 y r3: una ronda que el SERVIDOR ya rechazó no se vuelve a mandar a cocina (el gerente la revisa en
             // la cola). Se pregunta después del refresco de impresoras y otra vez justo antes de cada hoja (abajo).
-            // Codex r4 #1 de «Anular producto»: una ronda que el SERVIDOR ya CONFIRMÓ y que la cuenta al día no trae (otra caja anuló
-            // o separó sus renglones) tampoco se reimprime: imprimirla mandaba a cocina algo que ya no está en la cuenta.
-            val alDia = cuentaAlDiaAqui
+            // Codex r4 #1 y r5 #3 de «Anular producto»: una ronda que el SERVIDOR ya CONFIRMÓ tampoco sale de la cola: lo suyo que sigue
+            // en la cuenta ya viene en `sentItems`, y lo que no (otra caja lo anuló o lo separó) no debe volver a cocina. También sin la
+            // cuenta al día: una copia de menos en una reimpresión es mejor que cocinar algo anulado.
             val enCola = candidatasEnCola.filter { line ->
-                rondaDe(line.externalId)?.let { !rondaRechazada(it) && !(alDia && rondaConfirmada(it)) } ?: true
+                rondaDe(line.externalId)?.let { !rondaRechazada(it) && !rondaConfirmada(it) } ?: true
             }
             if (sentItems.isEmpty() && enCola.isEmpty()) {
                 _isReprinting.value = false

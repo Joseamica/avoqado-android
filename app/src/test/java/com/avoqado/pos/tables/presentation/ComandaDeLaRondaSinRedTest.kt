@@ -154,8 +154,8 @@ class ComandaDeLaRondaSinRedTest {
         assertTrue("no reimprime el Café anulado: $impreso", !impreso.contains("Café"))
     }
 
-    /** Regresión de r4 #1: sin la cuenta al día (sin red), una ronda confirmada que no se ve en la cuenta SÍ se reimprime. */
-    @Test fun `sin la cuenta al dia una ronda confirmada sigue reimprimiendose`() = runTest {
+    /** Codex r5 #3: sin internet tras el acuse (la cuenta no se pudo releer), la ronda confirmada tampoco vuelve a cocina. */
+    @Test fun `sin la cuenta al dia una ronda confirmada tampoco se reimprime`() = runTest {
         val mesa = vm()
         mesa.agregarCafe(); mesa.sendRound(); advanceUntilIdle()
         val i = cola.indexOfFirst { it.tipo == "ADD_ITEMS" }
@@ -163,9 +163,7 @@ class ComandaDeLaRondaSinRedTest {
 
         mesa.reprintComandas(); advanceUntilIdle()
 
-        val planes = mutableListOf<List<TicketPlan>>()
-        io.mockk.coVerify { impresora.printComandas(capture(planes), any(), any(), any(), any(), any(), any(), any()) }
-        assertTrue(planes.flatten().toString().contains("Café"))
+        io.mockk.coVerify(exactly = 0) { impresora.printComandas(any(), any(), any(), any(), any(), any(), any(), any()) }
     }
 
     /**
