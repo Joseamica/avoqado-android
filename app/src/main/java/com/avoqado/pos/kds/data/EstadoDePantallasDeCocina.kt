@@ -28,6 +28,8 @@ data class PantallasDesconectadasData(
     /** `false` justo después de que el servidor arrancó (Codex r5 #4): todavía no da a ninguna por desconectada. */
     val completo: Boolean = false,
     val desconectadas: List<PantallaDesconectada> = emptyList(),
+    /** Ids de las estaciones con pantalla efectiva HOY según el servidor; `null` = no lo dijo (error, servidor viejo). */
+    val pantallas: List<String>? = null,
 )
 
 /** `GET kds/pantallas-desconectadas` (`kitchenDisplayStations.ts` → `pantallasDesconectadas`). */
@@ -52,6 +54,18 @@ class EstadoDePantallasDeCocina @Inject constructor(
     /** Nombres de las estaciones cuya pantalla el servidor no ve conectada; vacío si todo bien o si no se sabe. */
     val sinInternet: StateFlow<List<String>> = _sinInternet.asStateFlow()
 
+    /** Las estaciones con pantalla de cocina HOY, según el último sondeo; `null` = no se sabe. */
+    @Volatile
+    private var conPantalla: Set<String>? = null
+
+    /**
+     * ¿El servidor confirmó, en el último sondeo, que [stationId] tiene pantalla de cocina? (Codex r8 #3). La copia de la
+     * configuración de la caja puede estar vieja (el dueño apagó la pantalla en el panel, y las rondas con preparación usan
+     * una config congelada): la caja sólo calla el «No salió» de una estación que el servidor sigue teniendo como pantalla.
+     * Sin respuesta, `false`: ante la duda se avisa como siempre.
+     */
+    fun esPantallaDelServidor(stationId: String): Boolean = conPantalla?.contains(stationId) == true
+
     private var trabajo: Job? = null
     private var venueDelTrabajo: String? = null
 
@@ -62,11 +76,13 @@ class EstadoDePantallasDeCocina @Inject constructor(
         trabajo?.cancel()
         venueDelTrabajo = venueId
         _sinInternet.value = emptyList()
+        conPantalla = null
         trabajo = scope.launch {
             while (true) {
                 val revision = revisar(venueId)
                 ensureActive() // una respuesta que llegó tras cambiar de sucursal o cerrar sesión no se publica
                 _sinInternet.value = revision?.nombres.orEmpty()
+                conPantalla = revision?.pantallas
                 delay(esperaTras(revision))
             }
         }
@@ -78,10 +94,14 @@ class EstadoDePantallasDeCocina @Inject constructor(
         trabajo = null
         venueDelTrabajo = null
         _sinInternet.value = emptyList()
+        conPantalla = null
     }
 
-    /** Lo que dijo el servidor. [nombres] vacío si no hay ninguna desconectada o si el servidor aún no sabe (`completo`). */
-    internal data class Revision(val hayPantallas: Boolean, val nombres: List<String>)
+    /**
+     * Lo que dijo el servidor. [nombres] vacío si no hay ninguna desconectada o si el servidor aún no sabe (`completo`);
+     * [pantallas] = las estaciones con pantalla hoy, o `null` si no lo dijo.
+     */
+    internal data class Revision(val hayPantallas: Boolean, val nombres: List<String>, val pantallas: Set<String>? = null)
 
     /** `null` = no se sabe (sin red, error, sin permiso, tope, servidor viejo). Expuesta para las pruebas. */
     internal suspend fun revisar(venueId: String): Revision? {
@@ -94,7 +114,7 @@ class EstadoDePantallasDeCocina @Inject constructor(
             null
         } ?: return null
         val nombres = if (data.completo) data.desconectadas.map { it.name }.filter { it.isNotBlank() } else emptyList()
-        return Revision(data.hayPantallas, nombres)
+        return Revision(data.hayPantallas, nombres, data.pantallas?.toSet())
     }
 
     /** Cuánto esperar para volver a preguntar, según la última respuesta. */

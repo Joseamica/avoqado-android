@@ -137,6 +137,10 @@ class PaymentFlowViewModelTest {
     }
     /** «La libreta»: visible para comprobar qué se le reporta al servidor (y al gerente) — Codex código r2. */
     private val reporteDeComandas = mockk<ReporteDeComandas>(relaxed = true)
+    /** D6 de Flautas: para el servidor, toda estación con pantalla lo sigue siendo (una prueba puede decir que ya no). */
+    private val estadoDePantallas = mockk<com.avoqado.pos.kds.data.EstadoDePantallasDeCocina> {
+        every { esPantallaDelServidor(any()) } returns true
+    }
     /** El MISMO dispatcher que ve el ViewModel y el reintento periódico — ver más abajo. */
     private val comandaDispatcherReal by lazy {
         ComandaDispatcher(
@@ -145,6 +149,7 @@ class PaymentFlowViewModelTest {
             printerService,
             colaDeMarcas,
             entregaPorWifi,
+            estadoDePantallas,
         )
     }
 
@@ -2413,6 +2418,21 @@ class PaymentFlowViewModelTest {
 
         coVerify(atLeast = 1) { comandaPrinter.printComandas(any(), any(), any(), any(), any()) }
         assertNull(viewModel.comandaWarning.value)
+    }
+
+    /** D6 (Codex r8 #3): el dueño apagó la pantalla en el panel y la caja sigue con su config vieja: se avisa. */
+    @Test
+    fun `D6 si el servidor ya no tiene a la estacion como pantalla SI avisa No salio`() = runTest {
+        cocinaSoloPantallaSinImpresoras(saldo = 0, estado = "PAID")
+        every { estadoDePantallas.esPantallaDelServidor("st_cocina") } returns false
+
+        viewModel.startPaymentFlow(CartState(items = listOf(
+            CartItem(id = "line-1", type = CartItemType.ProductItem("prod-1"), name = "Flautas Papa", unitPrice = 1000),
+        )))
+        viewModel.confirmCashCustom(1000)
+        advanceUntilIdle()
+
+        assertTrue(viewModel.comandaWarning.value is EstadoDeComanda.NoSalio)
     }
 
     /** D6 (Codex r1 #1): con un ABONO conocido el servidor todavía no arma la comanda de pantalla: se avisa. */

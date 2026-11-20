@@ -105,6 +105,11 @@ class ComandaDispatcher @Inject constructor(
      * y las «sólo pantalla» salen en papel de respaldo, que es el lado seguro.
      */
     private val entregaPorWifi: EntregaPorWifi? = null,
+    /**
+     * D6 de Flautas (Codex r8 #3): qué estaciones tienen pantalla de cocina HOY según el servidor. Hilt y el inyector de
+     * escritorio SIEMPRE la inyectan; sin ella (pruebas viejas) nunca se calla el «No salió», que es el lado seguro.
+     */
+    private val estadoDePantallas: com.avoqado.pos.kds.data.EstadoDePantallasDeCocina? = null,
 ) {
 
     /**
@@ -494,8 +499,16 @@ class ComandaDispatcher @Inject constructor(
         servidorLaTiene: Boolean?,
         respaldo: List<String>,
         saltados: List<TicketPlan>,
-    ): Boolean =
-        servidorLaTiene == true && saltados.isNotEmpty() && saltados.all { it.stationId != null && it.stationId in respaldo }
+    ): Boolean {
+        // Codex r8 #3: la config de esta caja puede estar vieja (el dueño apagó la pantalla en el panel; una ronda con
+        // preparación usa una config congelada). Sólo se calla si el SERVIDOR, en su último sondeo, sigue teniendo a cada
+        // estación como pantalla de cocina. Sin esa respuesta se avisa como siempre.
+        val pantallas = estadoDePantallas ?: return false
+        return servidorLaTiene == true && saltados.isNotEmpty() && saltados.all { plan ->
+            val id = plan.stationId
+            id != null && id in respaldo && pantallas.esPantallaDelServidor(id)
+        }
+    }
 
     /** El despacho no llegó a decidir el papel (truena o se cancela): todas sus filas guardadas sin acuse se sueltan. */
     private suspend fun soltarSinPapel(entregas: List<EntregaKds>, acusadas: Set<String>) {

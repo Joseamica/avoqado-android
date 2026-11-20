@@ -22,16 +22,24 @@ class EstadoDePantallasDeCocinaTest {
     private val api = mockk<ApiService>()
     private val estado = EstadoDePantallasDeCocina(api)
 
-    private fun contesta(venue: String, vararg nombres: String, completo: Boolean = true, hayPantallas: Boolean = true) =
-        coEvery { api.pantallasDesconectadas(venue) } returns PantallasDesconectadasResponse(
-            data = PantallasDesconectadasData(hayPantallas, completo, nombres.mapIndexed { i, n -> PantallaDesconectada("st_$i", n) }),
-        )
+    private fun contesta(
+        venue: String,
+        vararg nombres: String,
+        completo: Boolean = true,
+        hayPantallas: Boolean = true,
+        pantallas: List<String>? = listOf("st_cocina", "st_barra"),
+    ) = coEvery { api.pantallasDesconectadas(venue) } returns PantallasDesconectadasResponse(
+        data = PantallasDesconectadasData(hayPantallas, completo, nombres.mapIndexed { i, n -> PantallaDesconectada("st_$i", n) }, pantallas),
+    )
 
     @Test
     fun `guarda los nombres de las pantallas que el servidor da por desconectadas`() = runTest {
         contesta("venue-1", "COCINA 1", "Barra")
 
-        assertEquals(EstadoDePantallasDeCocina.Revision(hayPantallas = true, nombres = listOf("COCINA 1", "Barra")), estado.revisar("venue-1"))
+        assertEquals(
+            EstadoDePantallasDeCocina.Revision(hayPantallas = true, nombres = listOf("COCINA 1", "Barra"), pantallas = setOf("st_cocina", "st_barra")),
+            estado.revisar("venue-1"),
+        )
     }
 
     @Test
@@ -56,6 +64,33 @@ class EstadoDePantallasDeCocinaTest {
         }
 
         assertNull(estado.revisar("venue-1"))
+    }
+
+    /** Codex r8 #3: la caja sólo calla el «No salió» de una estación que el servidor confirmó como pantalla en su último sondeo. */
+    @Test
+    fun `esPantallaDelServidor sigue el ultimo sondeo y ante la duda dice que no`() = runTest {
+        assertEquals("antes del primer sondeo no se sabe", false, estado.esPantallaDelServidor("st_cocina"))
+        contesta("venue-1", pantallas = listOf("st_cocina"))
+
+        estado.iniciar(backgroundScope, "venue-1")
+        runCurrent()
+        assertEquals(true, estado.esPantallaDelServidor("st_cocina"))
+        assertEquals(false, estado.esPantallaDelServidor("st_barra"))
+
+        contesta("venue-1", pantallas = null) // el servidor no lo dijo (error que contestó 200, servidor viejo)
+        advanceTimeBy(EstadoDePantallasDeCocina.INTERVALO_MS + 1)
+        assertEquals(false, estado.esPantallaDelServidor("st_cocina"))
+
+        contesta("venue-1", pantallas = listOf("st_cocina"))
+        advanceTimeBy(EstadoDePantallasDeCocina.INTERVALO_MS + 1)
+        assertEquals(true, estado.esPantallaDelServidor("st_cocina"))
+
+        coEvery { api.pantallasDesconectadas("venue-1") } throws IOException("sin red")
+        advanceTimeBy(EstadoDePantallasDeCocina.INTERVALO_MS + 1)
+        assertEquals("sin respuesta no se sabe", false, estado.esPantallaDelServidor("st_cocina"))
+
+        estado.detener()
+        assertEquals(false, estado.esPantallaDelServidor("st_cocina"))
     }
 
     @Test
