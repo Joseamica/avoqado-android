@@ -275,8 +275,9 @@ class OnlineOrdersRepositoryTest {
         // Nadie lo abrió a tiempo y se liberó: ya no está disponible.
         server.enqueue(conflicto("EXPIRED"))
         assertEquals(AccionResultado.YaNoDisponible(OnlineOrderStatus.EXPIRED), repo.abrirPagadoEnLinea("o1"))
-        // Sin red: no se encola (es un cobro con tarjeta).
-        server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AT_START))
+        // Sin red a media llamada: no se encola (es un cobro con tarjeta). DISCONNECT_AFTER_REQUEST y no AT_START: esta petición reusa la
+        // conexión de las anteriores y MockWebServer sólo mira AT_START al aceptar una conexión nueva.
+        server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AFTER_REQUEST))
         assertEquals(AccionResultado.SinConexion, repo.abrirPagadoEnLinea("o1"))
     }
 
