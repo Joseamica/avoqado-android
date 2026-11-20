@@ -63,6 +63,9 @@ internal open class CobroEnMaquinaSobreSqlite : CobroEnMaquinaDao, AutoCloseable
             st.executeQuery().let { it.next(); it.getInt(1) }
         }
 
+    override suspend fun pendientes(venueId: String?): Int =
+        preparar(CobroEnMaquinaSql.PENDIENTES, "venueId" to venueId).use { st -> st.executeQuery().let { it.next(); it.getInt(1) } }
+
     override suspend fun insertar(fila: CobroEnMaquinaEntity) {
         val f = fila
         val columnas = listOf(

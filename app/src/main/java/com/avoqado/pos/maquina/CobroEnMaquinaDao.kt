@@ -54,7 +54,14 @@ interface CobroEnMaquinaDao {
     @Query(CobroEnMaquinaSql.ANOTAR_EVIDENCIA)
     suspend fun anotarEvidencia(referenceCC: String, crudos: String): Int
 
+    /** R5#2: cuántos frenan ([CobroEnMaquinaSql.PENDIENTES]) en [venueId], o en todas con null. */
+    @Query(CobroEnMaquinaSql.PENDIENTES)
+    suspend fun pendientes(venueId: String?): Int
+
     /** Lo que la subida (C4) tiene que mandar: cierres finales sin acuse y dudas sin subir. */
     @Query(CobroEnMaquinaSql.POR_SUBIR)
     suspend fun porSubir(): List<CobroEnMaquinaEntity>
 }
+
+/** R5#2: ¿hay cobros de la máquina sin subir o en duda, de cualquier sucursal? Lo usan los Ajustes de la máquina (C6). */
+suspend fun CobroEnMaquinaDao.hayPendientesDeLaMaquina(): Boolean = pendientes(null) > 0

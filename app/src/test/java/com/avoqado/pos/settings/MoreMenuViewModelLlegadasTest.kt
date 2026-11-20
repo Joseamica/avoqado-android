@@ -82,11 +82,27 @@ class MoreMenuViewModelLlegadasTest {
         assertTrue("esperaba el aviso de pendientes, llegó «$aviso»", aviso.contains("1 operación offline"))
     }
 
+    /** R5#2: un cobro de la máquina sin subir o en duda sube con SU sucursal activa; cambiar lo dejaría atrás. */
+    @Test
+    fun `con un cobro de la maquina sin subir no se cambia de sucursal`() = runTest {
+        val storage = mockk<SecureStorage>(relaxed = true) { every { venueId } returns "v1" }
+        val auth = mockk<AuthRepository>(relaxed = true)
+        val maquina = mockk<com.avoqado.pos.maquina.CobroEnMaquinaDao> { coEvery { pendientes("v1") } returns 1 }
+        val vm = construir(storage, auth, cobrosEnMaquina = maquina)
+
+        vm.switchVenue(StoredVenue(id = "v2", name = "Sucursal Centro"))
+
+        coVerify(exactly = 0) { auth.switchVenue(any()) }
+        val aviso = vm.sessionGuardMessage.value.orEmpty()
+        assertTrue("esperaba el aviso de pendientes, llegó «$aviso»", aviso.contains("1 operación offline"))
+    }
+
     private fun construir(
         storage: SecureStorage,
         auth: AuthRepository,
         llegadas: PendingReservationActionDao = mockk { coEvery { all() } returns emptyList() },
         cajon: com.avoqado.pos.cashdrawer.data.CashDrawerRepository? = null,
+        cobrosEnMaquina: com.avoqado.pos.maquina.CobroEnMaquinaDao? = null,
     ): MoreMenuViewModel {
         val tpv = mockk<TpvSettingsRepository>(relaxed = true) {
             every { terminalNavigation } returns MutableStateFlow(TerminalNavigationSettings.DEFAULT)
@@ -119,6 +135,7 @@ class MoreMenuViewModelLlegadasTest {
             pedidosEnLineaRepository = mockk(relaxed = true) { coEvery { porCobrarGuardado() } returns null },
             pendingReservationDao = llegadas,
             cashDrawerRepository = cajon,
+            cobrosEnMaquinaDao = cobrosEnMaquina,
         )
     }
 }

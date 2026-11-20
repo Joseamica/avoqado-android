@@ -65,6 +65,8 @@ class AppState @Inject constructor(
     private val pendingGrantQueue: com.avoqado.pos.customers.data.PendingGrantQueue? = null,
     /** D72: al volver la red se releen los tiempos de servicio si quedó su aviso. Default para las pruebas de JVM. */
     private val serviceCoursesRepository: com.avoqado.pos.tables.data.ServiceCoursesRepository? = null,
+    /** R5#2: los cobros de la máquina sin subir o en duda frenan cerrar sesión. Default para las pruebas de JVM. */
+    private val cobrosEnMaquinaDao: com.avoqado.pos.maquina.CobroEnMaquinaDao? = null,
 ) : ViewModel() {
 
     /**
@@ -620,7 +622,9 @@ class AppState @Inject constructor(
                 // D4: lo mismo los paquetes cobrados por entregar o por revisar.
                 (pendingGrantQueue?.bloqueantes(venueId) ?: 0) +
                 // Retiro con gerente (Codex r3 #12): la cola del cajón se manda con la sesión que esté; no se cierra encima.
-                (venueId?.let { cashDrawerRepository.movimientosSinSubir(it) } ?: 0)
+                (venueId?.let { cashDrawerRepository.movimientosSinSubir(it) } ?: 0) +
+                // R5#2: los cobros de la máquina suben con una sesión de su sucursal y la credencial de esta PC: no se cierra encima.
+                (venueId?.let { cobrosEnMaquinaDao?.pendientes(it) } ?: 0)
             // D52 (a) de la conversación principal: lo de OTRAS sucursales ya no frena. Cerrar sesión no borra los cobros ni la cola de
             // mesas (prueba «cerrar sesion no borra…»): se quedan en el aparato y se resuelven con un usuario de su sucursal. Sólo se avisa.
             if (deAqui > 0) {

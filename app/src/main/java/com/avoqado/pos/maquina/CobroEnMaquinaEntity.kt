@@ -128,6 +128,14 @@ internal object CobroEnMaquinaSql {
     const val ANOTAR_EVIDENCIA: String =
         "UPDATE cobros_en_maquina SET mensajesCrudos = :crudos WHERE referenceCC = :referenceCC AND estado = 'ESPERANDO'"
 
+    /**
+     * R5#2: lo que frena cerrar sesión, cambiar de sucursal y cambiar la IP o desemparejar la máquina: un intento abierto, una
+     * duda (subida o no: sólo la cierra la decisión del gerente) o un cierre final sin acuse. `:venueId` null = todas.
+     */
+    const val PENDIENTES: String =
+        "SELECT COUNT(*) FROM cobros_en_maquina WHERE (:venueId IS NULL OR venueId = :venueId) " +
+            "AND (estado IN ('EN_CURSO', 'ESPERANDO') OR (estado IN ('PAGADO', 'CANCELADO', 'GUARDADO') AND subido = 0))"
+
     const val POR_SUBIR: String =
         "SELECT * FROM cobros_en_maquina " +
             "WHERE (estado IN ('PAGADO', 'CANCELADO', 'GUARDADO') AND subido = 0) OR (estado = 'ESPERANDO' AND dudaSubida = 0) " +
