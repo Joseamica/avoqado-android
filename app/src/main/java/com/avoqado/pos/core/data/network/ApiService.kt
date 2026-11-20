@@ -244,6 +244,13 @@ interface ApiService {
     @GET("mobile/venues/{venueId}/print-config")
     suspend fun getPrintConfig(@Path("venueId") venueId: String): PrintConfigResponse
 
+    /** D6 de Flautas: ¿estas comandas ya están en una pantalla de cocina? (`kds.mobile.service.ts` → `foliosEnPantalla`). */
+    @POST("mobile/venues/{venueId}/kds/folios-en-pantalla")
+    suspend fun foliosEnPantalla(
+        @Path("venueId") venueId: String,
+        @Body request: com.avoqado.pos.printing.data.FoliosEnPantallaRequest,
+    ): com.avoqado.pos.printing.data.FoliosEnPantallaResponse
+
     @POST("mobile/venues/{venueId}/print-jobs/sync")
     suspend fun syncPrintJobs(
         @Path("venueId") venueId: String,

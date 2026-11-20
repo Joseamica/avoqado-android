@@ -105,6 +105,12 @@ class ComandaDispatcher @Inject constructor(
      * y las «sólo pantalla» salen en papel de respaldo, que es el lado seguro.
      */
     private val entregaPorWifi: EntregaPorWifi? = null,
+    /**
+     * D6 de Flautas (20-nov): le pregunta al SERVIDOR si la comanda de una estación «sólo pantalla» que no salió en papel
+     * ya está en su pantalla. Hilt y el inyector de escritorio SIEMPRE la inyectan; sin ella (pruebas viejas) nunca se
+     * calla el «No salió», que es el lado seguro.
+     */
+    private val confirmacionDePantalla: com.avoqado.pos.printing.data.ConfirmacionDePantalla? = null,
 ) {
 
     /**
@@ -453,7 +459,7 @@ class ComandaDispatcher @Inject constructor(
                 // entra al legado; lo que dejó sin asignar cae en «SIN ESTACIÓN» y, sin impresora de cocina, no sale. Es el
                 // negocio sin cocina de D2: ni aviso al cajero ni FAILED al gerente. Con una estación con comanda, sí.
                 negocioSinCocina = { (callarSinCocina ?: omitirSinComanda) && sinImpresoraDeCocina(printerService.savedPrinters.value, config) },
-                pantallaLaRecibe = { saltados -> pantallaLaTienePorElServidor(servidorLaTiene, decidido.respaldo, saltados) },
+                pantallaLaRecibe = { saltados -> pantallaLaTienePorElServidor(servidorLaTiene, decidido.respaldo, saltados, venueId, origenDelFolio) },
                 alCambiarEstado = alCambiarEstado,
                 encabezado = encabezado,
             )
@@ -484,16 +490,26 @@ class ComandaDispatcher @Inject constructor(
 
     /**
      * Flautas (20-nov, hz:0555ee15:D6): los planes que se quedaron sin papel son TODOS de estaciones «sólo pantalla» de
-     * respaldo (su pantalla no acusó por el WiFi), no hubo impresora que lo intentara, y la venta ya está en el servidor: su
-     * pantalla la ve por internet. Por ID de estación, nunca por nombre (Codex r1 #3: una estación real puede llamarse «SIN
-     * ESTACIÓN»; lo sin ruta no tiene id y nunca se calla). Sin red (`servidorLaTiene != true`) nadie la tiene.
+     * respaldo (su pantalla no acusó por el WiFi) y no hubo impresora que lo intentara. La caja no ADIVINA si la cocina la
+     * tiene (Codex r1/r2: con señales indirectas se equivocaba en los dos sentidos): le PREGUNTA al servidor por el folio de
+     * cada estación, y sólo si confirma TODOS se calla el aviso. Por id de estación, nunca por nombre (una estación real puede
+     * llamarse «SIN ESTACIÓN»; lo sin ruta no tiene id y nunca se calla). Sin red, sin folio o sin respuesta, se avisa.
      */
-    private fun pantallaLaTienePorElServidor(
+    private suspend fun pantallaLaTienePorElServidor(
         servidorLaTiene: Boolean?,
         respaldo: List<String>,
         saltados: List<TicketPlan>,
-    ): Boolean =
-        servidorLaTiene == true && saltados.isNotEmpty() && saltados.all { it.stationId != null && it.stationId in respaldo }
+        venueId: String?,
+        origen: String?,
+    ): Boolean {
+        val confirmacion = confirmacionDePantalla ?: return false
+        if (servidorLaTiene != true || venueId == null || origen == null || saltados.isEmpty()) return false
+        if (!saltados.all { it.stationId != null && it.stationId in respaldo }) return false
+        // Codex r3: no basta el folio; el servidor tiene que traer los platillos (las unidades de lo que esta caja mandó).
+        val unidadesPorFolio = saltados.groupBy { KitchenDeliveryPolicy.folio(origen, it.stationId) }
+            .mapValues { (_, planes) -> planes.sumOf { plan -> plan.lines.sumOf { it.quantity } } }
+        return confirmacion.enPantalla(venueId, unidadesPorFolio).containsAll(unidadesPorFolio.keys)
+    }
 
     /** El despacho no llegó a decidir el papel (truena o se cancela): todas sus filas guardadas sin acuse se sueltan. */
     private suspend fun soltarSinPapel(entregas: List<EntregaKds>, acusadas: Set<String>) {

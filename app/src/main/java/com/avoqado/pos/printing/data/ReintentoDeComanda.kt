@@ -50,9 +50,8 @@ sealed interface EstadoDeComanda {
         val algoSalio: Boolean = false,
         /**
          * Flautas (20-nov, hz:0555ee15:D6): lo único sin papel fueron estaciones «sólo pantalla» de respaldo (su pantalla no
-         * acusó por el WiFi), no había impresora que lo intentara, y la venta ya estaba en el servidor, que le arma la
-         * comanda a esa pantalla por internet. El reporte a la libreta sigue igual; sólo el AVISO en la caja puede callarse,
-         * y lo decide cada pantalla (Mostrador sólo con la venta liquidada: un abono todavía no arma comanda).
+         * acusó por el WiFi), no había impresora que lo intentara, y el SERVIDOR confirmó que ya tiene sus comandas en
+         * pantalla (`ConfirmacionDePantalla`). El reporte a la libreta sigue igual; sólo se calla el AVISO en la caja.
          */
         val pantallaLaRecibe: Boolean = false,
     ) : EstadoDeComanda {
@@ -205,7 +204,7 @@ class ReintentoDeComanda @Inject constructor(
          * D6 de Flautas: con los planes SALTADOS de este despacho (por plan, no por nombre), ¿los tiene su pantalla por el
          * servidor? Se pregunta sólo si nada TRONÓ y no hay saltadas de un ciclo anterior. Marca [EstadoDeComanda.NoSalio.pantallaLaRecibe].
          */
-        pantallaLaRecibe: (saltados: List<TicketPlan>) -> Boolean = { false },
+        pantallaLaRecibe: suspend (saltados: List<TicketPlan>) -> Boolean = { false },
         alCambiarEstado: (EstadoDeComanda) -> Unit = {},
     ): EstadoDeComanda {
         var pendientes = plans

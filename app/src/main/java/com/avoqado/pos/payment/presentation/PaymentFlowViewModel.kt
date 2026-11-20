@@ -6128,9 +6128,6 @@ class PaymentFlowViewModel @Inject constructor(
         // ENCOLADA todavía no llega al servidor, que es quien arma la comanda de pantalla: sus estaciones «sólo
         // pantalla» salen en papel de respaldo.
         val servidorLaTiene = (_state.value as? PaymentFlowState.Success)?.isQueued != true
-        // D6 de Flautas (20-nov): el SERVIDOR arma la comanda de pantalla al LIQUIDAR la venta, no con un abono (Codex r1 #1).
-        // Sólo con la venta liquidada se puede callar el «No salió» de una estación «sólo pantalla» sin impresora.
-        val liquidada = servidorLaTiene && serverRemainingBalanceCents == 0
         val origenDelFolio = externalIdDeLaVenta?.let { "sale:$it" }
         // 🔴 Codex r10 #3 (familia B): la FOTO de esta venta antes de lanzar el trabajo. La impresión y la comanda esperan
         // (hasta ~1 min con reintentos); si mientras tanto empieza otra venta, siguen con SU recibo, SU orden y SU negocio, nunca
@@ -6152,7 +6149,7 @@ class PaymentFlowViewModel @Inject constructor(
             // ~1 minuto: si viviera en la coroutine del pago, congelaría la caja con el
             // cliente enfrente. `PaymentFlowViewModelTest` fija que `state` llega a `Success`
             // aunque la comanda siga reintentando.
-            despacharComanda(cart, servidorLaTiene, origenDelFolio, ordenDeLaComanda, negocioDeLaComanda, venta, liquidada)
+            despacharComanda(cart, servidorLaTiene, origenDelFolio, ordenDeLaComanda, negocioDeLaComanda, venta)
         }
     }
 
@@ -6174,8 +6171,6 @@ class PaymentFlowViewModel @Inject constructor(
         orderId: String?,
         venueId: String?,
         venta: Int,
-        /** D6 de Flautas: la venta quedó liquidada en el servidor (ya le armó su comanda de pantalla). Ver [autoPrintAfterPayment]. */
-        liquidada: Boolean = false,
     ) {
         val realItems = cart.items.filter {
             it.type is CartItemType.ProductItem && !it.locked
@@ -6200,7 +6195,7 @@ class PaymentFlowViewModel @Inject constructor(
                 comandaDispatcher.despacharEnFondo(
                     venueId = venueId, orderNumber = orderNumber, pedidos = coursePedidos,
                     orderId = orderId, servidorLaTiene = servidorLaTiene, origenDelFolio = origenDelFolio,
-                    alCambiarEstado = { estado -> aplicarEstadoDeComanda(estado, orderNumber, venta, pantallaPuedeCallar = liquidada) },
+                    alCambiarEstado = { estado -> aplicarEstadoDeComanda(estado, orderNumber, venta) },
                 ).join()
                 return
             }
@@ -6252,7 +6247,7 @@ class PaymentFlowViewModel @Inject constructor(
                 // Etapa 3 del KDS (3.4): la caja decide por estación — ver `KitchenDeliveryPolicy`.
                 servidorLaTiene = servidorLaTiene,
                 origenDelFolio = origenDelFolio,
-                alCambiarEstado = { estado -> aplicarEstadoDeComanda(estado, orderNumber, venta, pantallaPuedeCallar = liquidada) },
+                alCambiarEstado = { estado -> aplicarEstadoDeComanda(estado, orderNumber, venta) },
                 // «No lleva comanda»: el cobro de mostrador es una venta del POS.
                 omitirSinComanda = true,
             )
@@ -6312,21 +6307,20 @@ class PaymentFlowViewModel @Inject constructor(
      * 🔴 Un `Salio` tardío de la venta anterior NO puede borrar el aviso —todavía sin
      * resolver— de la venta que el cajero tiene enfrente. Por eso se compara el folio.
      */
-    private fun aplicarEstadoDeComanda(
+    @androidx.annotation.VisibleForTesting
+    internal fun aplicarEstadoDeComanda(
         estado: EstadoDeComanda,
         orderNumber: String,
         /** La venta de la comanda (Codex r10 #3). null = no es de una venta en particular. */
         venta: Int? = null,
-        /** D6 de Flautas: la venta está liquidada, así que [EstadoDeComanda.NoSalio.pantallaLaRecibe] puede callar el aviso. */
-        pantallaPuedeCallar: Boolean = false,
     ) {
         // «No lleva comanda» (10-nov): no hacía falta papel. No pinta, no borra el aviso de otra venta, no guarda nada.
         if (estado is EstadoDeComanda.SinComanda) return
         // D2 (founder, 28-oct): un negocio sin ninguna impresora de cocina (una tienda) no tiene comanda que avisar. Una
         // impresora de cocina que FALLA sí se sigue avisando (no trae la marca).
         if (estado is EstadoDeComanda.NoSalio && estado.sinImpresoraDeCocina) return
-        // D6 de Flautas (20-nov): la pantalla «sólo pantalla» sin impresora ya la tiene por el servidor (venta liquidada).
-        if (pantallaPuedeCallar && estado is EstadoDeComanda.NoSalio && estado.pantallaLaRecibe) return
+        // D6 de Flautas (20-nov): el SERVIDOR confirmó que la comanda de esa estación «sólo pantalla» ya está en su pantalla.
+        if (estado is EstadoDeComanda.NoSalio && estado.pantallaLaRecibe) return
         // 🔴 Familia B: un «Insistiendo» de la comanda de una venta que ya no está en pantalla no se pinta sobre la nueva (describe
         // algo en curso de otra venta). El veredicto final SÍ se dice, con su folio: una comanda que no salió nunca se esconde
         // (P1 #6 de Codex, 7-sep; ver `startPaymentFlow`).
@@ -6339,7 +6333,10 @@ class PaymentFlowViewModel @Inject constructor(
             val esDeEstaVenta = when (avisoActual) {
                 null, EstadoDeComanda.Salio, EstadoDeComanda.SinComanda -> true
                 is EstadoDeComanda.Insistiendo -> avisoActual.orderNumber == orderNumber
-                is EstadoDeComanda.NoSalio -> avisoActual.orderNumber == orderNumber
+                // D6 de Flautas (Codex r2 #3): los tiempos de Mostrador comparten folio. El «salió» de un tiempo no prueba nada
+                // del VEREDICTO final de otro (un `NoSalio` sin trabajo: sólo se ve, no se reimprime); antes lo borraba y la
+                // cocina se quedaba sin ese tiempo y sin aviso. Uno con trabajo vive en la libreta, que esto no toca.
+                is EstadoDeComanda.NoSalio -> avisoActual.orderNumber == orderNumber && avisoActual.trabajo != null
             }
             if (esDeEstaVenta) {
                 _avisoEnCurso.value = null
@@ -6359,6 +6356,10 @@ class PaymentFlowViewModel @Inject constructor(
             // se puede reimprimir. Ver y poder reimprimir son cosas distintas: el cajero TIENE
             // que enterarse de que la comanda no salió aunque nadie pueda reenviarla, y
             // guardarlo en disco sólo serviría para PISAR a uno que sí era recuperable.
+            // D6 de Flautas (Codex r3 #4): el «reintentando» de un tiempo no pisa el veredicto final de OTRO tiempo de la
+            // misma venta (comparten ranura): si no, el «salió» de ese tiempo borraba después el único aviso del primero.
+            val enCurso = _avisoEnCurso.value
+            if (estado is EstadoDeComanda.Insistiendo && enCurso is EstadoDeComanda.NoSalio && enCurso.orderNumber == estado.orderNumber) return
             _avisoEnCurso.value = estado
         }
     }
