@@ -64,22 +64,52 @@ class TelefonoTest {
         for (texto in escritos) assertEquals("«$texto»", "+525591873922", telefonoMx(texto))
     }
 
-    @Test fun `P1 Codex r1 teclear de uno en uno da lo mismo que pegar en el campo con bandera`() {
-        // AvoqadoPhoneInput sólo guarda dígitos: cada tecla llega con lo que ya quedó guardado. Se simula tecla por tecla.
-        fun teclear(texto: String, lada: String): String =
-            texto.fold("") { guardado, tecla -> digitosDelCampoConBandera(guardado + tecla, lada) }
+    /** El campo con bandera tecla por tecla, como AvoqadoPhoneInput: guarda lo escrito y entrega los dígitos. */
+    private fun teclear(texto: String, lada: String): String {
+        var escrito = ""
+        var digitos = ""
+        for (tecla in texto) {
+            escrito = filtrarTecleoDeTelefono(textoVisibleDelCampo(escrito, digitos, lada) + tecla)
+            digitos = digitosNacionales(escrito, lada)
+        }
+        return digitos
+    }
+
+    @Test fun `P1 Codex r1 y r2 teclear de uno en uno da lo mismo que pegar en el campo con bandera`() {
         for ((texto, lada, esperado) in listOf(
             Triple("+52 1 55 9187 3922", "52", "5591873922"),
             Triple("+52 55 9187 3922", "52", "5591873922"),
             Triple("52 5591873922", "52", "5591873922"),
+            Triple("52 1 55 9187 3922", "52", "5591873922"),
             Triple("+1 202 555 0123", "1", "2025550123"),
             Triple("55 9187 3922", "52", "5591873922"),
+            Triple("+34 612 345 678", "34", "612345678"),     // Codex r2: antes «+3434612345678»
+            Triple("+49 151 23456789", "49", "15123456789"),
+            Triple("612 345 678", "34", "612345678"),
         )) {
             assertEquals("tecleado «$texto»", esperado, teclear(texto, lada))
-            assertEquals("pegado «$texto»", esperado, digitosDelCampoConBandera(texto, lada))
+            assertEquals("pegado «$texto»", esperado, digitosNacionales(filtrarTecleoDeTelefono(texto), lada))
         }
-        // Otra lada: pegado y tecleado dan lo mismo (como antes del cambio, no se adivina la lada repetida).
-        assertEquals(teclear("+49 151 23456789", "49"), digitosDelCampoConBandera("+49 151 23456789", "49"))
+    }
+
+    @Test fun `P1 Codex r2 el campo enseña lo escrito y vuelve a los digitos si quien lo usa los cambia`() {
+        assertEquals("+52 55 9187 3922", textoVisibleDelCampo("+52 55 9187 3922", "5591873922", "52"))
+        assertEquals("", textoVisibleDelCampo("+52 55 9187 3922", "", "52"))            // lo vaciaron al enviar
+        assertEquals("5512345678", textoVisibleDelCampo("", "5512345678", "52"))        // llegó un teléfono guardado
+    }
+
+    @Test fun `P1 Codex r2 un mas fuera de lugar o la lada entre parentesis`() {
+        assertEquals("+525591873922", telefonoMx("(+52) 55 9187 3922"))
+        assertNull(telefonoMx("(+53) 5 123 4567"))
+        assertNull(telefonoMx("55+9187-3922"))
+        assertNull(telefonoMx("++52 55 9187 3922"))
+    }
+
+    @Test fun `P1 Codex r2 lo que se escribe no esconde marcas que volteen lo que se ve ni se corta antes de tiempo`() {
+        assertEquals("55 9187 3922", filtrarTecleoDeTelefono("55 9187 \u202E3922\u202C"))
+        val largo = "\u202A+52  1  (55)  9187 - 3922\u202C"
+        assertEquals("+525591873922", telefonoMx(filtrarTecleoDeTelefono(largo)))
+        assertEquals("+52 55 9187 3922", filtrarTecleoDeTelefono("+52 55 9187 3922abc"))
     }
 
     @Test fun `P1 un numero de 10 digitos que empieza con 52 no pierde su principio`() {

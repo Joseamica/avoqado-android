@@ -38,7 +38,9 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
-import com.avoqado.pos.core.util.digitosDelCampoConBandera
+import com.avoqado.pos.core.util.digitosNacionales
+import com.avoqado.pos.core.util.filtrarTecleoDeTelefono
+import com.avoqado.pos.core.util.textoVisibleDelCampo
 
 /**
  * International phone input with country selector.
@@ -72,6 +74,7 @@ fun AvoqadoPhoneInput(
     placeholder: String = "Número",
 ) {
     var showPicker by remember { mutableStateOf(false) }
+    var escrito by remember { mutableStateOf(digits) }
 
     Row(
         modifier = modifier
@@ -137,11 +140,14 @@ fun AvoqadoPhoneInput(
                     )
                 }
                 BasicTextField(
-                    value = digits,
-                    // Sólo dígitos, y sin la lada que la persona repitió: con México elegido, «+52 55 9187 3922» se queda en
-                    // «5591873922» (antes «525591873922» y el WhatsApp salía a «+52525591873922»), igual pegado que tecleado.
-                    // Regla en core/util/Telefono.kt.
-                    onValueChange = { onDigitsChange(digitosDelCampoConBandera(it, country.dialCode)) },
+                    // Se ve lo escrito (con su «+»); a quien lo usa le llegan sólo los dígitos, sin la lada repetida: con México
+                    // elegido, «+52 55 9187 3922» da «5591873922» (antes «525591873922» y el WhatsApp salía a «+52525591873922»),
+                    // igual pegado que tecleado. Regla en core/util/Telefono.kt.
+                    value = textoVisibleDelCampo(escrito, digits, country.dialCode),
+                    onValueChange = { nuevo ->
+                        escrito = filtrarTecleoDeTelefono(nuevo)
+                        onDigitsChange(digitosNacionales(escrito, country.dialCode))
+                    },
                     singleLine = true,
                     enabled = enabled,
                     textStyle = MaterialTheme.typography.bodyLarge.copy(

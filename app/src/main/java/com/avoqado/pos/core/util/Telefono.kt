@@ -10,7 +10,7 @@ package com.avoqado.pos.core.util
  * WhatsApp salía a «+52525591873922».
  *
  * Reglas:
- * - Con «+» delante, la persona dijo la lada: si es la del país, se quita (en México también el «1» del celular viejo:
+ * - Con «+» delante (también «(+52)»), la persona dijo la lada: si es la del país, se quita (en México también el «1» del celular viejo:
  *   «+52 1 55…»); si es OTRA lada, los dígitos se quedan como están y [telefonoMx] no los acepta (Codex r1: «+53 5 123 4567»
  *   no se vuelve un celular mexicano).
  * - Sin «+», México: 13 dígitos que empiezan con «521» pierden «521»; 12 que empiezan con «52» (y el tercero no es «1», que
@@ -21,7 +21,7 @@ package com.avoqado.pos.core.util
 fun digitosNacionales(texto: String, lada: String = LADA_MEXICO): String {
     val limpio = sinAdornos(texto)
     val digitos = limpio.filter { it in '0'..'9' }
-    if (limpio.startsWith("+")) {
+    if (conLadaEscrita(limpio)) {
         if (!digitos.startsWith(lada)) return digitos
         val resto = digitos.drop(lada.length)
         return if (lada == LADA_MEXICO && resto.length == 11 && resto.startsWith("1")) resto.drop(1) else resto
@@ -30,12 +30,20 @@ fun digitosNacionales(texto: String, lada: String = LADA_MEXICO): String {
 }
 
 /**
- * Lo que guarda el campo con bandera ([com.avoqado.pos.designsystem.components.AvoqadoPhoneInput]): sólo dígitos y sin la
- * lada repetida, decidido por el largo y nunca por el «+». El campo sólo guarda dígitos, así que al teclear el «+» se pierde
- * en la primera tecla: si pegar dependiera del «+», pegar y teclear lo mismo darían números distintos (Codex r1).
+ * Lo que se deja escribir en un campo de teléfono: dígitos 0-9, espacios, «+», paréntesis, guiones y puntos, con tope de 40.
+ * 🔴 Sin las marcas invisibles de dirección (U+202E…): pegadas en el campo pueden mostrar «55 9187 2293» mientras se manda
+ * «5591873922» (Codex r2). Lo que se ve es lo que se manda.
  */
-fun digitosDelCampoConBandera(texto: String, lada: String): String =
-    sinLadaRepetida(sinAdornos(texto).filter { it in '0'..'9' }, lada)
+fun filtrarTecleoDeTelefono(texto: String): String =
+    texto.filter { it in '0'..'9' || it in " +()-." || Character.isSpaceChar(it) }.take(40)
+
+/**
+ * El texto que enseña el campo con bandera: lo que la persona escribió (con su «+», que dice la lada) mientras siga dando los
+ * mismos dígitos que tiene quien lo usa; si quien lo usa los cambió (lo vació al enviar, por ejemplo), esos dígitos.
+ * Así pegar y teclear «+34 612 345 678» dan lo mismo (Codex r1 y r2).
+ */
+fun textoVisibleDelCampo(escrito: String, digitos: String, lada: String): String =
+    if (digitosNacionales(escrito, lada) == digitos) escrito else digitos
 
 /**
  * El celular de México listo para el SERVIDOR («+525591873922»), o null si no quedan 10 dígitos de México. Acepta espacios
@@ -45,9 +53,17 @@ fun digitosDelCampoConBandera(texto: String, lada: String): String =
 fun telefonoMx(texto: String): String? {
     val limpio = sinAdornos(texto)
     if (!CARACTERES_DE_TELEFONO.matches(limpio)) return null
-    if (limpio.startsWith("+") && !limpio.filter { it in '0'..'9' }.startsWith(LADA_MEXICO)) return null
+    if (masFueraDeLugar(limpio)) return null
+    if (conLadaEscrita(limpio) && !limpio.filter { it in '0'..'9' }.startsWith(LADA_MEXICO)) return null
     return digitosNacionales(limpio, LADA_MEXICO).takeIf { it.length == 10 }?.let { "+$LADA_MEXICO$it" }
 }
+
+/** «+52 …» o «(+52) …»: la persona escribió la lada. */
+private fun conLadaEscrita(limpio: String): Boolean = limpio.trimStart('(').startsWith("+")
+
+/** Un «+» que no va al principio («55+9187…») o más de uno: no es un teléfono (Codex r2). */
+private fun masFueraDeLugar(limpio: String): Boolean =
+    limpio.count { it == '+' } > 1 || ('+' in limpio && !conLadaEscrita(limpio))
 
 private fun sinLadaRepetida(digitos: String, lada: String): String = when {
     lada == LADA_MEXICO && digitos.length == 13 && digitos.startsWith("521") -> digitos.drop(3)

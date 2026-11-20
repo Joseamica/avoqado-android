@@ -14,6 +14,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import com.avoqado.pos.designsystem.components.*
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.core.util.formatMoneyFromCents
+import com.avoqado.pos.core.util.filtrarTecleoDeTelefono
 import com.avoqado.pos.giftcards.data.AjustesDeTarjetas
 import com.avoqado.pos.giftcards.domain.*
 import com.avoqado.pos.payment.presentation.CobroDeCuentaScreen
@@ -115,7 +116,7 @@ fun VenderTarjetaScreen(
                         if (sobre.canal == "WHATSAPP") {
                             Text(TextosDeTarjetas.TELEFONO_DE_QUIEN_LA_RECIBE)
                             AvoqadoPillTextField(value = sobre.telefonoDigitos, keyboardType = KeyboardType.Phone,
-                                onValueChange = { cambiar(sobre.copy(telefonoDigitos = it.take(25), lada = "52")) }, placeholder = TextosDeTarjetas.EJEMPLO_DE_CELULAR)
+                                onValueChange = { cambiar(sobre.copy(telefonoDigitos = filtrarTecleoDeTelefono(it), lada = "52")) }, placeholder = TextosDeTarjetas.EJEMPLO_DE_CELULAR)
                             if ("telefono$i" in invalidos) Text(TextosDeTarjetas.CELULAR_INVALIDO, color = MaterialTheme.colorScheme.error)
                         }
                         if (sobre.canal == "EMAIL") {

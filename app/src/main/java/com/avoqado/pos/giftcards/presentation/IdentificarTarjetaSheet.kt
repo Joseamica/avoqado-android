@@ -15,6 +15,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import com.avoqado.pos.designsystem.components.*
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.core.util.telefonoMx
+import com.avoqado.pos.core.util.filtrarTecleoDeTelefono
 import com.avoqado.pos.giftcards.data.*
 import com.avoqado.pos.giftcards.domain.*
 import com.avoqado.pos.pos.presentation.scanner.BarcodeScannerView
@@ -88,7 +89,7 @@ fun IdentificarTarjetaSheet(
             }
             if (modo == TextosDeTarjetas.TELEFONO) {
                 Text("+52 · México")
-                AvoqadoPillTextField(enabled = !ocupado, value = telefono, onValueChange = { telefono = it.take(25); viewModel.cambiarTelefono(telefono); otp = ""; pidioCodigo = false }, placeholder = TextosDeTarjetas.EJEMPLO_DE_CELULAR, keyboardType = KeyboardType.Phone)
+                AvoqadoPillTextField(enabled = !ocupado, value = telefono, onValueChange = { telefono = filtrarTecleoDeTelefono(it); viewModel.cambiarTelefono(telefono); otp = ""; pidioCodigo = false }, placeholder = TextosDeTarjetas.EJEMPLO_DE_CELULAR, keyboardType = KeyboardType.Phone)
                 if (pidioCodigo) {
                     Text(TextosDeTarjetas.CODIGO_ENVIADO)
                     TextButton(enabled = habilitado, onClick = { scope.launch { viewModel.pedirCodigo(telefono); if (viewModel.estado.value == EstadoDeIdentificacion.CodigoPedido) otp = "" } }) { Text(TextosDeTarjetas.PEDIR_CODIGO) }
