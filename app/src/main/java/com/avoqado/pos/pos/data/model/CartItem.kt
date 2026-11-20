@@ -1,5 +1,6 @@
 package com.avoqado.pos.pos.data.model
 
+import com.avoqado.pos.pos.domain.juntarExtrasRepetidos
 import java.util.UUID
 import kotlin.math.roundToInt
 import kotlinx.serialization.Serializable
@@ -178,7 +179,8 @@ data class CartItem(
 
     val modifiersSummary: String?
         get() {
-            val names = selectedModifiers.map { it.modifierName }
+            // «2x Flautas Cochinita» si se eligió dos veces (grupo que deja repetir, encargo a508f4).
+            val names = juntarExtrasRepetidos(selectedModifiers.map { it.modifierName })
             return if (names.isEmpty()) null else names.joinToString(", ")
         }
 
