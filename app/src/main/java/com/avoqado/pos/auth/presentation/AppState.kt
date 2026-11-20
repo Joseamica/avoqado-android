@@ -67,6 +67,8 @@ class AppState @Inject constructor(
     private val serviceCoursesRepository: com.avoqado.pos.tables.data.ServiceCoursesRepository? = null,
     /** R5#2: los cobros de la máquina sin subir o en duda frenan cerrar sesión. Default para las pruebas de JVM. */
     private val cobrosEnMaquinaDao: com.avoqado.pos.maquina.CobroEnMaquinaDao? = null,
+    /** C4: la cola propia de la máquina de efectivo arranca y para con la de los cobros. Default para las pruebas de JVM. */
+    private val subidaDeLaMaquina: com.avoqado.pos.maquina.SubidaDeLaMaquina? = null,
 ) : ViewModel() {
 
     /**
@@ -559,6 +561,7 @@ class AppState @Inject constructor(
                 paymentSyncService.start()
                 payLaterQueue?.start()
                 pendingGrantQueue?.start()
+                subidaDeLaMaquina?.start()
                 startOfflineOutbox()
                 refreshPlanAndSettings(sesionNueva = true)
             }
@@ -585,6 +588,8 @@ class AppState @Inject constructor(
         // el nuevo contexto; start() reinicia cuando cambia el venue activo.
         startOfflineOutbox()
         startInventorySyncIfNeeded()
+        // C4: sube lo de la máquina de la sucursal que quedó activa.
+        subidaDeLaMaquina?.disparar()
         _roleVersion.value += 1
         notifyDeviceSessionChanged()
         // D3: cambio de sucursal (el login y los refrescos piden la suya en refreshPlanAndSettings).
@@ -597,6 +602,7 @@ class AppState @Inject constructor(
         paymentSyncService.start()
         payLaterQueue?.start()
         pendingGrantQueue?.start()
+        subidaDeLaMaquina?.start()
         startOfflineOutbox()
         // refreshTabs rearma una sola generación de inventario para esta sesión/venue.
         refreshTabs()
@@ -653,6 +659,7 @@ class AppState @Inject constructor(
             paymentSyncService.stop()
             payLaterQueue?.stop()
             pendingGrantQueue?.stop()
+            subidaDeLaMaquina?.stop()
             stopInventorySync()
             syncOutbox.stop()
             // Hub D3: la sesión de mesa se borra ANTES de apagar el hub, así su despedida declara «ninguna» y la libera enseguida.

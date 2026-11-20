@@ -534,4 +534,32 @@ class CobroConMaquinaTest {
         canal.llega(pagoCompletado(ref, credit = due, change = 0)); runCurrent()
         assertEquals(EstadoDelIntento.PAGADO, dao.fila(ref)!!.estado)
     }
+
+    // MARK: - Aviso a la subida (C4, R3#12)
+
+    @Test
+    fun `cada cierre, cada duda y cada huerfano recuperado avisan a la subida, despues de guardarse`() = runTest {
+        val avisos = mutableListOf<String?>()
+        val cobro = CobroConMaquina(canal, dao, { testScheduler.currentTime }, backgroundScope, Random(7)) {
+            avisos += dao.todas().lastOrNull()?.estado
+        }
+        val ref = cobroPropio(cobro)
+        assertTrue(avisos.isEmpty())
+
+        canal.llega(pagoCompletado(ref, credit = 20_000, change = 1_250)); runCurrent()
+        assertEquals("el cierre ya estaba en disco al avisar", listOf<String?>(EstadoDelIntento.PAGADO), avisos)
+
+        val otro = (cobro.cobrar(venta.copy(llaveDeVenta = "venta-2")) as ResultadoDeInicio.Iniciado).referenceCC
+        canal.llega(status("AQZZZZZZZZZZZZ")); runCurrent()
+        assertEquals(EstadoDelIntento.ESPERANDO, dao.fila(otro)!!.estado)
+        assertEquals(2, avisos.size)
+
+        dao.insertar(
+            CobroEnMaquinaEntity("AQ000000000009", "venue-1", "v9", "{}", 18_000, 750, 18_750, null, null, creadoEn = 9, estado = EstadoDelIntento.EN_CURSO),
+        )
+        cobro.recuperar()
+        assertEquals("un huérfano pasó a duda", 3, avisos.size)
+        cobro.recuperar()
+        assertEquals("sin cambios no avisa", 3, avisos.size)
+    }
 }

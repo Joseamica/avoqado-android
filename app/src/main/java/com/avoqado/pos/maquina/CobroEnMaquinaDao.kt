@@ -61,6 +61,33 @@ interface CobroEnMaquinaDao {
     /** Lo que la subida (C4) tiene que mandar: cierres finales sin acuse y dudas sin subir. */
     @Query(CobroEnMaquinaSql.POR_SUBIR)
     suspend fun porSubir(): List<CobroEnMaquinaEntity>
+
+    // MARK: - La subida (C4, [SubidaDeLaMaquina])
+
+    @Query(CobroEnMaquinaSql.PARA_SUBIR)
+    suspend fun paraSubir(venueId: String): List<CobroEnMaquinaEntity>
+
+    @Query(CobroEnMaquinaSql.ESPERAN_AL_GERENTE)
+    suspend fun esperanAlGerente(venueId: String): List<CobroEnMaquinaEntity>
+
+    @Query(CobroEnMaquinaSql.MARCAR_SUBIDO)
+    suspend fun marcarSubido(referenceCC: String, conflicto: String?): Int
+
+    @Query(CobroEnMaquinaSql.ANOTAR_CONFLICTO)
+    suspend fun anotarConflicto(referenceCC: String, conflicto: String): Int
+
+    @Query(CobroEnMaquinaSql.MARCAR_DUDA_SUBIDA)
+    suspend fun marcarDudaSubida(referenceCC: String, subida: Boolean): Int
+
+    @Query(CobroEnMaquinaSql.RESOLVER)
+    suspend fun resolver(
+        referenceCC: String,
+        resueltoPor: String,
+        creditCents: Int,
+        changeDispensedCents: Int,
+        cancelPedido: String?,
+        conflicto: String?,
+    ): Int
 }
 
 /** R5#2: ¿hay cobros de la máquina sin subir o en duda, de cualquier sucursal? Lo usan los Ajustes de la máquina (C6). */

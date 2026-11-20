@@ -110,4 +110,29 @@ internal open class CobroEnMaquinaSobreSqlite : CobroEnMaquinaDao, AutoCloseable
         actualizar(CobroEnMaquinaSql.ANOTAR_EVIDENCIA, "referenceCC" to referenceCC, "crudos" to crudos)
 
     override suspend fun porSubir() = filas(CobroEnMaquinaSql.POR_SUBIR)
+
+    override suspend fun paraSubir(venueId: String) = filas(CobroEnMaquinaSql.PARA_SUBIR, "venueId" to venueId)
+
+    override suspend fun esperanAlGerente(venueId: String) = filas(CobroEnMaquinaSql.ESPERAN_AL_GERENTE, "venueId" to venueId)
+
+    override suspend fun marcarSubido(referenceCC: String, conflicto: String?) =
+        actualizar(CobroEnMaquinaSql.MARCAR_SUBIDO, "referenceCC" to referenceCC, "conflicto" to conflicto)
+
+    override suspend fun anotarConflicto(referenceCC: String, conflicto: String) =
+        actualizar(CobroEnMaquinaSql.ANOTAR_CONFLICTO, "referenceCC" to referenceCC, "conflicto" to conflicto)
+
+    override suspend fun marcarDudaSubida(referenceCC: String, subida: Boolean) =
+        actualizar(CobroEnMaquinaSql.MARCAR_DUDA_SUBIDA, "referenceCC" to referenceCC, "subida" to if (subida) 1 else 0)
+
+    override suspend fun resolver(
+        referenceCC: String,
+        resueltoPor: String,
+        creditCents: Int,
+        changeDispensedCents: Int,
+        cancelPedido: String?,
+        conflicto: String?,
+    ) = actualizar(
+        CobroEnMaquinaSql.RESOLVER, "referenceCC" to referenceCC, "resueltoPor" to resueltoPor, "creditCents" to creditCents,
+        "changeDispensedCents" to changeDispensedCents, "cancelPedido" to cancelPedido, "conflicto" to conflicto,
+    )
 }

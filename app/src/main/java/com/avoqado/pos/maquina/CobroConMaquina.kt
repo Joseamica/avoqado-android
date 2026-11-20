@@ -110,6 +110,8 @@ class CobroConMaquina(
     private val reloj: () -> Long,
     private val scope: CoroutineScope,
     private val aleatorio: Random = SecureRandom(),
+    /** C4: un cierre o una duda ya están en disco; la subida ([SubidaDeLaMaquina.disparar]) los manda sin esperar a su reloj. */
+    private val alTerminar: () -> Unit = {},
 ) {
     private val _estado = MutableStateFlow<EstadoDelCobro>(EstadoDelCobro.Libre)
     val estado: StateFlow<EstadoDelCobro> = _estado.asStateFlow()
@@ -202,7 +204,7 @@ class CobroConMaquina(
      * Nunca resuelve una duda ni le manda nada a la máquina.
      */
     suspend fun recuperar(): List<CobroEnMaquinaEntity> = candado.withLock {
-        dao.huerfanosAEsperando(salvo = activo?.takeIf { it.vivo }?.ref ?: "")
+        if (dao.huerfanosAEsperando(salvo = activo?.takeIf { it.vivo }?.ref ?: "") > 0) alTerminar()
         dao.porSubir()
     }
 
@@ -269,6 +271,7 @@ class CobroConMaquina(
             ?: return aEsperando(a)   // contradictorio: el crudo ya va en la evidencia
         // El desenlace y «por subir» en UN `UPDATE`: la fila es la cola (R4-1).
         dao.cerrar(a.ref, desenlace.name, m.creditCents, m.changeDispensedCents, reloj(), crudos(a))
+        alTerminar()
         a.fase = Fase.CERRADO
         a.desenlace = desenlace
         a.credit = m.creditCents
@@ -280,6 +283,7 @@ class CobroConMaquina(
 
     private suspend fun aEsperando(a: Intento) {
         dao.aEsperando(a.ref, crudos(a))
+        alTerminar()
         a.fase = Fase.ESPERANDO
         a.propio = false
         cancelarTemporizador()

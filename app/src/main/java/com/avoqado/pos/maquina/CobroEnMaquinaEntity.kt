@@ -140,4 +140,59 @@ internal object CobroEnMaquinaSql {
         "SELECT * FROM cobros_en_maquina " +
             "WHERE (estado IN ('PAGADO', 'CANCELADO', 'GUARDADO') AND subido = 0) OR (estado = 'ESPERANDO' AND dudaSubida = 0) " +
             "ORDER BY creadoEn ASC, referenceCC ASC"
+
+    // MARK: - La subida (C4)
+
+    /**
+     * Lo que la subida manda de [venueId]: [POR_SUBIR] sin lo que ya tiene `conflicto` (409, 422 o una respuesta con otros
+     * importes): eso espera a un gerente y no se reintenta. Sigue contando en [PENDIENTES].
+     */
+    const val PARA_SUBIR: String =
+        "SELECT * FROM cobros_en_maquina WHERE venueId = :venueId AND conflicto IS NULL " +
+            "AND ((estado IN ('PAGADO', 'CANCELADO', 'GUARDADO') AND subido = 0) OR (estado = 'ESPERANDO' AND dudaSubida = 0)) " +
+            "ORDER BY creadoEn ASC, referenceCC ASC"
+
+    /** Las dudas ya subidas que esperan la decisión del gerente (R5#6): se consultan cada 60 s. */
+    const val ESPERAN_AL_GERENTE: String =
+        "SELECT * FROM cobros_en_maquina WHERE venueId = :venueId AND estado = 'ESPERANDO' AND dudaSubida = 1 " +
+            "AND conflicto IS NULL ORDER BY creadoEn ASC, referenceCC ASC"
+
+    /** El SERVIDOR repitió el folio y los importes (200), o guardó el dinero como incidencia (202, con su texto en `conflicto`). */
+    const val MARCAR_SUBIDO: String =
+        "UPDATE cobros_en_maquina SET subido = 1, conflicto = :conflicto " +
+            "WHERE referenceCC = :referenceCC AND estado IN ('PAGADO', 'CANCELADO', 'GUARDADO') AND subido = 0"
+
+    /** 409, 422 o una respuesta con otros importes: visible, y deja de reintentarse. Sólo lo que sigue sin acuse. */
+    const val ANOTAR_CONFLICTO: String =
+        "UPDATE cobros_en_maquina SET conflicto = :conflicto WHERE referenceCC = :referenceCC " +
+            "AND ((estado IN ('PAGADO', 'CANCELADO', 'GUARDADO') AND subido = 0) OR estado = 'ESPERANDO')"
+
+    /** `1` = el SERVIDOR ya tiene la duda; `0` = la perdió (404 al consultarla): se vuelve a subir. */
+    const val MARCAR_DUDA_SUBIDA: String =
+        "UPDATE cobros_en_maquina SET dudaSubida = :subida WHERE referenceCC = :referenceCC AND estado = 'ESPERANDO'"
+
+    /**
+     * La decisión del gerente llegó del SERVIDOR (R4-4). 🔴 En una fila `RESUELTO`, `cancelPedido` es el modo del desenlace
+     * que decidió el gerente, como lo arma el SERVIDOR (`CANCELADO` '1', `GUARDADO` '2', `PAGADO` null): ver [desenlace].
+     */
+    const val RESOLVER: String =
+        "UPDATE cobros_en_maquina SET estado = 'RESUELTO', resueltoPor = :resueltoPor, creditCents = :creditCents, " +
+            "changeDispensedCents = :changeDispensedCents, cancelPedido = :cancelPedido, subido = 1, dudaSubida = 1, " +
+            "conflicto = :conflicto WHERE referenceCC = :referenceCC AND estado = 'ESPERANDO'"
 }
+
+/**
+ * El desenlace de una fila final o `RESUELTO` (para el ticket y el comprobante de C7); null mientras no terminó. En
+ * `RESUELTO` sale de `cancelPedido` ([CobroEnMaquinaSql.RESOLVER]).
+ */
+val CobroEnMaquinaEntity.desenlace: Desenlace?
+    get() = when (estado) {
+        EstadoDelIntento.PAGADO, EstadoDelIntento.CANCELADO, EstadoDelIntento.GUARDADO -> Desenlace.valueOf(estado)
+        EstadoDelIntento.RESUELTO -> when (cancelPedido) {
+            null -> Desenlace.PAGADO
+            "1" -> Desenlace.CANCELADO
+            "2" -> Desenlace.GUARDADO
+            else -> null
+        }
+        else -> null
+    }
