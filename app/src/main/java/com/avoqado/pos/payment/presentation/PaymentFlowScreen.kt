@@ -104,6 +104,8 @@ fun PaymentFlowScreen(
     alNoPasarLaPuerta: ((String) -> Unit)? = null,
     /** D13: la foto de la puerta del efectivo de quien fijó el saldo (bandeja, «Pedidos → detalle»). null = la toma el cobro. */
     dineroConocido: com.avoqado.pos.payment.domain.DineroConocido? = null,
+    /** hz:bdd815fd:D5: lo que faltaba según la pantalla que abre el cobro («Pedidos → Cobrar»). Ver `PaymentFlowViewModel.startPaymentFlow`. */
+    saldoLeidoDeLaCuenta: Int? = null,
 ) {
     val scopeDeSaldo = rememberCoroutineScope()
     val filaDeSaldo by viewModel.conductaDelSaldo.collectAsState()
@@ -219,6 +221,7 @@ fun PaymentFlowScreen(
             antesDeRecibirEfectivo = antesDeRecibirEfectivo,
             alNoPasarLaPuerta = alNoPasarLaPuerta,
             dineroConocido = dineroConocido,
+            saldoLeidoDeLaCuenta = saldoLeidoDeLaCuenta,
         )
         aperturaIniciada = true
     }

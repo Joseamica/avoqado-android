@@ -1619,6 +1619,18 @@ class PaymentFlowViewModel @Inject constructor(
      */
     private var continuaVentaPartida = false
 
+    /**
+     * 🔴 hz:bdd815fd:D5: la orden y lo que le faltaba según la pantalla que abrió ESTE cobro ([startPaymentFlow], `saldoLeidoDeLaCuenta`).
+     * Se fija al arrancar y no cambia en los reintentos del mismo cobro (la terminal no estaba, el 412): si se releyera, el abono que
+     * entró en medio pasaría. Se suelta en cuanto este cobro registra dinero: lo que falta cambió por él mismo y un envío posterior
+     * lo frenaría sin razón. Nunca la columna guardada del SERVIDOR (la de D53): la pantalla enseña otra cuenta (`saldoPorCobrar`).
+     */
+    private class SaldoQueVioLaPantalla(val orderId: String, val cents: Int)
+    private var saldoQueVioLaPantalla: SaldoQueVioLaPantalla? = null
+
+    /** hz:bdd815fd:D5: lo que faltaba de la orden a la que va ESTE envío según su pantalla, o null (el cuerpo sale igual que siempre). */
+    private fun loQueFaltabaEnPantalla(orderId: String?): Int? = saldoQueVioLaPantalla?.takeIf { it.orderId == orderId }?.cents
+
     /** D7: tras una parte con tarjeta no se pudo confirmar el saldo con el SERVIDOR (el éxito lo dice). */
     private var saldoSinConfirmar = false
     private var splitNumberOfParts: Int? = null
@@ -2638,6 +2650,13 @@ class PaymentFlowViewModel @Inject constructor(
          * sin puerta, como antes (mesa, partes 2..N: su saldo se arma en el aparato y una foto al arrancar no diría qué contó).
          */
         dineroConocido: com.avoqado.pos.payment.domain.DineroConocido? = null,
+        /**
+         * 🔴 hz:bdd815fd:D5: lo que faltaba de [resumeOrderId] según la pantalla que abrió este cobro («Pedidos → Cobrar»: el
+         * `preBillBalance.remainingBalanceCents` que le dio el SERVIDOR). Viaja como `expectedRemainingCents` en cada envío de ESTE cobro a
+         * la terminal: si un abono entró en medio, el SERVIDOR no cobra (412). null = como siempre (venta nueva, mesa, partes 2..N, cuyo
+         * saldo arma el aparato y no viene de una lectura del SERVIDOR).
+         */
+        saldoLeidoDeLaCuenta: Int? = null,
     ) {
         // 🔴 La MISMA apertura (un toque de «Cobrar») no reinicia el cobro. La pantalla vuelve a
         // componerse al cambiar de pestaña o girar la tablet y relanza este arranque con lo que
@@ -2782,6 +2801,10 @@ class PaymentFlowViewModel @Inject constructor(
         // every retail/quick flow is byte-identical.
         mesaDelCobro?.let { createdOrderId = it.orderId }
         continuaVentaPartida = mesaDelCobro == null && !resumeOrderId.isNullOrBlank()
+        // hz:bdd815fd:D5: sólo si la orden que se cobra ES la que leyó la pantalla (una mesa en PAYING la reemplaza arriba).
+        saldoQueVioLaPantalla = saldoLeidoDeLaCuenta?.takeIf { it >= 0 && mesaDelCobro == null }?.let { saldo ->
+            resumeOrderId?.takeIf { it.isNotBlank() && it == createdOrderId }?.let { SaldoQueVioLaPantalla(it, saldo) }
+        }
         // 🔴 D13: la foto de la puerta del efectivo, con el saldo que esta pantalla cree que falta (sólo si la trae quien fijó el saldo).
         val ordenAlArrancar = createdOrderId
         saldoAlArrancar = ordenAlArrancar?.let { it to cart.totalCents.toLong() }
@@ -3660,6 +3683,8 @@ class PaymentFlowViewModel @Inject constructor(
                     deLaBandeja = cobroDeLaBandeja ?: cobroFueraDeLaBandeja(),
                     // D53: el cobro de vales lleva lo que debía su orden al armarla; si cambió, el SERVIDOR no cobra.
                     expectedBalanceBeforeCents = saldoEsperadoDeLosVales(createdOrderId),
+                    // hz:bdd815fd:D5: «Pedidos → Cobrar» lleva lo que faltaba según su pantalla; si cambió, el SERVIDOR no cobra.
+                    expectedRemainingCents = loQueFaltabaEnPantalla(createdOrderId),
                 )
                 recordarIntentoDeCobro(terminalResult)
                 if (terminalResult is TerminalPaymentResult.Success && terminalResult.alreadyRecovered) return
@@ -4843,6 +4868,7 @@ class PaymentFlowViewModel @Inject constructor(
         /** Se descubrió al cancelar: la pantalla lo DICE, porque el cajero creía cancelada la venta. */
         trasCancelar: Boolean = false,
     ) {
+        saldoQueVioLaPantalla = null // hz:bdd815fd:D5: este cobro ya movió lo que falta.
         // D7 (27-oct): la terminal no dice cuánto queda de una venta partida. Se le pregunta al SERVIDOR ANTES de soltar la
         // protección durable del cobro (`reconocerCobro`) y antes de publicar el éxito, que es lo que entrega el resultado
         // al carrito. Si el cajero se fue mientras tanto, el dinero no se pierde: va por el camino del desenlace tardío.
@@ -6474,6 +6500,7 @@ class PaymentFlowViewModel @Inject constructor(
      * el cliente se queda con su aritmética local.
      */
     private fun adoptarSaldoDelServer(remainingBalanceCents: Int?, orderPaymentStatus: String?) {
+        saldoQueVioLaPantalla = null // hz:bdd815fd:D5: este cobro ya registró dinero; lo que falta cambió por él.
         // La orden ya está cerrada: no queda nada por cobrar, diga lo que diga
         // el número. Cobrarle más la rechazaría y el cajero quedaría con una
         // venta que no cierra.
