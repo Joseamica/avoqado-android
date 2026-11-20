@@ -369,7 +369,7 @@ class F1FolioDelCarritoModeloTest {
             }
         }
 
-        /** «Cuentas abiertas» (`CobroDeCuentaScreen`): el cobro de lo que la pantalla enseña de [cuenta], con el saldo que le pasa al cobro. */
+        /** «Cuentas abiertas» (`CobroDeCuentaScreen`): el cobro de lo que la pantalla enseña de [cuenta], con el saldo de D5. */
         fun cobrarCuentaAbierta(cuenta: com.avoqado.pos.tables.data.OrderDetail) {
             val cents = com.avoqado.pos.tables.data.restanteCents(cuenta)!!
             cobro.setSplitConfig("FULLPAYMENT")
@@ -377,7 +377,8 @@ class F1FolioDelCarritoModeloTest {
                 com.avoqado.pos.pos.presentation.cart.CartState(items = listOf(com.avoqado.pos.pos.data.model.CartItem(
                     type = com.avoqado.pos.pos.data.model.CartItemType.CustomAmount, name = "Saldo pendiente", unitPrice = cents))),
                 resumeOrderId = cuenta.id, apertura = UUID.randomUUID().toString(),
-                saldoDelFolio = com.avoqado.pos.payment.presentation.saldoDelFolioDeLaCuenta(cuenta),
+                // Unión con develop: el saldo de «Cuentas abiertas» es el de D5 (`CobroDeCuentaScreen`), no el de F1.
+                saldoLeidoDeLaCuenta = com.avoqado.pos.payment.presentation.saldoLeidoDelServidor(cuenta, cents),
             )
         }
 
@@ -946,22 +947,16 @@ class F1FolioDelCarritoModeloTest {
     }
 
     /**
-     * Codex final r1 #1: «Cuentas abiertas» enseña $100 y otra caja abona $0.50 antes del envío. Sin `expectedRemainingCents` el
-     * SERVIDOR aplica el margen de $1 de las apps viejas y el lector cobra $100 de una cuenta que debe $99.50. Con el saldo que se
-     * enseña, 412: nada llega al lector y el siguiente cobro sale del saldo vigente (como el carrito).
+     * Codex final r1 #1, ya con D5 (unión F1 × develop): «Cuentas abiertas» enseña $100 y otra caja abona $0.50 antes del envío. Sin
+     * `expectedRemainingCents` el margen de $1 dejaba que el lector cobrara $100 de una cuenta que debe $99.50. Con el saldo de D5,
+     * 412: nada llega al lector y la caja se queda en la pantalla de D5 (texto del SERVIDOR; la salida de F1 no la toma). Al volver
+     * a entrar, la cuenta se relee y el cobro sale de lo que de verdad falta.
      */
     @Test
     fun cuentasAbiertas_otraCajaAbona50centavos_412_noCobraDeMas() = runTest {
         val servidor = Servidor()
         var saldoReal = 10_000
-        // El SERVIDOR (contrato §1): con el saldo esperado, al centavo; sin él, el margen de $1 de las apps viejas (ya hay abono).
-        servidor.proximoEnvio = { _, requestId ->
-            val esperado = servidor.saldosEsperados.last()
-            val monto = servidor.montos.last()
-            val rechazo = if (esperado != null) esperado != saldoReal || monto > saldoReal else monto > saldoReal + 100
-            if (rechazo) TerminalPaymentResult.Error("El cobro no cuadra", requestId = requestId, noSeCreo = true, saldoVigenteCents = saldoReal)
-            else TerminalPaymentResult.Undetermined("x", requestId)
-        }
+        servidor.proximoEnvio = { _, requestId -> servidor.admision(requestId, saldoReal, conAbono = saldoReal < 10_000) }
         val caja = Caja(servidor)
         val cuenta = com.avoqado.pos.tables.data.OrderDetail(id = "order-a", status = "PENDING", paymentStatus = "PENDING", total = 100.0,
             preBillBalance = com.avoqado.pos.tables.data.PreBillBalance(10_000, 0, 10_000))
@@ -970,12 +965,12 @@ class F1FolioDelCarritoModeloTest {
         caja.tarjeta()
         advanceUntilIdle()
 
-        assertEquals("viaja el saldo que se enseña", 10_000, servidor.saldosEsperados.last())
+        assertEquals("viaja el saldo que se enseña (D5)", 10_000, servidor.saldosEsperados.last())
         assertTrue("nada llegó al lector", caja.cobro.state.value is PaymentFlowState.Error)
-        assertEquals("el saldo vigente, como en el carrito", 9_950, caja.cobro.saldoVigente.value?.cents)
+        assertTrue(servidor.admitidos.isEmpty())
+        assertNull("la pantalla de D5, no la salida de F1", caja.cobro.saldoVigente.value)
 
-        // La cuenta se relee y el nuevo cobro sale de lo que de verdad falta.
-        caja.cobro.consumirSaldoVigente()
+        // Al volver a entrar, la cuenta se relee y el nuevo cobro sale de lo que de verdad falta.
         caja.cobrarCuentaAbierta(cuenta.copy(paymentStatus = "PARTIAL", preBillBalance = com.avoqado.pos.tables.data.PreBillBalance(10_000, 50, 9_950)))
         caja.tarjeta()
         advanceUntilIdle()

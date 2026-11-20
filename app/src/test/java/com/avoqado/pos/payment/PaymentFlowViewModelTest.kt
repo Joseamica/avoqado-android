@@ -1333,6 +1333,61 @@ class PaymentFlowViewModelTest {
         assertEquals(textoDelServidor, (viewModel.state.value as PaymentFlowState.Error).message)
     }
 
+    /**
+     * Unión F1 × develop (mapa-union-android.md §6.3, N3). En «Pedidos → Cobrar» el 412 de saldo es de D5 aunque el servicio ya
+     * traiga el saldo vigente (`saldoVigenteCents`, la salida de F1, que llena TODO 412 `ORDER_BALANCE_CHANGED`): la caja se queda
+     * en la pantalla de D5 con el texto del SERVIDOR; no publica el saldo vigente (que cerraría el cobro y la cuenta).
+     */
+    @Test
+    fun `F1 x D5 el 412 de Pedidos Cobrar con saldo vigente sigue en la pantalla de D5`() = runTest {
+        every { areaTicketRepository.session.current() } returns null
+        coEvery {
+            terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any(), any(), any(), any(), any())
+        } returns TerminalPaymentResult.Error(textoDelServidor, requestId = "req-412", noSeCreo = true, cuentaCambio = true, saldoVigenteCents = 2_000)
+
+        viewModel.startPaymentFlow(carritoDeSaldoPendiente(2500), resumeOrderId = "orden-de-pedidos", saldoLeidoDeLaCuenta = 2500)
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        viewModel.selectTerminalAndPay("t1")
+        advanceUntilIdle()
+
+        assertEquals("el texto del SERVIDOR", textoDelServidor, (viewModel.state.value as PaymentFlowState.Error).message)
+        assertNull("la salida de F1 no toma el 412 de D5", viewModel.saldoVigente.value)
+        assertFalse(viewModel.debeSalir.value)
+        assertNull(viewModel.cuentaDeValesCambio.value)
+    }
+
+    /**
+     * Unión F1 × develop (§6.4, N4). La parte 2..N de una venta de VALES es de D4: aunque el carrito le pase su saldo a F1
+     * (`saldoDelFolio`, como lo hace `CheckoutScreen`), el envío lleva sólo `expectedBalanceBeforeCents` y su 412 sale por D4.
+     */
+    @Test
+    fun `F1 x D4 la parte 2 de vales no manda el saldo de F1 y su 412 sale por D4`() = runTest {
+        val sesion = conAbono(sesionDeVales("0.00", valeDeArea("a", "3.00")), pagado = "1.50", saldo = "1.50")
+        every { areaTicketRepository.session.current() } returns sesion
+        coEvery { areaTicketRepository.materialize(any(), any(), any(), any(), any(), any(), any(), any()) } returns sesion
+        coEvery { areaTicketRepository.refresh(any(), any()) } returns conAbono(sesion, pagado = "1.60", saldo = "1.40")
+        coEvery {
+            terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any(), any(), any(), any(), any())
+        } returns TerminalPaymentResult.Error(textoDelServidor, requestId = "req-412", noSeCreo = true, cuentaCambio = true, saldoVigenteCents = 140)
+        val saldoPendiente = CartItem(id = "saldo", type = CartItemType.CustomAmount, name = "Saldo pendiente", unitPrice = 150)
+
+        viewModel.startPaymentFlow(CartState(items = listOf(saldoPendiente)), resumeOrderId = "order-vales", saldoDelFolio = 150)
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        viewModel.selectTerminalAndPay("t1")
+        advanceUntilIdle()
+
+        coVerify(exactly = 1) {
+            terminalPaymentService.sendPaymentToTerminal(
+                terminalId = "t1", amountCents = 150, tipCents = any(), rating = any(), orderId = "order-vales",
+                processedByStaffId = any(), customerId = any(), deLaBandeja = any(), expectedBalanceBeforeCents = 150,
+                expectedRemainingCents = null,
+            )
+        }
+        assertNull("la salida de F1 no toma el 412 de vales", viewModel.saldoVigente.value)
+        assertTrue("sale por D4 al carrito", viewModel.debeSalir.value)
+        assertNotNull(viewModel.cuentaDeValesCambio.value)
+    }
+
     @Test
     fun `D4 un rechazo de saldo que no es la cuenta que cambio sigue en su pantalla de error de siempre`() = runTest {
         val sesion = sesionDeVales("0.00", valeDeArea("a", "3.00"))
@@ -3885,7 +3940,8 @@ class PaymentFlowViewModelTest {
 
     @Test
     fun `D5 una cuenta que ya existe sin lectura de su pantalla (partes 2 a N) NO manda lo que faltaba`() = runTest {
-        // Las partes 2..N de una venta partida en tienda arman su saldo en el aparato: no es una lectura del SERVIDOR.
+        // Las partes 2..N de una venta partida en tienda arman su saldo en el aparato: no es una lectura del SERVIDOR, así que D5 no
+        // lo manda. (Unión con F1, decisión B: en Mostrador el campo sí viaja, pero lo pone el carrito por `saldoDelFolio`; aquí no se pasa.)
         coEvery {
             terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any(), any(), any(), any(), any())
         } returns TerminalPaymentResult.Error("Terminal offline")

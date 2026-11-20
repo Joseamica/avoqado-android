@@ -3787,11 +3787,6 @@ class PaymentFlowViewModel @Inject constructor(
                 }
                 _state.value = PaymentFlowState.SentToTerminal(total)
                 val generation = paymentGeneration
-                // F1 bloque 2: el saldo que vio la caja viaja con el envío; si no se conoce, va sin él (contrato viejo) y se anota.
-                val saldoEsperado = saldoEsperadoDelFolio()
-                if (saldoEsperado == null && !createdOrderId.isNullOrBlank()) {
-                    Log.w("💳", "F1: sin saldo conocido de la cuenta $createdOrderId: el cobro sale sin expectedRemainingCents")
-                }
                 // D4: sin suspender de por medio, así el `requestId` que se anota es el de ESTE envío.
                 pendingGrantQueue?.let {
                     terminalPaymentService.antesDelProximoEnvio = { requestId ->
@@ -3802,6 +3797,15 @@ class PaymentFlowViewModel @Inject constructor(
                 // este mismo cobro lo vuelve a usar (r3 #1).
                 val apartadoDelEnvio = sesionDelCobro?.let { id -> areaTicketRepository.session.current()?.takeIf { it.id == id } }
                 apartadoDelUltimoEnvio = apartadoDelEnvio
+                // F1 bloque 2 (unión con develop, mapa-union-android.md §4): el saldo de la venta de Mostrador ligada a su orden viaja con
+                // el envío, también si la caja no lo confirmó (decisión B). Nunca en vales (D53/D4) ni en «Pedidos → Cobrar» (D5): esas
+                // cuentas mandan su propio dato y tienen su propia salida del 412.
+                val faltabaEnPantalla = loQueFaltabaEnPantalla(createdOrderId)
+                val saldoEsperado = saldoEsperadoDelFolio()
+                    ?.takeIf { faltabaEnPantalla == null && apartadoDelEnvio == null && !esCobroDeVales() }
+                if (saldoEsperado == null && faltabaEnPantalla == null && apartadoDelEnvio == null && !createdOrderId.isNullOrBlank()) {
+                    Log.w("💳", "F1: sin saldo conocido de la cuenta $createdOrderId: el cobro sale sin expectedRemainingCents")
+                }
                 val terminalResult = terminalPaymentService.sendPaymentToTerminal(
                     terminalId = terminalId,
                     amountCents = currentBaseAmount(),
@@ -3823,7 +3827,7 @@ class PaymentFlowViewModel @Inject constructor(
                     expectedBalanceBeforeCents = saldoEsperadoDeLosVales(createdOrderId),
                     // hz:bdd815fd:D5: «Pedidos → Cobrar» lleva lo que faltaba según su pantalla; si cambió, el SERVIDOR no cobra.
                     // F1: si no, el saldo de la venta de Mostrador ligada a su orden.
-                    expectedRemainingCents = loQueFaltabaEnPantalla(createdOrderId) ?: saldoEsperado,
+                    expectedRemainingCents = faltabaEnPantalla ?: saldoEsperado,
                 )
                 // 🔴 Codex android r1 #1: sólo la respuesta de ESTE flujo es su «último intento». La del envío original de A que llega
                 // con B ya abierto (el cajero salió con [Seguir]) iba aquí ANTES de mirar la generación, y Esc en B volvía a observar
@@ -3861,14 +3865,16 @@ class PaymentFlowViewModel @Inject constructor(
                             salirPorCuentaCambiada(terminalResult.message, apartadoDelEnvio)
                             return
                         }
-                        // F1 bloque 2: 412 de saldo distinto. La venta toma el saldo vigente y vuelve a cobrar desde ahí (sin reenviar).
-                        terminalResult.saldoVigenteCents?.let { saldo ->
+                        // F1 bloque 2: el 412 de saldo de la venta de Mostrador (sólo si el campo lo puso F1; con D5 se queda en su
+                        // pantalla con el texto del SERVIDOR). La venta toma el saldo vigente y vuelve a cobrar desde ahí (sin reenviar).
+                        val saldoVigenteF1 = terminalResult.saldoVigenteCents?.takeIf { saldoEsperado != null }
+                        saldoVigenteF1?.let { saldo ->
                             folioDeEstaCompra(null, com.avoqado.pos.payment.data.FolioEnDuda.Origen.LOCAL)?.let { f ->
                                 _saldoVigente.value = com.avoqado.pos.payment.data.SaldoVigente(f.venueId, f.identidadDeVenta, f.orderId, saldo)
                             }
                         }
                         _state.value = PaymentFlowState.Error(
-                            message = terminalResult.saldoVigenteCents?.let { com.avoqado.pos.payment.data.avisoDeSaldoCambiado(it) } ?: terminalResult.message,
+                            message = saldoVigenteF1?.let { com.avoqado.pos.payment.data.avisoDeSaldoCambiado(it) } ?: terminalResult.message,
                             source = if (terminalResult.sinCobroNiRechazo) PaymentErrorSource.NO_SE_COBRO else PaymentErrorSource.TERMINAL,
                             // C1: «Terminal ocupada» con salida — «Revisar ese cobro» sólo si el servidor nombró un cobro
                             // real (con `"unknown"` no hay a quién preguntar).
