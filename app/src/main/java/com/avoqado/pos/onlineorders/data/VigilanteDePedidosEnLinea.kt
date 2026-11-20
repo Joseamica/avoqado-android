@@ -53,6 +53,7 @@ private const val TAG = "🛎 PedidosEnLinea-Vigilante"
  *   CUALQUIER pantalla, la tienda de «Mi equipo» sigue abierta (el SERVIDOR sólo lo cuenta con `orders:update`). En ANDROID el
  *   vigilante ya sólo corre con la app al frente; en WINDOWS, minimizada no late. El «sondear ya» nunca late (puede salir después
  *   de `onStop`). La cabecera de fondo la pone el repositorio siempre, así un 403 no abre el PIN del gerente cada 10 s.
+ * - D662 parte 2: [pausadaSola], la tienda se pausó sola (2 pedidos seguidos sin aceptar); el banner lo dice en cualquier pantalla.
  * - Sin red es un estado normal: [sinConexion] se enciende, la última lista se conserva (y sigue sonando) y se reintenta.
  * - En segundo plano ([onStop]) se detiene todo: no hay promesa de avisar con la app dormida.
  * - El sonido usa sólo `RingtoneManager...play()`, lo único que el adaptador de WINDOWS tiene.
@@ -119,6 +120,11 @@ class VigilanteDePedidosEnLinea internal constructor(
 
     /** Los pedidos por aceptar del último sondeo bueno (se conserva si falla la red). */
     val pendientes: StateFlow<List<OnlineOrder>> = _pendientes.asStateFlow()
+
+    private val _pausadaSola = MutableStateFlow(false)
+
+    /** D662 parte 2: la tienda se pausó sola (2 pedidos seguidos sin aceptar), según el último sondeo bueno; se conserva sin red. */
+    val pausadaSola: StateFlow<Boolean> = _pausadaSola.asStateFlow()
 
     private val _sinConexion = MutableStateFlow(false)
 
@@ -188,6 +194,7 @@ class VigilanteDePedidosEnLinea internal constructor(
         _foliosPorPagar.value = 0
         actualizarAbiertos()
         _sinConexion.value = false
+        _pausadaSola.value = false
     }
 
     /** Falso desde cada [onStart] hasta el primer sondeo BUENO: con datos viejos del segundo plano no suena nada. */
@@ -297,6 +304,7 @@ class VigilanteDePedidosEnLinea internal constructor(
             _pendientes.value = lista
             silenciados.value = silenciados.value intersect lista.map { it.orderId }.toSet()
             hayAbiertosEnInbox = inbox.pending + inbox.active > 0
+            _pausadaSola.value = inbox.autoPaused
             actualizarAbiertos()
             _sinConexion.value = false
             sonidoListo.value = true

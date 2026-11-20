@@ -104,6 +104,8 @@ data class Inbox(
     val storeOff: Boolean,
     val truncated: Boolean,
     val nextCursor: String?,
+    /** D662: la tienda se pausó sola (2 pedidos seguidos sin aceptar) y sigue así hasta «Reanudar». Un servidor viejo no lo manda. */
+    val autoPaused: Boolean = false,
 )
 
 /**
