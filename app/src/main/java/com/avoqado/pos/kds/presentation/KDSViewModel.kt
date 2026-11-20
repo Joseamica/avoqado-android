@@ -146,15 +146,32 @@ class KDSViewModel @Inject constructor(
      */
     private val _recientesAbierta = MutableStateFlow(false)
     val recientesAbierta: StateFlow<Boolean> = _recientesAbierta.asStateFlow()
+
+    /**
+     * D17 (tercer rediseño tras Codex r20, como Toast): un «Deshacer» a la vez. Mientras va al SERVIDOR, los botones de la hoja se
+     * apagan y «Recientes» no se vuelve a abrir; al confirmarse la hoja se CIERRA y la comanda regresa al tablero. Así ninguna
+     * lectura ni otro toque se cruza con él.
+     */
+    private val _deshaciendo = MutableStateFlow(false)
+    val deshaciendo: StateFlow<Boolean> = _deshaciendo.asStateFlow()
     private var aperturaDeRecientes = 0
     private var lecturaDeRecientes = 0
     private var estacionDeLaHoja: String? = null
 
     /** Cambiar la vista (otra estación, elegir estación, pantalla apagada) cierra la hoja abierta de otra estación. */
     private fun ponerVista(v: VistaDeCocina) {
+        val antes = (_vista.value as? VistaDeCocina.Tablero)?.estacion?.id
         _vista.value = v
         if (estacionDeLaHoja != null && (v as? VistaDeCocina.Tablero)?.estacion?.id != estacionDeLaHoja) cerrarRecientes()
+        // Codex r20: el porqué de un «Deshacer» de Cocina no se queda en la barra de Barra.
+        if (avisoEsDeDeshacer && (v as? VistaDeCocina.Tablero)?.estacion?.id != antes) {
+            avisoEsDeDeshacer = false
+            _aviso.value = null
+        }
     }
+
+    /** La barra del tablero trae el porqué de un «Deshacer» (se quita al cambiar de estación). */
+    private var avisoEsDeDeshacer = false
 
     private fun lecturaVigente(lectura: Int, estacionId: String) = lectura == lecturaDeRecientes && estacionDeLaHoja == estacionId
 
@@ -224,7 +241,10 @@ class KDSViewModel @Inject constructor(
     /** D11: sin internet pero recibiendo por el WiFi — la banda lo dice distinto. */
     val recibiendoPorWifi: StateFlow<Boolean> get() = receptor.activo
 
-    fun cerrarAviso() { _aviso.value = null }
+    fun cerrarAviso() {
+        _aviso.value = null
+        avisoEsDeDeshacer = false
+    }
 
     fun cerrarExito() { _exito.value = null }
 
@@ -709,6 +729,7 @@ class KDSViewModel @Inject constructor(
      * «Leyendo…»); toda respuesta de una lectura anterior, de una hoja cerrada o de otra estación se descarta.
      */
     fun abrirRecientes() {
+        if (_deshaciendo.value) return
         val tablero = _vista.value as? VistaDeCocina.Tablero ?: return
         aperturaDeRecientes++
         estacionDeLaHoja = tablero.estacion.id
@@ -749,17 +770,21 @@ class KDSViewModel @Inject constructor(
         _avisoDeRecientes.value = emptyMap()
     }
 
-    /** «Deshacer»: sin optimismo — la comanda sigue en Recientes hasta que el servidor la regresa. */
+    /** «Deshacer»: sin optimismo — la comanda sigue en Recientes hasta que el servidor la regresa. Uno a la vez. */
     fun deshacer(id: String) {
+        if (_deshaciendo.value) return
         val reciente = _recientes.value.firstOrNull { it.id == id }
         val folio = reciente?.sourceKey
         // D17: con tiempos, el SERVIDOR sólo la regresa si sigue siendo la que se vio terminada (su hora de terminada).
         val terminadaEn = reciente?.takeIf { it.preparationVersion == 1 }?.completedAt
         val estacion = estacionDeLaHoja
         val apertura = aperturaDeRecientes
+        _deshaciendo.value = true
+        _avisoDeRecientes.value = emptyMap()
         viewModelScope.launch {
-            _avisoDeRecientes.value = _avisoDeRecientes.value - id
-            kdsRepository.recall(id, terminadaEn)
+            val resultado = kdsRepository.recall(id, terminadaEn)
+            _deshaciendo.value = false
+            resultado
                 .onSuccess {
                     // Ronda 4: LISTO + Deshacer inmediato (antes de que un sondeo confirme el bump) no puede
                     // quedar tapado por el blindaje de M4 — el servidor SÍ va a volver a mandar esta comanda.
@@ -770,18 +795,23 @@ class KDSViewModel @Inject constructor(
                         locales = locales.map { if (it.sourceKey == folio) it.copy(listaEnMillis = null) else it }
                         ticketsLocales.quitarLista(folio)
                     }
+                    // La comanda regresó: se cierra la hoja (como Toast) y se ve en el tablero.
+                    if (apertura == aperturaDeRecientes) cerrarRecientes()
                     refrescarTablero()
-                    // La hoja abierta de esa estación (ésta u otra apertura) se vuelve a leer: lo que enseña es lo que el SERVIDOR
-                    // tiene DESPUÉS del cambio; la lectura que iba en el aire queda vieja y se descarta.
-                    if (estacion != null && estacionDeLaHoja == estacion) leerHoja()
                 }
                 .onFailure { e ->
                     if (esSinRed(e)) _sinConexion.value = true
                     val aviso = avisoDeFallo(e, AccionDeCocina.DESHACER)
-                    // El porqué va debajo de su comanda en la hoja abierta y, como siempre, en la barra del tablero de ESA estación
-                    // (si se cierra la hoja, no se pierde).
-                    if (apertura == aperturaDeRecientes && estacionDeLaHoja != null) _avisoDeRecientes.value = _avisoDeRecientes.value + (id to aviso)
-                    if (estacion != null && (_vista.value as? VistaDeCocina.Tablero)?.estacion?.id == estacion) _aviso.value = aviso
+                    // El porqué va debajo de su comanda si su hoja sigue abierta; si ya se cerró, a la barra del tablero de ESA
+                    // estación (nunca a la de otra).
+                    when {
+                        apertura == aperturaDeRecientes && estacionDeLaHoja != null ->
+                            _avisoDeRecientes.value = mapOf(id to aviso)
+                        estacion != null && (_vista.value as? VistaDeCocina.Tablero)?.estacion?.id == estacion -> {
+                            _aviso.value = aviso
+                            avisoEsDeDeshacer = true
+                        }
+                    }
                 }
         }
     }

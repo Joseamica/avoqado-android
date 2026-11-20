@@ -125,6 +125,9 @@ fun KDSScreen(
     val recientesNoLeidas by viewModel.recientesNoLeidas.collectAsState()
     val avisoDeRecientes by viewModel.avisoDeRecientes.collectAsState()
     val recientesLeyendo by viewModel.recientesLeyendo.collectAsState()
+    val deshaciendo by viewModel.deshaciendo.collectAsState()
+    // D17 (Codex r20): salir de la cocina (o rotar) cierra «Recientes»: al volver no reaparece sola con lo de antes.
+    DisposableEffect(Unit) { onDispose { viewModel.cerrarRecientes() } }
     val sinConexion by viewModel.sinConexion.collectAsState()
     val aviso by viewModel.aviso.collectAsState()
     val exito by viewModel.exito.collectAsState()
@@ -337,6 +340,7 @@ fun KDSScreen(
             noLeidas = recientesNoLeidas,
             avisos = avisoDeRecientes,
             leyendo = recientesLeyendo,
+            deshaciendo = deshaciendo,
             onDeshacer = viewModel::deshacer,
             onDismiss = viewModel::cerrarRecientes,
         )
@@ -763,6 +767,7 @@ private fun RecientesSheet(
     noLeidas: AvisoDeCocina?,
     avisos: Map<String, AvisoDeCocina> = emptyMap(),
     leyendo: Boolean = false,
+    deshaciendo: Boolean = false,
     onDeshacer: (String) -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -829,6 +834,7 @@ private fun RecientesSheet(
                         )
                         TextButton(
                             onClick = { onDeshacer(orden.id) },
+                            enabled = !deshaciendo,
                             modifier = Modifier.testTag("kds-deshacer-${orden.id}"),
                         ) {
                             Text(TextosDeCocina.DESHACER)
