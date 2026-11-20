@@ -81,10 +81,14 @@ import com.avoqado.pos.kds.domain.TextosDeCocina
 import com.avoqado.pos.kds.domain.etiquetaDeEstacion
 import com.avoqado.pos.kds.domain.idsParaMarcarTodas
 import com.avoqado.pos.kds.domain.puedeApagar
+import com.avoqado.pos.onlineorders.data.VentanaALaVista
 import com.avoqado.pos.printing.routing.PrintConfig
 import com.avoqado.pos.printing.routing.PrinterInfo
 import com.avoqado.pos.printing.routing.StationInfo
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.launch
 
 // MARK: - Entry Point
 
@@ -93,14 +97,25 @@ import kotlinx.coroutines.delay
  * exista la composición — Compose la conserva con la app en segundo plano o la pantalla apagada. Nadie mira el tablero
  * ahí: en `ON_STOP` se cancela (el `finally` apaga el receptor ⇒ sin acuse, la caja imprime papel) y en `ON_START`
  * vuelve a empezar, con línea base nueva (M3). Fuera del Composable para poder probarlo.
+ *
+ * D14 (Flautas, 20-nov): en WINDOWS minimizar NO baja el ciclo de vida (`RaizDeEscritorio` sigue RESUMED), así que la ventana
+ * minimizada ([ventana] en `false`) cuenta como el mismo «oculto» que `ON_STOP`. En ANDROID [ventana] siempre es `true`.
  */
-internal suspend fun KDSViewModel.mientrasEsteALaVista(owner: LifecycleOwner) {
+internal suspend fun KDSViewModel.mientrasEsteALaVista(owner: LifecycleOwner, ventana: StateFlow<Boolean> = VentanaALaVista.aLaVista) {
     // Codex 3.6 (#6): el `finally` de `mientrasSeVe` puede tardar (una lectura colgada no se cancela a medias): `ON_STOP`
     // apaga el receptor YA, sin esperarlo.
     val alParar = LifecycleEventObserver { _, evento -> if (evento == Lifecycle.Event.ON_STOP) alOcultarse() }
     owner.lifecycle.addObserver(alParar)
     try {
-        owner.repeatOnLifecycle(Lifecycle.State.STARTED) { mientrasSeVe() }
+        owner.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            // Minimizar apaga en el acto y cancela la apertura SIN esperarla, como `repeatOnLifecycle` (con `collectLatest`,
+            // restaurar esperaría una lectura colgada hasta 30 s). Restaurar = apertura nueva: lee en el acto.
+            var apertura: Job? = null
+            ventana.collect { seVe ->
+                if (!seVe) { alOcultarse(); apertura?.cancel(); apertura = null }
+                else if (apertura == null) apertura = launch { mientrasSeVe() }
+            }
+        }
     } finally {
         owner.lifecycle.removeObserver(alParar)
     }

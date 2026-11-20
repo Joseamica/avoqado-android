@@ -1035,4 +1035,108 @@ class KDSViewModelTest {
         assertEquals(listOf("c1"), vm.comandas.value.map { it.id })
         coVerify(exactly = 0) { ticketsLocales.retirarPendientes(match { "sale:vieja:st-barra" in it }) }
     }
+
+    // MARK: - D14 (Flautas, 20-nov): la ventana minimizada de WINDOWS
+
+    /**
+     * En WINDOWS minimizar no baja el ciclo de vida (`RaizDeEscritorio` sigue RESUMED): sin esto el tablero minimizado seguía
+     * leyendo cada 10 s (el SERVIDOR lo daba por conectado) y acusando por WiFi sin nadie mirando. Minimizada = el mismo
+     * «oculto» que `ON_STOP`; al restaurar lee en el acto, con línea base nueva.
+     */
+    @Test
+    fun `P1 D14 con la ventana minimizada el tablero no lee ni acusa, y al restaurar lee en el acto`() = runTest {
+        val pantalla = PantallaDePrueba()
+        pantalla.registro.currentState = Lifecycle.State.RESUMED
+        val ventana = MutableStateFlow(true)
+        val vm = armar() // 1ª lectura
+        val job = launch { vm.mientrasEsteALaVista(pantalla, ventana) }
+        runCurrent() // 2ª lectura: abrir
+        verify(atLeast = 1) { receptor.activar("v1", "st-barra") }
+
+        ventana.value = false // minimizada; el ciclo de vida sigue RESUMED
+        runCurrent()
+        verifyOrder {
+            receptor.activar("v1", "st-barra")
+            receptor.desactivar()
+        }
+        advanceTimeBy(60_000) // un minuto minimizada: ni una lectura más (con el sondeo vivo serían 6)
+        coVerify(exactly = 2) { repo.fetchOrders(any()) }
+
+        ventana.value = true // restaurada
+        runCurrent() // sin esperar los 10 s del sondeo
+        coVerify(exactly = 3) { repo.fetchOrders(any()) }
+        verifyOrder {
+            receptor.activar("v1", "st-barra")
+            receptor.desactivar()
+            receptor.activar("v1", "st-barra")
+        }
+        job.cancelAndJoin()
+    }
+
+    /** Como #6 con `ON_STOP`: minimizar con la lectura colgada apaga el receptor YA, y restaurar no espera esa lectura. */
+    @Test
+    fun `P2 D14 minimizar con la lectura colgada apaga en el acto y restaurar no la espera`() = runTest {
+        val pantalla = PantallaDePrueba()
+        pantalla.registro.currentState = Lifecycle.State.RESUMED
+        val ventana = MutableStateFlow(true)
+        val vm = armar()
+        coEvery { repo.fetchOrders(any()) } coAnswers {
+            withContext(NonCancellable) { delay(30_000) }
+            Result.success(emptyList())
+        }
+        val job = launch { vm.mientrasEsteALaVista(pantalla, ventana) }
+        runCurrent()
+        clearMocks(receptor, answers = false)
+
+        ventana.value = false // minimizada con la lectura colgada
+        runCurrent()
+        verify(exactly = 1) { receptor.desactivar() }
+
+        ventana.value = true // restaurada antes de que termine la lectura vieja
+        runCurrent()
+        verifyOrder {
+            receptor.desactivar()
+            receptor.activar("v1", "st-barra")
+        }
+        advanceTimeBy(31_000) // termina la lectura vieja: su final no apaga la apertura nueva
+        runCurrent()
+        verify(exactly = 1) { receptor.desactivar() }
+        job.cancelAndJoin()
+    }
+
+    /**
+     * Codex r1 #4 de D14: la lectura colgada de la apertura vieja que termina en FALLO (un `IOException` se cuela aunque la
+     * corrutina ya esté cancelada) no puede pintarse sobre la apertura nueva: encendía «Sin conexión» con el tablero ya leído
+     * (o, antes de la primera lectura nueva, ponía la línea base y sonaba lo que llegó con la ventana minimizada).
+     */
+    @Test
+    fun `P2 D14 el fallo tardio de la lectura vieja no pinta Sin conexion sobre la apertura nueva`() = runTest {
+        val pantalla = PantallaDePrueba()
+        pantalla.registro.currentState = Lifecycle.State.RESUMED
+        val ventana = MutableStateFlow(true)
+        val vm = armar()
+        var lecturas = 0
+        coEvery { repo.fetchOrders(any()) } coAnswers {
+            if (lecturas++ == 0) {
+                withContext(NonCancellable) { delay(30_000) }
+                Result.failure(IOException("timeout"))
+            } else {
+                Result.success(listOf(comanda("k1", 1_000)))
+            }
+        }
+        val job = launch { vm.mientrasEsteALaVista(pantalla, ventana) }
+        runCurrent() // la lectura de esta apertura se cuelga
+
+        ventana.value = false
+        runCurrent()
+        advanceTimeBy(25_000)
+        ventana.value = true // la apertura nueva lee bien en el acto
+        runCurrent()
+        assertFalse(vm.sinConexion.value)
+
+        advanceTimeBy(6_000) // a los 30 s la vieja termina en fallo (antes de la siguiente vuelta de la nueva)
+        runCurrent()
+        assertFalse("el fallo de una apertura cancelada no se pinta", vm.sinConexion.value)
+        job.cancelAndJoin()
+    }
 }

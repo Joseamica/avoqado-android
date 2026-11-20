@@ -43,7 +43,9 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -286,6 +288,9 @@ class KDSViewModel @Inject constructor(
         val requestedOffset = boardOffset
         _boardPaging.value = _boardPaging.value.copy(loading = true)
         val lectura = kdsRepository.fetchBoardPage(tablero.estacion.id, requestedOffset)
+        // D14 (Codex r1 #4): una lectura colgada no se cancela a medias y su FALLO se cuela aunque esta apertura ya se haya
+        // cancelado (minimizar, `ON_STOP`). Lo de una apertura cancelada no se pinta sobre la nueva.
+        currentCoroutineContext().ensureActive()
         // Codex 3.6 (#7): si mientras tanto eligieron OTRA estación (o cambió la sucursal), esta respuesta es de la anterior:
         // no se pinta bajo el encabezado nuevo, ni se guarda como su foto, ni retira copias locales. La nueva trae la suya.
         val sigue = (_vista.value as? VistaDeCocina.Tablero)?.estacion?.id == tablero.estacion.id &&
