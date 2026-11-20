@@ -287,6 +287,27 @@ class CarritoConCobroAbiertoTest {
         assertNull(vm.avisoDelCobroAbierto.value)
     }
 
+    /**
+     * Unión F1 × develop (mapa-union-android.md §6.2, N2). El 412 de saldo de F1 llega con el cobro ABIERTO: `PaymentFlowScreen`
+     * llama `onSaldoVigente` antes de `onCancel` (que es quien cierra el cobro). Es el propio cobro: el carrito queda en «Saldo
+     * pendiente» por lo que de verdad falta, ligado a su orden, y el siguiente cobro va por ese saldo. Sin `delCobro`, D9 lo frenaba
+     * en silencio (el vínculo sí cambiaba) y cada «Cobrar» volvía a dar el 412.
+     */
+    @Test
+    fun `P1 F1 el 412 de saldo deja Saldo pendiente con el cobro abierto`() {
+        val vm = cafeConElCobroAbierto()
+        val venta = vm.cartState.value.identidadDeVenta
+
+        vm.tomarSaldoVigente(com.avoqado.pos.payment.data.SaldoVigente("venue-1", venta, "orden-a", 3_000))
+
+        assertEquals(listOf("Saldo pendiente" to 3_000), vm.cartState.value.items.map { it.name to it.unitPrice })
+        assertEquals("la misma venta", venta, vm.cartState.value.identidadDeVenta)
+        assertNull(vm.avisoDelCobroAbierto.value)
+        vm.cerrarCobro()
+        assertEquals("orden-a", vm.resolvePendingSplitOrderForCharge())
+        assertEquals("el siguiente envío lleva el saldo del SERVIDOR", 3_000, vm.saldoDelFolioConocido())
+    }
+
     @Test
     fun `P1 el cobro por producto quita lo pagado con el cobro abierto`() {
         val vm = carrito()

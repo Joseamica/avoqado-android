@@ -1113,6 +1113,38 @@ class CartViewModelWeightTest {
         assertEquals("copia-1", vm.cartState.value.carritoGuardadoId)
     }
 
+    /**
+     * Unión F1 × develop (mapa-union-android.md §11 decisión 4, riesgo 6.10). La copia de antes de la tarjeta de F1 también se escribe
+     * en el cobro de vales. Tras «la cuenta cambió» (D4) el orden es: `cerrarCobro` la suelta (no hay tarjeta en duda) y DESPUÉS D4
+     * pone el «Saldo pendiente» (`CheckoutScreen` espera a que el cobro se cierre). La venta no queda apuntando a una copia borrada.
+     */
+    @Test
+    fun `F1 x D4 la copia de antes de la tarjeta se suelta al cerrar el cobro y despues D4 pone el Saldo pendiente`() = runTest {
+        every { areaTicketRepository.session.current() } returns checkoutConVales("linea-a" to "50.00", "linea-b" to "30.00")
+        val copias = mutableListOf<SavedCart>()
+        every { savedCartsRepository.saveCart(capture(copias)) } returns true
+        every { savedCartsRepository.deleteCart(any()) } returns true
+        val vm = createViewModel()
+        vm.traerValesDeLaSesion()
+        val venta = vm.cartState.value.identidadDeVenta
+        vm.abrirCobro()
+        val folio = com.avoqado.pos.payment.data.FolioEnDuda(
+            "venue-1", venta, "orden-vales", null, com.avoqado.pos.payment.data.FolioEnDuda.Origen.LOCAL,
+        )
+        assertTrue("la copia con su folio, antes de la tarjeta", vm.guardarFolioAntesDeLaTarjeta(folio))
+        val copia = copias.single()
+        assertEquals("orden-vales", copia.folio?.orderId)
+
+        vm.cerrarCobro() // la salida de D4 cierra el cobro primero
+        verify(exactly = 1) { savedCartsRepository.deleteCart(copia.id) }
+        every { areaTicketRepository.session.current() } returns sesionConOrden(status = "PARTIALLY_PAID", pagado = "0.50")
+        assertTrue(vm.ponerSaldoTrasCuentaCambiada("orden-vales", 7950, venta))
+
+        assertEquals(listOf("Saldo pendiente" to 7950), vm.cartState.value.items.map { it.name to it.unitPrice })
+        assertNull("no apunta a la copia ya soltada", vm.cartState.value.carritoGuardadoId)
+        assertEquals("orden-vales", vm.resolvePendingSplitOrderForCharge())
+    }
+
     @Test
     fun `P1 D4 si la sesion ya se solto (otra caja la liquido) el carrito no se toca`() = runTest {
         // Codex D4 r3 #2: la relectura llegó tarde y un latido ya soltó la sesión pagada; su saldo ya no vale.

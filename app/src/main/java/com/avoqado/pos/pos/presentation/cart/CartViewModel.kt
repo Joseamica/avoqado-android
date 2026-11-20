@@ -787,6 +787,8 @@ class CartViewModel @Inject constructor(
         if (cocinaPorAplicar) { cocinaPorAplicar = false; freezePreparationForPendingProducts() }
         // Mientras estuvo abierto, el carrito vivo no se pintaba en la pantalla del cliente (Codex r5 #7: la venta de tarjetas).
         if (estabaAbierto) refreshCustomerDisplay()
+        // F1 × D9: el desenlace de un folio que llegó con el cobro abierto se aplica ahora, releyendo A en el SERVIDOR.
+        foliosPorReleer.toList().also { foliosPorReleer.clear() }.forEach { (venue, orden) -> viewModelScope.launch { releerFolio(venue, orden) } }
         // D4: lo que la venta intentó cobrar ya no está en pantalla: desde ahora lo decide su evidencia (también su duda).
         pendingGrantQueue?.soltarVenta()
     }
@@ -890,10 +892,18 @@ class CartViewModel @Inject constructor(
     }
 
     /**
-     * 🔴 F1 bloque 2 (412 `REMAINING_BALANCE_MISMATCH`): el SERVIDOR dijo cuánto falta de verdad en la cuenta de ESTA venta. El
-     * carrito queda con ese saldo («Saldo pendiente»), ligado a su folio, y lo dice; el cobro y el reparto salen de ahí.
+     * 🔴 F1 bloque 2 (412 `ORDER_BALANCE_CHANGED`, su `remainingCents`): el SERVIDOR dijo cuánto falta de verdad en la cuenta de ESTA
+     * venta. El carrito queda con ese saldo («Saldo pendiente»), ligado a su folio, y lo dice; el cobro y el reparto salen de ahí.
+     *
+     * 🔴 Unión con develop (D9): llega con el cobro ABIERTO (`PaymentFlowScreen` la llama antes de `onCancel`). Es el propio cobro, así
+     * que escribe por su puerta ([delCobro]); sin ella D9 frenaba el vaciado y el «Saldo pendiente» pero el vínculo sí tomaba el saldo
+     * nuevo, y cada «Cobrar» volvía a dar el 412 (mapa-union-android.md §6.2).
      */
     fun tomarSaldoVigente(saldo: com.avoqado.pos.payment.data.SaldoVigente) {
+        delCobro { tomarSaldoVigenteDelCobro(saldo) }
+    }
+
+    private fun tomarSaldoVigenteDelCobro(saldo: com.avoqado.pos.payment.data.SaldoVigente) {
         val state = _cartState.value
         if (state.isEmpty || state.identidadDeVenta != saldo.identidadDeVenta || saldo.venueId != secureStorage.venueId) return
         val ligada = _pendingSplitOrder.value
@@ -1030,7 +1040,11 @@ class CartViewModel @Inject constructor(
         val sigueEnDuda = if (origen == otraCaja) !bloqueadorResuelto else terminalPaymentService?.sigueEnDuda(orderId) != false
         val desenlace = decidirFolio(saldo, sigueEnDuda) ?: return
         Log.i("🛒", "Folio $orderId: $desenlace (pantalla=${visible != null}, copia=${copia?.id})")
-        if (visible != null) {
+        if (visible != null && cobroAbierto) {
+            // Unión con develop (D9, mapa §6.2): con el cobro abierto la venta en pantalla no cambia por nada que no sea el propio cobro.
+            // El desenlace de A se aplica al cerrarlo: [cerrarCobro] vuelve a leer A (lo decide el SERVIDOR; releer es idempotente).
+            foliosPorReleer += venueId to orderId
+        } else if (visible != null) {
             aplicarAlCarrito(desenlace, saldo.remainingCents, orderId)
             // La copia de antes del envío ya es el registro de A (con su desenlace): el cierre del cobro no la suelta. Si se borraba, la
             // cuenta en pantalla quedaba apuntando a una copia que ya no existe y el siguiente «Cobrar» no se podía preparar.
@@ -1088,6 +1102,8 @@ class CartViewModel @Inject constructor(
 
     /** F1 bloque 2: la duda que traía la venta mientras se aplica un cobro confirmado; vuelve al re-marcar su mismo folio. */
     private var dudaQueSigue: com.avoqado.pos.payment.data.FolioEnDuda? = null
+    /** F1 × D9: (sucursal, folio) cuyo desenlace llegó con el cobro abierto; [cerrarCobro] los vuelve a leer. */
+    private val foliosPorReleer = mutableSetOf<Pair<String, String>>()
     /** F1 bloque 2: el saldo que confirmó el SERVIDOR para la cuenta que se re-marca a continuación. */
     private var saldoConfirmadoQueSigue: Int? = null
 
