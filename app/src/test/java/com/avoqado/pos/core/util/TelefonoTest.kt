@@ -46,6 +46,42 @@ class TelefonoTest {
         for (texto in malos) assertNull("«$texto»", telefonoMx(texto))
     }
 
+    @Test fun `P1 Codex r1 un numero con otra lada o el +52 incompleto no se vuelve mexicano`() {
+        // Antes del arreglo de r1: «+53 5 123 4567» salía como «+525351234567» y «+52 55 9187 39» como «+525255918739».
+        for (texto in listOf("+53 5 123 4567", "+1 555 123 4567", "+52 55 9187 39", "+5255123456", "+44 20 7946 0958"))
+            assertNull("«$texto»", telefonoMx(texto))
+    }
+
+    @Test fun `P1 Codex r1 espacios y marcas invisibles de copiar y pegar no tumban el numero`() {
+        val nbsp = "\u00A0"
+        val escritos = listOf(
+            "(55)${nbsp}9187-3922",                  // espacio no separable
+            "\u202A+52 55 9187 3922\u202C",          // marcas de dirección que mete WhatsApp al copiar un contacto
+            "\u200E+52 55 9187 3922",
+            "55\u20119187\u20113922",                // guion que no se parte
+            "55 9187–3922",                          // guion largo
+        )
+        for (texto in escritos) assertEquals("«$texto»", "+525591873922", telefonoMx(texto))
+    }
+
+    @Test fun `P1 Codex r1 teclear de uno en uno da lo mismo que pegar en el campo con bandera`() {
+        // AvoqadoPhoneInput sólo guarda dígitos: cada tecla llega con lo que ya quedó guardado. Se simula tecla por tecla.
+        fun teclear(texto: String, lada: String): String =
+            texto.fold("") { guardado, tecla -> digitosDelCampoConBandera(guardado + tecla, lada) }
+        for ((texto, lada, esperado) in listOf(
+            Triple("+52 1 55 9187 3922", "52", "5591873922"),
+            Triple("+52 55 9187 3922", "52", "5591873922"),
+            Triple("52 5591873922", "52", "5591873922"),
+            Triple("+1 202 555 0123", "1", "2025550123"),
+            Triple("55 9187 3922", "52", "5591873922"),
+        )) {
+            assertEquals("tecleado «$texto»", esperado, teclear(texto, lada))
+            assertEquals("pegado «$texto»", esperado, digitosDelCampoConBandera(texto, lada))
+        }
+        // Otra lada: pegado y tecleado dan lo mismo (como antes del cambio, no se adivina la lada repetida).
+        assertEquals(teclear("+49 151 23456789", "49"), digitosDelCampoConBandera("+49 151 23456789", "49"))
+    }
+
     @Test fun `P1 un numero de 10 digitos que empieza con 52 no pierde su principio`() {
         assertEquals("5255123456", digitosNacionales("5255123456"))
         assertEquals("+525255123456", telefonoMx("5255123456"))
