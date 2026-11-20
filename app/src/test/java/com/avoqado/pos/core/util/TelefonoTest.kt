@@ -133,6 +133,14 @@ class TelefonoTest {
         assertNull(telefonoMx("0559187392"))
     }
 
+    @Test fun `P1 Codex r4 el signo menos copiado y el 1 viejo con un digito de menos`() {
+        assertEquals("+525591873922", telefonoMx(filtrarTecleoDeTelefono("55−9187−3922")))   // U+2212
+        assertEquals("5591873922", digitosNacionales(filtrarTecleoDelCampoConBandera("55−9187−3922")))
+        // El campo con bandera ya no cuenta el «1» viejo como parte del número: quedan los 9 que se escribieron.
+        assertEquals("559187392", digitosNacionales(filtrarTecleoDelCampoConBandera("+52 1 (55) 9187-392")))
+        assertNull(telefonoMx("+52 1 (55) 9187-392"))
+    }
+
     @Test fun `P1 Codex r3 al cambiar de pais los digitos se sacan otra vez de lo escrito`() {
         // Lo que hace AvoqadoPhoneInput al elegir otra bandera: con EE. UU. «15123456789» da «5123456789»; con Alemania,
         // de lo escrito sale «15123456789» (antes se quedaba «5123456789» y se mandaba «+495123456789»).

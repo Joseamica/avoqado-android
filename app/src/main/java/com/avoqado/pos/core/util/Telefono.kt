@@ -11,10 +11,10 @@ package com.avoqado.pos.core.util
  *
  * Reglas:
  * - Lo escrito se normaliza sin cambiar su significado: dígitos de cualquier alfabeto («５») pasan a 0-9, «＋» a «+», todo
- *   espacio a espacio, todo guion a «-», y las marcas invisibles de copiar y pegar (U+202A, U+202E, U+200E…) se quitan.
+ *   espacio a espacio, todo guion (y el signo menos «−») a «-», y las marcas invisibles de copiar y pegar (U+202A, U+202E, U+200E…) se quitan.
  *   Nada que cambie el número se borra en silencio (Codex r3): una letra se queda y el número no pasa.
  * - Con «+» delante (también «(+52)»), la persona dijo la lada: si es la del país, se quita (en México también el «1» del
- *   celular viejo: «+52 1 55…»); si es OTRA lada, los dígitos se quedan como están y [telefonoMx] no los acepta.
+ *   celular viejo: «+52 1 55…», que ningún celular de México empieza con 1); si es OTRA lada, los dígitos se quedan como están y [telefonoMx] no los acepta.
  * - Sin «+», México: 13 dígitos que empiezan con «521» pierden «521»; 12 que empiezan con «52» (y el tercero no es «1», que
  *   es el inicio de «521…») pierden «52». Norteamérica: 11 que empiezan con «1» pierden el «1». Así se quita también tecleando
  *   de uno en uno.
@@ -26,7 +26,9 @@ fun digitosNacionales(texto: String, lada: String = LADA_MEXICO): String {
     if (conLadaEscrita(limpio)) {
         if (!digitos.startsWith(lada)) return digitos
         val resto = digitos.drop(lada.length)
-        return if (lada == LADA_MEXICO && resto.length == 11 && resto.startsWith("1")) resto.drop(1) else resto
+        // Ningún celular de México empieza con 1: tras «+52», un «1» es el prefijo viejo del celular, falte o no un dígito
+        // (Codex r4: «+52 1 (55) 9187-392» daba «1559187392», con el «1» contado como parte del número).
+        return if (lada == LADA_MEXICO && resto.startsWith("1")) resto.drop(1) else resto
     }
     return sinLadaRepetida(digitos, lada)
 }
@@ -93,7 +95,7 @@ private fun normalizar(texto: String): String = buildString {
             c == '（' -> append('(')
             c == '）' -> append(')')
             c == '．' -> append('.')
-            tipo == Character.DASH_PUNCTUATION.toInt() -> append('-')
+            tipo == Character.DASH_PUNCTUATION.toInt() || c == '−' -> append('-')   // U+2212, el «menos» (Codex r4)
             c.isWhitespace() || Character.isSpaceChar(c) -> append(' ')
             else -> append(c)
         }
