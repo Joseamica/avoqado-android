@@ -142,7 +142,13 @@ fun ProductDetailPanel(
                     .windowInsetsPadding(WindowInsets.statusBars)
                     .shadow(8.dp)
                     .background(MaterialTheme.colorScheme.surface)
-                    .clickable(enabled = false, onClick = {}), // prevent click-through
+                    // D10 (Flautas, WINDOWS): HABILITADO a propósito, como el de la báscula. Uno deshabilitado deja pasar al
+                    // fondo el Espacio/Enter que el campo no consume (y el clic en un hueco), y el fondo cierra el panel.
+                    .clickable(
+                        indication = null,
+                        interactionSource = remember { MutableInteractionSource() },
+                        onClick = {},
+                    ),
             ) {
                 ProductDetailContent(
                     product = product,
