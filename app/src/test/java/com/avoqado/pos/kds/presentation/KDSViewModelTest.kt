@@ -316,19 +316,18 @@ class KDSViewModelTest {
     }
 
     @Test
-    fun `D17 la comanda terminada sale del tablero y vuelve si una correccion por el WiFi le da trabajo`() = runTest {
+    fun `D17 la comanda que la cocina termino sale del tablero y no vuelve a parpadear con la copia vieja`() = runTest {
         val preparacion = mockk<com.avoqado.pos.kds.data.KitchenPreparationRepository>(relaxed = true)
         every { preparacion.capabilities } returns kotlinx.coroutines.flow.MutableStateFlow(
             com.avoqado.pos.kds.domain.PreparationCapabilities(version = 1, enabled = true, kitchenDoneVersion = 1))
-        var proyeccion = com.avoqado.pos.kds.domain.PreparationCounts(READY = 1)
         coEvery { preparacion.merge(any(), any(), any()) } answers {
-            secondArg<List<com.avoqado.pos.kds.domain.PreparationLine>>().map { it.copy(preparation = proyeccion) }
+            secondArg<List<com.avoqado.pos.kds.domain.PreparationLine>>().map { it.copy(preparation = com.avoqado.pos.kds.domain.PreparationCounts(READY = 1)) }
         }
         coEvery { preparacion.pendingKeys(any(), any()) } returns emptySet()
+        // La foto (sin red) todavía la trae «Preparando»; la cocina ya la dejó Lista en este aparato.
         val conTiempos = comanda("k5", 500).copy(preparationVersion = 1, items = listOf(KDSOrderItem(id = "i-k5", productName = "Pozole",
             quantity = 1, externalId = "sync:r:0", preparation = com.avoqado.pos.kds.domain.PreparationCounts(PREPARING = 1))))
-        var lectura = listOf(conTiempos, comanda("k1", 1_000))
-        coEvery { repo.fetchOrders(any()) } answers { Result.success(lectura) }
+        coEvery { repo.fetchOrders(any()) } returns Result.success(listOf(conTiempos, comanda("k1", 1_000)))
         every { repo.venueIdActual() } returns "v1"
         every { printConfig.getCurrentConfig() } answers { config }
         every { prefs.estacion("v1") } returns "st-barra"
@@ -344,22 +343,14 @@ class KDSViewModelTest {
         )
         vm.refrescar()
         advanceUntilIdle()
-        assertEquals(listOf("k1"), vm.comandas.value.map { it.id }) // la cocina la dejó lista: sale
-
-        lectura = listOf(comanda("k1", 1_000)) // el SERVIDOR ya no la manda (READY)
-        vm.refrescar()
-        advanceUntilIdle()
         assertEquals(listOf("k1"), vm.comandas.value.map { it.id })
 
-        proyeccion = com.avoqado.pos.kds.domain.PreparationCounts(PENDING = 1) // la caja la corrigió por el WiFi, sin internet
-        lectura = listOf(comanda("k1", 1_000))
+        val pinturas = mutableListOf<List<String>>()
+        val vigia = backgroundScope.launch { vm.comandas.collect { pinturas.add(it.map { o -> o.id }) } }
         vm.refrescar()
         advanceUntilIdle()
-        assertEquals(listOf("k5", "k1"), vm.comandas.value.map { it.id })
-        // Codex r3 #2: sigue en la pantalla en los sondeos siguientes mientras tenga trabajo
-        vm.refrescar()
-        advanceUntilIdle()
-        assertEquals(listOf("k5", "k1"), vm.comandas.value.map { it.id })
+        vigia.cancel()
+        assertTrue(pinturas.none { "k5" in it }) // Codex r4 D4: ni un instante con la copia vieja
     }
 
     @Test
@@ -379,23 +370,19 @@ class KDSViewModelTest {
     }
 
     @Test
-    fun `D17 Liberar sale en la cocina solo con el interruptor del negocio, aunque quien mire sea gerente`() = runTest {
+    fun `D17 Liberar sale en la cocina solo con el permiso de cocina del repositorio`() = runTest {
         val preparacion = mockk<com.avoqado.pos.kds.data.KitchenPreparationRepository>(relaxed = true)
-        val capacidades = kotlinx.coroutines.flow.MutableStateFlow(com.avoqado.pos.kds.domain.PreparationCapabilities(version = 1, enabled = true))
-        every { preparacion.capabilities } returns capacidades
-        every { preparacion.can(any()) } returns true
+        every { preparacion.capabilities } returns kotlinx.coroutines.flow.MutableStateFlow(com.avoqado.pos.kds.domain.PreparationCapabilities())
         every { repo.venueIdActual() } returns "v1"
         val vm = KDSViewModel(
             repo, mockk(relaxed = true), mockk(relaxed = true), printConfig, Provider { cola },
             prefs, roleManager, planManager, mockk(relaxed = true),
             receptor, ticketsLocales, preparationRepository = preparacion,
         )
+        every { preparacion.canFromKitchen(com.avoqado.pos.kds.domain.PreparationAction.RELEASE) } returns false
         org.junit.Assert.assertFalse(vm.canPreparation(com.avoqado.pos.kds.domain.PreparationAction.RELEASE))
-        assertTrue(vm.canPreparation(com.avoqado.pos.kds.domain.PreparationAction.START))
-        capacidades.value = capacidades.value.copy(kitchenCanRelease = true)
+        every { preparacion.canFromKitchen(com.avoqado.pos.kds.domain.PreparationAction.RELEASE) } returns true
         assertTrue(vm.canPreparation(com.avoqado.pos.kds.domain.PreparationAction.RELEASE))
-        every { preparacion.can(com.avoqado.pos.kds.domain.PreparationAction.RELEASE) } returns false
-        org.junit.Assert.assertFalse(vm.canPreparation(com.avoqado.pos.kds.domain.PreparationAction.RELEASE))
     }
 
     @Test

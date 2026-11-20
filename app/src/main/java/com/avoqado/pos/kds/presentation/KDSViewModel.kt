@@ -166,9 +166,11 @@ class KDSViewModel @Inject constructor(
 
     // Etapa 3 del KDS (3.5, D9): las dos fuentes de la mezcla por folio.
     private var delServidor: List<KDSOrder> = emptyList()
-    /** D17: ver [recordarTerminadas]. Arriba, con lo demás del tablero: se inicializa antes de cualquier `publicar`. */
-    private val terminadasRecordadas = LinkedHashMap<String, Pair<KDSOrder, Long>>()
-    private var venueDeRecordadas: String? = null
+    /**
+     * D17 (Codex r4 D4): las comandas con tiempos que la proyección local ya dio por terminadas. La primera pintura de cada
+     * `publicar` (con lo que dice el servidor o la foto) no las vuelve a enseñar un instante antes de leer la proyección.
+     */
+    private var ocultasPorTerminadas: Set<String> = emptySet()
     /** Codex 3.6 (#2): la estación de la que viene [delServidor] (lectura buena o foto del aparato); `null` = nada todavía. */
     private var estacionDelServidor: String? = null
     private var locales: List<KdsTicketLocal> = emptyList()
@@ -291,12 +293,7 @@ class KDSViewModel @Inject constructor(
     private suspend fun refrescarTablero() {
         val tablero = _vista.value as? VistaDeCocina.Tablero ?: return
         val venueId = kdsRepository.venueIdActual()
-        if (estacionDelServidor != tablero.estacion.id || venueDeRecordadas != venueId) {
-            if (estacionDelServidor != tablero.estacion.id) { boardOffset = 0; _boardPaging.value = BoardPaging() }
-            // D17: lo recordado es de la estación y la sucursal que se veían.
-            terminadasRecordadas.clear()
-            venueDeRecordadas = venueId
-        }
+        if (estacionDelServidor != tablero.estacion.id) { boardOffset = 0; _boardPaging.value = BoardPaging() }
         val requestedOffset = boardOffset
         _boardPaging.value = _boardPaging.value.copy(loading = true)
         val lectura = kdsRepository.fetchBoardPage(tablero.estacion.id, requestedOffset)
@@ -365,11 +362,8 @@ class KDSViewModel @Inject constructor(
      * (la primera lectura de Room de cada apertura es parte de la base, M2).
      */
     private fun publicar(desdeServidor: Boolean, sonar: Boolean = true) {
-        // D17 (Codex r2 #5): `todas` incluye las comandas con tiempos que la cocina terminó y el servidor ya no manda (recordadas
-        // una hora): si la caja corrige un platillo por el WiFi del local sin internet, la proyección las vuelve a enseñar.
-        val idsDelServidor = delServidor.map { it.id }.toSet()
-        val todas = juntarPorFolio(delServidor + recordadasVigentes(idsDelServidor), locales).filterNot { it.id in bumpsVigentes() }
-        val juntas = sinTerminadasEnCocina(todas, capacidadesDePreparacion())
+        val todas = juntarPorFolio(delServidor, locales).filterNot { it.id in bumpsVigentes() }
+        val juntas = sinTerminadasEnCocina(todas, capacidadesDePreparacion()).filterNot { it.id in ocultasPorTerminadas }
         val claves = juntas.map { it.sourceKey ?: it.id }.toSet()
         if (sonar && hasLoadedFromAPI && (claves - previousOrderIds).isNotEmpty()) playNotificationSound()
         previousOrderIds = claves
@@ -396,7 +390,7 @@ class KDSViewModel @Inject constructor(
                     preparationRevision = row.preparationRevision, pendingPreparation = row.stableKey in pending)
             }) }
             val visibles = sinTerminadasEnCocina(proyectadas, capacidadesDePreparacion())
-            recordarTerminadas(todas, visibles.map { it.id }.toSet())
+            ocultasPorTerminadas = (proyectadas.map { it.id }.toSet() - visibles.map { it.id }.toSet())
             _comandas.value = visibles
             repository.notice.value?.let { _aviso.value = AvisoDeCocina(it, esError = false) }
             } catch (e: kotlinx.coroutines.CancellationException) { throw e }
@@ -407,37 +401,6 @@ class KDSViewModel @Inject constructor(
                 }
             }
         }
-    }
-
-    /**
-     * D17 (Codex r2 #5): la copia del SERVIDOR de cada comanda con tiempos que el tablero escondió porque la cocina ya la terminó,
-     * con la hora en que se escondió. Sólo vuelve a la pantalla si su proyección vuelve a tener trabajo (una corrección por el WiFi
-     * del local); lo terminado se queda escondido. Una hora, 100 como máximo, sólo en memoria (al reiniciar la app se olvida) y de
-     * la estación a la vista: cambiar de estación o de sucursal la vacía.
-     */
-
-    private fun recordadasVigentes(idsDelServidor: Set<String>): List<KDSOrder> {
-        val corte = System.currentTimeMillis() - 60 * 60 * 1000L
-        terminadasRecordadas.entries.removeAll { it.value.second < corte || it.key in idsDelServidor }
-        return terminadasRecordadas.values.map { it.first }
-    }
-
-    private fun recordarTerminadas(todas: List<KDSOrder>, visibles: Set<String>) {
-        if (capacidadesDePreparacion().kitchenDoneVersion < 1) return
-        val ahora = System.currentTimeMillis()
-        for (order in todas) {
-            if (order.preparationVersion != 1 || esLocal(order.id)) continue
-            val recordada = terminadasRecordadas[order.id]
-            when {
-                // Codex r3 #2: la que volvió por una corrección se sigue recordando MIENTRAS tenga trabajo (si no, el siguiente sondeo
-                // sin internet la volvía a esconder). Sólo la quita que el servidor la mande otra vez (`recordadasVigentes`).
-                order.id in visibles -> if (recordada != null) terminadasRecordadas[order.id] = recordada.first to ahora
-                // Se escondió por terminada: se recuerda la copia del servidor. Las que nunca se escondieron no entran (una comanda
-                // que el servidor deja de mandar por otra razón —archivada, anulada— no puede reaparecer sola).
-                recordada == null -> terminadasRecordadas[order.id] = order to ahora
-            }
-        }
-        while (terminadasRecordadas.size > 100) terminadasRecordadas.remove(terminadasRecordadas.keys.first())
     }
 
     /** Las capacidades confirmadas (sin red, las guardadas). Función y no la propiedad: `publicar` puede correr antes de inicializarla. */
@@ -473,10 +436,8 @@ class KDSViewModel @Inject constructor(
      * D17: «Liberar» sale en la pantalla de cocina SÓLO con el interruptor del negocio prendido (aunque quien mire sea gerente:
      * apagado, liberar es de la caja). El permiso sigue siendo el del SERVIDOR (`permissionsFor`).
      */
-    fun canPreparation(action: com.avoqado.pos.kds.domain.PreparationAction): Boolean = preparationRepository?.let { repository ->
-        (action != com.avoqado.pos.kds.domain.PreparationAction.RELEASE || repository.capabilities.value.kitchenCanRelease) &&
-            repository.can(action)
-    } == true
+    fun canPreparation(action: com.avoqado.pos.kds.domain.PreparationAction): Boolean =
+        preparationRepository?.canFromKitchen(action) == true
 
     fun progress(orderId: String, item: com.avoqado.pos.kds.domain.KDSOrderItem,
         action: com.avoqado.pos.kds.domain.PreparationAction, quantity: Int,
@@ -489,7 +450,7 @@ class KDSViewModel @Inject constructor(
                 val repository = preparationRepository ?: error("Actualiza la app para usar preparación por producto")
                 if (!repository.negotiated(venueId)) repository.refreshCapabilities(venueId)
                 // D17: lo que se libera desde la cocina no imprime el papel «LIBERAR» (la cocina ya lo ve en su pantalla).
-                repository.act(venueId, listOf(row), action, quantity, from, reason, withPaper = false)
+                repository.act(venueId, listOf(row), action, quantity, from, reason, withPaper = false, fromKitchen = true)
                 publicar(desdeServidor = false, sonar = false)
                 _exito.value = "${action.label}: $quantity · ${item.productName}"
             } catch (e: kotlinx.coroutines.CancellationException) { throw e }

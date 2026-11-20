@@ -246,7 +246,9 @@ class KitchenPreparationRepositoryTest {
         val apagado = repository(capability = """{"version":1,"enabled":true}""")
         org.junit.Assert.assertFalse(apagado.can(PreparationAction.RELEASE))
         val prendido = repository(capability = """{"version":1,"enabled":true,"kitchenCanRelease":true,"kitchenDoneVersion":1}""")
-        assertTrue(prendido.can(PreparationAction.RELEASE))
+        assertTrue(prendido.canFromKitchen(PreparationAction.RELEASE))
+        org.junit.Assert.assertFalse(prendido.can(PreparationAction.RELEASE)) // «Servicio y entregas» sigue pidiendo orders:create
+        org.junit.Assert.assertFalse(apagado.canFromKitchen(PreparationAction.RELEASE))
         assertEquals(listOf("orders:update"), prendido.permissionsFor(PreparationAction.RELEASE))
         assertEquals(listOf("orders:update", "orders:create"), prendido.permissionsFor(PreparationAction.DELIVER))
         assertEquals(1, prendido.capabilities.value.kitchenDoneVersion)
