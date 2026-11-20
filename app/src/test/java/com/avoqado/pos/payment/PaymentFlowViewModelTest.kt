@@ -137,6 +137,10 @@ class PaymentFlowViewModelTest {
     }
     /** «La libreta»: visible para comprobar qué se le reporta al servidor (y al gerente) — Codex código r2. */
     private val reporteDeComandas = mockk<ReporteDeComandas>(relaxed = true)
+    /** D6 de Flautas: para el servidor, toda estación con pantalla lo sigue siendo (una prueba puede decir que ya no). */
+    private val estadoDePantallas = mockk<com.avoqado.pos.kds.data.EstadoDePantallasDeCocina> {
+        every { esPantallaDelServidor(any()) } returns true
+    }
     /** El MISMO dispatcher que ve el ViewModel y el reintento periódico — ver más abajo. */
     private val comandaDispatcherReal by lazy {
         ComandaDispatcher(
@@ -145,6 +149,7 @@ class PaymentFlowViewModelTest {
             printerService,
             colaDeMarcas,
             entregaPorWifi,
+            estadoDePantallas,
         )
     }
 
@@ -2362,6 +2367,129 @@ class PaymentFlowViewModelTest {
             reporteDeComandas.reportar(any(), any(), any(), match { it is EstadoDeComanda.NoSalio && !it.sinImpresoraDeCocina }, any(), any(), any())
         }
         assertTrue("la cocina que falló se avisa", viewModel.comandaWarning.value is EstadoDeComanda.NoSalio)
+    }
+
+    /** D6 de Flautas (20-nov): COCINA 1 «sólo pantalla», sin impresoras y la pantalla sin acuse por el WiFi. */
+    private fun cocinaSoloPantallaSinImpresoras(saldo: Int?, estado: String?) {
+        coEvery {
+            orderRepository.createOrder(any(), any(), any(), any(), any(), capturedVenueId = any())
+        } returns Result.success(CreateOrderResponse(success = true, data = OrderData(id = "order-flautas")))
+        coEvery {
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), capturedVenueId = any(), lineasDelTicket = any())
+        } returns Result.success(
+            OrderRepository.CashPayResult(paymentId = "pago-flautas", receiptAccessKey = null, remainingBalanceCents = saldo, orderPaymentStatus = estado),
+        )
+        every { printConfigRepository.getCurrentConfig() } returns PrintConfig(
+            stations = listOf(StationInfo(id = "st_cocina", name = "COCINA 1", printerId = null, active = true, hasKitchenDisplay = true)),
+            defaultStationId = "st_cocina",
+        )
+        coEvery { comandaPrinter.printComandas(any(), any(), any(), any(), any()) } coAnswers {
+            val plans = firstArg<List<TicketPlan>>()
+            ComandaPrinter.Result(attempted = plans.size, printed = 0, skippedNoPrinter = plans.size, lastError = null,
+                skippedStations = listOf("COCINA 1"), skippedPlans = plans)
+        }
+    }
+
+    /** D6 de Flautas (opción B): venta liquidada y COCINA 1 sólo pantalla sin impresoras: la pantalla la toma del servidor. */
+    @Test
+    fun `D6 venta liquidada con su cocina solo pantalla y sin impresoras no avisa No salio`() = runTest {
+        cocinaSoloPantallaSinImpresoras(saldo = 0, estado = "PAID")
+
+        viewModel.startPaymentFlow(CartState(items = listOf(
+            CartItem(id = "line-1", type = CartItemType.ProductItem("prod-1"), name = "Flautas Papa", unitPrice = 1000),
+        )))
+        viewModel.confirmCashCustom(1000)
+        advanceUntilIdle()
+
+        coVerify(atLeast = 1) { comandaPrinter.printComandas(any(), any(), any(), any(), any()) }
+        assertNull("la pantalla la toma del servidor", viewModel.comandaWarning.value)
+    }
+
+    /** D6 (Codex r2 #1): con el saldo desconocido (p. ej. tarjeta, servidor que no lo manda) no es un abono: no se avisa. */
+    @Test
+    fun `D6 sin saldo conocido no es abono - no avisa No salio`() = runTest {
+        cocinaSoloPantallaSinImpresoras(saldo = null, estado = null)
+
+        viewModel.startPaymentFlow(CartState(items = listOf(
+            CartItem(id = "line-1", type = CartItemType.ProductItem("prod-1"), name = "Flautas Papa", unitPrice = 1000),
+        )))
+        viewModel.confirmCashCustom(1000)
+        advanceUntilIdle()
+
+        coVerify(atLeast = 1) { comandaPrinter.printComandas(any(), any(), any(), any(), any()) }
+        assertNull(viewModel.comandaWarning.value)
+    }
+
+    /** D6 (Codex r8 #3): el dueño apagó la pantalla en el panel y la caja sigue con su config vieja: se avisa. */
+    @Test
+    fun `D6 si el servidor ya no tiene a la estacion como pantalla SI avisa No salio`() = runTest {
+        cocinaSoloPantallaSinImpresoras(saldo = 0, estado = "PAID")
+        every { estadoDePantallas.esPantallaDelServidor("st_cocina") } returns false
+
+        viewModel.startPaymentFlow(CartState(items = listOf(
+            CartItem(id = "line-1", type = CartItemType.ProductItem("prod-1"), name = "Flautas Papa", unitPrice = 1000),
+        )))
+        viewModel.confirmCashCustom(1000)
+        advanceUntilIdle()
+
+        assertTrue(viewModel.comandaWarning.value is EstadoDeComanda.NoSalio)
+    }
+
+    /** D6 (Codex r1 #1): con un ABONO conocido el servidor todavía no arma la comanda de pantalla: se avisa. */
+    @Test
+    fun `D6 un abono conocido con su cocina solo pantalla SI avisa No salio`() = runTest {
+        cocinaSoloPantallaSinImpresoras(saldo = 500, estado = "PARTIAL")
+
+        viewModel.startPaymentFlow(CartState(items = listOf(
+            CartItem(id = "line-1", type = CartItemType.ProductItem("prod-1"), name = "Flautas Papa", unitPrice = 1000),
+        )))
+        viewModel.confirmCashCustom(1000)
+        advanceUntilIdle()
+
+        coVerify(atLeast = 1) { comandaPrinter.printComandas(any(), any(), any(), any(), any()) }
+        assertTrue("el abono no arma comanda en el servidor", viewModel.comandaWarning.value is EstadoDeComanda.NoSalio)
+    }
+
+    /**
+     * D6 de Flautas (Codex r2 #3): los tiempos de Mostrador comparten folio. El «salió» del segundo tiempo no borra el aviso
+     * final del primero, que no salió (sin trabajo: sólo se ve); antes la cocina se quedaba sin ese tiempo y sin aviso.
+     */
+    @Test
+    fun `D6 el salio de un tiempo no borra el aviso final de otro tiempo de la misma venta`() = runTest {
+        val primerTiempo = EstadoDeComanda.NoSalio(estaciones = listOf("COCINA 1"), causa = "sin impresora", orderNumber = "AAAA")
+
+        viewModel.aplicarEstadoDeComanda(primerTiempo, "AAAA")
+        viewModel.aplicarEstadoDeComanda(EstadoDeComanda.Salio, "AAAA")
+        advanceUntilIdle()
+
+        assertEquals(primerTiempo, viewModel.comandaWarning.value)
+    }
+
+    /**
+     * D6 de Flautas (Codex r3 #4): el primer tiempo no salió (veredicto final, sin trabajo); el segundo reintenta y luego sale.
+     * Su «reintentando» no pisa el aviso del primero, y su «salió» tampoco lo borra.
+     */
+    @Test
+    fun `D6 el reintentando y el salio de otro tiempo no borran el aviso final del primero`() = runTest {
+        val primerTiempo = EstadoDeComanda.NoSalio(estaciones = listOf("COCINA 1"), causa = "sin impresora", orderNumber = "AAAA")
+
+        viewModel.aplicarEstadoDeComanda(primerTiempo, "AAAA")
+        viewModel.aplicarEstadoDeComanda(EstadoDeComanda.Insistiendo(2, 3, listOf("Barra"), "AAAA"), "AAAA")
+        assertEquals(primerTiempo, viewModel.comandaWarning.value)
+        viewModel.aplicarEstadoDeComanda(EstadoDeComanda.Salio, "AAAA")
+        advanceUntilIdle()
+
+        assertEquals(primerTiempo, viewModel.comandaWarning.value)
+    }
+
+    /** El reverso: el «salió» SÍ borra el «reintentando» de su propia venta (lo de hoy no cambia). */
+    @Test
+    fun `D6 el salio sigue borrando el reintentando de su venta`() = runTest {
+        viewModel.aplicarEstadoDeComanda(EstadoDeComanda.Insistiendo(2, 3, listOf("Barra"), "AAAA"), "AAAA")
+        viewModel.aplicarEstadoDeComanda(EstadoDeComanda.Salio, "AAAA")
+        advanceUntilIdle()
+
+        assertNull(viewModel.comandaWarning.value)
     }
 
     /**
