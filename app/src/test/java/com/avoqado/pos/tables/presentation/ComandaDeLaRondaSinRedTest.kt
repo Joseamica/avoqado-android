@@ -240,25 +240,6 @@ class ComandaDeLaRondaSinRedTest {
         org.junit.Assert.assertEquals("Comanda reimpresa. $REIMPRIMIR_RONDA_POR_LLEGAR", mesa.actionMessage.value)
     }
 
-    /** Codex r8 #7: un tiempo moderno retenido (STANDARD) que la cuenta trae no sale en la reimpresión, como en su primer papel. */
-    @Test fun `la reimpresion con la cuenta leida no saca un tiempo retenido`() = runTest {
-        session.start(TableSession.Active("t1", "5", "Patio", "o-1", "ORD", 3, 0, TableSession.Mode.ORDERING))
-        val fuerte = com.avoqado.pos.tables.data.OrderDetailItem(id = "line-f", productName = "Arrachera", total = 200.0, productId = "p-arr",
-            serviceCourse = com.avoqado.pos.pos.data.model.ServiceCourseSnapshot("mains", "Principales", "STANDARD", preparationVersion = 1))
-        coEvery { repository.getOrderDetail(any(), any()) } returns Result.success(com.avoqado.pos.tables.data.OrderDetail("o-1",
-            total = 300.0, version = 4, items = listOf(flautas(), fuerte)))
-        val mesa = vm(keepSession = true, enLinea = true)
-        mesa.loadCheck(); advanceUntilIdle()
-
-        mesa.reprintComandas(); advanceUntilIdle()
-
-        val planes = mutableListOf<List<TicketPlan>>()
-        io.mockk.coVerify { impresora.printComandas(capture(planes), any(), any(), any(), any(), any(), any(), any()) }
-        val impreso = planes.flatten().toString()
-        assertTrue("sale la entrada: $impreso", impreso.contains("Flautas"))
-        assertTrue("no sale el plato retenido: $impreso", !impreso.contains("Arrachera"))
-    }
-
     /**
      * La app muere justo después de dejar la ronda en la cola y antes de su papel (la impresora tardaba, o Android la cerró). Se
      * simula con un `enqueue` que guarda la fila y nunca regresa: nada de ese proceso vuelve a correr. Se reabre la mesa en un

@@ -182,7 +182,7 @@ internal const val REIMPRIMIR_RONDA_RECIEN_CONFIRMADA =
 
 /** Codex r8 #1/#3: con internet, una ronda en la cola que la cuenta aún no trae está por llegar: sale de la cuenta, no del aparato. */
 internal const val REIMPRIMIR_RONDA_POR_LLEGAR =
-    "Una ronda todavía está llegando al servidor: vuelve a tocar «Volver a imprimir» en un momento para sacarla."
+    "Una ronda de esta caja todavía no tiene confirmación del servidor: salió lo que la cuenta ya trae; lo demás sale al reimprimir cuando se confirme."
 
 /** 7133e3: el valor como lo guarda el SERVIDOR (2 decimales, mitad hacia arriba). */
 internal fun valorDelManual(value: Double): Double =
@@ -2422,12 +2422,16 @@ class TableOrderViewModel @Inject constructor(
             // lectura (sin internet) lo ya enviado no sale y la pantalla lo dice; puede faltar una copia hasta que vuelva el internet.
             // La sesión se lee después del refresco de impresoras: la mesa abierta sin red pudo volverse real mientras (Codex r7 #4).
             val session = tableSession.current() ?: run { _isReprinting.value = false; return@launch }
+            // Codex r9 #2: qué rondas de la cola estaban SIN confirmar ANTES de leer la cuenta. Si el acuse llega mientras se lee, la
+            // lectura pudo no traerla todavía: sigue contando como «por llegar» (no «No hay artículos»).
+            val pendientesAntes = _queued.value.mapNotNull { rondaDe(it.externalId) }.distinct()
+                .filter { !rondaRechazada(it) && !rondaConfirmada(it) }.toSet()
             val fresca = if (session.isProvisional) null else
                 conPresupuesto(PRESUPUESTO_VERSION_MS) { repository.getOrderDetail(vId, session.orderId) }.getOrNull()
                     ?.takeIf { it.id == session.orderId }
-            // Como su primer papel: un tiempo moderno retenido (STANDARD) no sale aunque la cuenta lo traiga (Codex r8 #7).
-            val deLaCuentaAlDia = fresca?.items?.filter { it.productId != null &&
-                !(it.serviceCourse?.preparationVersion == 1 && it.serviceCourse.kind == "STANDARD") }.orEmpty()
+            // La cuenta sale como siempre salió de la cuenta en pantalla (todos sus renglones). Codex r9 #6: filtrar lo STANDARD dejaba fuera
+            // un tiempo ya liberado (el renglón conserva STANDARD); que la reimpresión retenga lo no liberado es deuda previa a D7.
+            val deLaCuentaAlDia = fresca?.items?.filter { it.productId != null }.orEmpty()
             val llavesDeLaCuentaAlDia = fresca?.items?.mapNotNull { it.externalId }?.toSet().orEmpty()
             val candidatasEnCola = _queued.value.filter { line ->
                 line.item.type is CartItemType.ProductItem && !retenida(line) && line.externalId !in llavesDeLaCuentaAlDia
@@ -2438,7 +2442,8 @@ class TableOrderViewModel @Inject constructor(
             // algo anulado (respuesta perdida + anulación). SIN la cuenta (sin internet), la ronda que nadie confirmó sale de lo guardado,
             // como su primer papel (na13e014, 17-nov: la mesa sin red tiene que poder reimprimir lo que mandó).
             val enCola = if (fresca != null) emptyList() else pendientesEnCola
-            val rondaPorLlegar = fresca != null && pendientesEnCola.isNotEmpty()
+            val rondaPorLlegar = fresca != null && (pendientesEnCola.isNotEmpty() ||
+                candidatasEnCola.any { line -> rondaDe(line.externalId)?.let { it in pendientesAntes && !rondaRechazada(it) } == true })
             // ¿Quedó fuera algo ya enviado por no poder leer la cuenta? (la cuenta en pantalla, o una ronda confirmada que no trae)
             val loEnviadoSinLeer = fresca == null && (
                 _check.value?.items?.any { it.productId != null } == true ||
@@ -2467,9 +2472,11 @@ class TableOrderViewModel @Inject constructor(
             // estaciones configuradas sin poder reimprimir NADA.
             if (!config.stations.any { it.active } && printerService.getDefaultPrinter(PrinterRole.KITCHEN) == null) {
                 _isReprinting.value = false
+                // Codex r9 #5: el aviso de lo ya enviado que no sale (sin internet) va también aquí.
+                val nota = if (confirmadasSinConexion > 0) " $REIMPRIMIR_RONDA_SIN_CONEXION" else ""
                 showError(
                     "No hay ninguna impresora de cocina configurada",
-                    "Agrega una en Más → Impresoras y asígnale el rol de Cocina.",
+                    "Agrega una en Más → Impresoras y asígnale el rol de Cocina.$nota",
                 )
                 return@launch
             }
@@ -2484,6 +2491,7 @@ class TableOrderViewModel @Inject constructor(
             var sinComanda = 0
             var rechazadas = 0 // na13e014 (Codex r4): renglones de una ronda que el SERVIDOR rechazó mientras se reimprimía
             var confirmadasAMedias = 0 // Codex r6 #4: hojas de una ronda que el SERVIDOR confirmó mientras se reimprimía
+            var hojasConCopiaFaltante = 0 // Codex r9 #4: hojas de las que salió una copia y faltó otra
             try {
                 val deLaCuenta = deLaCuentaAlDia.groupBy { it.course }.map { (course, courseItems) ->
                     course to courseItems.map { item ->
@@ -2548,7 +2556,7 @@ class TableOrderViewModel @Inject constructor(
                             }
                             salioUna = true
                         }
-                        if (salioUna) { intentadas++; if (!faltoUna) impresas++ }
+                        if (salioUna) { intentadas++; if (!faltoUna) impresas++ else hojasConCopiaFaltante++ }
                     }
                 }
             } finally {
@@ -2565,6 +2573,12 @@ class TableOrderViewModel @Inject constructor(
             // Codex r8 #6: con un error de impresora, el aviso de lo que no salió por la decisión 2 va en la indicación (no se pierde).
             fun conAviso(indicacion: String) = if (avisoDeRonda != null) "$indicacion $avisoDeRonda" else indicacion
             when {
+                // Codex r9 #4: salió una copia y faltó otra: se dice (cocina ya tiene una; no hace falta repetir la hoja entera).
+                hojasConCopiaFaltante > 0 && impresas + hojasConCopiaFaltante == intentadas ->
+                    showError(
+                        "Salió la comanda, pero faltó una de sus copias",
+                        conAviso(if (ultimoError != null) motivoImpresora(ultimoError) else "Revisa la impresora de esa estación."),
+                    )
                 intentadas == 0 && sinImpresora == 0 && avisoDeRonda != null ->
                     if (confirmadasSinConexion > 0) showSinRed(avisoDeRonda) else showMessage(avisoDeRonda)
                 impresas > 0 && impresas == intentadas && avisoDeRonda != null -> {
