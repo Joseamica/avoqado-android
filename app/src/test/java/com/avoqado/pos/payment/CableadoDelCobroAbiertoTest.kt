@@ -36,14 +36,17 @@ class CableadoDelCobroAbiertoTest {
     }
 
     /**
-     * F1 · Codex final r1 #1: «Cuentas abiertas» manda el saldo que enseña (`expectedRemainingCents`) y, con el 412, se queda en la
-     * cuenta con el saldo vigente y su aviso, como el carrito (el `onCancel` que sigue al 412 no la cierra).
+     * Unión F1 × develop (mapa-union-android.md §1 choque 2): en «Pedidos → Cobrar» / «Cuentas abiertas» el saldo es de D5
+     * (`saldoLeidoDelServidor`, sólo si es lo que se cobra). La cuenta ya no pasa el saldo de F1 ni su salida del 412: con el 412 se
+     * queda la pantalla de D5 (texto del SERVIDOR) y «Cancelar» cierra la cuenta como siempre; al volver se relee.
      */
-    @Test fun `cuentas abiertas manda su saldo y el 412 la deja en la cuenta`() {
+    @Test fun `cuentas abiertas manda solo el saldo de D5 y el 412 es la pantalla de D5`() {
         val cobroEnLinea = cobro.substring(cobro.indexOf("PaymentFlowScreen(cartState=cart,resumeOrderId=cuenta.id,"))
-        assertTrue(cobroEnLinea.contains("saldoDelFolio=saldoDelFolioDeLaCuenta(cuenta),"))
-        assertTrue(cobroEnLinea.contains("onSaldoVigente={saldo->trasElSaldo=true;cobrar=false;avisoLocal=com.avoqado.pos.payment.data.avisoDeSaldoCambiado(saldo.cents)"))
-        assertTrue(cobroEnLinea.contains("onCancel={if(trasElSaldo)trasElSaldo=falseelseonSalir(CierreDeCuenta.ABIERTA)},"))
+        assertTrue(cobroEnLinea.contains("saldoLeidoDeLaCuenta=saldoLeidoDelServidor(cuenta,cents),"))
+        assertFalse("sin el saldo de F1", cobro.contains("saldoDelFolio="))
+        assertFalse("sin la salida de F1", cobro.contains("onSaldoVigente="))
+        assertFalse(cobro.contains("trasElSaldo"))
+        assertTrue(cobroEnLinea.contains("onCancel={onSalir(CierreDeCuenta.ABIERTA)},"))
     }
 
     /** M-n2: al cerrar el cobro en línea se vuelve a pedir la OFERTA (que también recarga), no sólo la cuenta. */
