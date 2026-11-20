@@ -1812,9 +1812,10 @@ class TableOrderViewModel @Inject constructor(
         bloqueoDeSaldo(vId, session)?.let { showBlockedReason(it); return }
         if (type != "PERCENTAGE" && type != "FIXED_AMOUNT") return
         if (!value.isFinite()) { showError("El descuento debe ser mayor a cero"); return }
+        // Codex r3 #4: lo TECLEADO no pasa de 100 (100.004 % no se redondea a 100 %).
+        if (type == "PERCENTAGE" && value > 100) { showError("El porcentaje no puede ser mayor a 100"); return }
         val valor = valorDelManual(value)
         if (valor <= 0) { showError("El descuento debe ser mayor a cero"); return }
-        if (type == "PERCENTAGE" && valor > 100) { showError("El porcentaje no puede ser mayor a 100"); return }
         val roles = com.avoqado.pos.core.domain.RoleManager(secureStorage)
         // Codex r2 #5: una cuenta abierta sin red en este aparato no tiene cuenta del SERVIDOR; su subtotal es el de sus rondas guardadas.
         val cuenta = _check.value?.takeIf { it.id == session.orderId }
@@ -1823,15 +1824,21 @@ class TableOrderViewModel @Inject constructor(
             session.isProvisional && session.saldoSinRedConocido -> session.valorRondasSinRedCents / 100.0 to 0.0
             else -> null to null
         }
-        val regala = manualDejaLaCuentaEnCero(type, valor, subtotal, descontado)
+        val nombre = name.trim()
+        val firma = firmaDelManual(vId, session.orderId, type, valor, nombre, motivo)
+        // Codex r3 #2: un envío IGUAL sin confirmar se reintenta con su llave (el SERVIDOR contesta la fila que ya hizo), aunque la
+        // cuenta que se ve ahora ya traiga ese descuento y parezca una cortesía.
+        val reintento = repository.hayLlaveDelManual(firma)
+        // Codex r3 #3: otros manuales de esta cuenta que todavía no confirma el SERVIDOR no están en la cuenta que se ve: no se sabe
+        // cuánto queda, así que se trata como si dejara la cuenta en $0 (pide el permiso de cortesía o internet).
+        val otrosSinConfirmar = repository.hayOtrosManualesSinConfirmar(vId, session.orderId, firma)
+        val regala = !reintento && (otrosSinConfirmar || manualDejaLaCuentaEnCero(type, valor, subtotal, descontado))
         if (regala && !roles.canApplyDiscounts && !roles.canCompOrders) { showError(DESCUENTO_MANUAL_ES_CORTESIA); return }
         val sinPin = roles.canApplyDiscounts && (!regala || roles.canCompOrders)
         if (!sinPin && (!connectivityMonitor.isConnected.value || session.isProvisional)) {
             showSinRed(DESCUENTO_MANUAL_CON_PIN_SIN_RED_MESA)
             return
         }
-        val nombre = name.trim()
-        val firma = firmaDelManual(vId, session.orderId, type, valor, nombre, motivo)
         // Codex r2 #2: la llave vive en el repositorio (uno por app), no en esta pantalla: salir de la mesa y volver no la pierde.
         val llave = repository.llaveDelManual(firma)
         viewModelScope.launch {
@@ -1848,9 +1855,9 @@ class TableOrderViewModel @Inject constructor(
                 }
             }.fold(
                 onSuccess = { desenlace ->
-                    repository.soltarLlaveDelManual(firma)
+                    // Codex r3 #1: sólo la respuesta del SERVIDOR suelta la llave; en la cola sigue sin confirmar (otro toque igual la reusa).
                     if (desenlace == com.avoqado.pos.tables.data.DesenlaceDelManual.GUARDADO_SIN_RED) showSinRed(DESCUENTO_MANUAL_GUARDADO_SIN_RED)
-                    else showMessage("Descuento aplicado")
+                    else { repository.soltarLlaveDelManual(firma); showMessage("Descuento aplicado") }
                     repository.refresh(vId)
                 },
                 onFailure = { e ->

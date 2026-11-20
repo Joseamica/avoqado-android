@@ -137,6 +137,19 @@ class DescuentoManualDeMesaTest {
         assertNotEquals(primera, m.repo.llaveDelManual(firma)) // ya confirmado: otro descuento igual es otro
     }
 
+    @Test fun `Codex r3 3 - otro manual de la misma cuenta sin confirmar se ve, uno de otra cuenta no`() {
+        val m = mundo()
+        val a = firmaDelManual(venue, "orden-1", "FIXED_AMOUNT", 60.0, "", null)
+        val b = firmaDelManual(venue, "orden-1", "FIXED_AMOUNT", 50.0, "", null)
+        val otraCuenta = firmaDelManual(venue, "orden-10", "FIXED_AMOUNT", 50.0, "", null)
+        assertFalse(m.repo.hayOtrosManualesSinConfirmar(venue, "orden-1", b))
+        m.repo.llaveDelManual(a)
+        assertTrue(m.repo.hayOtrosManualesSinConfirmar(venue, "orden-1", b))
+        assertFalse(m.repo.hayOtrosManualesSinConfirmar(venue, "orden-1", a)) // la misma firma no cuenta como «otro»
+        assertFalse(m.repo.hayOtrosManualesSinConfirmar(venue, "orden-10", otraCuenta)) // "orden-1" no es prefijo de "orden-10"
+        assertTrue(m.repo.hayLlaveDelManual(a))
+    }
+
     @Test fun `la pantalla de MESAS ofrece el descuento manual con el formulario de MOSTRADOR y su motivo`() {
         val path = "src/main/java/com/avoqado/pos/tables/presentation/TableOrderScreen.kt"
         val source = listOf(File(path), File("app/$path")).first { it.exists() }.readText()
