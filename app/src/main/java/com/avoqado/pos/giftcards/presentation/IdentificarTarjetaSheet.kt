@@ -14,6 +14,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.avoqado.pos.designsystem.components.*
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
+import com.avoqado.pos.core.util.telefonoMx
 import com.avoqado.pos.giftcards.data.*
 import com.avoqado.pos.giftcards.domain.*
 import com.avoqado.pos.pos.presentation.scanner.BarcodeScannerView
@@ -71,7 +72,7 @@ fun IdentificarTarjetaSheet(
     Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface)) {
         AvoqadoFullscreenHeader(title = TextosDeTarjetas.CONSULTAR, onNav = onCerrar, showDivider = true,
             primaryActionText = if (modo == TextosDeTarjetas.TELEFONO && !pidioCodigo) TextosDeTarjetas.PEDIR_CODIGO else TextosDeTarjetas.VERIFICAR,
-            primaryActionEnabled = habilitado && if (modo == TextosDeTarjetas.TELEFONO) telefono.length == 10 && (!pidioCodigo || otp.length == 6) else codigo.trim().length in 4..40,
+            primaryActionEnabled = habilitado && if (modo == TextosDeTarjetas.TELEFONO) telefonoMx(telefono) != null && (!pidioCodigo || otp.length == 6) else codigo.trim().length in 4..40,
             onPrimaryAction = { scope.launch {
                 if (modo != TextosDeTarjetas.TELEFONO) viewModel.enviarCodigo()
                 else if (pidioCodigo) viewModel.verificar(telefono, otp)
@@ -87,7 +88,7 @@ fun IdentificarTarjetaSheet(
             }
             if (modo == TextosDeTarjetas.TELEFONO) {
                 Text("+52 · México")
-                AvoqadoPillTextField(enabled = !ocupado, value = telefono, onValueChange = { telefono = it.filter { c -> c in '0'..'9' }.take(10); viewModel.cambiarTelefono(telefono); otp = ""; pidioCodigo = false }, placeholder = TextosDeTarjetas.TELEFONO, keyboardType = KeyboardType.Phone)
+                AvoqadoPillTextField(enabled = !ocupado, value = telefono, onValueChange = { telefono = it.take(25); viewModel.cambiarTelefono(telefono); otp = ""; pidioCodigo = false }, placeholder = TextosDeTarjetas.EJEMPLO_DE_CELULAR, keyboardType = KeyboardType.Phone)
                 if (pidioCodigo) {
                     Text(TextosDeTarjetas.CODIGO_ENVIADO)
                     TextButton(enabled = habilitado, onClick = { scope.launch { viewModel.pedirCodigo(telefono); if (viewModel.estado.value == EstadoDeIdentificacion.CodigoPedido) otp = "" } }) { Text(TextosDeTarjetas.PEDIR_CODIGO) }

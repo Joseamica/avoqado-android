@@ -59,7 +59,7 @@ fun VenderTarjetaScreen(
             title = TextosDeTarjetas.VENDER, onNav = onSalir,
             primaryActionText = if (viewModel.bloqueado) TextosDeTarjetas.REINTENTAR else TextosDeTarjetas.cobrar(form.sobres.sumOf { it.montoCents ?: 0 }),
             primaryActionEnabled = controlDeVentaDeTarjeta(conectado, servidor, estado != VenderTarjetaViewModel.Estado.Enviando && (viewModel.bloqueado || (entradaDisponible && invalidos.isEmpty()))),
-            primaryActionDisabledReason = if (!conectado || !servidor) TextosDeTarjetas.SIN_RED else if (invalidos.isNotEmpty() && !viewModel.bloqueado) "Revisa los campos de la tarjeta" else null,
+            primaryActionDisabledReason = if (!conectado || !servidor) TextosDeTarjetas.SIN_RED else if (!viewModel.bloqueado) motivoDeCobrarApagado(invalidos, form.sobres.size) else null,
             onPrimaryAction = { scope.launch { viewModel.cobrarDesdePantalla() } },
             showDivider = true,
         )
@@ -94,6 +94,7 @@ fun VenderTarjetaScreen(
                                 }) { Text(formatMoneyFromCents(cents)) }
                             }
                         }
+                        Text(TextosDeTarjetas.O_ESCRIBE_OTRO_MONTO, style = MaterialTheme.typography.bodySmall)
                         AvoqadoPillTextField(value = montos.getOrElse(i) { "" }, placeholder = TextosDeTarjetas.OTRO_MONTO,
                             keyboardType = KeyboardType.Decimal, onValueChange = { texto ->
                                 montos = montos.toMutableList().also { it[i] = texto }
@@ -114,8 +115,8 @@ fun VenderTarjetaScreen(
                         if (sobre.canal == "WHATSAPP") {
                             Text(TextosDeTarjetas.TELEFONO_DE_QUIEN_LA_RECIBE)
                             AvoqadoPillTextField(value = sobre.telefonoDigitos, keyboardType = KeyboardType.Phone,
-                                onValueChange = { cambiar(sobre.copy(telefonoDigitos = it, lada = "52")) }, placeholder = "+52 · 10 dígitos")
-                            if ("telefono$i" in invalidos) Text("Escribe 10 dígitos de México (+52)")
+                                onValueChange = { cambiar(sobre.copy(telefonoDigitos = it.take(25), lada = "52")) }, placeholder = TextosDeTarjetas.EJEMPLO_DE_CELULAR)
+                            if ("telefono$i" in invalidos) Text(TextosDeTarjetas.CELULAR_INVALIDO, color = MaterialTheme.colorScheme.error)
                         }
                         if (sobre.canal == "EMAIL") {
                             AvoqadoPillTextField(value = sobre.correo, onValueChange = { cambiar(sobre.copy(correo = it)) },
@@ -137,7 +138,7 @@ fun VenderTarjetaScreen(
                     viewModel.cambiar(form.copy(sobres = form.sobres + SobreEnFormulario(null, "PRINTED", "", "", "", "")))
                 }) { Text(TextosDeTarjetas.AGREGAR_OTRA) }
                 AvoqadoPillTextField(value = form.deParteDe, onValueChange = { viewModel.cambiar(form.copy(deParteDe = it)) }, placeholder = TextosDeTarjetas.DE_PARTE_DE)
-                if ("deParteDe" in invalidos) Text(TextosDeTarjetas.OBLIGATORIO_CON_ENTREGA)
+                if ("deParteDe" in invalidos) Text(TextosDeTarjetas.OBLIGATORIO_CON_ENTREGA, color = MaterialTheme.colorScheme.error)
                 if ("total" in invalidos) Text(TextosDeTarjetas.totalDebajoDe(kotlin.math.round(ajustes.topePorOperacion!! * 100).toInt()))
             }
             if (estado is VenderTarjetaViewModel.Estado.ResultadoPendiente) Text(TextosDeTarjetas.CUENTA_YA_PAGADA)

@@ -38,6 +38,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
+import com.avoqado.pos.core.util.digitosNacionales
 
 /**
  * International phone input with country selector.
@@ -137,7 +138,9 @@ fun AvoqadoPhoneInput(
                 }
                 BasicTextField(
                     value = digits,
-                    onValueChange = { onDigitsChange(it.filter { c -> c.isDigit() }) },
+                    // Sólo dígitos, y sin la lada que la persona repitió: con México elegido, «+52 55 9187 3922» se queda en
+                    // «5591873922» (antes «525591873922» y el WhatsApp salía a «+52525591873922»). Regla en core/util/Telefono.kt.
+                    onValueChange = { onDigitsChange(digitosNacionales(it, country.dialCode)) },
                     singleLine = true,
                     enabled = enabled,
                     textStyle = MaterialTheme.typography.bodyLarge.copy(
