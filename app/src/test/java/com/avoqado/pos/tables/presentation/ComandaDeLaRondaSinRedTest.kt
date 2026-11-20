@@ -164,6 +164,65 @@ class ComandaDeLaRondaSinRedTest {
         mesa.reprintComandas(); advanceUntilIdle()
 
         io.mockk.coVerify(exactly = 0) { impresora.printComandas(any(), any(), any(), any(), any(), any(), any(), any()) }
+        // Decisión 2 = A: no sale, y la pantalla lo dice en llano (en gris, no como error ni «no hay artículos»).
+        org.junit.Assert.assertEquals(REIMPRIMIR_RONDA_SIN_CONEXION, mesa.actionMessage.value)
+    }
+
+    /** Café de la ronda r1 en el borrador de la cuenta o-1 (la cuenta en pantalla todavía no lo trae). */
+    private fun cuentaConCafeEnRonda(estadoDeLaRonda: String) {
+        session.start(TableSession.Active("t1", "5", "Patio", "o-1", "ORD", 3, 0, TableSession.Mode.ORDERING))
+        val cafe = TableOrderViewModel.PendingLine(
+            com.avoqado.pos.pos.data.model.CartItem("c1", com.avoqado.pos.pos.data.model.CartItemType.ProductItem("p-cafe"), "Café", unitPrice = 5000), null)
+        drafts.save("v-1", "o-1", emptyList(), mapOf("r1" to listOf(cafe)))
+        cola += FilaDeLaOrden("r1", "ADD_ITEMS", estadoDeLaRonda, null)
+    }
+
+    private fun flautas() = com.avoqado.pos.tables.data.OrderDetailItem(id = "line", productName = "Flautas", total = 100.0,
+        productId = "p-fl", sentToKitchenAt = "2026-11-20T18:00:00Z")
+
+    /**
+     * Codex r6 #5 (con la decisión 2): la cuenta en pantalla es vieja (la lectura falló) pero al tocar «Volver a imprimir» ya hay
+     * internet: se relee la cuenta y el Café confirmado SÍ sale, de la cuenta al día. Antes se perdía esa copia legítima.
+     */
+    @Test fun `una ronda confirmada sale de la cuenta releida si al reimprimir ya hay internet`() = runTest {
+        cuentaConCafeEnRonda("ACKED")
+        coEvery { repository.getOrderDetail(any(), any()) } returns Result.failure(java.io.IOException("sin red")) andThen
+            Result.success(com.avoqado.pos.tables.data.OrderDetail("o-1", total = 150.0, version = 4, items = listOf(flautas(),
+                com.avoqado.pos.tables.data.OrderDetailItem(id = "line-cafe", productName = "Café", total = 50.0, productId = "p-cafe",
+                    externalId = "sync:r1:0", sentToKitchenAt = "2026-11-20T18:01:00Z"))))
+        val mesa = vm(keepSession = true)
+        mesa.loadCheck(); advanceUntilIdle()
+
+        mesa.reprintComandas(); advanceUntilIdle()
+
+        val planes = mutableListOf<List<TicketPlan>>()
+        io.mockk.coVerify { impresora.printComandas(capture(planes), any(), any(), any(), any(), any(), any(), any()) }
+        val impreso = planes.flatten().toString()
+        assertTrue("sale el Café de la cuenta al día: $impreso", impreso.contains("Café"))
+        assertTrue("una sola vez: $impreso", Regex("Café").findAll(impreso).count() == 1)
+    }
+
+    /** Codex r6 #4: el acuse llega mientras sale la hoja de la cuenta; la hoja de la ronda ya no sale de lo que tenía el aparato. */
+    @Test fun `si la ronda se confirma a media reimpresion su hoja no sale y la pantalla lo dice`() = runTest {
+        cuentaConCafeEnRonda("PENDING")
+        coEvery { repository.getOrderDetail(any(), any()) } returns Result.success(com.avoqado.pos.tables.data.OrderDetail("o-1",
+            total = 100.0, version = 4, items = listOf(flautas())))
+        val mesa = vm(keepSession = true, enLinea = true)
+        mesa.loadCheck(); advanceUntilIdle()
+        coEvery { impresora.printComandas(any(), any(), any(), any(), any(), any(), any(), any()) } answers {
+            val i = cola.indexOfFirst { it.id == "r1" }
+            cola[i] = cola[i].copy(estado = "ACKED")
+            ComandaPrinter.Result(attempted = 1, printed = 1, skippedNoPrinter = 0, lastError = null)
+        }
+
+        mesa.reprintComandas(); advanceUntilIdle()
+
+        val planes = mutableListOf<List<TicketPlan>>()
+        io.mockk.coVerify(exactly = 1) { impresora.printComandas(capture(planes), any(), any(), any(), any(), any(), any(), any()) }
+        val impreso = planes.flatten().toString()
+        assertTrue("sale lo de la cuenta: $impreso", impreso.contains("Flautas"))
+        assertTrue("no sale el Café de la ronda recién confirmada: $impreso", !impreso.contains("Café"))
+        org.junit.Assert.assertEquals("Comanda reimpresa. $REIMPRIMIR_RONDA_RECIEN_CONFIRMADA", mesa.actionMessage.value)
     }
 
     /**

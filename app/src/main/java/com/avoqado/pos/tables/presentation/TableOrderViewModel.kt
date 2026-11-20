@@ -169,6 +169,17 @@ internal const val DESCUENTO_MANUAL_SIN_RESPUESTA =
 internal const val ANULAR_SIN_CONFIRMAR =
     "Sin conexión: no supimos si el producto se anuló. Revisa la cuenta al volver la red antes de anularlo otra vez."
 
+/**
+ * «Anular producto», decisión 2 = A (founder por delegación, 20-nov): sin internet, «Volver a imprimir» no saca una ronda que el
+ * SERVIDOR ya confirmó (otra caja pudo anular algo de ella en ese minuto, y eso no vuelve a cocina). La pantalla lo dice.
+ */
+internal const val REIMPRIMIR_RONDA_SIN_CONEXION =
+    "Sin conexión: esta ronda ya se envió y no se puede confirmar si cambió; se podrá reimprimir al volver el internet."
+
+/** Codex r6 #4: el SERVIDOR confirmó la ronda mientras salía otra hoja; se saca con la cuenta al día, no con lo que tenía el aparato. */
+internal const val REIMPRIMIR_RONDA_RECIEN_CONFIRMADA =
+    "Esta ronda se acaba de confirmar: vuelve a tocar «Volver a imprimir» para sacarla con la cuenta al día."
+
 /** 7133e3: el valor como lo guarda el SERVIDOR (2 decimales, mitad hacia arriba). */
 internal fun valorDelManual(value: Double): Double =
     java.math.BigDecimal(value.toString()).setScale(2, java.math.RoundingMode.HALF_UP).toDouble()
@@ -2414,12 +2425,34 @@ class TableOrderViewModel @Inject constructor(
             // Codex r4 #1 y r5 #3 de «Anular producto»: una ronda que el SERVIDOR ya CONFIRMÓ tampoco sale de la cola: lo suyo que sigue
             // en la cuenta ya viene en `sentItems`, y lo que no (otra caja lo anuló o lo separó) no debe volver a cocina. También sin la
             // cuenta al día: una copia de menos en una reimpresión es mejor que cocinar algo anulado.
-            val enCola = candidatasEnCola.filter { line ->
-                rondaDe(line.externalId)?.let { !rondaRechazada(it) && !rondaConfirmada(it) } ?: true
+            // Decisión 2 = A (founder por delegación, 20-nov) y Codex r6 #5: si hay una ronda confirmada que la cuenta en pantalla todavía
+            // no trae, se relee la cuenta (con tope de tiempo). Con la lectura, sale lo que la cuenta tiene de verdad (lo anulado no); sin
+            // ella (sin internet), esa ronda no sale y la pantalla lo dice en llano, en gris.
+            val confirmadasFuera = candidatasEnCola.filter { line ->
+                rondaDe(line.externalId)?.let { !rondaRechazada(it) && rondaConfirmada(it) } == true
             }
-            if (sentItems.isEmpty() && enCola.isEmpty()) {
+            var deLaCuentaAlDia = sentItems
+            var llavesDeLaCuentaAlDia = enLaCuenta
+            var confirmadasSinConexion = 0
+            if (confirmadasFuera.isNotEmpty()) {
+                val fresca = if (session.isProvisional) null else
+                    conPresupuesto(PRESUPUESTO_VERSION_MS) { repository.getOrderDetail(vId, session.orderId) }.getOrNull()
+                        ?.takeIf { it.id == session.orderId }
+                if (fresca != null) {
+                    deLaCuentaAlDia = fresca.items.filter { it.productId != null }
+                    llavesDeLaCuentaAlDia = fresca.items.mapNotNull { it.externalId }.toSet()
+                } else {
+                    confirmadasSinConexion = confirmadasFuera.size
+                }
+            }
+            val enCola = candidatasEnCola.filter { line ->
+                line.externalId !in llavesDeLaCuentaAlDia &&
+                    (rondaDe(line.externalId)?.let { !rondaRechazada(it) && !rondaConfirmada(it) } ?: true)
+            }
+            if (deLaCuentaAlDia.isEmpty() && enCola.isEmpty()) {
                 _isReprinting.value = false
-                showMessage("No hay artículos enviados para reimprimir")
+                if (confirmadasSinConexion > 0) showSinRed(REIMPRIMIR_RONDA_SIN_CONEXION)
+                else showMessage("No hay artículos enviados para reimprimir")
                 return@launch
             }
             val config = printConfigRepository.getCurrentConfig()
@@ -2445,8 +2478,9 @@ class TableOrderViewModel @Inject constructor(
             var ultimoError: String? = null
             var sinComanda = 0
             var rechazadas = 0 // na13e014 (Codex r4): renglones de una ronda que el SERVIDOR rechazó mientras se reimprimía
+            var confirmadasAMedias = 0 // Codex r6 #4: hojas de una ronda que el SERVIDOR confirmó mientras se reimprimía
             try {
-                val deLaCuenta = sentItems.groupBy { it.course }.map { (course, courseItems) ->
+                val deLaCuenta = deLaCuentaAlDia.groupBy { it.course }.map { (course, courseItems) ->
                     course to courseItems.map { item ->
                         RoutableItem(
                             orderItemId = item.id,
@@ -2476,6 +2510,9 @@ class TableOrderViewModel @Inject constructor(
                     val rondaDelGrupo = if (deLaColaEnGrupo) delGrupo.firstNotNullOfOrNull { rondaDe(it.externalId) } else null
                     for (tanda in tandas) {
                         if (rondaDelGrupo != null && rondaRechazada(rondaDelGrupo)) { rechazadas++; continue }
+                        // Codex r6 #4: si el acuse llegó mientras salía la hoja anterior, otra caja pudo anular algo de esta ronda: no
+                        // sale de lo que tenía el aparato (decisión 2).
+                        if (rondaDelGrupo != null && rondaConfirmada(rondaDelGrupo)) { confirmadasAMedias++; continue }
                         val planes = tanda
                         if (planes.isEmpty()) continue
                         val r = comandaPrinter.printComandas(
@@ -2494,7 +2531,19 @@ class TableOrderViewModel @Inject constructor(
                 _isReprinting.value = false
             }
 
+            // Lo que no salió por la decisión 2 se dice junto al resultado, en llano (regla sin red: «degrada y lo DICE»).
+            val avisoDeRonda = when {
+                confirmadasSinConexion > 0 -> REIMPRIMIR_RONDA_SIN_CONEXION
+                confirmadasAMedias > 0 -> REIMPRIMIR_RONDA_RECIEN_CONFIRMADA
+                else -> null
+            }
             when {
+                intentadas == 0 && sinImpresora == 0 && avisoDeRonda != null ->
+                    if (confirmadasSinConexion > 0) showSinRed(avisoDeRonda) else showMessage(avisoDeRonda)
+                impresas > 0 && impresas == intentadas && avisoDeRonda != null -> {
+                    val hecho = if (impresas == 1) "Comanda reimpresa" else "$impresas comandas reimpresas"
+                    if (confirmadasSinConexion > 0) showSinRed("$hecho. $avisoDeRonda") else showMessage("$hecho. $avisoDeRonda")
+                }
                 // Codex r4: todo lo que quedaba era de una ronda que el SERVIDOR rechazó a media reimpresión. No es la impresora.
                 intentadas == 0 && sinImpresora == 0 && rechazadas > 0 ->
                     showMessage("No hay artículos enviados para reimprimir")
