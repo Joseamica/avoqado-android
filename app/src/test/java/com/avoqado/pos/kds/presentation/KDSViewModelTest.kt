@@ -316,6 +316,49 @@ class KDSViewModelTest {
     }
 
     @Test
+    fun `D17 la comanda terminada sale del tablero y vuelve si una correccion por el WiFi le da trabajo`() = runTest {
+        val preparacion = mockk<com.avoqado.pos.kds.data.KitchenPreparationRepository>(relaxed = true)
+        every { preparacion.capabilities } returns kotlinx.coroutines.flow.MutableStateFlow(
+            com.avoqado.pos.kds.domain.PreparationCapabilities(version = 1, enabled = true, kitchenDoneVersion = 1))
+        var proyeccion = com.avoqado.pos.kds.domain.PreparationCounts(READY = 1)
+        coEvery { preparacion.merge(any(), any(), any()) } answers {
+            secondArg<List<com.avoqado.pos.kds.domain.PreparationLine>>().map { it.copy(preparation = proyeccion) }
+        }
+        coEvery { preparacion.pendingKeys(any(), any()) } returns emptySet()
+        val conTiempos = comanda("k5", 500).copy(preparationVersion = 1, items = listOf(KDSOrderItem(id = "i-k5", productName = "Pozole",
+            quantity = 1, externalId = "sync:r:0", preparation = com.avoqado.pos.kds.domain.PreparationCounts(PREPARING = 1))))
+        var lectura = listOf(conTiempos, comanda("k1", 1_000))
+        coEvery { repo.fetchOrders(any()) } answers { Result.success(lectura) }
+        every { repo.venueIdActual() } returns "v1"
+        every { printConfig.getCurrentConfig() } answers { config }
+        every { prefs.estacion("v1") } returns "st-barra"
+        every { prefs.foto(any(), any(), any()) } returns null
+        every { roleManager.role } returns "KITCHEN"
+        every { planManager.hasFeature("KITCHEN_DISPLAY") } returns true
+        coEvery { repo.fetchBoardPage(any(), any()) } coAnswers { repo.fetchOrders(firstArg()).map { KDSRepository.BoardPage(it) } }
+        coEvery { repo.fetchDeliveryChannels() } returns Result.success(emptyList())
+        val vm = KDSViewModel(
+            repo, mockk(relaxed = true), mockk(relaxed = true), printConfig, Provider { cola },
+            prefs, roleManager, planManager, mockk(relaxed = true),
+            receptor, ticketsLocales, preparationRepository = preparacion,
+        )
+        vm.refrescar()
+        advanceUntilIdle()
+        assertEquals(listOf("k1"), vm.comandas.value.map { it.id }) // la cocina la dejó lista: sale
+
+        lectura = listOf(comanda("k1", 1_000)) // el SERVIDOR ya no la manda (READY)
+        vm.refrescar()
+        advanceUntilIdle()
+        assertEquals(listOf("k1"), vm.comandas.value.map { it.id })
+
+        proyeccion = com.avoqado.pos.kds.domain.PreparationCounts(PENDING = 1) // la caja la corrigió por el WiFi, sin internet
+        lectura = listOf(comanda("k1", 1_000))
+        vm.refrescar()
+        advanceUntilIdle()
+        assertEquals(listOf("k5", "k1"), vm.comandas.value.map { it.id })
+    }
+
+    @Test
     fun `D17 deshacer una comanda con tiempos manda la hora en que la cocina la termino`() = runTest {
         val conTiempos = comanda("k9", 500).copy(preparationVersion = 1, completedAt = 1_700_000_000_123)
         coEvery { repo.fetchRecientes("st-barra") } returns Result.success(listOf(conTiempos, comanda("k8", 400)))

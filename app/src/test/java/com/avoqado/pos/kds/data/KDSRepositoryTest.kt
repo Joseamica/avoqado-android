@@ -198,6 +198,7 @@ class KDSRepositoryTest {
 
         val recientes = server.takeRequest(1, TimeUnit.SECONDS)!!
         assertEquals("/api/v1/mobile/venues/v1/kds/orders/recent", recientes.requestUrl!!.encodedPath)
+        assertEquals("1", recientes.requestUrl!!.queryParameter("kitchenDoneVersion"))
         assertEquals("st-barra", recientes.requestUrl!!.queryParameter("stationId"))
         val deshacer = server.takeRequest(1, TimeUnit.SECONDS)!!
         assertEquals("POST", deshacer.method)

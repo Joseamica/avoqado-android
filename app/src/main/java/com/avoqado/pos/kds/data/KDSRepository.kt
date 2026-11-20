@@ -158,7 +158,8 @@ class KDSRepository @Inject constructor(
     /** «Recientes»: las últimas 20 terminadas en 60 min, para deshacer un LISTO por error. */
     suspend fun fetchRecientes(stationId: String?): Result<List<KDSOrder>> {
         val (venueId, token) = sesion() ?: return sinSesion()
-        val url = ruta(venueId, "kds/orders/recent") + (conEstacion(stationId)?.let { "?$it" } ?: "")
+        // D17: esta app sabe regresar una comanda con tiempos (manda `expectedDoneAt`); el SERVIDOR sólo se las enseña a quien lo pide.
+        val url = ruta(venueId, "kds/orders/recent") + "?" + listOfNotNull(conEstacion(stationId), "kitchenDoneVersion=1").joinToString("&")
         val request = Request.Builder()
             .url(url)
             .header("Authorization", "Bearer $token")
