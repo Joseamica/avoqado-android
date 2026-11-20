@@ -1012,9 +1012,15 @@ internal const val ULTIMO_PRODUCTO_SIN_ANULAR =
 internal const val PROMOCION_SIN_ANULAR =
     "Es parte de una promoción y no se anula suelto. Puedes darlo de cortesía o anular la cuenta completa."
 
+/** Con un cobro en la cuenta el SERVIDOR no anula (Codex r2 #8): el mismo texto, antes de tocar (y antes de pedir un PIN). */
+internal const val CUENTA_CON_PAGOS_SIN_ANULAR =
+    "Esta cuenta ya tiene pagos registrados y ya no se pueden anular sus productos. Si hay que devolver dinero, alguien con permiso lo hace con Reembolso en el POS o en el panel."
+
 /** Por qué «Anular producto» va en gris para [item] de la cuenta [check] (null = se puede). La cortesía no cambia. */
 internal fun motivoParaNoAnular(item: com.avoqado.pos.tables.data.OrderDetailItem, check: com.avoqado.pos.tables.data.OrderDetail?): String? =
     when {
+        check != null && (check.paymentStatus == "PAID" || check.paymentStatus == "PARTIAL" ||
+            check.payments.any { it.status == "COMPLETED" }) -> CUENTA_CON_PAGOS_SIN_ANULAR
         item.orderPromotionId != null -> PROMOCION_SIN_ANULAR
         check?.items?.size == 1 -> ULTIMO_PRODUCTO_SIN_ANULAR
         else -> null
@@ -1039,7 +1045,8 @@ internal fun RenglonEnviadoDialog(
 
     AvoqadoDialog(
         title = productName,
-        description = "Ya se mandó a cocina. Elige el motivo: «Anular producto» lo quita de la cuenta; «Dar de cortesía» lo deja sin cobrar.",
+        // Codex r2 #2: no dice «ya se mandó a cocina»: la TPV puede guardar en la cuenta algo que todavía no manda.
+        description = "Elige el motivo: «Anular producto» lo quita de la cuenta; «Dar de cortesía» lo deja sin cobrar.",
         onDismiss = onDismiss,
         actionButton = {
             Column(verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {

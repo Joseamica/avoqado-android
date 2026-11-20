@@ -122,6 +122,10 @@ class AnularProductoEnviadoTest {
         assertEquals(ULTIMO_PRODUCTO_SIN_ANULAR, motivoParaNoAnular(suelto, OrderDetail("o", items = listOf(suelto))))
         // La promoción manda aunque sea el único renglón: la salida es la cortesía o anular la cuenta.
         assertEquals(PROMOCION_SIN_ANULAR, motivoParaNoAnular(pieza, OrderDetail("o", items = listOf(pieza))))
+        // Codex r2 #8: con un abono (o la cabecera PARTIAL/PAID) va en gris ANTES de tocar, con el texto del SERVIDOR.
+        assertEquals(CUENTA_CON_PAGOS_SIN_ANULAR, motivoParaNoAnular(suelto, dos.copy(paymentStatus = "PARTIAL")))
+        assertEquals(CUENTA_CON_PAGOS_SIN_ANULAR, motivoParaNoAnular(suelto,
+            dos.copy(payments = listOf(OrderDetailPayment(id = "p1", status = "COMPLETED")))))
     }
 
     @Test fun losMotivosEmpiezanPorLosDeAnular() {
