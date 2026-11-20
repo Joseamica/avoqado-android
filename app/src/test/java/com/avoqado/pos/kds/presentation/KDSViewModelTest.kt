@@ -385,6 +385,37 @@ class KDSViewModelTest {
     }
 
     @Test
+    fun `D17 la lectura de una hoja ya cerrada no pisa la de la hoja abierta`() = runTest {
+        val conTiempos = comanda("k9", 500).copy(preparationVersion = 1, completedAt = 1_700_000_000_123)
+        val primera = kotlinx.coroutines.CompletableDeferred<Result<List<KDSOrder>>>()
+        coEvery { repo.fetchRecientes("st-barra") } coAnswers { primera.await() } andThen Result.success(listOf(conTiempos))
+        val vm = armar()
+        vm.abrirRecientes() // se queda leyendo
+        vm.abrirRecientes() // la cerró y la volvió a abrir: esta sí lee
+        assertEquals(listOf("k9"), vm.recientes.value.map { it.id })
+        primera.complete(Result.failure(java.io.IOException("se cayó")))
+        advanceUntilIdle()
+        assertEquals(listOf("k9"), vm.recientes.value.map { it.id })
+        assertNull(vm.recientesNoLeidas.value)
+    }
+
+    @Test
+    fun `D17 una confirmacion vieja de Deshacer no quita la comanda que otra tablet volvio a terminar`() = runTest {
+        val vieja = comanda("k9", 500).copy(preparationVersion = 1, completedAt = 1_700_000_000_123)
+        val otraVez = vieja.copy(completedAt = 1_700_000_900_000)
+        coEvery { repo.fetchRecientes("st-barra") } returnsMany listOf(Result.success(listOf(vieja)), Result.success(listOf(otraVez)))
+        val respuesta = kotlinx.coroutines.CompletableDeferred<Result<Unit>>()
+        coEvery { repo.recall(any(), any()) } coAnswers { respuesta.await() }
+        val vm = armar()
+        vm.abrirRecientes()
+        vm.deshacer("k9")
+        vm.abrirRecientes() // otra tablet ya la volvió a marcar Listo
+        respuesta.complete(Result.success(Unit))
+        advanceUntilIdle()
+        assertEquals(listOf(1_700_000_900_000L), vm.recientes.value.map { it.completedAt })
+    }
+
+    @Test
     fun `D17 la respuesta de un Deshacer de una hoja ya cerrada no se pinta en la hoja nueva`() = runTest {
         val conTiempos = comanda("k9", 500).copy(preparationVersion = 1, completedAt = 1_700_000_000_123)
         coEvery { repo.fetchRecientes("st-barra") } returns Result.success(listOf(conTiempos))

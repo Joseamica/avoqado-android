@@ -1,5 +1,6 @@
 package com.avoqado.pos.kds.presentation
 
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -23,6 +24,8 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -746,7 +749,7 @@ private fun TableroDeCocina(
 
 // MARK: - Recientes
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 private fun RecientesSheet(
     recientes: List<KDSOrder>,
@@ -816,12 +819,18 @@ private fun RecientesSheet(
                         }
                     }
                     if (aviso != null && aviso.comandaId == orden.id) {
-                        // D17 (Codex r14 y r15): por qué no se pudo «Deshacer» ESTA comanda, justo debajo de su botón.
+                        // D17 (Codex r14, r15 y r16): por qué no se pudo «Deshacer» ESTA comanda, justo debajo de su botón, y la hoja
+                        // se desliza lo necesario para que se vea aunque el botón estuviera al ras del borde.
+                        val aLaVista = remember { BringIntoViewRequester() }
+                        LaunchedEffect(aviso) { aLaVista.bringIntoView() }
                         Text(
                             text = aviso.aviso.texto,
                             style = MaterialTheme.typography.bodyMedium,
                             color = if (aviso.aviso.esError) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(bottom = AvoqadoTheme.spacing.sm).testTag("kds-recientes-aviso-${orden.id}"),
+                            modifier = Modifier
+                                .padding(bottom = AvoqadoTheme.spacing.sm)
+                                .bringIntoViewRequester(aLaVista)
+                                .testTag("kds-recientes-aviso-${orden.id}"),
                         )
                     }
                 }

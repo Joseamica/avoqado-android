@@ -684,9 +684,12 @@ class KDSViewModel @Inject constructor(
     fun abrirRecientes() {
         val tablero = _vista.value as? VistaDeCocina.Tablero ?: return
         _avisoDeRecientes.value = null
-        hojaDeRecientes++
+        val hoja = ++hojaDeRecientes
         viewModelScope.launch {
-            kdsRepository.fetchRecientes(tablero.estacion.id)
+            val leidas = kdsRepository.fetchRecientes(tablero.estacion.id)
+            // D17 (Codex r16 #2): la lectura de una hoja que ya se cerró no pisa la de la hoja abierta ahora.
+            if (hoja != hojaDeRecientes) return@launch
+            leidas
                 .onSuccess {
                     _recientes.value = it
                     _recientesNoLeidas.value = null
@@ -712,7 +715,8 @@ class KDSViewModel @Inject constructor(
             _avisoDeRecientes.value = null
             kdsRepository.recall(id, terminadaEn)
                 .onSuccess {
-                    _recientes.value = _recientes.value.filterNot { it.id == id }
+                    // D17 (Codex r16 #3): sólo la fila que se deshizo; si otra tablet la volvió a terminar (otra hora), se queda.
+                    _recientes.value = _recientes.value.filterNot { it.id == id && it.completedAt == reciente?.completedAt }
                     // Ronda 4: LISTO + Deshacer inmediato (antes de que un sondeo confirme el bump) no puede
                     // quedar tapado por el blindaje de M4 — el servidor SÍ va a volver a mandar esta comanda.
                     bumpsRecientes.remove(id)
