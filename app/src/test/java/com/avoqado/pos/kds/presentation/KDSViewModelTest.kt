@@ -1139,4 +1139,101 @@ class KDSViewModelTest {
         assertFalse("el fallo de una apertura cancelada no se pinta", vm.sinConexion.value)
         job.cancelAndJoin()
     }
+
+    // MARK: - D14 (Codex r2): sólo publica la ÚLTIMA lectura del tablero que arrancó
+
+    /**
+     * El cruce que ya existía en ANDROID: «Anterior» arranca una lectura lenta, el sondeo arranca otra después y contesta
+     * primero con lo vigente (otra pantalla ya terminó «vieja»). La de «Anterior» llega tarde y no puede resucitarla.
+     */
+    @Test
+    fun `P1 D14 una lectura de pagina que contesta tarde no pisa al sondeo que arranco despues`() = runTest {
+        val vm = armar()
+        val puerta = CompletableDeferred<Unit>()
+        var lecturas = 0
+        coEvery { repo.fetchOrders(any()) } coAnswers {
+            if (lecturas++ == 0) {
+                puerta.await()
+                Result.success(listOf(comanda("k1", 1_000), comanda("vieja", 1_500)))
+            } else {
+                Result.success(listOf(comanda("k1", 1_000)))
+            }
+        }
+        vm.previousBoardPage() // la lectura de la página se queda en vuelo
+        runCurrent()
+        vm.refrescar() // el sondeo arranca después y contesta primero
+        assertEquals(listOf("k1"), vm.comandas.value.map { it.id })
+
+        puerta.complete(Unit) // contesta la de la página, ya vieja
+        runCurrent()
+        assertEquals(listOf("k1"), vm.comandas.value.map { it.id })
+        verify(exactly = 0) { prefs.guardarFoto(any(), any(), match { l -> l.any { it.id == "vieja" } }, any()) }
+    }
+
+    /** Lo mismo con la ventana: una página en vuelo al minimizar no pisa la lectura de la restauración (Codex r2 #1). */
+    @Test
+    fun `P1 D14 una pagina en vuelo al minimizar no pisa la lectura al restaurar`() = runTest {
+        val pantalla = PantallaDePrueba()
+        pantalla.registro.currentState = Lifecycle.State.RESUMED
+        val ventana = MutableStateFlow(true)
+        val vm = armar()
+        val job = launch { vm.mientrasEsteALaVista(pantalla, ventana) }
+        runCurrent()
+        val puerta = CompletableDeferred<Unit>()
+        var lecturas = 0
+        coEvery { repo.fetchOrders(any()) } coAnswers {
+            if (lecturas++ == 0) {
+                puerta.await()
+                Result.success(listOf(comanda("k1", 1_000), comanda("vieja", 1_500)))
+            } else {
+                Result.success(listOf(comanda("k1", 1_000)))
+            }
+        }
+        vm.previousBoardPage() // «Anterior» y, con su lectura en vuelo, minimizar
+        runCurrent()
+        ventana.value = false
+        runCurrent()
+        ventana.value = true // restaurar: lee lo vigente
+        runCurrent()
+        assertEquals(listOf("k1"), vm.comandas.value.map { it.id })
+
+        puerta.complete(Unit)
+        runCurrent()
+        assertEquals(listOf("k1"), vm.comandas.value.map { it.id })
+        job.cancelAndJoin()
+    }
+
+    /**
+     * Codex r2 #2: la descarga de configuración de la apertura cancelada termina tarde (el repositorio se traga la
+     * cancelación) con la pantalla apagada; esa apertura ya no puede cambiar la vista ni apagar el receptor de la nueva.
+     */
+    @Test
+    fun `P2 D14 la configuracion que termina tarde en una apertura cancelada no apaga la apertura nueva`() = runTest {
+        val pantalla = PantallaDePrueba()
+        pantalla.registro.currentState = Lifecycle.State.RESUMED
+        val ventana = MutableStateFlow(true)
+        val vm = armar()
+        var descargas = 0
+        coEvery { printConfig.refresh(any()) } coAnswers {
+            if (descargas++ == 0) {
+                withContext(NonCancellable) { delay(30_000) }
+                config = PrintConfig(stations = listOf(barra.copy(hasKitchenDisplay = false)), version = "v0")
+            }
+        }
+        val job = launch { vm.mientrasEsteALaVista(pantalla, ventana) }
+        runCurrent() // la descarga de esta apertura se cuelga
+        ventana.value = false
+        runCurrent()
+        advanceTimeBy(5_000)
+        ventana.value = true // la apertura nueva arranca con la configuración vigente
+        runCurrent()
+        assertTrue(vm.vista.value is VistaDeCocina.Tablero)
+        clearMocks(receptor, answers = false)
+
+        advanceTimeBy(26_000) // a los 30 s termina la descarga vieja (antes de la vuelta de config de la nueva)
+        runCurrent()
+        assertTrue("la apertura cancelada no cambia la vista", vm.vista.value is VistaDeCocina.Tablero)
+        verify(exactly = 0) { receptor.desactivar() }
+        job.cancelAndJoin()
+    }
 }
