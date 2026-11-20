@@ -47,9 +47,10 @@ fun textoDeIncidencia(motivo: String): String = "Registrado como incidencia: " +
  * no toca `pending_payments`, ni su replay, ni el cajón (la PC de la máquina no tiene).
  *
  * - **Cierres finales** (`PAGADO`, `CANCELADO`, `GUARDADO` sin acuse) → `POST …/cash-machine/sales`. `subido` sólo si el
- *   SERVIDOR repite el folio, el desenlace y los importes (200), o si guardó el dinero como incidencia (202, que queda
- *   visible en `conflicto`). Un 409/422, otro 4xx o una respuesta con otros importes quedan visibles y la fila deja de
- *   reintentarse: espera a un gerente (y sigue frenando cerrar sesión, R5#2).
+ *   SERVIDOR repite el folio, el desenlace y los importes (200), si guardó el dinero como incidencia (202), o si lo rechazó
+ *   DEJANDO su incidencia durable (409/422 con `incidentId`): las tres quedan en `respuestaServidor` y lo raro, visible en
+ *   `conflicto`. Un 4xx sin incidencia o una respuesta con otros importes quedan visibles, sin acuse y sin reintento: esperan
+ *   a un gerente (y siguen frenando cerrar sesión, R5#2). El 409 `CASH_MACHINE_CLOSE_RETRY` se reintenta.
  * - **Dudas** (`ESPERANDO`) → `POST …/doubts` con el carrito congelado; después se consultan cada 60 s hasta que el
  *   gerente decide, y la fila pasa a `RESUELTO` con lo que tecleó (R4-4).
  * - **Sin red, 401, 5xx o sin emparejar** no se marca nada: se reintenta. Sin emparejar (o 403) se dice en [aviso].
@@ -180,27 +181,34 @@ class SubidaDeLaMaquina @Inject constructor(
             }
             // Sin respuesta útil (caído, ruta que todavía no existe, muchas peticiones): se reintenta.
             r.codigo >= 500 || r.codigo == 404 || r.codigo == 408 || r.codigo == 429 -> Unit
-            r.codigo in 400..499 ->
-                dao.anotarConflicto(fila.referenceCC, ServerErrorText.fromResponseBody(r.cuerpo, "El servidor rechazó este cobro (${r.codigo})"))
+            // «Otro registro de este folio estaba en curso»: el SERVIDOR revirtió todo y pide repetir el MISMO folio.
+            r.codigo == 409 && codigoDe(r.cuerpo) == "CASH_MACHINE_CLOSE_RETRY" -> Unit
+            r.codigo in 400..499 -> {
+                val texto = ServerErrorText.fromResponseBody(r.cuerpo, "El servidor rechazó este cobro (${r.codigo})")
+                // Un cierre con su incidencia DURABLE en el SERVIDOR (409/422) ya no es de la PC: queda visible y deja de frenar
+                // cerrar sesión. Sin incidencia (un 400) el dinero sólo está aquí: visible y sin acuse.
+                if (!esDuda && incidenciaDe(r.cuerpo) != null) dao.marcarSubido(fila.referenceCC, texto, r.cuerpo)
+                else dao.anotarConflicto(fila.referenceCC, texto)
+            }
             r.codigo == 200 || r.codigo == 202 -> {
                 val json = runCatching { JSONObject(r.cuerpo) }.getOrNull() ?: return true   // ilegible: se reintenta (es idempotente)
-                if (esDuda) aplicarDuda(fila, json) else aplicarCierre(fila, json, r.codigo)
+                if (esDuda) aplicarDuda(fila, json, r.cuerpo) else aplicarCierre(fila, json, r.codigo, r.cuerpo)
             }
         }
         _aviso.value = null
         return true
     }
 
-    private suspend fun aplicarCierre(fila: CobroEnMaquinaEntity, json: JSONObject, codigo: Int) {
+    private suspend fun aplicarCierre(fila: CobroEnMaquinaEntity, json: JSONObject, codigo: Int, cuerpo: String) {
         if (repite(fila, json, fila.estado, conLoQueEntro = true)) {
-            dao.marcarSubido(fila.referenceCC, if (codigo == 202) textoDeIncidencia(json.optString("motivo")) else null)
+            dao.marcarSubido(fila.referenceCC, if (codigo == 202) textoDeIncidencia(json.optString("motivo")) else null, cuerpo)
         } else {
             dao.anotarConflicto(fila.referenceCC, TEXTO_RESPUESTA_DISTINTA)
         }
     }
 
     /** `ABIERTO`: el SERVIDOR ya la tiene. `RESUELTO`: la decisión del gerente (o su incidencia) con lo que tecleó. */
-    private suspend fun aplicarDuda(fila: CobroEnMaquinaEntity, json: JSONObject) {
+    private suspend fun aplicarDuda(fila: CobroEnMaquinaEntity, json: JSONObject, cuerpo: String) {
         val outcome = json.optString("outcome")
         val credit = json.centavos("creditCents")
         val change = json.centavos("changeDispensedCents")
@@ -215,9 +223,9 @@ class SubidaDeLaMaquina @Inject constructor(
                 resueltoPor = json.optString("resolvedBy").ifBlank { "GERENTE" },
                 creditCents = credit,
                 changeDispensedCents = change,
-                // Como el SERVIDOR arma el cierre del gerente; lo lee [desenlace].
-                cancelPedido = when (outcome) { "CANCELADO" -> "1"; "GUARDADO" -> "2"; else -> null },
                 conflicto = json.optString("incident").takeIf { it.isNotBlank() }?.let { textoDeIncidencia(json.optString("motivo")) },
+                // El desenlace del gerente vive aquí ([desenlace]); `cancelPedido` sigue siendo lo que pidió la PC.
+                respuesta = cuerpo,
             )
         }
     }
@@ -253,6 +261,16 @@ class SubidaDeLaMaquina @Inject constructor(
         .apply { if (fila.mensajesCrudos.isNotBlank()) put("lastSeen", fila.mensajesCrudos) }
 
     private fun iso(ms: Long) = Instant.ofEpochMilli(ms).toString()
+
+    private fun codigoDe(cuerpo: String): String? = runCatching { JSONObject(cuerpo).optString("code") }.getOrNull()
+
+    /** La incidencia que el SERVIDOR guardó con un 409/422: arriba o en `details` (así salen los `AppError`). */
+    private fun incidenciaDe(cuerpo: String): String? = runCatching {
+        val json = JSONObject(cuerpo)
+        listOf(json, json.optJSONObject("details")).firstNotNullOfOrNull { o ->
+            o?.optString("incidentId")?.takeIf { it.isNotBlank() && it != "null" }
+        }
+    }.getOrNull()
 
     private fun JSONObject.centavos(campo: String): Int? = (opt(campo) as? Number)?.toInt()
 

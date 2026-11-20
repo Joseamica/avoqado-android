@@ -146,6 +146,8 @@ class SubidaDeLaMaquinaTest {
         assertTrue(fila.subido)
         assertNull(fila.conflicto)
         assertEquals(0, dao.pendientes("venue-1"))
+        assertEquals("el eco completo queda en la fila (C7 lee el excedente)", 0, JSONObject(fila.respuestaServidor!!).getInt("excedenteCents"))
+        assertEquals("PAGADO", JSONObject(fila.respuestaServidor!!).getString("outcome"))
     }
 
     @Test
@@ -197,22 +199,66 @@ class SubidaDeLaMaquinaTest {
         assertEquals(0, dao.pendientes("venue-1"))
     }
 
+    private fun errorConIncidencia(codigo: Int, mensaje: String, code: String, incidentId: String) =
+        MockResponse().setResponseCode(codigo).setBody(
+            JSONObject().put("message", mensaje).put("code", code)
+                .put("details", JSONObject().put("motivo", "OTRA_EVIDENCIA").put("incidentId", incidentId)).toString(),
+        )
+
     @Test
-    fun `409 y 422 quedan visibles con el texto del servidor y no se reintentan`() = runBlocking {
+    fun `409 y 422 con su incidencia en el servidor se marcan subidos, quedan visibles y ya no frenan cerrar sesion`() = runBlocking {
         val otro = final(REF_2, EstadoDelIntento.PAGADO, credit = 18_750, change = 0).copy(creadoEn = 2_000)
         insertar(pagado, otro)
         cuando(
             "POST", ".*/cash-machine/sales",
-            error(409, "Este folio de la máquina ya se registró con otros importes", "CASH_MACHINE_CLOSE_CONFLICT"),
-            error(422, "Los importes de este cierre de la máquina no son posibles", "CASH_MACHINE_CLOSE_IMPOSSIBLE"),
+            errorConIncidencia(409, "Este folio de la máquina ya se registró con otros importes", "CASH_MACHINE_CLOSE_CONFLICT", "cinc000000000000000000001"),
+            errorConIncidencia(422, "Los importes de este cierre de la máquina no son posibles", "CASH_MACHINE_CLOSE_IMPOSSIBLE", "cinc000000000000000000002"),
         )
 
         assertFalse(subida.subir())
 
-        assertEquals("Este folio de la máquina ya se registró con otros importes", dao.fila(REF_1)!!.conflicto)
-        assertEquals("Los importes de este cierre de la máquina no son posibles", dao.fila(REF_2)!!.conflicto)
-        assertFalse(dao.fila(REF_1)!!.subido || dao.fila(REF_2)!!.subido)
+        val conflicto = dao.fila(REF_1)!!
+        val imposible = dao.fila(REF_2)!!
+        assertEquals("Este folio de la máquina ya se registró con otros importes", conflicto.conflicto)
+        assertEquals("Los importes de este cierre de la máquina no son posibles", imposible.conflicto)
+        assertTrue("la evidencia ya es durable en el servidor", conflicto.subido && imposible.subido)
+        assertEquals("cinc000000000000000000001", JSONObject(conflicto.respuestaServidor!!).getJSONObject("details").getString("incidentId"))
+        assertEquals("ya no frena cerrar sesión", 0, dao.pendientes("venue-1"))
         subida.subir()
+        assertEquals("no se reintenta", 2, servidor.requestCount)
+    }
+
+    @Test
+    fun `un 400 sin incidencia queda visible, sin acuse y sin reintento`() = runBlocking {
+        insertar(pagado)
+        cuando("POST", ".*/cash-machine/sales", error(400, "El pedido debe ser un objeto", "VALIDATION_ERROR"))
+
+        assertFalse(subida.subir())
+
+        val fila = dao.fila(REF_1)!!
+        assertEquals("El pedido debe ser un objeto", fila.conflicto)
+        assertFalse("el dinero sólo está en esta PC", fila.subido)
+        assertNull(fila.respuestaServidor)
+        assertEquals("sigue frenando cerrar sesión", 1, dao.pendientes("venue-1"))
+        subida.subir()
+        assertEquals(1, servidor.requestCount)
+    }
+
+    @Test
+    fun `el 409 de reintentar el mismo folio se reintenta y no queda como conflicto`() = runBlocking {
+        insertar(pagado)
+        cuando(
+            "POST", ".*/cash-machine/sales",
+            error(409, "Otro registro de este folio estaba en curso. Intenta otra vez.", "CASH_MACHINE_CLOSE_RETRY"),
+            ok(evidencia(pagado)),
+        )
+
+        assertTrue("queda trabajo", subida.subir())
+        assertNull(dao.fila(REF_1)!!.conflicto)
+        assertFalse(dao.fila(REF_1)!!.subido)
+
+        assertFalse(subida.subir())
+        assertTrue(dao.fila(REF_1)!!.subido)
         assertEquals(2, servidor.requestCount)
     }
 
@@ -306,6 +352,8 @@ class SubidaDeLaMaquinaTest {
         assertEquals("GERENTE", fila.resueltoPor)
         assertEquals(5_000 to 0, fila.creditCents to fila.changeDispensedCents)
         assertEquals("para el comprobante (C7)", Desenlace.CANCELADO, fila.desenlace)
+        assertNull("cancelPedido sigue siendo sólo lo que pidió la PC (nada)", fila.cancelPedido)
+        assertEquals("CANCELADO", JSONObject(fila.respuestaServidor!!).getString("outcome"))
         assertNull(fila.conflicto)
         assertEquals("la duda resuelta ya no frena", 0, dao.pendientes("venue-1"))
     }

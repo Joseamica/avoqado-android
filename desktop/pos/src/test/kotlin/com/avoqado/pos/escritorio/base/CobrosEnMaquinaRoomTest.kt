@@ -34,6 +34,24 @@ class CobrosEnMaquinaRoomTest {
         } finally { carpeta.toFile().deleteRecursively() }
     }
 
+    @Test fun `una base v20 con un cobro de la maquina llega a v21 con su respuesta en NULL y el cobro intacto`() {
+        val carpeta = Files.createTempDirectory("migraciones")
+        try {
+            val ayudante = ayudanteDeMigraciones(carpeta.resolve("base"))
+            ayudante.createDatabase(20).use { v20 ->
+                v20.execSQL(
+                    "INSERT INTO cobros_en_maquina (referenceCC, venueId, llaveDeVenta, pedidoJson, saleCents, tipCents, dueCents, " +
+                        "creadoEn, estado, creditCents, changeDispensedCents, cierreConocido, subido, dudaSubida, ticketImpreso, " +
+                        "mensajesCrudos, cancelPedido) VALUES ('AQ000000000001', 'venue-1', 'venta-1', '{}', 18000, 750, 18750, 1, " +
+                        "'GUARDADO', 5000, 0, 1, 0, 0, 0, 'crudo', '2')",
+                )
+            }
+            ayudante.runMigrationsAndValidate(21, migracionesDeAndroid().map { it.paraRoom() }).use { v21 ->
+                assertEquals(1L, v21.leerLargo("SELECT COUNT(*) FROM cobros_en_maquina WHERE cancelPedido = '2' AND respuestaServidor IS NULL"))
+            }
+        } finally { carpeta.toFile().deleteRecursively() }
+    }
+
     @Test fun `el DAO real deja un solo intento abierto por venta y el cierre se escribe una sola vez`() = runBlocking {
         val carpeta = Files.createTempDirectory("cobros-en-maquina")
         val base = DatabaseModule.provideDatabase(ContextoDeEscritorio(carpeta))
@@ -54,6 +72,11 @@ class CobrosEnMaquinaRoomTest {
                     pagado.subido, pagado.resueltoPor, pagado.mensajesCrudos))
             assertFalse(dao.abrirIntento(intento("AQ000000000004")), "una venta pagada no se vuelve a cobrar")
             assertEquals(listOf(pagado), dao.porSubir())
+
+            assertEquals(1, dao.marcarSubido("AQ000000000001", null, """{"outcome":"PAGADO","excedenteCents":500}"""))
+            assertEquals("""{"outcome":"PAGADO","excedenteCents":500}""", dao.porReferencia("AQ000000000001")!!.respuestaServidor)
+            assertEquals(1, dao.marcarTicketImpreso("AQ000000000001"))
+            assertTrue(dao.porReferencia("AQ000000000001")!!.ticketImpreso)
         } finally {
             base.close()
             carpeta.toFile().deleteRecursively()

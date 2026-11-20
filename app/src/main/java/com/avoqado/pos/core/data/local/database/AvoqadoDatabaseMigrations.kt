@@ -310,7 +310,18 @@ object AvoqadoDatabaseMigrations {
      */
     val MIGRATION_19_20 = object : Migration(19, 20) {
         override fun migrate(db: SupportSQLiteDatabase) {
-            db.execSQL(CobroEnMaquinaSql.CREAR_TABLA)
+            db.execSQL(CobroEnMaquinaSql.CREAR_TABLA_V20)
+        }
+    }
+
+    /**
+     * v21 — máquina de efectivo (C4): `cobros_en_maquina.respuestaServidor`, la última respuesta final del SERVIDOR (el eco del
+     * cierre, la decisión del gerente o el 409/422 con su incidencia). Columna nula: una fila vieja no la tiene y nada se migra.
+     * Deja de sobrecargar `cancelPedido`, que vuelve a ser sólo lo que pidió la PC.
+     */
+    val MIGRATION_20_21 = object : Migration(20, 21) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL(CobroEnMaquinaSql.MIGRAR_20_21)
         }
     }
 

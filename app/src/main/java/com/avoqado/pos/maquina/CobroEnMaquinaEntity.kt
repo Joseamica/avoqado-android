@@ -2,6 +2,7 @@ package com.avoqado.pos.maquina
 
 import androidx.room.Entity
 import androidx.room.PrimaryKey
+import org.json.JSONObject
 
 /** Los estados de un intento de cobro en la máquina (columna `estado`). */
 object EstadoDelIntento {
@@ -63,6 +64,12 @@ data class CobroEnMaquinaEntity(
     val ticketImpreso: Boolean = false,
     /** Los últimos mensajes de la máquina de este intento, tal cual llegaron (≤ 8 KB): la evidencia para el gerente. */
     val mensajesCrudos: String = "",
+    /**
+     * v21: la última respuesta FINAL del SERVIDOR, tal cual (`outcome`, `resolvedBy`, los importes con `excedenteCents` y
+     * `owedCents`, `motivo`, `incidentId`): el eco de un cierre (200/202), la decisión del gerente o el 409/422 que guardó una
+     * incidencia. De aquí sale el desenlace de un `RESUELTO` ([desenlace]) y el comprobante de diferencia (C7).
+     */
+    val respuestaServidor: String? = null,
 )
 
 /**
@@ -71,8 +78,8 @@ data class CobroEnMaquinaEntity(
  */
 internal object CobroEnMaquinaSql {
 
-    /** 🔴 En el formato EXACTO que Room genera para [CobroEnMaquinaEntity] (lo vigila `CobroEnMaquinaMigracionTest`). */
-    const val CREAR_TABLA: String =
+    /** 🔴 La tabla como la creó la v20 (`MIGRATION_19_20`), congelada: la v21 le agrega [MIGRAR_20_21]. */
+    const val CREAR_TABLA_V20: String =
         "CREATE TABLE IF NOT EXISTS `cobros_en_maquina` (" +
             "`referenceCC` TEXT NOT NULL, `venueId` TEXT NOT NULL, `llaveDeVenta` TEXT NOT NULL, `pedidoJson` TEXT NOT NULL, " +
             "`saleCents` INTEGER NOT NULL, `tipCents` INTEGER NOT NULL, `dueCents` INTEGER NOT NULL, `saleShiftId` TEXT, " +
@@ -81,6 +88,20 @@ internal object CobroEnMaquinaSql {
             "`cancelPedido` TEXT, `cancelPedidoEn` INTEGER, `cierreEn` INTEGER, `cierreConocido` INTEGER NOT NULL, " +
             "`resueltoPor` TEXT, `subido` INTEGER NOT NULL, `dudaSubida` INTEGER NOT NULL, `conflicto` TEXT, " +
             "`ticketImpreso` INTEGER NOT NULL, `mensajesCrudos` TEXT NOT NULL, PRIMARY KEY(`referenceCC`))"
+
+    /** 🔴 En el formato EXACTO que Room genera HOY para [CobroEnMaquinaEntity] (lo vigila `CobroEnMaquinaMigracionTest`). */
+    const val CREAR_TABLA: String =
+        "CREATE TABLE IF NOT EXISTS `cobros_en_maquina` (" +
+            "`referenceCC` TEXT NOT NULL, `venueId` TEXT NOT NULL, `llaveDeVenta` TEXT NOT NULL, `pedidoJson` TEXT NOT NULL, " +
+            "`saleCents` INTEGER NOT NULL, `tipCents` INTEGER NOT NULL, `dueCents` INTEGER NOT NULL, `saleShiftId` TEXT, " +
+            "`quoteId` TEXT, `creadoEn` INTEGER NOT NULL, `estado` TEXT NOT NULL, `generacionPropia` INTEGER, " +
+            "`ultimoCreditoEn` INTEGER, `creditCents` INTEGER NOT NULL, `changeDispensedCents` INTEGER NOT NULL, " +
+            "`cancelPedido` TEXT, `cancelPedidoEn` INTEGER, `cierreEn` INTEGER, `cierreConocido` INTEGER NOT NULL, " +
+            "`resueltoPor` TEXT, `subido` INTEGER NOT NULL, `dudaSubida` INTEGER NOT NULL, `conflicto` TEXT, " +
+            "`ticketImpreso` INTEGER NOT NULL, `mensajesCrudos` TEXT NOT NULL, `respuestaServidor` TEXT, PRIMARY KEY(`referenceCC`))"
+
+    /** v21 (C4): la respuesta final del SERVIDOR, en columna propia y nula. Nada que migrar: una fila vieja no la tiene. */
+    const val MIGRAR_20_21: String = "ALTER TABLE cobros_en_maquina ADD COLUMN respuestaServidor TEXT"
 
     const val POR_REFERENCIA: String = "SELECT * FROM cobros_en_maquina WHERE referenceCC = :referenceCC"
 
@@ -157,12 +178,16 @@ internal object CobroEnMaquinaSql {
         "SELECT * FROM cobros_en_maquina WHERE venueId = :venueId AND estado = 'ESPERANDO' AND dudaSubida = 1 " +
             "AND conflicto IS NULL ORDER BY creadoEn ASC, referenceCC ASC"
 
-    /** El SERVIDOR repitió el folio y los importes (200), o guardó el dinero como incidencia (202, con su texto en `conflicto`). */
+    /**
+     * El SERVIDOR repitió el folio y los importes (200), guardó el dinero como incidencia (202) o rechazó el cierre DEJANDO su
+     * incidencia durable (409/422 con `incidentId`): ya no se reintenta ni frena cerrar sesión, y lo que dijo queda visible en
+     * `conflicto` y completo en `respuestaServidor`.
+     */
     const val MARCAR_SUBIDO: String =
-        "UPDATE cobros_en_maquina SET subido = 1, conflicto = :conflicto " +
+        "UPDATE cobros_en_maquina SET subido = 1, conflicto = :conflicto, respuestaServidor = :respuesta " +
             "WHERE referenceCC = :referenceCC AND estado IN ('PAGADO', 'CANCELADO', 'GUARDADO') AND subido = 0"
 
-    /** 409, 422 o una respuesta con otros importes: visible, y deja de reintentarse. Sólo lo que sigue sin acuse. */
+    /** Un rechazo SIN incidencia en el SERVIDOR (400) o una respuesta con otros importes: visible, y deja de reintentarse. */
     const val ANOTAR_CONFLICTO: String =
         "UPDATE cobros_en_maquina SET conflicto = :conflicto WHERE referenceCC = :referenceCC " +
             "AND ((estado IN ('PAGADO', 'CANCELADO', 'GUARDADO') AND subido = 0) OR estado = 'ESPERANDO')"
@@ -172,27 +197,27 @@ internal object CobroEnMaquinaSql {
         "UPDATE cobros_en_maquina SET dudaSubida = :subida WHERE referenceCC = :referenceCC AND estado = 'ESPERANDO'"
 
     /**
-     * La decisión del gerente llegó del SERVIDOR (R4-4). 🔴 En una fila `RESUELTO`, `cancelPedido` es el modo del desenlace
-     * que decidió el gerente, como lo arma el SERVIDOR (`CANCELADO` '1', `GUARDADO` '2', `PAGADO` null): ver [desenlace].
+     * La decisión del gerente llegó del SERVIDOR (R4-4). `cancelPedido` NO se toca: sigue siendo sólo lo que pidió la PC. El
+     * desenlace que decidió el gerente queda en `respuestaServidor` ([desenlace]).
      */
     const val RESOLVER: String =
         "UPDATE cobros_en_maquina SET estado = 'RESUELTO', resueltoPor = :resueltoPor, creditCents = :creditCents, " +
-            "changeDispensedCents = :changeDispensedCents, cancelPedido = :cancelPedido, subido = 1, dudaSubida = 1, " +
-            "conflicto = :conflicto WHERE referenceCC = :referenceCC AND estado = 'ESPERANDO'"
+            "changeDispensedCents = :changeDispensedCents, subido = 1, dudaSubida = 1, conflicto = :conflicto, " +
+            "respuestaServidor = :respuesta WHERE referenceCC = :referenceCC AND estado = 'ESPERANDO'"
+
+    /** C7: el ticket del cobro salió de verdad (resultado real de la impresora). */
+    const val MARCAR_TICKET_IMPRESO: String = "UPDATE cobros_en_maquina SET ticketImpreso = 1 WHERE referenceCC = :referenceCC"
 }
 
 /**
  * El desenlace de una fila final o `RESUELTO` (para el ticket y el comprobante de C7); null mientras no terminó. En
- * `RESUELTO` sale de `cancelPedido` ([CobroEnMaquinaSql.RESOLVER]).
+ * `RESUELTO` es el `outcome` que guardó el SERVIDOR ([CobroEnMaquinaEntity.respuestaServidor]); ilegible = null.
  */
 val CobroEnMaquinaEntity.desenlace: Desenlace?
     get() = when (estado) {
         EstadoDelIntento.PAGADO, EstadoDelIntento.CANCELADO, EstadoDelIntento.GUARDADO -> Desenlace.valueOf(estado)
-        EstadoDelIntento.RESUELTO -> when (cancelPedido) {
-            null -> Desenlace.PAGADO
-            "1" -> Desenlace.CANCELADO
-            "2" -> Desenlace.GUARDADO
-            else -> null
-        }
+        EstadoDelIntento.RESUELTO -> respuestaServidor
+            ?.let { runCatching { JSONObject(it).optString("outcome") }.getOrNull() }
+            ?.let { outcome -> Desenlace.entries.firstOrNull { it.name == outcome } }
         else -> null
     }

@@ -49,6 +49,7 @@ internal open class CobroEnMaquinaSobreSqlite : CobroEnMaquinaDao, AutoCloseable
         cierreConocido = rs.getInt("cierreConocido") == 1, resueltoPor = rs.getString("resueltoPor"),
         subido = rs.getInt("subido") == 1, dudaSubida = rs.getInt("dudaSubida") == 1, conflicto = rs.getString("conflicto"),
         ticketImpreso = rs.getInt("ticketImpreso") == 1, mensajesCrudos = rs.getString("mensajesCrudos"),
+        respuestaServidor = rs.getString("respuestaServidor"),
     )
 
     /** Lectura directa, sin suspender (para revisar el disco desde un `enviar` falso). */
@@ -76,7 +77,7 @@ internal open class CobroEnMaquinaSobreSqlite : CobroEnMaquinaDao, AutoCloseable
             "cancelPedido" to f.cancelPedido, "cancelPedidoEn" to f.cancelPedidoEn, "cierreEn" to f.cierreEn,
             "cierreConocido" to if (f.cierreConocido) 1 else 0, "resueltoPor" to f.resueltoPor, "subido" to if (f.subido) 1 else 0,
             "dudaSubida" to if (f.dudaSubida) 1 else 0, "conflicto" to f.conflicto, "ticketImpreso" to if (f.ticketImpreso) 1 else 0,
-            "mensajesCrudos" to f.mensajesCrudos,
+            "mensajesCrudos" to f.mensajesCrudos, "respuestaServidor" to f.respuestaServidor,
         )
         val sql = "INSERT INTO cobros_en_maquina (${columnas.joinToString { it.first }}) VALUES (${columnas.joinToString { ":" + it.first }})"
         actualizar(sql, *columnas.toTypedArray())
@@ -115,8 +116,8 @@ internal open class CobroEnMaquinaSobreSqlite : CobroEnMaquinaDao, AutoCloseable
 
     override suspend fun esperanAlGerente(venueId: String) = filas(CobroEnMaquinaSql.ESPERAN_AL_GERENTE, "venueId" to venueId)
 
-    override suspend fun marcarSubido(referenceCC: String, conflicto: String?) =
-        actualizar(CobroEnMaquinaSql.MARCAR_SUBIDO, "referenceCC" to referenceCC, "conflicto" to conflicto)
+    override suspend fun marcarSubido(referenceCC: String, conflicto: String?, respuesta: String?) =
+        actualizar(CobroEnMaquinaSql.MARCAR_SUBIDO, "referenceCC" to referenceCC, "conflicto" to conflicto, "respuesta" to respuesta)
 
     override suspend fun anotarConflicto(referenceCC: String, conflicto: String) =
         actualizar(CobroEnMaquinaSql.ANOTAR_CONFLICTO, "referenceCC" to referenceCC, "conflicto" to conflicto)
@@ -129,10 +130,13 @@ internal open class CobroEnMaquinaSobreSqlite : CobroEnMaquinaDao, AutoCloseable
         resueltoPor: String,
         creditCents: Int,
         changeDispensedCents: Int,
-        cancelPedido: String?,
         conflicto: String?,
+        respuesta: String?,
     ) = actualizar(
         CobroEnMaquinaSql.RESOLVER, "referenceCC" to referenceCC, "resueltoPor" to resueltoPor, "creditCents" to creditCents,
-        "changeDispensedCents" to changeDispensedCents, "cancelPedido" to cancelPedido, "conflicto" to conflicto,
+        "changeDispensedCents" to changeDispensedCents, "conflicto" to conflicto, "respuesta" to respuesta,
     )
+
+    override suspend fun marcarTicketImpreso(referenceCC: String) =
+        actualizar(CobroEnMaquinaSql.MARCAR_TICKET_IMPRESO, "referenceCC" to referenceCC)
 }

@@ -71,7 +71,7 @@ interface CobroEnMaquinaDao {
     suspend fun esperanAlGerente(venueId: String): List<CobroEnMaquinaEntity>
 
     @Query(CobroEnMaquinaSql.MARCAR_SUBIDO)
-    suspend fun marcarSubido(referenceCC: String, conflicto: String?): Int
+    suspend fun marcarSubido(referenceCC: String, conflicto: String?, respuesta: String?): Int
 
     @Query(CobroEnMaquinaSql.ANOTAR_CONFLICTO)
     suspend fun anotarConflicto(referenceCC: String, conflicto: String): Int
@@ -85,9 +85,12 @@ interface CobroEnMaquinaDao {
         resueltoPor: String,
         creditCents: Int,
         changeDispensedCents: Int,
-        cancelPedido: String?,
         conflicto: String?,
+        respuesta: String?,
     ): Int
+
+    @Query(CobroEnMaquinaSql.MARCAR_TICKET_IMPRESO)
+    suspend fun marcarTicketImpreso(referenceCC: String): Int
 }
 
 /** R5#2: ¿hay cobros de la máquina sin subir o en duda, de cualquier sucursal? Lo usan los Ajustes de la máquina (C6). */
