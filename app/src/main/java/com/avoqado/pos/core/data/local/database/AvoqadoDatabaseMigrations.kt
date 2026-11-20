@@ -5,6 +5,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 import com.avoqado.pos.inventory.waste.data.PendingWasteSql
 import com.avoqado.pos.inventory.waste.data.WasteSql
 import com.avoqado.pos.kds.data.local.KdsLanSql
+import com.avoqado.pos.maquina.CobroEnMaquinaSql
 
 object AvoqadoDatabaseMigrations {
     // v1 only persisted pending payments. v2 added cash drawer offline state.
@@ -295,6 +296,21 @@ object AvoqadoDatabaseMigrations {
     val MIGRATION_18_19 = object : Migration(18, 19) {
         override fun migrate(db: SupportSQLiteDatabase) {
             db.execSQL("ALTER TABLE pending_payments ADD COLUMN lineasDelTicketJson TEXT")
+        }
+    }
+
+    /**
+     * v20 — máquina de efectivo (fase 1a, R4-1): una tabla nueva, nada que migrar. Cada intento de cobro en la QuickPay se
+     * guarda ANTES del `paycash`, y su desenlace con `subido = false` en un solo `UPDATE`: la tabla es la cola propia de la
+     * máquina (no toca `pending_payments`).
+     *
+     * 🔴 El `CREATE TABLE` sale de [CobroEnMaquinaSql], la MISMA constante que ejecutan las pruebas contra SQLite de verdad, y
+     * `CobroEnMaquinaMigracionTest` la compara contra el esquema que Room exporta. Sin índices: el «un intento abierto por
+     * venta» lo cuida `CobroEnMaquinaDao.abrirIntento` en una transacción.
+     */
+    val MIGRATION_19_20 = object : Migration(19, 20) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL(CobroEnMaquinaSql.CREAR_TABLA)
         }
     }
 

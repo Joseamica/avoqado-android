@@ -41,8 +41,10 @@ import com.avoqado.pos.reservations.data.PendingReservationActionEntity
         // v13 — etapa 3 del KDS (3.5): entregas por WiFi que la caja guarda ANTES de conectar, y comandas que la pantalla guarda ANTES de acusar
         EntregaKdsPendienteEntity::class,
         KdsTicketLocalEntity::class,
+        // v20 — máquina de efectivo (fase 1a): los intentos de cobro en la QuickPay; la tabla ES su cola (R4-1)
+        com.avoqado.pos.maquina.CobroEnMaquinaEntity::class,
     ],
-    version = 19,
+    version = 20,
     exportSchema = true,
 )
 abstract class AvoqadoDatabase : RoomDatabase() {
@@ -58,4 +60,5 @@ abstract class AvoqadoDatabase : RoomDatabase() {
     abstract fun pendingWasteDao(): PendingWasteDao
     abstract fun entregasKdsPendientesDao(): EntregasKdsPendientesDao
     abstract fun kdsTicketsLocalesDao(): KdsTicketsLocalesDao
+    abstract fun cobrosEnMaquinaDao(): com.avoqado.pos.maquina.CobroEnMaquinaDao
 }

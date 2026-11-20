@@ -25,8 +25,21 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 enum class Conexion { DESCONECTADA, CONECTANDO, CONECTADA }
 
-/** Un mensaje de la máquina con la [generacion] de la conexión que lo recibió (no la vigente al leerlo). */
-data class Recibido(val generacion: Int, val mensaje: MensajeDeLaMaquina)
+/**
+ * Un mensaje de la máquina con la [generacion] de la conexión que lo recibió (no la vigente al leerlo) y su texto [crudo]
+ * tal cual llegó: es la evidencia que se guarda cuando un cierre no cuadra.
+ */
+data class Recibido(val generacion: Int, val mensaje: MensajeDeLaMaquina, val crudo: String)
+
+/** Lo que el cobro ([CobroConMaquina]) necesita del cliente WebSocket; las pruebas ponen uno falso. */
+interface CanalDeLaMaquina {
+    val conexion: StateFlow<Conexion>
+    val generacion: StateFlow<Int>
+    val recibidos: SharedFlow<Recibido>
+
+    /** Manda [json] sólo si la conexión abierta es la de [generacion]. false = no salió nada. */
+    fun enviar(json: String, generacion: Int): Boolean
+}
 
 /**
  * El único que le habla a la QuickPay por `ws://<ip>:8080/` (manual 2.1). Reconecta cada [reconexionMs] y manda `ping`
@@ -45,15 +58,15 @@ class ClienteDeLaMaquina(
     private val reloj: () -> Long,
     private val reconexionMs: Long = 3_000,
     private val pingMs: Long = 10_000,
-) {
+) : CanalDeLaMaquina {
     private val _conexion = MutableStateFlow(Conexion.DESCONECTADA)
-    val conexion: StateFlow<Conexion> = _conexion.asStateFlow()
+    override val conexion: StateFlow<Conexion> = _conexion.asStateFlow()
 
     private val _generacion = MutableStateFlow(0)
-    val generacion: StateFlow<Int> = _generacion.asStateFlow()
+    override val generacion: StateFlow<Int> = _generacion.asStateFlow()
 
     private val _recibidos = MutableSharedFlow<Recibido>(extraBufferCapacity = Int.MAX_VALUE)
-    val recibidos: SharedFlow<Recibido> = _recibidos.asSharedFlow()
+    override val recibidos: SharedFlow<Recibido> = _recibidos.asSharedFlow()
 
     // Todo lo de abajo cambia sólo con el candado.
     private val candado = Any()
@@ -82,8 +95,7 @@ class ClienteDeLaMaquina(
         }
     }
 
-    /** Manda [json] sólo si la conexión abierta es la de [generacion]. false = no salió nada. */
-    fun enviar(json: String, generacion: Int): Boolean = synchronized(candado) {
+    override fun enviar(json: String, generacion: Int): Boolean = synchronized(candado) {
         val socket = socketAbierto
         socket != null && generacionAbierta == generacion && socket.send(json)
     }
@@ -148,7 +160,7 @@ class ClienteDeLaMaquina(
 
         override fun onMessage(webSocket: WebSocket, text: String) {
             oyo.set(true)
-            leerMensaje(text)?.let { _recibidos.tryEmit(Recibido(generacion, it)) }
+            leerMensaje(text)?.let { _recibidos.tryEmit(Recibido(generacion, it, text)) }
         }
 
         override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {

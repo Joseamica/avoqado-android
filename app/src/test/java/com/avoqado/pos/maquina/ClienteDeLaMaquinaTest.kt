@@ -107,7 +107,7 @@ class ClienteDeLaMaquinaTest {
         c.conectarAlServidor()
 
         esperar("el sockets") { lista.isNotEmpty() }
-        assertEquals(Recibido(1, MensajeDeLaMaquina.Sockets(false, 0, 0, "022210221000")), lista.single())
+        assertEquals(Recibido(1, MensajeDeLaMaquina.Sockets(false, 0, 0, "022210221000"), SOCKETS), lista.single())
         assertEquals(Conexion.CONECTADA, c.conexion.value)
         assertEquals(1, c.generacion.value)
     }

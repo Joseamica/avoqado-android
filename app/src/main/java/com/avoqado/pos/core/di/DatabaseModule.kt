@@ -49,6 +49,7 @@ object DatabaseModule {
                 AvoqadoDatabaseMigrations.MIGRATION_16_17,
                 AvoqadoDatabaseMigrations.MIGRATION_17_18,
                 AvoqadoDatabaseMigrations.MIGRATION_18_19,
+                AvoqadoDatabaseMigrations.MIGRATION_19_20,
         )
             .build()
     }
