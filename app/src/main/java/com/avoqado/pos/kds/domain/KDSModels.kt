@@ -73,8 +73,11 @@ data class KDSOrderItem(
     val preparation: PreparationCounts? = null,
     val preparationRevision: Int = 0,
     val pendingPreparation: Boolean = false,
-    /** D17: en cuántas estaciones se prepara (lo manda el SERVIDOR nuevo). La cocina no libera uno de varias: lo libera la caja. */
-    val stationCount: Int = 1,
+    /**
+     * D17: en cuántas estaciones se prepara, según el SERVIDOR. `null` = no se sabe (servidor viejo, comanda que llegó por el WiFi del
+     * local): la cocina sólo ofrece «Liberar» cuando el servidor dijo 1 (Codex r7 #1); lo de varias estaciones lo libera la caja.
+     */
+    val stationCount: Int? = null,
 )
 
 /**

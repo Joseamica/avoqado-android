@@ -304,6 +304,8 @@ class KDSViewModel @Inject constructor(
             // Codex r6 #3: lo que la proyección de OTRA estación dejó no vale aquí; la primera pintura vuelve a esperar a la suya.
             ocultasPorTerminadas = emptySet()
             proyeccionLeida = false
+            // Codex r7 #3: una proyección de la estación anterior que siga en vuelo ya no puede marcar ésta como leída.
+            preparationEpoch++
         }
         val requestedOffset = boardOffset
         _boardPaging.value = _boardPaging.value.copy(loading = true)
@@ -379,8 +381,12 @@ class KDSViewModel @Inject constructor(
             // se hayan leído las capacidades guardadas.
             it.id in ocultasPorTerminadas || (!proyeccionLeida && preparationRepository != null && it.preparationVersion == 1)
         }
-        val yaHabiaBase = hasLoadedFromAPI
-        sonarSiLleganNuevas(juntas, sonar && yaHabiaBase, reemplazar = true)
+        // Codex r7 #2: el sonido se decide aquí con lo que dice el servidor (también las comandas con tiempos que todavía esperan su
+        // proyección), no después: una actualización silenciosa que se cruzara ya no puede comérselo.
+        val porSonar = sinTerminadasEnCocina(todas, capacidadesDePreparacion()).filterNot { it.id in ocultasPorTerminadas }
+        val claves = porSonar.map { it.sourceKey ?: it.id }.toSet()
+        if (sonar && hasLoadedFromAPI && (claves - previousOrderIds).isNotEmpty()) playNotificationSound()
+        previousOrderIds = claves
         if (desdeServidor) hasLoadedFromAPI = true
         _comandas.value = juntas
         val epoch = ++preparationEpoch
@@ -406,8 +412,6 @@ class KDSViewModel @Inject constructor(
             val visibles = sinTerminadasEnCocina(proyectadas, capacidadesDePreparacion())
             ocultasPorTerminadas = (proyectadas.map { it.id }.toSet() - visibles.map { it.id }.toSet())
             proyeccionLeida = true
-            // Codex r6 #2: la comanda con tiempos que la primera pintura no enseñó suena aquí, cuando aparece.
-            sonarSiLleganNuevas(visibles, sonar && yaHabiaBase, reemplazar = false)
             _comandas.value = visibles
             repository.notice.value?.let { _aviso.value = AvisoDeCocina(it, esError = false) }
             } catch (e: kotlinx.coroutines.CancellationException) { throw e }
@@ -420,16 +424,6 @@ class KDSViewModel @Inject constructor(
                 }
             }
         }
-    }
-
-    /**
-     * Suena si hay comandas que no estaban (M3). La primera pintura deja la base (`reemplazar`); la de la proyección sólo SUMA lo
-     * que aparece en ella, para que una comanda con tiempos que llegó suene una vez, al aparecer.
-     */
-    private fun sonarSiLleganNuevas(lista: List<KDSOrder>, sonar: Boolean, reemplazar: Boolean) {
-        val claves = lista.map { it.sourceKey ?: it.id }.toSet()
-        if (sonar && (claves - previousOrderIds).isNotEmpty()) playNotificationSound()
-        previousOrderIds = if (reemplazar) claves else previousOrderIds + claves
     }
 
     /** Las capacidades confirmadas (sin red, las guardadas). Función y no la propiedad: `publicar` puede correr antes de inicializarla. */
@@ -455,7 +449,7 @@ class KDSViewModel @Inject constructor(
             orderItemId = item.orderItemId, externalId = item.externalId, sourceKey = order.sourceKey,
             stationId = order.printStationId, orderNumber = order.orderNumber, productName = item.productName,
             quantity = item.quantity, serviceCourse = item.serviceCourse, orderPromotionId = item.orderPromotionId,
-            preparation = counts, preparationRevision = item.preparationRevision, stationCount = item.stationCount,
+            preparation = counts, preparationRevision = item.preparationRevision, stationCount = item.stationCount ?: 1,
         ) }
 
     val preparationCapabilities = preparationRepository?.capabilities

@@ -68,7 +68,7 @@ class KDSRepositoryTest {
     @Test fun `D17 cada platillo trae en cuantas estaciones se prepara (1 si el servidor no lo dice)`() = runTest {
         server.enqueue(MockResponse().setBody(lista(comanda(itemJson = ",\"stationCount\":2"), comanda())))
         val items = repo.fetchOrders("st-barra").getOrThrow().map { it.items.single().stationCount }
-        assertEquals(listOf(2, 1), items)
+        assertEquals(listOf(2, null), items) // sin el dato no se sabe: la cocina no ofrece «Liberar»
     }
     @Test
     fun `la lista del vigilante pide las mas nuevas sin estacion ni urgencia`() = runTest {
