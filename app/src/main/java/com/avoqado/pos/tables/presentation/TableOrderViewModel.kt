@@ -174,7 +174,7 @@ internal const val ANULAR_SIN_CONFIRMAR =
  * SERVIDOR ya confirmó (otra caja pudo anular algo de ella en ese minuto, y eso no vuelve a cocina). La pantalla lo dice.
  */
 internal const val REIMPRIMIR_RONDA_SIN_CONEXION =
-    "Sin conexión: esta ronda ya se envió y no se puede confirmar si cambió; se podrá reimprimir al volver el internet."
+    "Sin conexión: lo que ya se envió no se puede reimprimir porque otra caja pudo cambiarlo; se podrá al volver el internet."
 
 /** Codex r6 #4: el SERVIDOR confirmó la ronda mientras salía otra hoja; se saca con la cuenta al día, no con lo que tenía el aparato. */
 internal const val REIMPRIMIR_RONDA_RECIEN_CONFIRMADA =
@@ -2401,54 +2401,44 @@ class TableOrderViewModel @Inject constructor(
 
     fun reprintComandas() {
         if (_isReprinting.value) return
-        val session = tableSession.current() ?: return
+        tableSession.current() ?: return
         val vId = venueId ?: return
-        val sentItems = _check.value?.items?.filter { it.productId != null } ?: emptyList()
-        // na13e014 (nube, 17-nov): sin red, la ronda que sigue en la cola no está en la cuenta del servidor (y en una mesa abierta
-        // sin red no hay cuenta): «Volver a imprimir» se la saltaba. Se agregan las rondas en cola de ESTA mesa que la cuenta aún
-        // no trae (por su llave `sync:<ronda>:<i>`), ruteadas como su primera impresión.
-        val enLaCuenta = _check.value?.items?.mapNotNull { it.externalId }?.toSet().orEmpty()
-        val candidatasEnCola = _queued.value.filter { line ->
-            line.item.type is CartItemType.ProductItem && line.externalId !in enLaCuenta &&
-                // Como el papel de su primer envío: un tiempo moderno retenido (STANDARD) no sale en papel hasta marcharlo.
-                !(line.item.serviceCourse?.preparationVersion == 1 && line.item.serviceCourse?.kind == "STANDARD")
-        }
-        if (sentItems.isEmpty() && candidatasEnCola.isEmpty()) {
+        // Como el papel de su primer envío: un tiempo moderno retenido (STANDARD) no sale en papel hasta marcharlo.
+        fun retenida(line: PendingLine) = line.item.serviceCourse?.preparationVersion == 1 && line.item.serviceCourse?.kind == "STANDARD"
+        if (_check.value?.items?.none { it.productId != null } != false &&
+            _queued.value.none { it.item.type is CartItemType.ProductItem && !retenida(it) }) {
             showMessage("No hay artículos enviados para reimprimir")
             return
         }
         viewModelScope.launch {
             _isReprinting.value = true
             printConfigRepository.refresh(vId)
-            // Codex r1 (R3), r2 y r3: una ronda que el SERVIDOR ya rechazó no se vuelve a mandar a cocina (el gerente la revisa en
-            // la cola). Se pregunta después del refresco de impresoras y otra vez justo antes de cada hoja (abajo).
-            // Codex r4 #1 y r5 #3 de «Anular producto»: una ronda que el SERVIDOR ya CONFIRMÓ tampoco sale de la cola: lo suyo que sigue
-            // en la cuenta ya viene en `sentItems`, y lo que no (otra caja lo anuló o lo separó) no debe volver a cocina. También sin la
-            // cuenta al día: una copia de menos en una reimpresión es mejor que cocinar algo anulado.
-            // Decisión 2 = A (founder por delegación, 20-nov) y Codex r6 #5: si hay una ronda confirmada que la cuenta en pantalla todavía
-            // no trae, se relee la cuenta (con tope de tiempo). Con la lectura, sale lo que la cuenta tiene de verdad (lo anulado no); sin
-            // ella (sin internet), esa ronda no sale y la pantalla lo dice en llano, en gris.
-            val confirmadasFuera = candidatasEnCola.filter { line ->
-                rondaDe(line.externalId)?.let { !rondaRechazada(it) && rondaConfirmada(it) } == true
+            // «Anular producto», decisión 2 = A (founder por delegación, 20-nov) y Codex r4–r7: lo que el SERVIDOR ya tiene sale SÓLO de
+            // la cuenta leída AHORA (5 s), nunca de la copia en pantalla ni de la cola: otra caja pudo anular algo en ese minuto. Sin esa
+            // lectura (sin internet) lo ya enviado no sale y la pantalla lo dice; puede faltar una copia hasta que vuelva el internet.
+            // La sesión se lee después del refresco de impresoras: la mesa abierta sin red pudo volverse real mientras (Codex r7 #4).
+            val session = tableSession.current() ?: run { _isReprinting.value = false; return@launch }
+            val fresca = if (session.isProvisional) null else
+                conPresupuesto(PRESUPUESTO_VERSION_MS) { repository.getOrderDetail(vId, session.orderId) }.getOrNull()
+                    ?.takeIf { it.id == session.orderId }
+            val deLaCuentaAlDia = fresca?.items?.filter { it.productId != null }.orEmpty()
+            val llavesDeLaCuentaAlDia = fresca?.items?.mapNotNull { it.externalId }?.toSet().orEmpty()
+            // na13e014 (nube, 17-nov): la ronda que sigue en la cola (sin red, o sin acuse) sale de lo que guardó el aparato, como su
+            // primer papel, SÓLO si el SERVIDOR no la ha confirmado ni rechazado (si ya la tiene, sale de la cuenta leída o no sale).
+            val candidatasEnCola = _queued.value.filter { line ->
+                line.item.type is CartItemType.ProductItem && !retenida(line) && line.externalId !in llavesDeLaCuentaAlDia
             }
-            var deLaCuentaAlDia = sentItems
-            var llavesDeLaCuentaAlDia = enLaCuenta
-            var confirmadasSinConexion = 0
-            if (confirmadasFuera.isNotEmpty()) {
-                val fresca = if (session.isProvisional) null else
-                    conPresupuesto(PRESUPUESTO_VERSION_MS) { repository.getOrderDetail(vId, session.orderId) }.getOrNull()
-                        ?.takeIf { it.id == session.orderId }
-                if (fresca != null) {
-                    deLaCuentaAlDia = fresca.items.filter { it.productId != null }
-                    llavesDeLaCuentaAlDia = fresca.items.mapNotNull { it.externalId }.toSet()
-                } else {
-                    confirmadasSinConexion = confirmadasFuera.size
-                }
-            }
-            val enCola = candidatasEnCola.filter { line ->
-                line.externalId !in llavesDeLaCuentaAlDia &&
-                    (rondaDe(line.externalId)?.let { !rondaRechazada(it) && !rondaConfirmada(it) } ?: true)
-            }
+            val enCola = candidatasEnCola.filter { line -> rondaDe(line.externalId)?.let { !rondaRechazada(it) && !rondaConfirmada(it) } ?: true }
+            // ¿Quedó fuera algo ya enviado por no poder leer la cuenta? (la cuenta en pantalla, o una ronda confirmada que no trae)
+            val loEnviadoSinLeer = fresca == null && (
+                _check.value?.items?.any { it.productId != null } == true ||
+                    candidatasEnCola.any { line -> rondaDe(line.externalId)?.let { !rondaRechazada(it) && rondaConfirmada(it) } == true }
+                )
+            val confirmadasSinConexion = if (loEnviadoSinLeer) 1 else 0
+            // Codex r7 #6: si otra caja movió la cuenta, la comanda dice la mesa donde está ahora (el plano lo sabe por el socket).
+            val mesaAhora = repository.tables.value.firstOrNull { mesa ->
+                mesa.currentOrder?.id == session.orderId || mesa.openOrders.any { it.id == session.orderId }
+            }?.number ?: session.tableNumber
             if (deLaCuentaAlDia.isEmpty() && enCola.isEmpty()) {
                 _isReprinting.value = false
                 if (confirmadasSinConexion > 0) showSinRed(REIMPRIMIR_RONDA_SIN_CONEXION)
@@ -2515,16 +2505,31 @@ class TableOrderViewModel @Inject constructor(
                         if (rondaDelGrupo != null && rondaConfirmada(rondaDelGrupo)) { confirmadasAMedias++; continue }
                         val planes = tanda
                         if (planes.isEmpty()) continue
-                        val r = comandaPrinter.printComandas(
-                            plans = planes,
-                            config = config,
-                            orderNumber = session.orderNumber,
-                            orderType = "Mesa ${session.tableNumber}" + (course?.let { " · $it" } ?: "") + " · REIMPRESIÓN",
-                        )
-                        intentadas += r.attempted
-                        impresas += r.printed
-                        sinImpresora += r.skippedNoPrinter
-                        r.lastError?.let { ultimoError = it }
+                        val tipo = "Mesa $mesaAhora" + (course?.let { " · $it" } ?: "") + " · REIMPRESIÓN"
+                        if (rondaDelGrupo == null) {
+                            val r = comandaPrinter.printComandas(plans = planes, config = config, orderNumber = session.orderNumber, orderType = tipo)
+                            intentadas += r.attempted
+                            impresas += r.printed
+                            sinImpresora += r.skippedNoPrinter
+                            r.lastError?.let { ultimoError = it }
+                            continue
+                        }
+                        // Codex r7 #3: la hoja de una ronda en cola sale COPIA POR COPIA, preguntando antes de cada una si el SERVIDOR ya la
+                        // confirmó o rechazó (una estación de 2 copias mandaba las dos en una sola llamada).
+                        val plan = planes.single()
+                        val copias = (plan.stationId?.let { id -> config.stations.firstOrNull { it.id == id } }?.copies ?: 1).coerceAtLeast(1)
+                        var salioUna = false
+                        for (copia in 1..copias) {
+                            if (copia > 1 && rondaRechazada(rondaDelGrupo)) { rechazadas++; break }
+                            if (copia > 1 && rondaConfirmada(rondaDelGrupo)) { confirmadasAMedias++; break }
+                            val r = comandaPrinter.printComandas(plans = planes, config = config, orderNumber = session.orderNumber,
+                                orderType = tipo, copiasPendientes = mapOf(plan.stationId to 1))
+                            sinImpresora += r.skippedNoPrinter
+                            r.lastError?.let { ultimoError = it }
+                            if (r.printed == 0) { if (!salioUna) intentadas += r.attempted; break }
+                            salioUna = true
+                        }
+                        if (salioUna) { intentadas++; impresas++ }
                     }
                 }
             } finally {

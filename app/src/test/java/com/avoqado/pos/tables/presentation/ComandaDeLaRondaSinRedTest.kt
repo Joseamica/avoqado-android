@@ -202,6 +202,23 @@ class ComandaDeLaRondaSinRedTest {
         assertTrue("una sola vez: $impreso", Regex("Café").findAll(impreso).count() == 1)
     }
 
+    /**
+     * Decisión 2 = A, rediseño tras Codex r7 #2: sin internet, lo que la cuenta en pantalla trae (ya enviado y confirmado) tampoco sale:
+     * otra caja pudo anularlo. No se imprime nada y la pantalla lo dice.
+     */
+    @Test fun `sin internet lo ya enviado de la cuenta en pantalla no se reimprime y lo dice`() = runTest {
+        session.start(TableSession.Active("t1", "5", "Patio", "o-1", "ORD", 3, 0, TableSession.Mode.ORDERING))
+        coEvery { repository.getOrderDetail(any(), any()) } returns Result.success(com.avoqado.pos.tables.data.OrderDetail("o-1",
+            total = 100.0, version = 4, items = listOf(flautas()))) andThen Result.failure(java.io.IOException("sin red"))
+        val mesa = vm(keepSession = true)
+        mesa.loadCheck(); advanceUntilIdle()
+
+        mesa.reprintComandas(); advanceUntilIdle()
+
+        io.mockk.coVerify(exactly = 0) { impresora.printComandas(any(), any(), any(), any(), any(), any(), any(), any()) }
+        org.junit.Assert.assertEquals(REIMPRIMIR_RONDA_SIN_CONEXION, mesa.actionMessage.value)
+    }
+
     /** Codex r6 #4: el acuse llega mientras sale la hoja de la cuenta; la hoja de la ronda ya no sale de lo que tenía el aparato. */
     @Test fun `si la ronda se confirma a media reimpresion su hoja no sale y la pantalla lo dice`() = runTest {
         cuentaConCafeEnRonda("PENDING")
