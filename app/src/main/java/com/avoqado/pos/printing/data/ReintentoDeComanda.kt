@@ -49,9 +49,10 @@ sealed interface EstadoDeComanda {
          */
         val algoSalio: Boolean = false,
         /**
-         * Flautas (20-nov, hz:0555ee15:D6): lo único sin papel fueron estaciones «sólo pantalla» de respaldo (su pantalla no
-         * acusó por el WiFi), no había impresora que lo intentara, y el SERVIDOR confirmó que ya tiene sus comandas en
-         * pantalla (`ConfirmacionDePantalla`). El reporte a la libreta sigue igual; sólo se calla el AVISO en la caja.
+         * Flautas (20-nov, hz:0555ee15:D6, opción B): lo único sin papel fueron estaciones «sólo pantalla» de respaldo (su
+         * pantalla no acusó por el WiFi), no había impresora que lo intentara, y la venta ya está en el servidor: la pantalla
+         * la toma de ahí. No es un acuse de que la cocina la vio (como Square y Toast): si la pantalla no está conectada, lo
+         * dice la franja fija. El reporte a la libreta sigue igual; sólo se calla el AVISO en la caja.
          */
         val pantallaLaRecibe: Boolean = false,
     ) : EstadoDeComanda {
@@ -201,10 +202,10 @@ class ReintentoDeComanda @Inject constructor(
          */
         negocioSinCocina: () -> Boolean = { false },
         /**
-         * D6 de Flautas: con los planes SALTADOS de este despacho (por plan, no por nombre), ¿los tiene su pantalla por el
+         * D6 de Flautas: con los planes SALTADOS de este despacho (por plan, no por nombre), ¿los toma su pantalla del
          * servidor? Se pregunta sólo si nada TRONÓ y no hay saltadas de un ciclo anterior. Marca [EstadoDeComanda.NoSalio.pantallaLaRecibe].
          */
-        pantallaLaRecibe: suspend (saltados: List<TicketPlan>) -> Boolean = { false },
+        pantallaLaRecibe: (saltados: List<TicketPlan>) -> Boolean = { false },
         alCambiarEstado: (EstadoDeComanda) -> Unit = {},
     ): EstadoDeComanda {
         var pendientes = plans

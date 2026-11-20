@@ -11,7 +11,6 @@ import com.avoqado.pos.kds.data.local.EntregasKdsPendientesDao
 import com.avoqado.pos.printing.data.ComandaPrinter
 import com.avoqado.pos.printing.data.ComandasPendientesStore
 import com.avoqado.pos.printing.data.EntregaKds
-import com.avoqado.pos.printing.data.ConfirmacionDePantalla
 import com.avoqado.pos.printing.data.EntregaPorWifi
 import com.avoqado.pos.printing.data.ReplayDeEntregasKds
 import com.avoqado.pos.printing.data.ResultadoLegado
@@ -1012,108 +1011,56 @@ class ComandaDispatcherTest {
         }
     }
 
-    /** D6 de Flautas: el SERVIDOR contesta qué folios ya están en una pantalla de cocina. */
-    private val confirmacion = mockk<ConfirmacionDePantalla>()
-    private val preguntados = mutableListOf<Map<String, Int>>()
-
-    private fun despachadorConConfirmacion(confirma: (Map<String, Int>) -> Set<String>): ComandaDispatcher {
-        coEvery { confirmacion.enPantalla(any(), any()) } answers {
-            val comandas = secondArg<Map<String, Int>>()
-            preguntados += comandas
-            confirma(comandas)
-        }
-        return ComandaDispatcher(
-            printConfigRepository,
-            ReintentoDeComanda(comandaPrinter, reporteDeComandas = mockk<ReporteDeComandas>(relaxed = true)),
-            printerService,
-            cola,
-            entrega,
-            confirmacion,
-        )
-    }
-
     /**
-     * Flautas (20-nov, hz:0555ee15:D6): Barra «sólo pantalla», sin impresora a la mano, y su pantalla no acusa por el WiFi.
-     * La caja le pregunta al servidor por el folio de Barra; el servidor ya la armó: sale marcada `pantallaLaRecibe` y no se
-     * avisa en cada orden. El reporte a la libreta sigue (lo prueba `ReintentoDeComanda`).
+     * Flautas (20-nov, hz:0555ee15:D6, opción B «como Square y Toast»): Barra «sólo pantalla», sin impresora a la mano, y su
+     * pantalla no acusa por el WiFi. La venta ya está en el servidor, que le arma su comanda a la pantalla: sale marcada
+     * `pantallaLaRecibe` y no se avisa en cada orden (si la pantalla no está conectada, lo dice la franja fija).
      */
     @Test
-    fun `D6 el servidor confirma la comanda de la sola pantalla sin papel - sale marcada`() = runTest {
+    fun `D6 en linea la sola pantalla sin acuse y sin ninguna impresora sale marcada`() = runTest {
         every { printConfigRepository.getCurrentConfig() } returns conBarraSoloPantalla
         sinNingunaImpresora()
 
-        val estado = despachadorConConfirmacion { it.keys }.dispatch(
+        val estado = despachadorConCola().dispatch(
             venueId = "venue-1", lines = listOf(cafe), orderNumber = "1234", orderType = "En tienda",
             servidorLaTiene = true, origenDelFolio = "sale:ext-1",
         ) as EstadoDeComanda.NoSalio
 
         assertTrue(estado.pantallaLaRecibe)
         assertFalse("no es la marca D2 de negocio sin cocina", estado.sinImpresoraDeCocina)
-        assertEquals("pregunta por el folio de Barra con sus unidades", listOf(mapOf("sale:ext-1:st_barra" to 1)), preguntados)
     }
 
-    /** D6 (Codex r1 #1 y #2, r2 #2): el servidor NO la tiene (un abono, una pantalla que se prendió a media ronda…): se avisa. */
+    /** D6: sin red el servidor no la tiene y la pantalla no la puede tomar: se avisa. */
     @Test
-    fun `D6 el servidor no confirma - NO sale marcada`() = runTest {
+    fun `D6 sin red NO sale marcada`() = runTest {
         every { printConfigRepository.getCurrentConfig() } returns conBarraSoloPantalla
         sinNingunaImpresora()
 
-        val estado = despachadorConConfirmacion { emptySet() }.dispatch(
-            venueId = "venue-1", lines = listOf(cafe), orderNumber = "1234", orderType = "En tienda",
-            servidorLaTiene = true, origenDelFolio = "sale:ext-1",
-        ) as EstadoDeComanda.NoSalio
-
-        assertFalse(estado.pantallaLaRecibe)
-    }
-
-    /** D6: sin red el servidor no la tiene: ni se pregunta. */
-    @Test
-    fun `D6 sin red NO se pregunta ni sale marcada`() = runTest {
-        every { printConfigRepository.getCurrentConfig() } returns conBarraSoloPantalla
-        sinNingunaImpresora()
-
-        val estado = despachadorConConfirmacion { it.keys }.dispatch(
+        val estado = despachadorConCola().dispatch(
             venueId = "venue-1", lines = listOf(cafe), orderNumber = "1234", orderType = "En tienda",
             servidorLaTiene = false, origenDelFolio = "sale:ext-1",
         ) as EstadoDeComanda.NoSalio
 
         assertFalse(estado.pantallaLaRecibe)
-        assertTrue(preguntados.isEmpty())
     }
 
-    /** D6: sin folio no hay qué preguntar. */
+    /** D6: si también se quedó sin papel una estación que NO es de pantalla (Cocina), nadie más la tiene: se avisa. */
     @Test
-    fun `D6 sin folio NO se pregunta ni sale marcada`() = runTest {
+    fun `D6 si tambien se salto una estacion que no es de pantalla NO sale marcada`() = runTest {
         every { printConfigRepository.getCurrentConfig() } returns conBarraSoloPantalla
         sinNingunaImpresora()
 
-        val estado = despachadorConConfirmacion { it.keys }.dispatch(
-            venueId = "venue-1", lines = listOf(cafe), orderNumber = "1234", orderType = "En tienda",
-            servidorLaTiene = true, origenDelFolio = null,
-        ) as EstadoDeComanda.NoSalio
-
-        assertFalse(estado.pantallaLaRecibe)
-        assertTrue(preguntados.isEmpty())
-    }
-
-    /** D6: si también se quedó sin papel una estación que NO es de pantalla (Cocina), nadie más la tiene: ni se pregunta. */
-    @Test
-    fun `D6 si tambien se salto una estacion que no es de pantalla NO se pregunta ni sale marcada`() = runTest {
-        every { printConfigRepository.getCurrentConfig() } returns conBarraSoloPantalla
-        sinNingunaImpresora()
-
-        val estado = despachadorConConfirmacion { it.keys }.dispatch(
+        val estado = despachadorConCola().dispatch(
             venueId = "venue-1", lines = listOf(taco, cafe), orderNumber = "1234", orderType = "En tienda",
             servidorLaTiene = true, origenDelFolio = "sale:ext-1",
         ) as EstadoDeComanda.NoSalio
 
         assertFalse(estado.pantallaLaRecibe)
-        assertTrue(preguntados.isEmpty())
     }
 
     /**
      * Codex r1 #3: una estación REAL «sólo pantalla» llamada «SIN ESTACIÓN» y otro producto sin ruta ni default. Los dos se
-     * saltan con el MISMO nombre; se decide por id: lo sin ruta no tiene, así que ni se pregunta y se avisa.
+     * saltan con el MISMO nombre; se decide por id: lo sin ruta no tiene, así que no se calla.
      */
     @Test
     fun `D6 una estacion llamada SIN ESTACION no esconde lo que se quedo sin ruta`() = runTest {
@@ -1125,42 +1072,26 @@ class ComandaDispatcherTest {
         )
         sinNingunaImpresora()
 
-        val estado = despachadorConConfirmacion { it.keys }.dispatch(
+        val estado = despachadorConCola().dispatch(
             venueId = "venue-1", lines = listOf(taco, cafe), orderNumber = "1234", orderType = "En tienda",
             servidorLaTiene = true, origenDelFolio = "sale:ext-1",
         ) as EstadoDeComanda.NoSalio
 
         assertFalse(estado.pantallaLaRecibe)
-        assertTrue(preguntados.isEmpty())
     }
 
     /** D6: con una impresora que TRONÓ el negocio sí espera papel: se avisa y queda para «Volver a imprimir». */
     @Test
-    fun `D6 un respaldo cuya impresora trono NO se pregunta ni sale marcado`() = runTest {
+    fun `D6 un respaldo cuya impresora trono NO sale marcado`() = runTest {
         every { printConfigRepository.getCurrentConfig() } returns conBarraSoloPantalla
         coEvery { comandaPrinter.printComandas(any(), any(), any(), any(), any()) } answers {
             val p = firstArg<List<TicketPlan>>()
             ComandaPrinter.Result(attempted = 1, printed = 0, skippedNoPrinter = 0, lastError = "timeout", failedPlans = p, failedStations = listOf("Barra"))
         }
 
-        val estado = despachadorConConfirmacion { it.keys }.dispatch(
-            venueId = "venue-1", lines = listOf(cafe), orderNumber = "1234", orderType = "En tienda",
-            servidorLaTiene = true, origenDelFolio = "sale:ext-1", maxIntentos = 1,
-        ) as EstadoDeComanda.NoSalio
-
-        assertFalse(estado.pantallaLaRecibe)
-        assertTrue(preguntados.isEmpty())
-    }
-
-    /** D6: sin la pieza que pregunta (pruebas viejas, armado a mano) nunca se calla. */
-    @Test
-    fun `D6 sin la confirmacion del servidor NO sale marcada`() = runTest {
-        every { printConfigRepository.getCurrentConfig() } returns conBarraSoloPantalla
-        sinNingunaImpresora()
-
         val estado = despachadorConCola().dispatch(
             venueId = "venue-1", lines = listOf(cafe), orderNumber = "1234", orderType = "En tienda",
-            servidorLaTiene = true, origenDelFolio = "sale:ext-1",
+            servidorLaTiene = true, origenDelFolio = "sale:ext-1", maxIntentos = 1,
         ) as EstadoDeComanda.NoSalio
 
         assertFalse(estado.pantallaLaRecibe)

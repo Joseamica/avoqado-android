@@ -100,6 +100,10 @@ class AppState @Inject constructor(
     @Inject
     lateinit var preparationDelivery: com.avoqado.pos.kds.data.PreparationDeliveryService
 
+    /** D6 de Flautas (opción B): qué pantallas de cocina no están conectadas al servidor, para la franja fija. Por miembro. */
+    @Inject
+    lateinit var estadoDePantallas: com.avoqado.pos.kds.data.EstadoDePantallasDeCocina
+
     /**
      * La marca del negocio en la pantalla del cliente (nombre y logo en reposo). Por miembro, como las de arriba; en Windows
      * Guice la inyecta igual. Se pone al día en cada cambio de sesión ([notifyDeviceSessionChanged]).
@@ -128,6 +132,7 @@ class AppState @Inject constructor(
         if (::lanHubService.isInitialized) lanHubService.stop()
         if (::transporteLan.isInitialized) transporteLan.detener()
         if (::replayDeEntregasKds.isInitialized) replayDeEntregasKds.detener()
+        if (::estadoDePantallas.isInitialized) estadoDePantallas.detener()
     }
 
     private fun notifyDeviceSessionChanged() {
@@ -197,6 +202,7 @@ class AppState @Inject constructor(
             // Etapa 3 del KDS (3.5, D12): la red local sigue a la sucursal. Idempotente por venue; con otra reinicia.
             if (::lanHubService.isInitialized) lanHubService.sincronizarVenue(venueId)
             if (::transporteLan.isInitialized) transporteLan.iniciar(venueId)
+            if (::estadoDePantallas.isInitialized) estadoDePantallas.iniciar(viewModelScope, venueId)
             // D12 (paso 2): el hub Premium vive con la sesión, no sólo con el plano de Mesas, para que otra caja de
             // Mostrador pueda pedir el candado de una cuenta. Falla abierto como Mesas; idempotente por venue.
             if (::lanHubService.isInitialized && planManager.hasFeature("OFFLINE_LAN_HUB")) lanHubService.start()
@@ -383,10 +389,16 @@ class AppState @Inject constructor(
         }.stateIn(scope = viewModelScope, started = SharingStarted.WhileSubscribed(5_000), initialValue = null)
     }
 
-    /** D11: tras 3 entregas seguidas sin acuse a una estación, «La pantalla de Barra no se alcanza por el WiFi», con o sin internet. */
+    /**
+     * D11: tras 3 entregas seguidas sin acuse a una estación, «La pantalla de Barra no se alcanza por el WiFi», con o sin
+     * internet. D6 de Flautas (opción B): antes que eso, si el SERVIDOR no ve a la pantalla, «La pantalla de cocina de Barra no
+     * está conectada» (la caja ya no avisa orden por orden cuando la venta está en el servidor).
+     */
     val avisoDeRacha: StateFlow<String?> by lazy {
-        combine(printConfigRepository.config, transporteLan.racha.sinAlcance) { config, sinAlcance ->
-            com.avoqado.pos.printing.routing.KitchenDeliveryPolicy.avisoDeRacha(sinAlcance, config)
+        val desconectadas = if (::estadoDePantallas.isInitialized) estadoDePantallas.desconectadas
+        else kotlinx.coroutines.flow.MutableStateFlow(emptySet<String>())
+        combine(printConfigRepository.config, transporteLan.racha.sinAlcance, desconectadas) { config, sinAlcance, apagadas ->
+            com.avoqado.pos.printing.routing.KitchenDeliveryPolicy.avisoDeRacha(sinAlcance, config, apagadas)
         }.stateIn(scope = viewModelScope, started = SharingStarted.WhileSubscribed(5_000), initialValue = null)
     }
 

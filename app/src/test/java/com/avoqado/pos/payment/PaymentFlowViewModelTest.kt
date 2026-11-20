@@ -137,10 +137,6 @@ class PaymentFlowViewModelTest {
     }
     /** «La libreta»: visible para comprobar qué se le reporta al servidor (y al gerente) — Codex código r2. */
     private val reporteDeComandas = mockk<ReporteDeComandas>(relaxed = true)
-    /** D6 de Flautas: lo que el SERVIDOR dice que ya está en una pantalla de cocina. Por default, nada (se avisa como hoy). */
-    private val confirmacionDePantalla = mockk<com.avoqado.pos.printing.data.ConfirmacionDePantalla> {
-        coEvery { enPantalla(any(), any()) } returns emptySet()
-    }
     /** El MISMO dispatcher que ve el ViewModel y el reintento periódico — ver más abajo. */
     private val comandaDispatcherReal by lazy {
         ComandaDispatcher(
@@ -149,7 +145,6 @@ class PaymentFlowViewModelTest {
             printerService,
             colaDeMarcas,
             entregaPorWifi,
-            confirmacionDePantalla,
         )
     }
 
@@ -2370,7 +2365,7 @@ class PaymentFlowViewModelTest {
     }
 
     /** D6 de Flautas (20-nov): COCINA 1 «sólo pantalla», sin impresoras y la pantalla sin acuse por el WiFi. */
-    private fun cocinaSoloPantallaSinImpresoras(saldo: Int, estado: String) {
+    private fun cocinaSoloPantallaSinImpresoras(saldo: Int?, estado: String?) {
         coEvery {
             orderRepository.createOrder(any(), any(), any(), any(), any(), capturedVenueId = any())
         } returns Result.success(CreateOrderResponse(success = true, data = OrderData(id = "order-flautas")))
@@ -2390,14 +2385,10 @@ class PaymentFlowViewModelTest {
         }
     }
 
-    /** D6 de Flautas: el servidor ya puso la comanda en la pantalla de COCINA 1: la caja no avisa «No salió». */
+    /** D6 de Flautas (opción B): venta liquidada y COCINA 1 sólo pantalla sin impresoras: la pantalla la toma del servidor. */
     @Test
-    fun `D6 el servidor confirma la comanda en pantalla - no avisa No salio`() = runTest {
+    fun `D6 venta liquidada con su cocina solo pantalla y sin impresoras no avisa No salio`() = runTest {
         cocinaSoloPantallaSinImpresoras(saldo = 0, estado = "PAID")
-        val preguntados = mutableListOf<Map<String, Int>>()
-        coEvery { confirmacionDePantalla.enPantalla(any(), any()) } answers {
-            secondArg<Map<String, Int>>().also { preguntados += it }.keys
-        }
 
         viewModel.startPaymentFlow(CartState(items = listOf(
             CartItem(id = "line-1", type = CartItemType.ProductItem("prod-1"), name = "Flautas Papa", unitPrice = 1000),
@@ -2406,15 +2397,27 @@ class PaymentFlowViewModelTest {
         advanceUntilIdle()
 
         coVerify(atLeast = 1) { comandaPrinter.printComandas(any(), any(), any(), any(), any()) }
-        val (folio, unidades) = preguntados.single().entries.single()
-        assertTrue("preguntó por el folio de COCINA 1: $folio", folio.startsWith("sale:") && folio.endsWith(":st_cocina"))
-        assertEquals("con las unidades que mandó", 1, unidades)
-        assertNull("la pantalla ya la tiene", viewModel.comandaWarning.value)
+        assertNull("la pantalla la toma del servidor", viewModel.comandaWarning.value)
     }
 
-    /** D6 (Codex r1 #1): con un ABONO el servidor todavía no arma la comanda de pantalla: no la confirma y se avisa. */
+    /** D6 (Codex r2 #1): con el saldo desconocido (p. ej. tarjeta, servidor que no lo manda) no es un abono: no se avisa. */
     @Test
-    fun `D6 el servidor no confirma (un abono) - SI avisa No salio`() = runTest {
+    fun `D6 sin saldo conocido no es abono - no avisa No salio`() = runTest {
+        cocinaSoloPantallaSinImpresoras(saldo = null, estado = null)
+
+        viewModel.startPaymentFlow(CartState(items = listOf(
+            CartItem(id = "line-1", type = CartItemType.ProductItem("prod-1"), name = "Flautas Papa", unitPrice = 1000),
+        )))
+        viewModel.confirmCashCustom(1000)
+        advanceUntilIdle()
+
+        coVerify(atLeast = 1) { comandaPrinter.printComandas(any(), any(), any(), any(), any()) }
+        assertNull(viewModel.comandaWarning.value)
+    }
+
+    /** D6 (Codex r1 #1): con un ABONO conocido el servidor todavía no arma la comanda de pantalla: se avisa. */
+    @Test
+    fun `D6 un abono conocido con su cocina solo pantalla SI avisa No salio`() = runTest {
         cocinaSoloPantallaSinImpresoras(saldo = 500, estado = "PARTIAL")
 
         viewModel.startPaymentFlow(CartState(items = listOf(
@@ -2424,7 +2427,7 @@ class PaymentFlowViewModelTest {
         advanceUntilIdle()
 
         coVerify(atLeast = 1) { comandaPrinter.printComandas(any(), any(), any(), any(), any()) }
-        assertTrue("el servidor no la tiene", viewModel.comandaWarning.value is EstadoDeComanda.NoSalio)
+        assertTrue("el abono no arma comanda en el servidor", viewModel.comandaWarning.value is EstadoDeComanda.NoSalio)
     }
 
     /**

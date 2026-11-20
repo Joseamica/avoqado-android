@@ -244,12 +244,15 @@ interface ApiService {
     @GET("mobile/venues/{venueId}/print-config")
     suspend fun getPrintConfig(@Path("venueId") venueId: String): PrintConfigResponse
 
-    /** D6 de Flautas: ¿estas comandas ya están en una pantalla de cocina? (`kds.mobile.service.ts` → `foliosEnPantalla`). */
-    @POST("mobile/venues/{venueId}/kds/folios-en-pantalla")
-    suspend fun foliosEnPantalla(
+    /**
+     * D6 de Flautas (opción B): qué pantallas de cocina pidieron su tablero hace ≤ 90 s (`kds.mobile.controller.ts`). Va como
+     * petición de FONDO (Codex r6 #3): un 403 (sin `orders:read`) no abre el diálogo global ni pide PIN cada 20 s.
+     */
+    @Headers("${com.avoqado.pos.core.data.network.ForbiddenInterceptor.BACKGROUND_HEADER}: 1")
+    @GET("mobile/venues/{venueId}/kds/pantallas-conectadas")
+    suspend fun pantallasConectadas(
         @Path("venueId") venueId: String,
-        @Body request: com.avoqado.pos.printing.data.FoliosEnPantallaRequest,
-    ): com.avoqado.pos.printing.data.FoliosEnPantallaResponse
+    ): com.avoqado.pos.kds.data.PantallasConectadasResponse
 
     @POST("mobile/venues/{venueId}/print-jobs/sync")
     suspend fun syncPrintJobs(

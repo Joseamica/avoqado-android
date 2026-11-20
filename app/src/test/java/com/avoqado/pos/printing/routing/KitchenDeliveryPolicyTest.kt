@@ -195,6 +195,34 @@ class KitchenDeliveryPolicyTest {
         assertNull("una estación que ya no existe en la config no se nombra", KitchenDeliveryPolicy.avisoDeRacha(setOf("st_borrada"), c))
     }
 
+    /** D6 de Flautas (opción B): lo que el SERVIDOR no ve va primero; la racha del WiFi de las DEMÁS, después (Codex r6 #5). */
+    @Test
+    fun `D6 la pantalla que el servidor no ve se dice como no conectada, sin tapar la racha del WiFi de otra`() {
+        val c = config(cocina, barraSoloPantalla, StationInfo(id = "st_p", name = "Postres", hasKitchenDisplay = true))
+        assertEquals(
+            "La pantalla de cocina de Barra no está conectada: sus comandas le llegan cuando se conecte · " +
+                "La pantalla de Postres no se alcanza por el WiFi",
+            KitchenDeliveryPolicy.avisoDeRacha(setOf("st_p"), c, desconectadas = setOf("st_barra")),
+        )
+        assertEquals(
+            "la que no está conectada no se repite como «no se alcanza»",
+            "La pantalla de cocina de Barra no está conectada: sus comandas le llegan cuando se conecte",
+            KitchenDeliveryPolicy.avisoDeRacha(setOf("st_barra"), c, desconectadas = setOf("st_barra")),
+        )
+        assertEquals(
+            "Las pantallas de cocina de Barra y Postres no están conectadas: sus comandas les llegan cuando se conecten",
+            KitchenDeliveryPolicy.avisoDeRacha(emptySet(), c, desconectadas = setOf("st_p", "st_barra")),
+        )
+        assertEquals("sin desconectadas, la racha de hoy", "La pantalla de Postres no se alcanza por el WiFi",
+            KitchenDeliveryPolicy.avisoDeRacha(setOf("st_p"), c, desconectadas = emptySet()))
+    }
+
+    @Test
+    fun `D6 una estacion sin pantalla, desactivada o que ya no existe no se da por desconectada`() {
+        val c = config(cocina, barraSoloPantalla.copy(active = false), StationInfo(id = "st_p", name = "Postres", hasKitchenDisplay = false))
+        assertNull(KitchenDeliveryPolicy.avisoDeRacha(emptySet(), c, desconectadas = setOf("st_barra", "st_p", "st_borrada", "st_cocina")))
+    }
+
     @Test
     fun `P1 el aviso de racha ignora una estacion cuya pantalla se apago`() {
         val c = config(cocina, barraSoloPantalla.copy(hasKitchenDisplay = false))
