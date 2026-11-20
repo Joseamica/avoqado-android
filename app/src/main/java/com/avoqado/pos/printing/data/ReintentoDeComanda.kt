@@ -192,8 +192,10 @@ class ReintentoDeComanda @Inject constructor(
          * [com.avoqado.pos.printing.presentation.sinImpresoraDeCocina]). Se pregunta SÓLO si nada TRONÓ y lo que faltó fue
          * saltado: ese `NoSalio` sale marcado, y ni se avisa al cajero ni se reporta a la libreta (que le avisaría al
          * gerente), igual que el camino legado. Una falla real de impresora se avisa y se reporta siempre.
+         * Recibe los nombres de las estaciones que se quedaron sin papel (D6 de Flautas: se calla sólo si TODAS son
+         * «sólo pantalla» cuya pantalla ya la tiene por el servidor).
          */
-        negocioSinCocina: () -> Boolean = { false },
+        negocioSinCocina: (sinPapel: List<String>) -> Boolean = { false },
         alCambiarEstado: (EstadoDeComanda) -> Unit = {},
     ): EstadoDeComanda {
         var pendientes = plans
@@ -262,7 +264,7 @@ class ReintentoDeComanda @Inject constructor(
                         encabezado = encabezado,
                     )
                 },
-            ).let { if (it.trabajo == null && negocioSinCocina()) it.copy(sinImpresoraDeCocina = true) else it }
+            ).let { if (it.trabajo == null && negocioSinCocina(sinComanda)) it.copy(sinImpresoraDeCocina = true) else it }
                 .also { it.saltados = saltados.toList() } // después del `copy`: el cuerpo no viaja en él
         }
         alCambiarEstado(estado)

@@ -44,6 +44,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.ResponseBody.Companion.toResponseBody
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
 import org.junit.Rule
 import org.junit.Test
 import retrofit2.HttpException
@@ -549,6 +550,28 @@ class TableOrderRondaConLlaveTest {
         verify { store.guardar(noSalio, any()) }
         assertEquals("No salió la comanda de: Barra", vm.actionMessage.value)
         assertEquals(true, vm.actionIsError.value)
+    }
+
+    /** D6 de Flautas (20-nov): la pantalla de cocina ya tiene la ronda por el servidor y no hay impresora: la mesa no avisa. */
+    @Test
+    fun `D6 una comanda callada (la pantalla la tiene por el servidor) no se avisa en la mesa`() = runTest {
+        coEvery { repository.addRound(any(), any(), any(), any()) } returns Result.success(UpdatedOrder(id = "o1", version = 4))
+        val store = mockk<ComandasPendientesStore>(relaxed = true)
+        val callada = EstadoDeComanda.NoSalio(
+            estaciones = listOf("COCINA 1"), causa = null, orderNumber = "ORD-1", sinImpresoraDeCocina = true,
+        )
+        every { dispatcher.despacharEnFondo(any(), any(), any(), any(), any(), any(), any()) } answers {
+            arg<(EstadoDeComanda) -> Unit>(6).invoke(callada)
+            Job()
+        }
+        val vm = vm(store)
+        vm.addProduct(cafe)
+
+        vm.sendRound { _, _ -> }
+        advanceUntilIdle()
+
+        assertNotEquals("No salió la comanda de: COCINA 1", vm.actionMessage.value)
+        verify(exactly = 0) { store.guardar(any(), any()) }
     }
 
     /**

@@ -452,7 +452,10 @@ class ComandaDispatcher @Inject constructor(
                 // D2 con «No lleva comanda» (Codex código r1 #2 y r2): la tienda sin cocina que crea sólo «Sin comanda» ya no
                 // entra al legado; lo que dejó sin asignar cae en «SIN ESTACIÓN» y, sin impresora de cocina, no sale. Es el
                 // negocio sin cocina de D2: ni aviso al cajero ni FAILED al gerente. Con una estación con comanda, sí.
-                negocioSinCocina = { (callarSinCocina ?: omitirSinComanda) && sinImpresoraDeCocina(printerService.savedPrinters.value, config) },
+                negocioSinCocina = { sinPapel ->
+                    ((callarSinCocina ?: omitirSinComanda) && sinImpresoraDeCocina(printerService.savedPrinters.value, config)) ||
+                        pantallaLaTienePorElServidor(servidorLaTiene, decidido.respaldo, config, sinPapel)
+                },
                 alCambiarEstado = alCambiarEstado,
                 encabezado = encabezado,
             )
@@ -479,6 +482,23 @@ class ComandaDispatcher @Inject constructor(
         val orden = lines.withIndex().associate { (i, l) -> l.orderItemId to i }
         val juntas = plans.flatMap { it.lines }.sortedBy { l -> l.orderItemIds.minOfOrNull { orden[it] ?: Int.MAX_VALUE } ?: Int.MAX_VALUE }
         return listOf(TicketPlan(stationId = estacionFija, unrouted = false, lines = juntas))
+    }
+
+    /**
+     * Flautas (20-nov, hz:0555ee15:D6): las que se quedaron sin papel son TODAS estaciones «sólo pantalla» de respaldo (su
+     * pantalla no acusó por el WiFi), no hubo impresora que lo intentara, y la venta ya está en el servidor: su pantalla la
+     * ve por internet. Avisar «No salió la comanda» en cada orden sería falso; la banda de la racha («no se alcanza por el
+     * WiFi») lo sigue diciendo fijo. Sin red (`servidorLaTiene != true`) nadie la tiene y se avisa como siempre.
+     */
+    private fun pantallaLaTienePorElServidor(
+        servidorLaTiene: Boolean?,
+        respaldo: List<String>,
+        config: PrintConfig,
+        sinPapel: List<String>,
+    ): Boolean {
+        if (servidorLaTiene != true || respaldo.isEmpty() || sinPapel.isEmpty()) return false
+        val nombresDeRespaldo = config.stations.filter { it.id in respaldo }.map { it.name }.toSet()
+        return sinPapel.all { it in nombresDeRespaldo }
     }
 
     /** El despacho no llegó a decidir el papel (truena o se cancela): todas sus filas guardadas sin acuse se sueltan. */

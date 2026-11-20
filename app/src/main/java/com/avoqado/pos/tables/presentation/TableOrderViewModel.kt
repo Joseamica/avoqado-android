@@ -1607,6 +1607,9 @@ class TableOrderViewModel @Inject constructor(
      */
     private fun avisarComandaDeRonda(estado: com.avoqado.pos.printing.data.EstadoDeComanda) {
         if (estado !is com.avoqado.pos.printing.data.EstadoDeComanda.NoSalio) return
+        // D2 y D6 de Flautas (20-nov): callado = no había papel posible y no hace falta (negocio sin cocina, o la pantalla
+        // ya la tiene por el servidor). Mostrador ya lo respetaba (PaymentFlowViewModel); la mesa avisaba en cada ronda.
+        if (estado.sinImpresoraDeCocina) return
         // m-2 (Task 9 review, ronda 1): `despacharEnFondo` vive en el ámbito de la app y puede seguir insistiendo
         // minutos después de que el mesero cambie de sucursal. 🔴 D1 (Codex r3 #3): la libreta ya separa por sucursal
         // (un trabajo de la sucursal VIEJA queda suspendido: no se enseña ni se imprime en la nueva, y vuelve al

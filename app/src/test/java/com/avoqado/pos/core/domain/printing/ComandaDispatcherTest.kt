@@ -998,6 +998,78 @@ class ComandaDispatcherTest {
         assertEquals(listOf("sale:ext-1:st_barra"), cerradas.captured.map { it.mensaje.sourceKey })
     }
 
+    /** Ninguna impresora: la estación de respaldo (Barra) se salta, igual que la de una tienda sin impresoras. */
+    private fun sinNingunaImpresora(vararg saltadas: String) {
+        coEvery { comandaPrinter.printComandas(any(), any(), any(), any(), any()) } returns ComandaPrinter.Result(
+            attempted = saltadas.size, printed = 0, skippedNoPrinter = saltadas.size, lastError = null,
+            skippedStations = saltadas.toList(), failedPlans = emptyList(),
+        )
+    }
+
+    /**
+     * Flautas (20-nov, hz:0555ee15:D6): COCINA 1 «sólo pantalla», sin impresora en todo el negocio, y la pantalla no acusa
+     * por el WiFi. La ronda llegó al servidor, así que la pantalla la ve por internet: el papel de respaldo es imposible y
+     * avisar «No salió la comanda» en CADA orden es falso. Se calla como el negocio sin cocina (D2); la banda de la racha
+     * («no se alcanza por el WiFi») sigue diciéndolo fijo.
+     */
+    @Test
+    fun `D6 en linea la solo pantalla sin acuse y sin ninguna impresora no se avisa - su pantalla la tiene por el servidor`() = runTest {
+        every { printConfigRepository.getCurrentConfig() } returns conBarraSoloPantalla
+        sinNingunaImpresora("Barra")
+
+        val estado = despachadorConCola().dispatch(
+            venueId = "venue-1", lines = listOf(cafe), orderNumber = "1234", orderType = "En tienda",
+            servidorLaTiene = true, origenDelFolio = "sale:ext-1",
+        )
+
+        assertTrue((estado as EstadoDeComanda.NoSalio).sinImpresoraDeCocina)
+    }
+
+    /** D6: sin red la pantalla no la recibe por el servidor y nadie la tiene: el aviso se queda. */
+    @Test
+    fun `D6 sin red la solo pantalla sin acuse y sin impresora SI se avisa`() = runTest {
+        every { printConfigRepository.getCurrentConfig() } returns conBarraSoloPantalla
+        sinNingunaImpresora("Barra")
+
+        val estado = despachadorConCola().dispatch(
+            venueId = "venue-1", lines = listOf(cafe), orderNumber = "1234", orderType = "En tienda",
+            servidorLaTiene = false, origenDelFolio = "sale:ext-1",
+        )
+
+        assertFalse((estado as EstadoDeComanda.NoSalio).sinImpresoraDeCocina)
+    }
+
+    /** D6: si también se quedó sin papel una estación que NO es de pantalla (Cocina), nadie más la tiene: se avisa. */
+    @Test
+    fun `D6 en linea si tambien se salto una estacion que no es de pantalla SI se avisa`() = runTest {
+        every { printConfigRepository.getCurrentConfig() } returns conBarraSoloPantalla
+        sinNingunaImpresora("Cocina", "Barra")
+
+        val estado = despachadorConCola().dispatch(
+            venueId = "venue-1", lines = listOf(taco, cafe), orderNumber = "1234", orderType = "En tienda",
+            servidorLaTiene = true, origenDelFolio = "sale:ext-1",
+        )
+
+        assertFalse((estado as EstadoDeComanda.NoSalio).sinImpresoraDeCocina)
+    }
+
+    /** D6: con una impresora que TRONÓ el negocio sí espera papel: se avisa y queda para «Volver a imprimir». */
+    @Test
+    fun `D6 en linea un respaldo cuya impresora trono SI se avisa`() = runTest {
+        every { printConfigRepository.getCurrentConfig() } returns conBarraSoloPantalla
+        coEvery { comandaPrinter.printComandas(any(), any(), any(), any(), any()) } answers {
+            val p = firstArg<List<TicketPlan>>()
+            ComandaPrinter.Result(attempted = 1, printed = 0, skippedNoPrinter = 0, lastError = "timeout", failedPlans = p, failedStations = listOf("Barra"))
+        }
+
+        val estado = despachadorConCola().dispatch(
+            venueId = "venue-1", lines = listOf(cafe), orderNumber = "1234", orderType = "En tienda",
+            servidorLaTiene = true, origenDelFolio = "sale:ext-1", maxIntentos = 1,
+        )
+
+        assertFalse((estado as EstadoDeComanda.NoSalio).sinImpresoraDeCocina)
+    }
+
     /** M9 (a): la promesa de la 3.5 — sin internet, la pantalla acusa por el WiFi del local y no sale papel. */
     @Test
     fun `P1 sin red pero con acuse la estacion solo pantalla no se imprime ni se marca`() = runTest {
