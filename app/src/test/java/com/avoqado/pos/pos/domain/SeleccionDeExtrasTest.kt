@@ -99,13 +99,20 @@ class SeleccionDeExtrasTest {
     }
 
     @Test
-    fun `en pantalla y en papel la misma opción se junta como «2 × Nombre» en su orden de aparición`() {
+    fun `en pantalla y en papel la misma opción se junta como «2x Nombre» en su orden de aparición`() {
         assertEquals(
-            listOf("2 × Flautas Cochinita", "Flautas Papa"),
+            listOf("2x Flautas Cochinita", "Flautas Papa"),
             juntarExtrasRepetidos(listOf("Flautas Cochinita", "Flautas Papa", "Flautas Cochinita")),
         )
         assertEquals(listOf("Queso", "Tocino"), juntarExtrasRepetidos(listOf("Queso", "Tocino")))
         assertEquals(emptyList<String>(), juntarExtrasRepetidos(emptyList()))
+    }
+
+    @Test
+    fun `lo juntado sólo usa letras que toda impresora tiene (PC850 y PC437 no traen el signo por)`() {
+        val juntado = juntarExtrasRepetidos(listOf("Queso", "Queso"))
+        assertEquals(listOf("2x Queso"), juntado)
+        assertTrue(juntado.single().all { it.code < 128 })
     }
 
     @Test

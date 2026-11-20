@@ -179,7 +179,7 @@ data class CartItem(
 
     val modifiersSummary: String?
         get() {
-            // «2 × Flautas Cochinita» si se eligió dos veces (grupo que deja repetir, encargo a508f4).
+            // «2x Flautas Cochinita» si se eligió dos veces (grupo que deja repetir, encargo a508f4).
             val names = juntarExtrasRepetidos(selectedModifiers.map { it.modifierName })
             return if (names.isEmpty()) null else names.joinToString(", ")
         }

@@ -51,13 +51,14 @@ fun restarExtra(actuales: List<SelectedModifier>, grupo: ProductModifierGroup, e
 
 /**
  * Cómo se lee en el carrito, la comanda, el ticket y la pantalla de cocina: la misma opción una vez con su número delante
- * («2 × Flautas Cochinita»), en el orden en que apareció por primera vez — como el «Consolidate modifiers» de Toast y el
- * «2 × Nombre» que ya usan los pedidos en línea. Sin repetidos, la lista sale igual que antes.
+ * («2x Flautas Cochinita»), en el orden en que apareció por primera vez — como el «Consolidate modifiers» de Toast («2x
+ * Chocolate»). Con «x» y no «×» (Codex r2 #4): las impresoras en PC850/PC437 no tienen «×» y lo imprimen «?».
+ * Sin repetidos, la lista sale igual que antes.
  */
 fun juntarExtrasRepetidos(nombres: List<String>): List<String> {
     if (nombres.size < 2) return nombres
     val cuantos = LinkedHashMap<String, Int>()
     nombres.forEach { cuantos[it] = (cuantos[it] ?: 0) + 1 }
     if (cuantos.size == nombres.size) return nombres
-    return cuantos.map { (nombre, n) -> if (n > 1) "$n × $nombre" else nombre }
+    return cuantos.map { (nombre, n) -> if (n > 1) "${n}x $nombre" else nombre }
 }
