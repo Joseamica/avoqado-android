@@ -751,7 +751,7 @@ private fun TableroDeCocina(
 private fun RecientesSheet(
     recientes: List<KDSOrder>,
     noLeidas: AvisoDeCocina?,
-    aviso: AvisoDeCocina? = null,
+    aviso: AvisoDeDeshacer? = null,
     onDeshacer: (String) -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -778,16 +778,6 @@ private fun RecientesSheet(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(bottom = AvoqadoTheme.spacing.lg),
             )
-
-            if (aviso != null) {
-                // D17 (Codex r14): por qué no se pudo «Deshacer» (ya se entregó, pasó la hora, sin red…), aquí y no detrás de la hoja.
-                Text(
-                    text = aviso.texto,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = if (aviso.esError) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(bottom = AvoqadoTheme.spacing.md).testTag("kds-recientes-aviso"),
-                )
-            }
 
             if (noLeidas != null) {
                 // I2: no se pudo leer — nunca se pinta como «no hay nada».
@@ -824,6 +814,15 @@ private fun RecientesSheet(
                         ) {
                             Text(TextosDeCocina.DESHACER)
                         }
+                    }
+                    if (aviso != null && aviso.comandaId == orden.id) {
+                        // D17 (Codex r14 y r15): por qué no se pudo «Deshacer» ESTA comanda, justo debajo de su botón.
+                        Text(
+                            text = aviso.aviso.texto,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = if (aviso.aviso.esError) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(bottom = AvoqadoTheme.spacing.sm).testTag("kds-recientes-aviso-${orden.id}"),
+                        )
                     }
                 }
             }

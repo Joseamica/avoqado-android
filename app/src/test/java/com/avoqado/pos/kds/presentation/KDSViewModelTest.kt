@@ -378,9 +378,25 @@ class KDSViewModelTest {
         val vm = armar()
         vm.abrirRecientes()
         vm.deshacer("k9")
-        assertEquals("Ya no queda nada listo en esta comanda: se entregó o se canceló.", vm.avisoDeRecientes.value?.texto)
+        assertEquals("Ya no queda nada listo en esta comanda: se entregó o se canceló.", vm.avisoDeRecientes.value?.aviso?.texto)
+        assertEquals("k9", vm.avisoDeRecientes.value?.comandaId) // debajo de ESA comanda
         vm.abrirRecientes()
         assertNull(vm.avisoDeRecientes.value) // al volver a abrir, sin el aviso viejo
+    }
+
+    @Test
+    fun `D17 la respuesta de un Deshacer de una hoja ya cerrada no se pinta en la hoja nueva`() = runTest {
+        val conTiempos = comanda("k9", 500).copy(preparationVersion = 1, completedAt = 1_700_000_000_123)
+        coEvery { repo.fetchRecientes("st-barra") } returns Result.success(listOf(conTiempos))
+        val respuesta = kotlinx.coroutines.CompletableDeferred<Result<Unit>>()
+        coEvery { repo.recall(any(), any()) } coAnswers { respuesta.await() }
+        val vm = armar()
+        vm.abrirRecientes()
+        vm.deshacer("k9")
+        vm.abrirRecientes() // la cerró y la volvió a abrir mientras el SERVIDOR contestaba
+        respuesta.complete(Result.failure(KdsHttpException(409, "KDS_RECALL_NOTHING_READY", "Ya no queda nada listo en esta comanda.")))
+        advanceUntilIdle()
+        assertNull(vm.avisoDeRecientes.value)
     }
 
     @Test

@@ -131,9 +131,14 @@ class KDSViewModel @Inject constructor(
     private val _recientesNoLeidas = MutableStateFlow<AvisoDeCocina?>(null)
     val recientesNoLeidas: StateFlow<AvisoDeCocina?> = _recientesNoLeidas.asStateFlow()
 
-    /** D17 (Codex r14): por qué no se pudo «Deshacer», DENTRO de la hoja de «Recientes» (detrás de la hoja no se ve). */
-    private val _avisoDeRecientes = MutableStateFlow<AvisoDeCocina?>(null)
-    val avisoDeRecientes: StateFlow<AvisoDeCocina?> = _avisoDeRecientes.asStateFlow()
+    /**
+     * D17 (Codex r14 y r15): por qué no se pudo «Deshacer», DENTRO de la hoja de «Recientes» y debajo de ESA comanda (detrás de
+     * la hoja o arriba de la lista no se ve). Sólo la respuesta de un toque de la hoja abierta ahora: una que llega después de
+     * cerrarla y volver a abrir no se pinta como si acabara de pasar (`hojaDeRecientes`).
+     */
+    private val _avisoDeRecientes = MutableStateFlow<AvisoDeDeshacer?>(null)
+    val avisoDeRecientes: StateFlow<AvisoDeDeshacer?> = _avisoDeRecientes.asStateFlow()
+    private var hojaDeRecientes = 0
 
     /** Sin red: el tablero se queda con lo que tenía y lo DICE (neutro, nunca rojo). */
     private val _sinConexion = MutableStateFlow(false)
@@ -679,6 +684,7 @@ class KDSViewModel @Inject constructor(
     fun abrirRecientes() {
         val tablero = _vista.value as? VistaDeCocina.Tablero ?: return
         _avisoDeRecientes.value = null
+        hojaDeRecientes++
         viewModelScope.launch {
             kdsRepository.fetchRecientes(tablero.estacion.id)
                 .onSuccess {
@@ -701,6 +707,7 @@ class KDSViewModel @Inject constructor(
         val folio = reciente?.sourceKey
         // D17: con tiempos, el SERVIDOR sólo la regresa si sigue siendo la que se vio terminada (su hora de terminada).
         val terminadaEn = reciente?.takeIf { it.preparationVersion == 1 }?.completedAt
+        val hoja = hojaDeRecientes
         viewModelScope.launch {
             _avisoDeRecientes.value = null
             kdsRepository.recall(id, terminadaEn)
@@ -721,7 +728,7 @@ class KDSViewModel @Inject constructor(
                     if (esSinRed(e)) _sinConexion.value = true
                     val aviso = avisoDeFallo(e, AccionDeCocina.DESHACER)
                     _aviso.value = aviso
-                    _avisoDeRecientes.value = aviso
+                    if (hoja == hojaDeRecientes) _avisoDeRecientes.value = AvisoDeDeshacer(id, aviso)
                 }
         }
     }
@@ -867,3 +874,6 @@ class KDSViewModel @Inject constructor(
  * seguro: otro aparato lo intenta.
  */
 internal fun laComandaSalio(estado: EstadoDeComanda?): Boolean = estado is EstadoDeComanda.Salio
+
+/** D17: por qué no se pudo «Deshacer» [comandaId] (se pinta debajo de esa comanda en «Recientes»). */
+data class AvisoDeDeshacer(val comandaId: String, val aviso: AvisoDeCocina)
