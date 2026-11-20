@@ -1687,7 +1687,8 @@ class TableOrderViewModel @Inject constructor(
                 onFailure = { e ->
                     // Codex r1 #9: sin respuesta (WiFi sin salida, corte a medias) no se sabe si el SERVIDOR lo anuló: se dice así, en
                     // gris, y la relectura de `mutar` enseña la cuenta real en cuanto vuelva la señal. Nunca «no se anuló» a ciegas.
-                    if (com.avoqado.pos.core.data.network.ServerErrorText.isOffline(e)) showSinRed(ANULAR_SIN_CONFIRMAR)
+                    // Codex r4 #5: un 502–504 del intermediario tampoco dice si el SERVIDOR lo anuló (igual que al enviar una ronda).
+                    if (com.avoqado.pos.core.data.network.ServerErrorText.isOffline(e) || isNetworkError(e)) showSinRed(ANULAR_SIN_CONFIRMAR)
                     else showError(com.avoqado.pos.core.data.network.ServerErrorText.humanize(e, "No se pudo anular el producto"))
                 },
             )
@@ -2378,6 +2379,11 @@ class TableOrderViewModel @Inject constructor(
         runCatching { syncOutbox.observarEstado(llave).first() }.getOrNull() ==
             com.avoqado.pos.core.data.local.database.SyncIntentEntity.STATUS_REJECTED
 
+    /** Codex r4 #1: ¿el SERVIDOR ya confirmó esa ronda (en esta vida del VM o en la cola)? Si no se puede leer, no. */
+    private suspend fun rondaConfirmada(llave: String): Boolean = llave in rondasConfirmadas ||
+        runCatching { syncOutbox.observarEstado(llave).first() }.getOrNull() ==
+            com.avoqado.pos.core.data.local.database.SyncIntentEntity.STATUS_ACKED
+
     /** La reimpresión tarda (timeout de impresora ~10 s): la pantalla lo dice. */
     private val _isReprinting = MutableStateFlow(false)
     val isReprinting: StateFlow<Boolean> = _isReprinting.asStateFlow()
@@ -2405,7 +2411,12 @@ class TableOrderViewModel @Inject constructor(
             printConfigRepository.refresh(vId)
             // Codex r1 (R3), r2 y r3: una ronda que el SERVIDOR ya rechazó no se vuelve a mandar a cocina (el gerente la revisa en
             // la cola). Se pregunta después del refresco de impresoras y otra vez justo antes de cada hoja (abajo).
-            val enCola = candidatasEnCola.filter { line -> rondaDe(line.externalId)?.let { !rondaRechazada(it) } ?: true }
+            // Codex r4 #1 de «Anular producto»: una ronda que el SERVIDOR ya CONFIRMÓ y que la cuenta al día no trae (otra caja anuló
+            // o separó sus renglones) tampoco se reimprime: imprimirla mandaba a cocina algo que ya no está en la cuenta.
+            val alDia = cuentaAlDiaAqui
+            val enCola = candidatasEnCola.filter { line ->
+                rondaDe(line.externalId)?.let { !rondaRechazada(it) && !(alDia && rondaConfirmada(it)) } ?: true
+            }
             if (sentItems.isEmpty() && enCola.isEmpty()) {
                 _isReprinting.value = false
                 showMessage("No hay artículos enviados para reimprimir")

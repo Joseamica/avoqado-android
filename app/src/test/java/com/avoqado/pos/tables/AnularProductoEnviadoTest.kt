@@ -112,6 +112,18 @@ class AnularProductoEnviadoTest {
         coVerify(exactly = 0) { outbox.enqueue(any(), any(), any(), any(), any(), any()) }
     }
 
+    @Test fun un504DelIntermediarioTampocoDiceQueNoSeAnulo() = runTest {
+        // Codex r4 #5: el SERVIDOR pudo guardarlo y el intermediario contestó 504: gris «no supimos», nunca rojo.
+        val http = retrofit2.HttpException(retrofit2.Response.error<Any>(504, "".toResponseBody("text/plain".toMediaTypeOrNull())))
+        coEvery { repo.voidItem(any(), any(), any(), any()) } returns Result.failure(http)
+        vm.loadCheck(); advanceUntilIdle()
+
+        vm.voidSentItem("line", "Error de entrada"); advanceUntilIdle()
+
+        assertEquals(ANULAR_SIN_CONFIRMAR, vm.mensajeSinRed.value)
+        assertFalse(vm.actionIsError.value)
+    }
+
     @Test fun anularVaEnGrisConPromocionOElUnicoProducto() {
         val suelto = OrderDetailItem(id = "a", productName = "Agua", total = 35.0)
         val pieza = OrderDetailItem(id = "p", productName = "Agua del combo", total = 33.0, orderPromotionId = "promo-1")
