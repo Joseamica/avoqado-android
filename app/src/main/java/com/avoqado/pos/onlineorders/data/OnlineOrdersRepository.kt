@@ -188,7 +188,8 @@ class OnlineOrdersRepository @Inject constructor(
             storeOff = data.optJSONObject("store")?.textoONulo("status") == "DISABLED",
             truncated = data.optBoolean("truncated", false),
             nextCursor = data.textoONulo("nextCursor"),
-            autoPaused = data.optJSONObject("store")?.textoONulo("autoPausedAt") != null,
+            // Codex p2-r7 #3: sin `store` (el SERVIDOR no pudo leer el estado) no se sabe: null, y la caja conserva lo último.
+            autoPaused = data.optJSONObject("store")?.let { it.textoONulo("autoPausedAt") != null },
         )
     }
 

@@ -749,7 +749,7 @@ class OnlineOrdersViewModel internal constructor(
             if (completa) soltarMarcasDeMiEquipo(venueDeLaLectura, ordenes)
             _hayMas.value = cursor != null
             _hoyRecortado.value = inbox.truncated
-            _pausadaSola.value = inbox.autoPaused
+            inbox.autoPaused?.let { _pausadaSola.value = it } // sin `store` en la respuesta se conserva lo último (Codex p2-r7 #3)
             _sinConexion.value = false
             _leyoAlgunaVez.value = true
             _noSePudoLeer.value = false

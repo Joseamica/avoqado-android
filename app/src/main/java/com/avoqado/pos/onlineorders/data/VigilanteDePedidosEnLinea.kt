@@ -304,7 +304,7 @@ class VigilanteDePedidosEnLinea internal constructor(
             _pendientes.value = lista
             silenciados.value = silenciados.value intersect lista.map { it.orderId }.toSet()
             hayAbiertosEnInbox = inbox.pending + inbox.active > 0
-            _pausadaSola.value = inbox.autoPaused
+            inbox.autoPaused?.let { _pausadaSola.value = it } // sin `store` en la respuesta se conserva lo último (Codex p2-r7 #3)
             actualizarAbiertos()
             _sinConexion.value = false
             sonidoListo.value = true
