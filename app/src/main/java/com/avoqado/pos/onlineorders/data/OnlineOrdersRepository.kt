@@ -9,6 +9,7 @@ import com.avoqado.pos.core.data.network.ForbiddenInterceptor
 import com.avoqado.pos.onlineorders.domain.AccionResultado
 import com.avoqado.pos.onlineorders.domain.BeneficioDelFolio
 import com.avoqado.pos.onlineorders.domain.ClienteDelFolio
+import com.avoqado.pos.onlineorders.domain.ComandaPorImprimir
 import com.avoqado.pos.onlineorders.domain.ConteosPorPagar
 import com.avoqado.pos.onlineorders.domain.CursoresPorPagar
 import com.avoqado.pos.onlineorders.domain.HuellaDeFolio
@@ -22,6 +23,8 @@ import com.avoqado.pos.onlineorders.domain.OnlineOrderStatus
 import com.avoqado.pos.onlineorders.domain.PedidoPorCobrar
 import com.avoqado.pos.onlineorders.domain.SaldoDelPedido
 import com.avoqado.pos.onlineorders.domain.PrecioDeRenglon
+import com.avoqado.pos.onlineorders.domain.ReclamoDeImpresion
+import com.avoqado.pos.onlineorders.domain.TarjetaPorAbrir
 import com.avoqado.pos.onlineorders.presentation.ocultosQueSiguen
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.sync.Mutex
@@ -305,7 +308,17 @@ class OnlineOrdersRepository @Inject constructor(
     // MARK: - Impresión de la comanda (reclamo + sello; la llave es Order.id)
 
     /** `true` = este aparato ganó el reclamo y debe imprimir. Cualquier fallo es `false`: nunca se imprime sin reclamo. */
-    suspend fun claimPrint(orderId: String, deviceId: String): Boolean = impresion("$orderId/print/claim", deviceId, "claimed")
+    suspend fun claimPrint(orderId: String, deviceId: String): Boolean = reclamarComanda(orderId, deviceId).reclamado
+
+    /** El reclamo con lo que dijo el servidor (Ruling 9: `posibleRepetida`). Cualquier fallo = no reclamado. */
+    suspend fun reclamarComanda(orderId: String, deviceId: String): ReclamoDeImpresion =
+        ReclamoDeImpresion(impresion("$orderId/print/claim", deviceId, "claimed"))
+
+    /** D661: «Abrir y cobrar» un pedido pagado con tarjeta en línea (la aceptación de siempre, con la apertura explícita). */
+    suspend fun abrirPagadoEnLinea(orderId: String): AccionResultado = AccionResultado.Error("pendiente")
+
+    /** D661 (Ruling 14): UN pedido en línea leído por su propio camino (para la comanda de uno que no está en la página). */
+    suspend fun pedidoEnLinea(orderId: String): Result<OnlineOrder> = Result.failure(IllegalStateException("pendiente"))
 
     /** `true` = quedó sellada. `false` = ya estaba sellada o este aparato perdió el reclamo (NO significa «reimprime»). */
     suspend fun confirmPrint(orderId: String, deviceId: String): Boolean = impresion("$orderId/print/confirm", deviceId, "ok")

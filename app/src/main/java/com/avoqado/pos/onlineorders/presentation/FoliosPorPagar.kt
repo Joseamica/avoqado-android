@@ -6,6 +6,7 @@ import com.avoqado.pos.onlineorders.domain.HuellaDeFolio
 import com.avoqado.pos.onlineorders.domain.ListaPorPagar
 import com.avoqado.pos.onlineorders.domain.OnlineOrder
 import com.avoqado.pos.onlineorders.domain.OnlineOrderStatus
+import com.avoqado.pos.onlineorders.domain.TarjetaPorAbrir
 import java.text.Normalizer
 import java.time.Duration
 import java.time.Instant
@@ -24,8 +25,21 @@ internal fun yaPagadoCents(pedido: OnlineOrder): Long = (pedido.totalCents - ped
  */
 fun numeroDeSeccion(conteo: Int, mostrados: Int, hayMas: Boolean): Int = if (hayMas) max(conteo, mostrados) else mostrados
 
-/** La insignia de «Pedidos en línea» en «Más»: lo que espera una persona (aceptar o cobrar). */
-fun numeroDelMenu(porAceptar: Int, porPagar: Int): Int = porAceptar + porPagar
+/** La insignia de «Pedidos en línea» en «Más»: lo que espera una persona (aceptar, cobrar o, D661, abrir un pagado en línea). */
+fun numeroDelMenu(porAceptar: Int, porPagar: Int, porAbrir: Int = 0): Int = porAceptar + porPagar
+
+/**
+ * La sección de folios sale si el servidor la tiene (un «no disponible» la esconde aunque haya algo guardado) y hay algo que decir.
+ * PURA.
+ */
+fun seccionDeFoliosVisible(lista: ListaPorPagar): Boolean =
+    lista.disponible && (lista.showTile || lista.porPagar.isNotEmpty() || lista.porEntregar.isNotEmpty())
+
+/** D661: el botón de un pagado en línea por abrir. Abrir es cobrar una tarjeta: pide conexión. PURA. */
+fun sePuedeAbrir(tarjeta: TarjetaPorAbrir, sinConexion: Boolean, ocupado: Boolean): Boolean = true
+
+/** D661: lo que dice ese botón (lo que se puede, o por qué no). PURA. */
+fun textoDeAbrir(tarjeta: TarjetaPorAbrir, sinConexion: Boolean, ocupado: Boolean): String = TextosPedidosEnLinea.ABRIR_Y_COBRAR
 
 private fun normalizar(texto: String): String =
     Normalizer.normalize(texto, Normalizer.Form.NFD).replace(Regex("\\p{Mn}+"), "").lowercase()

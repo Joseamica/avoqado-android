@@ -12,6 +12,7 @@ import com.avoqado.pos.onlineorders.domain.Inbox
 import com.avoqado.pos.onlineorders.domain.ListaPorPagar
 import com.avoqado.pos.onlineorders.domain.OnlineOrder
 import com.avoqado.pos.onlineorders.domain.OnlineOrderStatus
+import com.avoqado.pos.onlineorders.domain.TarjetaPorAbrir
 import com.avoqado.pos.onlineorders.presentation.conLoCobradoEnElAparato
 import com.avoqado.pos.onlineorders.presentation.numeroDeSeccion
 import com.avoqado.pos.onlineorders.presentation.cobradosConTarjetaEnLaLista
@@ -82,6 +83,10 @@ class VigilanteDePedidosEnLinea internal constructor(
     private val positivosConTarjeta: (venueId: String?) -> Map<String, Long> = { emptyMap() },
     /** D662: ¿la ventana se ve? ANDROID siempre (el ciclo ya para en segundo plano); WINDOWS minimizada = no. */
     private val seVe: () -> Boolean = { VentanaALaVista.aLaVista.value },
+    /** D661 (Ruling 14): lee UN pedido por su propio camino, para la comanda de uno que no está en la página de «Por entregar». */
+    private val leerPedido: suspend (orderId: String) -> Result<OnlineOrder> = { Result.failure(IllegalStateException("sin lector")) },
+    /** D661: saca la comanda (reclamo + papel + confirmación, `ImpresionDePedidoEnLinea`). */
+    private val imprimirComanda: suspend (OnlineOrder) -> Unit = {},
 ) : DefaultLifecycleObserver {
 
     @Inject
@@ -119,6 +124,14 @@ class VigilanteDePedidosEnLinea internal constructor(
 
     /** Los pedidos por aceptar del último sondeo bueno (se conserva si falla la red). */
     val pendientes: StateFlow<List<OnlineOrder>> = _pendientes.asStateFlow()
+
+    private val _tarjetasPorAbrir = MutableStateFlow<List<TarjetaPorAbrir>>(emptyList())
+
+    /** D661: los pagados con tarjeta en línea que esperan que una caja los abra (la última lista leída). */
+    val tarjetasPorAbrir: StateFlow<List<TarjetaPorAbrir>> = _tarjetasPorAbrir.asStateFlow()
+
+    /** D661: relee «Por pagar» ya (la pantalla abrió un pedido): el sonido para en esta lectura y no en el siguiente compás. */
+    fun sondearFoliosYa() {}
 
     private val _sinConexion = MutableStateFlow(false)
 

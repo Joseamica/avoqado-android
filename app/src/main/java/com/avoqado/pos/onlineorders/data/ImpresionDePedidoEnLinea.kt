@@ -119,7 +119,8 @@ class ImpresionDePedidoEnLinea internal constructor(
             withContext(NonCancellable) {
                 val resultado = run {
                     if (!hayImpresoraDeCocina() || venueId() != sucursal) return@run ResultadoImpresion.NoSalio
-                    if (!repositorio.claimPrint(order.orderId, deviceId)) return@run ResultadoImpresion.OtroAparato
+                    val reclamo = repositorio.reclamarComanda(order.orderId, deviceId)
+                    if (!reclamo.reclamado) return@run ResultadoImpresion.OtroAparato
                     if (venueId() != sucursal) return@run ResultadoImpresion.NoSalio
                     if (!sacarComanda(order, sucursal)) return@run ResultadoImpresion.NoSalio
                     // Si la confirmación se pierde, el papel ya salió: a los 90 s otro aparato puede repetirla (límite aceptado, R20).

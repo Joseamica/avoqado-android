@@ -145,6 +145,8 @@ class OnlineOrdersViewModel internal constructor(
     private val guardarOcultos: suspend (Map<String, HuellaDeFolio>) -> Unit = {},
     /** A1 (e): un cobro con saldo de esta orden mandado y sin confirmar (`SolicitudesDeTarjeta.cuentaTrabada`). */
     private val saldoEnDuda: (orderId: String) -> Boolean = { false },
+    /** D661: tras abrir un pagado en línea, el vigilante relee «Por pagar» ya (el sonido para sin esperar su compás). */
+    private val sondearFoliosDelVigilante: () -> Unit = {},
 ) : ViewModel() {
 
     @Inject
@@ -857,6 +859,9 @@ class OnlineOrdersViewModel internal constructor(
         val s = _secciones.value
         _secciones.value = s.copy(porAceptar = s.porAceptar.map { if (it.orderId == orderId) it.copy(cardStatus = "CONFIRMING") else it })
     }
+
+    /** D661: «Abrir y cobrar» un pedido pagado con tarjeta en línea. */
+    fun abrirYCobrar(orderId: String) {}
 
     /** [motivo] es el código del servidor (`OUT_OF_ITEMS`, `CLOSED`, `TOO_BUSY`, `OTHER`). */
     fun rechazar(orderId: String, motivo: String) =

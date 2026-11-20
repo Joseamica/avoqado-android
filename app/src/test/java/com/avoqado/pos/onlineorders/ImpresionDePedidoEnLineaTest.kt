@@ -12,6 +12,7 @@ import com.avoqado.pos.onlineorders.domain.OnlineOrder
 import com.avoqado.pos.onlineorders.domain.OnlineOrderItem
 import com.avoqado.pos.onlineorders.domain.OnlineOrderModifier
 import com.avoqado.pos.onlineorders.domain.OnlineOrderStatus
+import com.avoqado.pos.onlineorders.domain.ReclamoDeImpresion
 import com.avoqado.pos.printing.data.EstadoDeComanda
 import com.avoqado.pos.printing.routing.CategoryRoute
 import com.avoqado.pos.printing.routing.PrintConfig
@@ -51,7 +52,7 @@ class ImpresionDePedidoEnLineaTest {
     @Test fun `changing venue during claim never prints or confirms in the next venue`() = runTest {
         var venue = "v1"
         var prints = 0
-        coEvery { repo.claimPrint("p1", "dev-1") } answers { venue = "v2"; true }
+        coEvery { repo.reclamarComanda("p1", "dev-1") } answers { venue = "v2"; ReclamoDeImpresion(true) }
         coEvery { repo.confirmPrint("p1", "dev-1") } returns true
         val sut = ImpresionDePedidoEnLinea(repo, { true }, { venue }, { _, _, _, _, _, _ -> prints++; EstadoDeComanda.Salio })
         assertEquals(ResultadoImpresion.NoSalio, sut.imprimirSiToca(pedido(), "dev-1"))
@@ -72,7 +73,7 @@ class ImpresionDePedidoEnLineaTest {
         every { printers.savedPrinters } returns kotlinx.coroutines.flow.MutableStateFlow(emptyList())
         every { configRepo.getCurrentConfig() } answers { if (++configReads > 1) venue = "v2"; config }
         coEvery { configRepo.savedConfig("v1") } coAnswers { venue = "v2"; config }
-        coEvery { repo.claimPrint("p1", "dev-1") } returns true
+        coEvery { repo.reclamarComanda("p1", "dev-1") } returns ReclamoDeImpresion(true)
         coEvery { repo.confirmPrint("p1", "dev-1") } returns true
         coEvery { dispatcher.dispatch(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any()) } returns EstadoDeComanda.Salio
         val sut = ImpresionDePedidoEnLinea(repo, dispatcher, printers, configRepo, storage)
@@ -90,7 +91,7 @@ class ImpresionDePedidoEnLineaTest {
             printers = listOf(PrinterInfo("p", "Cocina", "NETWORK", "192.168.1.50:9100")),
             stations = listOf(StationInfo("s", "Cocina", printerId = "p")))
         coEvery { configRepo.savedConfig("v1") } throws IllegalStateException("caché ilegible")
-        coEvery { repo.claimPrint("p1", "dev-1") } returns true
+        coEvery { repo.reclamarComanda("p1", "dev-1") } returns ReclamoDeImpresion(true)
         val sut = ImpresionDePedidoEnLinea(repo, dispatcher, printers, configRepo, storage)
         assertEquals(ResultadoImpresion.NoSalio, sut.imprimirSiToca(pedido(), "dev-1"))
         coVerify(exactly = 0) { repo.confirmPrint(any(), any()) }
@@ -129,7 +130,7 @@ class ImpresionDePedidoEnLineaTest {
 
     @Test
     fun `claims, prints and confirms once`() = runTest {
-        coEvery { repo.claimPrint("p1", "dev-1") } returns true
+        coEvery { repo.reclamarComanda("p1", "dev-1") } returns ReclamoDeImpresion(true)
         coEvery { repo.confirmPrint("p1", "dev-1") } returns true
         val despacho = Despacho()
         val resultado = armar(despacho).imprimirSiToca(pedido(), "dev-1")
@@ -138,13 +139,13 @@ class ImpresionDePedidoEnLineaTest {
         assertEquals("W-17", despacho.folio)
         assertEquals("v1", despacho.venue)
         assertEquals("p1", despacho.orderId)
-        coVerify(exactly = 1) { repo.claimPrint("p1", "dev-1") }
+        coVerify(exactly = 1) { repo.reclamarComanda("p1", "dev-1") }
         coVerify(exactly = 1) { repo.confirmPrint("p1", "dev-1") }
     }
 
     @Test
     fun `the web ticket carries customer, ready time, payment and note as header lines`() = runTest {
-        coEvery { repo.claimPrint(any(), any()) } returns true
+        coEvery { repo.reclamarComanda(any(), any()) } returns ReclamoDeImpresion(true)
         coEvery { repo.confirmPrint(any(), any()) } returns true
         val despacho = Despacho()
         val base = pedido()
@@ -162,8 +163,23 @@ class ImpresionDePedidoEnLineaTest {
     }
 
     @Test
+    fun `Ruling 9 a claim granted over an expired unconfirmed one prints POSIBLE REPETIDA on top, a normal claim does not`() = runTest {
+        // Antes de la salida física del papel: el aparato que reclamó primero murió sin confirmar; el reclamo vence y otro lo toma.
+        coEvery { repo.reclamarComanda("p1", "dev-1") } returns ReclamoDeImpresion(true, posibleRepetida = true)
+        coEvery { repo.confirmPrint(any(), any()) } returns true
+        val despacho = Despacho()
+        assertEquals(ResultadoImpresion.Impresa, armar(despacho).imprimirSiToca(pedido(), "dev-1"))
+        assertEquals("${MARCA_NEGRITA_ENCABEZADO}POSIBLE REPETIDA: revisa si ya salió", despacho.encabezado.first())
+        assertEquals("y debajo, la comanda de siempre", encabezadoDeComanda(pedido()), despacho.encabezado.drop(1))
+        // Un reclamo normal (el primero, o después de un papel confirmado) no lleva la marca.
+        coEvery { repo.reclamarComanda("p1", "dev-1") } returns ReclamoDeImpresion(true)
+        armar(despacho).imprimirSiToca(pedido(), "dev-1")
+        assertFalse(despacho.encabezado.any { it.contains("POSIBLE REPETIDA") })
+    }
+
+    @Test
     fun `lost claim prints nothing`() = runTest {
-        coEvery { repo.claimPrint("p1", "dev-1") } returns false
+        coEvery { repo.reclamarComanda("p1", "dev-1") } returns ReclamoDeImpresion(false)
         val despacho = Despacho()
         val resultado = armar(despacho).imprimirSiToca(pedido(), "dev-1")
         assertEquals(ResultadoImpresion.OtroAparato, resultado)
@@ -173,7 +189,7 @@ class ImpresionDePedidoEnLineaTest {
 
     @Test
     fun `printer failure does not confirm`() = runTest {
-        coEvery { repo.claimPrint("p1", "dev-1") } returns true
+        coEvery { repo.reclamarComanda("p1", "dev-1") } returns ReclamoDeImpresion(true)
         for (estado in listOf<EstadoDeComanda?>(EstadoDeComanda.NoSalio(listOf("Cocina"), "sin papel", "W-17"), null)) {
             val resultado = armar(Despacho(estado)).imprimirSiToca(pedido(), "dev-1")
             assertEquals(ResultadoImpresion.NoSalio, resultado)
@@ -183,7 +199,7 @@ class ImpresionDePedidoEnLineaTest {
 
     @Test
     fun `ticket says Para recoger and never Delivery`() = runTest {
-        coEvery { repo.claimPrint(any(), any()) } returns true
+        coEvery { repo.reclamarComanda(any(), any()) } returns ReclamoDeImpresion(true)
         coEvery { repo.confirmPrint(any(), any()) } returns true
         val despacho = Despacho()
         armar(despacho).imprimirSiToca(pedido(), "dev-1")
@@ -233,12 +249,12 @@ class ImpresionDePedidoEnLineaTest {
         val resultado = armar(despacho, hayImpresora = false).imprimirSiToca(pedido(), "dev-1")
         assertEquals(ResultadoImpresion.NoSalio, resultado)
         assertEquals(0, despacho.llamadas)
-        coVerify(exactly = 0) { repo.claimPrint(any(), any()) }
+        coVerify(exactly = 0) { repo.reclamarComanda(any(), any()) }
     }
 
     @Test
     fun `same order never prints twice at once from the same device`() = runTest {
-        coEvery { repo.claimPrint(any(), any()) } returns true
+        coEvery { repo.reclamarComanda(any(), any()) } returns ReclamoDeImpresion(true)
         coEvery { repo.confirmPrint(any(), any()) } returns true
         val despacho = Despacho().apply { compuerta = CompletableDeferred() }
         val impresion = armar(despacho)
@@ -248,7 +264,7 @@ class ImpresionDePedidoEnLineaTest {
         assertEquals(ResultadoImpresion.YaEnCurso, segunda)
         despacho.compuerta!!.complete(Unit)
         assertEquals(ResultadoImpresion.Impresa, primera.await())
-        coVerify(exactly = 1) { repo.claimPrint("p1", "dev-1") }
+        coVerify(exactly = 1) { repo.reclamarComanda("p1", "dev-1") }
         assertEquals(1, despacho.llamadas)
         // Terminada la primera, el pedido se puede volver a intentar (p. ej. el servidor lo pide otra vez).
         assertTrue(impresion.imprimirSiToca(pedido(), "dev-1") != ResultadoImpresion.YaEnCurso)
@@ -261,7 +277,7 @@ class ImpresionDePedidoEnLineaTest {
         assertEquals(ResultadoImpresion.Impresa, resultado)
         assertEquals(1, despacho.llamadas)
         assertEquals("Para recoger", despacho.tipo)
-        coVerify(exactly = 0) { repo.claimPrint(any(), any()) }
+        coVerify(exactly = 0) { repo.reclamarComanda(any(), any()) }
         coVerify(exactly = 0) { repo.confirmPrint(any(), any()) }
     }
 
@@ -275,16 +291,16 @@ class ImpresionDePedidoEnLineaTest {
 
     @Test
     fun `after a NoSalio this device does not claim that order again for 3 minutes`() = runTest {
-        coEvery { repo.claimPrint(any(), any()) } returns true
+        coEvery { repo.reclamarComanda(any(), any()) } returns ReclamoDeImpresion(true)
         coEvery { repo.confirmPrint(any(), any()) } returns true
         val despacho = Despacho(EstadoDeComanda.NoSalio(listOf("Cocina"), "sin papel", "W-17"))
         val impresion = armar(despacho)
         assertEquals(ResultadoImpresion.NoSalio, impresion.imprimirSiToca(pedido(), "dev-1"))
-        coVerify(exactly = 1) { repo.claimPrint("p1", "dev-1") }
+        coVerify(exactly = 1) { repo.reclamarComanda("p1", "dev-1") }
         // Dentro de los 3 minutos: ni reclamo ni papel (otro aparato la puede tomar).
         ahora += 179_000
         assertEquals(ResultadoImpresion.NoSalio, impresion.imprimirSiToca(pedido(), "dev-1"))
-        coVerify(exactly = 1) { repo.claimPrint("p1", "dev-1") }
+        coVerify(exactly = 1) { repo.reclamarComanda("p1", "dev-1") }
         assertEquals(1, despacho.llamadas)
         // «Reimprimir» ignora el descanso.
         despacho.estado = EstadoDeComanda.Salio
@@ -292,7 +308,7 @@ class ImpresionDePedidoEnLineaTest {
         // Pasados los 3 minutos vuelve a reclamar.
         ahora += 2_000
         assertEquals(ResultadoImpresion.Impresa, impresion.imprimirSiToca(pedido(), "dev-1"))
-        coVerify(exactly = 2) { repo.claimPrint("p1", "dev-1") }
+        coVerify(exactly = 2) { repo.reclamarComanda("p1", "dev-1") }
     }
 
     @Test
@@ -316,7 +332,7 @@ class ImpresionDePedidoEnLineaTest {
         val resultado = armar(despacho).imprimirSiToca(pedido(emptyList()), "dev-1")
         assertEquals(ResultadoImpresion.NoSalio, resultado)
         assertEquals(0, despacho.llamadas)
-        coVerify(exactly = 0) { repo.claimPrint(any(), any()) }
+        coVerify(exactly = 0) { repo.reclamarComanda(any(), any()) }
     }
 
     @Test

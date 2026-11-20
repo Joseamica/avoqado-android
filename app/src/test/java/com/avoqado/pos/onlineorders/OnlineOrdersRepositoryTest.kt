@@ -8,6 +8,7 @@ import com.avoqado.pos.core.domain.PlanTier
 import com.avoqado.pos.onlineorders.data.OnlineOrdersRepository
 import com.avoqado.pos.onlineorders.domain.AccionResultado
 import com.avoqado.pos.onlineorders.domain.OnlineOrderStatus
+import com.avoqado.pos.onlineorders.domain.ReclamoDeImpresion
 import io.mockk.coEvery
 import io.mockk.every
 import io.mockk.mockk
@@ -251,6 +252,59 @@ class OnlineOrdersRepositoryTest {
         val k = server.takeRequest(1, TimeUnit.SECONDS)!!
         assertEquals("/api/v1/mobile/venues/v1/online-orders/o1/print/confirm", k.requestUrl!!.encodedPath)
         assertEquals("dev-9", k.getHeader("x-device-id"))
+    }
+
+    @Test
+    fun `opening sends abrirPagadoEnLinea true`() = runTest {
+        server.enqueue(MockResponse().setBody("""{"success":true,"data":{}}"""))
+        assertEquals(AccionResultado.Hecho, repo.abrirPagadoEnLinea("o1"))
+        val r = server.takeRequest(1, TimeUnit.SECONDS)!!
+        assertEquals("POST", r.method)
+        assertEquals("/api/v1/mobile/venues/v1/online-orders/o1/accept", r.requestUrl!!.encodedPath)
+        // El cuerpo es EXACTAMENTE la apertura explícita del contrato (task-3b-report, «Contract»): nada de minutos.
+        assertEquals("""{"abrirPagadoEnLinea":true}""", r.body.readUtf8())
+        // La caja explica su propio error (nunca el PIN del gerente por un 403).
+        assertEquals("1", r.getHeader(ForbiddenInterceptor.LOCAL_ERROR_HEADER))
+
+        // Otra caja ya lo abrió (STALE con el pedido ACCEPTED): para esta caja es hecho, sin error.
+        server.enqueue(conflicto("ACCEPTED"))
+        assertEquals(AccionResultado.Hecho, repo.abrirPagadoEnLinea("o1"))
+        // El banco lo está cobrando por otra caja: no es error, es «confirmando».
+        server.enqueue(MockResponse().setResponseCode(409).setBody("""{"success":false,"code":"ONLINE_ORDER_CONFIRMING_PAYMENT","error":"Se está confirmando el pago"}"""))
+        assertTrue(repo.abrirPagadoEnLinea("o1") is AccionResultado.ConfirmandoPago)
+        // Nadie lo abrió a tiempo y se liberó: ya no está disponible.
+        server.enqueue(conflicto("EXPIRED"))
+        assertEquals(AccionResultado.YaNoDisponible(OnlineOrderStatus.EXPIRED), repo.abrirPagadoEnLinea("o1"))
+        // Sin red: no se encola (es un cobro con tarjeta).
+        server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AT_START))
+        assertEquals(AccionResultado.SinConexion, repo.abrirPagadoEnLinea("o1"))
+    }
+
+    @Test
+    fun `Ruling 14 one order is read through the mobile route with its items`() = runTest {
+        server.enqueue(MockResponse().setBody("""{"success":true,"data":${pedido(status = "COMPLETED", remaining = "0")}}"""))
+        val o = repo.pedidoEnLinea("o1").getOrThrow()
+        assertEquals("o1", o.orderId)
+        assertEquals(OnlineOrderStatus.COMPLETED, o.status)
+        assertEquals("Taco", o.items.single().name)
+        assertTrue(o.needsPrint)
+        val r = server.takeRequest(1, TimeUnit.SECONDS)!!
+        assertEquals("GET", r.method)
+        assertEquals("/api/v1/mobile/venues/v1/online-orders/o1", r.requestUrl!!.encodedPath)
+        // 404 «no es un pedido en línea»: falla, nunca un pedido inventado.
+        server.enqueue(MockResponse().setResponseCode(404).setBody("""{"success":false,"error":"Esta cuenta no es un pedido en línea."}"""))
+        assertTrue(repo.pedidoEnLinea("o9").isFailure)
+    }
+
+    @Test
+    fun `Ruling 9 the print claim reads posibleRepetida`() = runTest {
+        server.enqueue(MockResponse().setBody("""{"success":true,"data":{"claimed":true,"posibleRepetida":true}}"""))
+        server.enqueue(MockResponse().setBody("""{"success":true,"data":{"claimed":true}}"""))
+        server.enqueue(MockResponse().setBody("""{"success":true,"data":{"claimed":false}}"""))
+        assertEquals(ReclamoDeImpresion(true, posibleRepetida = true), repo.reclamarComanda("o1", "dev-9"))
+        assertEquals(ReclamoDeImpresion(true, posibleRepetida = false), repo.reclamarComanda("o1", "dev-9"))
+        assertEquals(ReclamoDeImpresion(false), repo.reclamarComanda("o1", "dev-9"))
+        assertEquals("dev-9", server.takeRequest(1, TimeUnit.SECONDS)!!.getHeader("x-device-id"))
     }
 
     @Test

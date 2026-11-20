@@ -182,4 +182,21 @@ object TextosPedidosEnLinea {
     fun beneficiosDeMas(n: Int) = "y $n más"
     /** Un cobro con saldo de esta caja que la lista guardada todavía no cuenta: «Cobrar» no abre otro (pudo ser parcial). */
     const val FOLIO_COBRADO_CON_SALDO = "Este folio ya tiene un cobro con saldo en esta caja: lo que falte se cobra al volver la conexión."
+
+    // D661 (Task 11): pagados con tarjeta en línea en «No, entran solos». Abrir = cobrar. iOS los copia igual.
+    const val SECCION_PAGADOS_EN_LINEA = "Pagados en línea · ábrelo para cobrar"
+    const val ABRIR_Y_COBRAR = "Abrir y cobrar"
+    const val ABRIENDO = "Abriendo…"
+    /** Abrir es cobrar una tarjeta: necesita conexión. Se dice en el botón, antes de tocarlo. */
+    const val ABRIR_NECESITA_CONEXION = "Abrir y cobrar necesita conexión"
+    const val COBRANDO_EN_OTRA_CAJA = "Cobrándose en otra caja…"
+    const val PAGADO_EN_LINEA_AYUDA = "Pagó con tarjeta en línea: se cobra al abrirlo y sale su comanda."
+    const val PAGADOS_EN_LINEA_SIN_PERMISO = "Pide a quien pueda atender pedidos que lo abra."
+    fun totalPagadoEnLinea(monto: String) = "Total $monto"
+    /** El resultado de abrir (lo abrió esta caja u otra ya lo había abierto): dónde quedó. */
+    fun abiertoEnPorEntregar(folio: String) = "El pedido $folio ya está en «Por entregar»."
+    /** Sin red al abrir: no se sabe si llegó; el servidor nunca lo cobra dos veces. */
+    const val ABRIR_SIN_CONEXION = "Sin conexión: no se pudo confirmar. Al volver la conexión la lista dice dónde quedó; nunca se cobra dos veces."
+    /** Ruling 9: arriba de una comanda cuyo reclamo anterior venció sin confirmarse. */
+    const val POSIBLE_REPETIDA = "POSIBLE REPETIDA: revisa si ya salió"
 }

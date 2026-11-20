@@ -135,6 +135,35 @@ class PorPagarTest {
     }
 
     @Test
+    fun `D661 to-pay sends the card-alert header and reads tarjetasPorAbrir in pesos and comandasPorImprimir`() = runTest {
+        val d661 = ""","tarjetasPorAbrir":[
+            {"orderId":"t1","orderNumber":"T-0042","customerName":"Ana N.","total":250.5,"createdAt":"2026-11-20T18:00:00.000Z","cobrando":false},
+            {"orderNumber":"roto"},
+            {"orderId":"t2","orderNumber":"T-0043","customerName":"","total":0.29,"createdAt":"2026-11-20T18:01:00.000Z","cobrando":true}],
+            "comandasPorImprimir":[{"orderId":"c1","orderNumber":"T-0040"},{"orderNumber":"sin id"}]"""
+        server.enqueue(MockResponse().setBody(cuerpo().replace("\"pollSeconds\":30", "\"pollSeconds\":30$d661")))
+        server.enqueue(MockResponse().setBody(cuerpo()))
+        val lista = repo.porPagar(conLatido = false).getOrThrow()
+        // La caja que suena y abre se anuncia SIEMPRE (el SERVIDOR revisa orders:update); con o sin el latido de folios.
+        assertEquals("1", server.takeRequest(1, TimeUnit.SECONDS)!!.getHeader("x-online-orders-card-alert"))
+        // Ruling 13: el total llega en PESOS y aquí va en centavos exactos; un renglón dañado se salta.
+        assertEquals(listOf("t1", "t2"), lista.tarjetasPorAbrir.map { it.orderId })
+        val t1 = lista.tarjetasPorAbrir[0]
+        assertEquals("T-0042", t1.orderNumber); assertEquals("Ana N.", t1.customerName); assertEquals(25050L, t1.totalCents)
+        assertEquals(Instant.parse("2026-11-20T18:00:00Z"), t1.createdAt); assertFalse(t1.cobrando)
+        val t2 = lista.tarjetasPorAbrir[1]
+        assertNull("sin nombre es null, no una cadena vacía", t2.customerName); assertEquals(29L, t2.totalCents); assertTrue(t2.cobrando)
+        assertEquals(listOf("c1"), lista.comandasPorImprimir.map { it.orderId })
+        assertEquals("T-0040", lista.comandasPorImprimir.single().orderNumber)
+        // La copia guardada las trae igual (para enseñarlas sin red; nunca para sonar).
+        assertEquals(listOf("t1", "t2"), repo.porPagarGuardado()!!.tarjetasPorAbrir.map { it.orderId })
+        // Un SERVIDOR viejo no las manda: listas vacías, sin error.
+        val vieja = repo.porPagar(conLatido = true).getOrThrow()
+        assertTrue(vieja.tarjetasPorAbrir.isEmpty()); assertTrue(vieja.comandasPorImprimir.isEmpty())
+        assertEquals("1", server.takeRequest(1, TimeUnit.SECONDS)!!.getHeader("x-online-orders-card-alert"))
+    }
+
+    @Test
     fun `porPagar manda seccion y cursor y no pisa lo guardado con otra pagina`() = runTest {
         server.enqueue(MockResponse().setBody(cuerpo(folio("o1"), cursorPagar = "c1")))
         server.enqueue(MockResponse().setBody(cuerpo(folio("o7"))))
@@ -573,6 +602,12 @@ class PorPagarBandejaTest {
     fun `the menu number adds por aceptar and por pagar`() {
         assertEquals(5, numeroDelMenu(porAceptar = 2, porPagar = 3))
         assertEquals(0, numeroDelMenu(0, 0))
+    }
+
+    @Test
+    fun `D661 the menu number adds the paid orders to open`() {
+        assertEquals(6, numeroDelMenu(porAceptar = 2, porPagar = 3, porAbrir = 1))
+        assertEquals(1, numeroDelMenu(0, 0, porAbrir = 1))
     }
 
     @Test
