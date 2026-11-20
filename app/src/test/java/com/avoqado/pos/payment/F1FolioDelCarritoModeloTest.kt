@@ -127,15 +127,21 @@ class F1FolioDelCarritoModeloTest {
         val admitidos = mutableListOf<Int>()
 
         /**
-         * El SERVIDOR (contrato §1): con `expectedRemainingCents`, al centavo (saldo esperado == real y monto ≤ real) o 412; sin él, el
-         * margen de $1 de las apps viejas cuando la cuenta ya tiene abono. Admitido = la tarjeta queda en duda en el lector.
+         * El SERVIDOR (regla 1 de la unión con develop, `mapa-union-android.md` §11): con `expectedRemainingCents`, el importe (sin
+         * propina) no puede pasar de lo que falta, sin margen; si pasa, 412 `ORDER_BALANCE_CHANGED` con `remainingCents` y nada llega
+         * al lector. Lo que la caja vio no decide nada más. Sin el campo, el margen de $1 de D7 sólo con abono. Admitido = la tarjeta
+         * queda en duda en el lector.
          */
         fun admision(requestId: String, saldoReal: Int, conAbono: Boolean): TerminalPaymentResult {
             val esperado = saldosEsperados.last()
             val monto = montos.last()
-            val rechazo = if (esperado != null) esperado != saldoReal || monto > saldoReal else conAbono && monto > saldoReal + 100
-            return if (rechazo) TerminalPaymentResult.Error("El cobro no cuadra", requestId = requestId, noSeCreo = true, saldoVigenteCents = saldoReal)
-            else TerminalPaymentResult.Undetermined("x", requestId).also { admitidos += monto }
+            val rechazo = if (esperado != null) monto > saldoReal else conAbono && monto > saldoReal + 100
+            return if (rechazo) {
+                TerminalPaymentResult.Error("La cuenta cambió mientras se cobraba", requestId = requestId, noSeCreo = true,
+                    cuentaCambio = true, saldoVigenteCents = saldoReal)
+            } else {
+                TerminalPaymentResult.Undetermined("x", requestId).also { admitidos += monto }
+            }
         }
 
         /** Bloque 3: la creación de la orden y la lectura del saldo se quedan colgadas hasta que la prueba las suelta. */
@@ -872,13 +878,9 @@ class F1FolioDelCarritoModeloTest {
         assertEquals(Restauracion.Hecha, caja.retomarFolio("order-a"))
         assertEquals("montaje: la caja ve $60", 6_000, caja.carrito.cartState.value.totalCents)
 
-        // Otra caja abona $30 entre la lectura y el envío. El SERVIDOR sólo admite el saldo real, al centavo.
+        // Otra caja abona $30 entre la lectura y el envío. El SERVIDOR no admite más de lo que de verdad falta.
         servidor.saldos["order-a"] = OrderRepository.SaldoDeLaOrden(3_000, "PARTIAL", "PENDING")
-        servidor.proximoEnvio = { _, requestId ->
-            val esperado = servidor.saldosEsperados.last()
-            if (esperado == 3_000) TerminalPaymentResult.Undetermined("x", requestId)
-            else TerminalPaymentResult.Error("El cobro no cuadra", requestId = requestId, noSeCreo = true, saldoVigenteCents = 3_000)
-        }
+        servidor.proximoEnvio = { _, requestId -> servidor.admision(requestId, saldoReal = 3_000, conAbono = true) }
         val enviosAntes = servidor.envios.size
         assertTrue(caja.cobrar())
         caja.tarjeta()
@@ -920,10 +922,7 @@ class F1FolioDelCarritoModeloTest {
 
         // Otra caja abona $30 antes del envío: 412 con lo que de verdad falta.
         servidor.saldos["order-a"] = OrderRepository.SaldoDeLaOrden(3_000, "PARTIAL", "PENDING")
-        servidor.proximoEnvio = { _, requestId ->
-            if (servidor.saldosEsperados.last() == 3_000) TerminalPaymentResult.Undetermined("x", requestId)
-            else TerminalPaymentResult.Error("El cobro no cuadra", requestId = requestId, noSeCreo = true, saldoVigenteCents = 3_000)
-        }
+        servidor.proximoEnvio = { _, requestId -> servidor.admision(requestId, saldoReal = 3_000, conAbono = true) }
         assertTrue(caja.cobrar())
         caja.tarjeta()
         advanceUntilIdle()
@@ -976,7 +975,90 @@ class F1FolioDelCarritoModeloTest {
         advanceUntilIdle()
         assertEquals(9_950, servidor.saldosEsperados.last())
         assertEquals(9_950, servidor.montos.last())
-        assertTrue(caja.cobro.state.value is PaymentFlowState.Undetermined)
+        assertEquals(listOf(9_950), servidor.admitidos)
+    }
+
+    // MARK: - Unión F1 × develop: la regla 1 del SERVIDOR, la variante B y el cobro abierto (D9)
+
+    /**
+     * N1 (`mapa-union-android.md` §7 y §11, variante B). Venta partida POR PRODUCTO cuyo total local va 1 ¢ arriba del SERVIDOR, sin
+     * que nadie toque la cuenta. Con el saldo de la parte 1 confirmado por el SERVIDOR (D7), la última parte es exactamente lo que
+     * falta: un solo envío. Nunca queda trabada ni el lector recibe más de lo que falta.
+     */
+    @Test
+    fun porProducto_totalLocalUnCentavoArriba_conSaldoConfirmado_laUltimaParteEsExacta() = runTest { ultimaPartePorProducto(saldoConfirmado = true) }
+
+    /** N1, sin confirmar: el campo viaja con el número local (B), un 412, la caja toma `remainingCents` y el segundo envío es exacto. */
+    @Test
+    fun porProducto_totalLocalUnCentavoArriba_sinConfirmar_un412YLaSegundaVezExacta() = runTest { ultimaPartePorProducto(saldoConfirmado = false) }
+
+    private fun TestScope.ultimaPartePorProducto(saldoConfirmado: Boolean) {
+        val servidor = Servidor()
+        val faltaEnElServidor = 2_999 // el refresco vale $30.00 en la caja; el SERVIDOR dice que falta $29.99
+        servidor.proximoEnvio = { _, requestId -> servidor.admision(requestId, faltaEnElServidor, conAbono = true) }
+        val caja = Caja(servidor)
+        caja.armar("cli-ana", "Ana")
+        val idPizza = caja.carrito.cartState.value.items.first { it.name == "Pizza" }.id
+        // La parte 1 (la pizza) ya se cobró sobre order-a: el cobro la aplica y `CheckoutScreen` liga lo que queda, con el cobro abierto.
+        caja.carrito.abrirCobro()
+        caja.carrito.aplicarCobroConfirmado(
+            splitType = "BYPRODUCT", paidItemIds = setOf(idPizza),
+            remainingBalanceCents = if (saldoConfirmado) faltaEnElServidor else 3_000,
+            saldoDelServidor = saldoConfirmado,
+        )
+        caja.carrito.markPendingSplitOrder("order-a")
+        caja.carrito.cerrarCobro()
+
+        // La última parte: lo que queda en el carrito.
+        assertTrue(caja.cobrar())
+        assertEquals("order-a", caja.carrito.chargingAgainstOrderId)
+        caja.tarjeta()
+        advanceUntilIdle()
+        if (!saldoConfirmado) {
+            assertEquals("B: el campo viaja aunque el número sea de la caja", 3_000, servidor.saldosEsperados.last())
+            assertTrue("nada llegó al lector", servidor.admitidos.isEmpty())
+            caja.atenderSaldoVigente()
+            advanceUntilIdle()
+            assertEquals("la caja toma lo que de verdad falta", listOf("Saldo pendiente" to faltaEnElServidor),
+                caja.carrito.cartState.value.items.map { it.name to it.unitPrice })
+            assertTrue(caja.cobrar())
+            caja.tarjeta()
+            advanceUntilIdle()
+        }
+        assertEquals("el lector recibe exactamente lo que falta, una vez", listOf(faltaEnElServidor), servidor.admitidos)
+        assertEquals("envíos de la última parte", if (saldoConfirmado) 1 else 2, servidor.envios.size)
+        assertTrue("siempre sobre A", servidor.envios.all { it == "order-a" })
+        assertEquals("con el campo, siempre", faltaEnElServidor, servidor.saldosEsperados.last())
+    }
+
+    /**
+     * N6 (§6.2). A queda en pantalla ligada a su folio en duda ([Seguir]) y la cajera vuelve a «Cobrar»: el cobro se abre (D9: la
+     * venta fotografiada no cambia por nada que no sea el propio cobro). Si el desenlace de A llega con ese cobro abierto, el carrito
+     * no se toca a medias: se aplica al cerrar el cobro. Antes D9 frenaba el vaciado y el «Saldo pendiente», pero el vínculo sí tomaba
+     * el saldo nuevo y el carrito se quedaba con el total viejo.
+     */
+    @Test
+    fun desenlaceDeA_conSuCobroAbierto_seAplicaAlCerrarlo() = runTest {
+        val servidor = Servidor()
+        val caja = Caja(servidor)
+        tarjetaDeAEnDuda(caja)
+        caja.seguir()
+        assertTrue(caja.cobrar())
+        val antes = caja.carrito.cartState.value
+
+        servidor.pendientesLocales.remove("order-a")
+        servidor.saldos["order-a"] = OrderRepository.SaldoDeLaOrden(6_000, "PARTIAL", "PENDING")
+        servidor.foliosDeTarjeta.emit(com.avoqado.pos.payment.data.DesenlaceDeFolio("venue-1", "order-a", "req-1"))
+        advanceUntilIdle()
+        assertEquals("con el cobro abierto la venta no cambia", antes, caja.carrito.cartState.value)
+        assertNull("y nada lo intentó a medias", caja.carrito.avisoDelCobroAbierto.value)
+
+        caja.carrito.cerrarCobro()
+        caja.carrito.releaseChargingOrder()
+        advanceUntilIdle()
+        assertEquals("al cerrar el cobro, A queda con su resto", listOf("Saldo pendiente" to 6_000),
+            caja.carrito.cartState.value.items.map { it.name to it.unitPrice })
+        assertEquals("y sigue contra A", "order-a", caja.carrito.resolvePendingSplitOrderForCharge())
     }
 
     // MARK: - Cabos del bloque 2: «Saldo por confirmar» y «Entendido»
