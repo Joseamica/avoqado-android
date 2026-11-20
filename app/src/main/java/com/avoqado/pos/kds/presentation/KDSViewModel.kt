@@ -140,6 +140,13 @@ class KDSViewModel @Inject constructor(
     val avisoDeRecientes: StateFlow<AvisoDeDeshacer?> = _avisoDeRecientes.asStateFlow()
     private var hojaDeRecientes = 0
 
+    /** Cuántos «Deshacer» confirmó el SERVIDOR (una lectura que empezó antes de uno nuevo se vuelve a pedir). */
+    private var deshechas = 0
+
+    /** D17: la hoja de «Recientes» se está leyendo (no enseña «nada se marcó» ni filas de otra apertura). */
+    private val _recientesLeyendo = MutableStateFlow(false)
+    val recientesLeyendo: StateFlow<Boolean> = _recientesLeyendo.asStateFlow()
+
     /** Sin red: el tablero se queda con lo que tenía y lo DICE (neutro, nunca rojo). */
     private val _sinConexion = MutableStateFlow(false)
     val sinConexion: StateFlow<Boolean> = _sinConexion.asStateFlow()
@@ -681,14 +688,32 @@ class KDSViewModel @Inject constructor(
         }
     }
 
+    /**
+     * D17 (rediseño tras Codex r17, una sola regla para la hoja de «Recientes»): cada apertura es una hoja NUEVA (`hojaDeRecientes`)
+     * que arranca vacía y «leyendo» (nunca enseña botones de otra estación ni de otra apertura). Lo que llega tarde se descarta:
+     * la lectura de una hoja ya cerrada, el aviso de un toque de otra hoja, y una lectura que empezó ANTES de que se confirmara un
+     * «Deshacer» (`deshechas`): ésa se vuelve a pedir, porque puede traer la comanda que ya regresó a la cocina.
+     */
     fun abrirRecientes() {
         val tablero = _vista.value as? VistaDeCocina.Tablero ?: return
-        _avisoDeRecientes.value = null
         val hoja = ++hojaDeRecientes
+        _avisoDeRecientes.value = null
+        _recientes.value = emptyList()
+        _recientesNoLeidas.value = null
+        _recientesLeyendo.value = true
+        leerRecientes(hoja, tablero.estacion.id, intentos = 3)
+    }
+
+    private fun leerRecientes(hoja: Int, estacionId: String, intentos: Int) {
+        val deshechasAlEmpezar = deshechas
         viewModelScope.launch {
-            val leidas = kdsRepository.fetchRecientes(tablero.estacion.id)
-            // D17 (Codex r16 #2): la lectura de una hoja que ya se cerró no pisa la de la hoja abierta ahora.
+            val leidas = kdsRepository.fetchRecientes(estacionId)
             if (hoja != hojaDeRecientes) return@launch
+            if (deshechasAlEmpezar != deshechas && intentos > 1) {
+                leerRecientes(hoja, estacionId, intentos - 1)
+                return@launch
+            }
+            _recientesLeyendo.value = false
             leidas
                 .onSuccess {
                     _recientes.value = it
@@ -709,14 +734,17 @@ class KDSViewModel @Inject constructor(
         val reciente = _recientes.value.firstOrNull { it.id == id }
         val folio = reciente?.sourceKey
         // D17: con tiempos, el SERVIDOR sólo la regresa si sigue siendo la que se vio terminada (su hora de terminada).
-        val terminadaEn = reciente?.takeIf { it.preparationVersion == 1 }?.completedAt
+        val conTiempos = reciente?.preparationVersion == 1
+        val terminadaEn = reciente?.takeIf { conTiempos }?.completedAt
         val hoja = hojaDeRecientes
         viewModelScope.launch {
             _avisoDeRecientes.value = null
             kdsRepository.recall(id, terminadaEn)
                 .onSuccess {
-                    // D17 (Codex r16 #3): sólo la fila que se deshizo; si otra tablet la volvió a terminar (otra hora), se queda.
-                    _recientes.value = _recientes.value.filterNot { it.id == id && it.completedAt == reciente?.completedAt }
+                    deshechas++
+                    // La de un solo Listo el SERVIDOR la regresa por id (se quita la fila); la de tiempos, sólo si es la misma
+                    // terminada que se vio (si otra tablet la volvió a terminar, con otra hora, se queda).
+                    _recientes.value = _recientes.value.filterNot { it.id == id && (!conTiempos || it.completedAt == terminadaEn) }
                     // Ronda 4: LISTO + Deshacer inmediato (antes de que un sondeo confirme el bump) no puede
                     // quedar tapado por el blindaje de M4 — el servidor SÍ va a volver a mandar esta comanda.
                     bumpsRecientes.remove(id)

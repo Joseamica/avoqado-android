@@ -220,6 +220,7 @@ object TextosDeCocina {
     const val CAMBIAR_ESTACION = "Cambiar de estación"
     const val LISTO = "Listo"
     const val RECIENTES = "Recientes"
+    const val RECIENTES_LEYENDO = "Leyendo…"
     const val RECIENTES_DETALLE = "Lo que se marcó como listo en la última hora"
     const val RECIENTES_VACIO = "Nada se marcó como listo en la última hora."
     const val DESHACER = "Deshacer"

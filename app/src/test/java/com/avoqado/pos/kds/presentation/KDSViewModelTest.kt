@@ -416,6 +416,53 @@ class KDSViewModelTest {
     }
 
     @Test
+    fun `D17 una lectura que empezo antes de confirmarse un Deshacer se vuelve a pedir`() = runTest {
+        val conTiempos = comanda("k9", 500).copy(preparationVersion = 1, completedAt = 1_700_000_000_123)
+        val vieja = kotlinx.coroutines.CompletableDeferred<Result<List<KDSOrder>>>()
+        coEvery { repo.fetchRecientes("st-barra") } returns Result.success(listOf(conTiempos)) coAndThen { vieja.await() } andThen Result.success(emptyList())
+        val respuesta = kotlinx.coroutines.CompletableDeferred<Result<Unit>>()
+        coEvery { repo.recall(any(), any()) } coAnswers { respuesta.await() }
+        val vm = armar()
+        vm.abrirRecientes()
+        vm.deshacer("k9")
+        vm.abrirRecientes() // reabre: la lectura sale antes de que el SERVIDOR confirme
+        assertTrue(vm.recientesLeyendo.value)
+        respuesta.complete(Result.success(Unit))
+        vieja.complete(Result.success(listOf(conTiempos))) // trae la comanda que ya regresó a la cocina
+        advanceUntilIdle()
+        assertEquals(emptyList<String>(), vm.recientes.value.map { it.id }) // se volvió a leer
+        assertFalse(vm.recientesLeyendo.value)
+    }
+
+    @Test
+    fun `D17 abrir Recientes arranca vacia y leyendo, sin filas de la apertura anterior`() = runTest {
+        val cocina = comanda("k1", 500).copy(preparationVersion = 1, completedAt = 1_700_000_000_123)
+        val lectura = kotlinx.coroutines.CompletableDeferred<Result<List<KDSOrder>>>()
+        coEvery { repo.fetchRecientes("st-barra") } returns Result.success(listOf(cocina)) coAndThen { lectura.await() }
+        val vm = armar()
+        vm.abrirRecientes()
+        assertEquals(listOf("k1"), vm.recientes.value.map { it.id })
+        vm.abrirRecientes()
+        assertEquals(emptyList<KDSOrder>(), vm.recientes.value)
+        assertTrue(vm.recientesLeyendo.value)
+    }
+
+    @Test
+    fun `D17 la de un solo Listo se quita al deshacerla aunque otra tablet le cambiara la hora`() = runTest {
+        val v0 = comanda("k8", 400).copy(completedAt = 1_700_000_000_000)
+        coEvery { repo.fetchRecientes("st-barra") } returnsMany listOf(Result.success(listOf(v0)), Result.success(listOf(v0.copy(completedAt = 1_700_000_500_000))))
+        val respuesta = kotlinx.coroutines.CompletableDeferred<Result<Unit>>()
+        coEvery { repo.recall(any(), any()) } coAnswers { respuesta.await() }
+        val vm = armar()
+        vm.abrirRecientes()
+        vm.deshacer("k8")
+        vm.abrirRecientes()
+        respuesta.complete(Result.success(Unit))
+        advanceUntilIdle()
+        assertEquals(emptyList<String>(), vm.recientes.value.map { it.id })
+    }
+
+    @Test
     fun `D17 la respuesta de un Deshacer de una hoja ya cerrada no se pinta en la hoja nueva`() = runTest {
         val conTiempos = comanda("k9", 500).copy(preparationVersion = 1, completedAt = 1_700_000_000_123)
         coEvery { repo.fetchRecientes("st-barra") } returns Result.success(listOf(conTiempos))
