@@ -6128,6 +6128,9 @@ class PaymentFlowViewModel @Inject constructor(
         // ENCOLADA todavía no llega al servidor, que es quien arma la comanda de pantalla: sus estaciones «sólo
         // pantalla» salen en papel de respaldo.
         val servidorLaTiene = (_state.value as? PaymentFlowState.Success)?.isQueued != true
+        // D6 de Flautas (20-nov): el SERVIDOR arma la comanda de pantalla al LIQUIDAR la venta, no con un abono (Codex r1 #1).
+        // Sólo con la venta liquidada se puede callar el «No salió» de una estación «sólo pantalla» sin impresora.
+        val liquidada = servidorLaTiene && serverRemainingBalanceCents == 0
         val origenDelFolio = externalIdDeLaVenta?.let { "sale:$it" }
         // 🔴 Codex r10 #3 (familia B): la FOTO de esta venta antes de lanzar el trabajo. La impresión y la comanda esperan
         // (hasta ~1 min con reintentos); si mientras tanto empieza otra venta, siguen con SU recibo, SU orden y SU negocio, nunca
@@ -6149,7 +6152,7 @@ class PaymentFlowViewModel @Inject constructor(
             // ~1 minuto: si viviera en la coroutine del pago, congelaría la caja con el
             // cliente enfrente. `PaymentFlowViewModelTest` fija que `state` llega a `Success`
             // aunque la comanda siga reintentando.
-            despacharComanda(cart, servidorLaTiene, origenDelFolio, ordenDeLaComanda, negocioDeLaComanda, venta)
+            despacharComanda(cart, servidorLaTiene, origenDelFolio, ordenDeLaComanda, negocioDeLaComanda, venta, liquidada)
         }
     }
 
@@ -6171,6 +6174,8 @@ class PaymentFlowViewModel @Inject constructor(
         orderId: String?,
         venueId: String?,
         venta: Int,
+        /** D6 de Flautas: la venta quedó liquidada en el servidor (ya le armó su comanda de pantalla). Ver [autoPrintAfterPayment]. */
+        liquidada: Boolean = false,
     ) {
         val realItems = cart.items.filter {
             it.type is CartItemType.ProductItem && !it.locked
@@ -6195,7 +6200,7 @@ class PaymentFlowViewModel @Inject constructor(
                 comandaDispatcher.despacharEnFondo(
                     venueId = venueId, orderNumber = orderNumber, pedidos = coursePedidos,
                     orderId = orderId, servidorLaTiene = servidorLaTiene, origenDelFolio = origenDelFolio,
-                    alCambiarEstado = { estado -> aplicarEstadoDeComanda(estado, orderNumber, venta) },
+                    alCambiarEstado = { estado -> aplicarEstadoDeComanda(estado, orderNumber, venta, pantallaPuedeCallar = liquidada) },
                 ).join()
                 return
             }
@@ -6247,7 +6252,7 @@ class PaymentFlowViewModel @Inject constructor(
                 // Etapa 3 del KDS (3.4): la caja decide por estación — ver `KitchenDeliveryPolicy`.
                 servidorLaTiene = servidorLaTiene,
                 origenDelFolio = origenDelFolio,
-                alCambiarEstado = { estado -> aplicarEstadoDeComanda(estado, orderNumber, venta) },
+                alCambiarEstado = { estado -> aplicarEstadoDeComanda(estado, orderNumber, venta, pantallaPuedeCallar = liquidada) },
                 // «No lleva comanda»: el cobro de mostrador es una venta del POS.
                 omitirSinComanda = true,
             )
@@ -6312,12 +6317,16 @@ class PaymentFlowViewModel @Inject constructor(
         orderNumber: String,
         /** La venta de la comanda (Codex r10 #3). null = no es de una venta en particular. */
         venta: Int? = null,
+        /** D6 de Flautas: la venta está liquidada, así que [EstadoDeComanda.NoSalio.pantallaLaRecibe] puede callar el aviso. */
+        pantallaPuedeCallar: Boolean = false,
     ) {
         // «No lleva comanda» (10-nov): no hacía falta papel. No pinta, no borra el aviso de otra venta, no guarda nada.
         if (estado is EstadoDeComanda.SinComanda) return
         // D2 (founder, 28-oct): un negocio sin ninguna impresora de cocina (una tienda) no tiene comanda que avisar. Una
         // impresora de cocina que FALLA sí se sigue avisando (no trae la marca).
         if (estado is EstadoDeComanda.NoSalio && estado.sinImpresoraDeCocina) return
+        // D6 de Flautas (20-nov): la pantalla «sólo pantalla» sin impresora ya la tiene por el servidor (venta liquidada).
+        if (pantallaPuedeCallar && estado is EstadoDeComanda.NoSalio && estado.pantallaLaRecibe) return
         // 🔴 Familia B: un «Insistiendo» de la comanda de una venta que ya no está en pantalla no se pinta sobre la nueva (describe
         // algo en curso de otra venta). El veredicto final SÍ se dice, con su folio: una comanda que no salió nunca se esconde
         // (P1 #6 de Codex, 7-sep; ver `startPaymentFlow`).

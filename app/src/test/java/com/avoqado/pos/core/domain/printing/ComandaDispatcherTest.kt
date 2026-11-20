@@ -998,64 +998,91 @@ class ComandaDispatcherTest {
         assertEquals(listOf("sale:ext-1:st_barra"), cerradas.captured.map { it.mensaje.sourceKey })
     }
 
-    /** Ninguna impresora: la estación de respaldo (Barra) se salta, igual que la de una tienda sin impresoras. */
-    private fun sinNingunaImpresora(vararg saltadas: String) {
-        coEvery { comandaPrinter.printComandas(any(), any(), any(), any(), any()) } returns ComandaPrinter.Result(
-            attempted = saltadas.size, printed = 0, skippedNoPrinter = saltadas.size, lastError = null,
-            skippedStations = saltadas.toList(), failedPlans = emptyList(),
-        )
+    /** Ninguna impresora a la mano: TODOS los planes se saltan (con su plan, como `ComandaPrinter`), con estos nombres. */
+    private fun sinNingunaImpresora() {
+        coEvery { comandaPrinter.printComandas(any(), any(), any(), any(), any()) } answers {
+            val p = firstArg<List<TicketPlan>>()
+            val config = secondArg<PrintConfig>()
+            ComandaPrinter.Result(
+                attempted = p.size, printed = 0, skippedNoPrinter = p.size, lastError = null,
+                skippedStations = p.map { plan -> config.stations.firstOrNull { it.id == plan.stationId }?.name ?: "SIN ESTACIÓN" },
+                failedPlans = emptyList(), skippedPlans = p,
+            )
+        }
     }
 
     /**
-     * Flautas (20-nov, hz:0555ee15:D6): COCINA 1 «sólo pantalla», sin impresora en todo el negocio, y la pantalla no acusa
-     * por el WiFi. La ronda llegó al servidor, así que la pantalla la ve por internet: el papel de respaldo es imposible y
-     * avisar «No salió la comanda» en CADA orden es falso. Se calla como el negocio sin cocina (D2); la banda de la racha
-     * («no se alcanza por el WiFi») sigue diciéndolo fijo.
+     * Flautas (20-nov, hz:0555ee15:D6): Barra «sólo pantalla», sin impresora a la mano, y su pantalla no acusa por el WiFi.
+     * La venta llegó al servidor, que le arma la comanda de pantalla: el papel de respaldo es imposible y avisar «No salió»
+     * en CADA orden es falso. Sale marcada `pantallaLaRecibe`; cada pantalla decide si calla. El reporte a la libreta sigue.
      */
     @Test
-    fun `D6 en linea la solo pantalla sin acuse y sin ninguna impresora no se avisa - su pantalla la tiene por el servidor`() = runTest {
+    fun `D6 en linea la solo pantalla sin acuse y sin ninguna impresora sale marcada - su pantalla la tiene por el servidor`() = runTest {
         every { printConfigRepository.getCurrentConfig() } returns conBarraSoloPantalla
-        sinNingunaImpresora("Barra")
+        sinNingunaImpresora()
 
         val estado = despachadorConCola().dispatch(
             venueId = "venue-1", lines = listOf(cafe), orderNumber = "1234", orderType = "En tienda",
             servidorLaTiene = true, origenDelFolio = "sale:ext-1",
-        )
+        ) as EstadoDeComanda.NoSalio
 
-        assertTrue((estado as EstadoDeComanda.NoSalio).sinImpresoraDeCocina)
+        assertTrue(estado.pantallaLaRecibe)
+        assertFalse("no es la marca D2 de negocio sin cocina", estado.sinImpresoraDeCocina)
     }
 
-    /** D6: sin red la pantalla no la recibe por el servidor y nadie la tiene: el aviso se queda. */
+    /** D6: sin red la pantalla no la recibe por el servidor y nadie la tiene. */
     @Test
-    fun `D6 sin red la solo pantalla sin acuse y sin impresora SI se avisa`() = runTest {
+    fun `D6 sin red la solo pantalla sin acuse y sin impresora NO sale marcada`() = runTest {
         every { printConfigRepository.getCurrentConfig() } returns conBarraSoloPantalla
-        sinNingunaImpresora("Barra")
+        sinNingunaImpresora()
 
         val estado = despachadorConCola().dispatch(
             venueId = "venue-1", lines = listOf(cafe), orderNumber = "1234", orderType = "En tienda",
             servidorLaTiene = false, origenDelFolio = "sale:ext-1",
-        )
+        ) as EstadoDeComanda.NoSalio
 
-        assertFalse((estado as EstadoDeComanda.NoSalio).sinImpresoraDeCocina)
+        assertFalse(estado.pantallaLaRecibe)
     }
 
-    /** D6: si también se quedó sin papel una estación que NO es de pantalla (Cocina), nadie más la tiene: se avisa. */
+    /** D6: si también se quedó sin papel una estación que NO es de pantalla (Cocina), nadie más la tiene. */
     @Test
-    fun `D6 en linea si tambien se salto una estacion que no es de pantalla SI se avisa`() = runTest {
+    fun `D6 en linea si tambien se salto una estacion que no es de pantalla NO sale marcada`() = runTest {
         every { printConfigRepository.getCurrentConfig() } returns conBarraSoloPantalla
-        sinNingunaImpresora("Cocina", "Barra")
+        sinNingunaImpresora()
 
         val estado = despachadorConCola().dispatch(
             venueId = "venue-1", lines = listOf(taco, cafe), orderNumber = "1234", orderType = "En tienda",
             servidorLaTiene = true, origenDelFolio = "sale:ext-1",
-        )
+        ) as EstadoDeComanda.NoSalio
 
-        assertFalse((estado as EstadoDeComanda.NoSalio).sinImpresoraDeCocina)
+        assertFalse(estado.pantallaLaRecibe)
+    }
+
+    /**
+     * Codex r1 #3: una estación REAL «sólo pantalla» llamada «SIN ESTACIÓN» y otro producto sin ruta ni default. Los dos se
+     * saltan con el MISMO nombre; por nombre se callaría lo sin ruta. Se decide por id: lo sin ruta no tiene, no se calla.
+     */
+    @Test
+    fun `D6 una estacion llamada SIN ESTACION no esconde lo que se quedo sin ruta`() = runTest {
+        val sinEstacionDePantalla = StationInfo(id = "st_x", name = "SIN ESTACIÓN", printerId = null, active = true, hasKitchenDisplay = true)
+        every { printConfigRepository.getCurrentConfig() } returns PrintConfig(
+            stations = listOf(sinEstacionDePantalla),
+            productOverrides = listOf(ProductOverride(productId = "prod_cafe", printStationId = "st_x")),
+            defaultStationId = null,
+        )
+        sinNingunaImpresora()
+
+        val estado = despachadorConCola().dispatch(
+            venueId = "venue-1", lines = listOf(taco, cafe), orderNumber = "1234", orderType = "En tienda",
+            servidorLaTiene = true, origenDelFolio = "sale:ext-1",
+        ) as EstadoDeComanda.NoSalio
+
+        assertFalse(estado.pantallaLaRecibe)
     }
 
     /** D6: con una impresora que TRONÓ el negocio sí espera papel: se avisa y queda para «Volver a imprimir». */
     @Test
-    fun `D6 en linea un respaldo cuya impresora trono SI se avisa`() = runTest {
+    fun `D6 en linea un respaldo cuya impresora trono NO sale marcado`() = runTest {
         every { printConfigRepository.getCurrentConfig() } returns conBarraSoloPantalla
         coEvery { comandaPrinter.printComandas(any(), any(), any(), any(), any()) } answers {
             val p = firstArg<List<TicketPlan>>()
@@ -1065,9 +1092,9 @@ class ComandaDispatcherTest {
         val estado = despachadorConCola().dispatch(
             venueId = "venue-1", lines = listOf(cafe), orderNumber = "1234", orderType = "En tienda",
             servidorLaTiene = true, origenDelFolio = "sale:ext-1", maxIntentos = 1,
-        )
+        ) as EstadoDeComanda.NoSalio
 
-        assertFalse((estado as EstadoDeComanda.NoSalio).sinImpresoraDeCocina)
+        assertFalse(estado.pantallaLaRecibe)
     }
 
     /** M9 (a): la promesa de la 3.5 — sin internet, la pantalla acusa por el WiFi del local y no sale papel. */

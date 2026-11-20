@@ -48,6 +48,13 @@ sealed interface EstadoDeComanda {
          * soltar y que otro aparato lo intente) de «salió una parte» (soltarlo repetiría lo que ya salió).
          */
         val algoSalio: Boolean = false,
+        /**
+         * Flautas (20-nov, hz:0555ee15:D6): lo único sin papel fueron estaciones «sólo pantalla» de respaldo (su pantalla no
+         * acusó por el WiFi), no había impresora que lo intentara, y la venta ya estaba en el servidor, que le arma la
+         * comanda a esa pantalla por internet. El reporte a la libreta sigue igual; sólo el AVISO en la caja puede callarse,
+         * y lo decide cada pantalla (Mostrador sólo con la venta liquidada: un abono todavía no arma comanda).
+         */
+        val pantallaLaRecibe: Boolean = false,
     ) : EstadoDeComanda {
         /**
          * D1 (16-nov-2026): la llave de ESTA comanda en `ComandasPendientesStore` — su folio interno, fijo aunque un
@@ -192,10 +199,13 @@ class ReintentoDeComanda @Inject constructor(
          * [com.avoqado.pos.printing.presentation.sinImpresoraDeCocina]). Se pregunta SÓLO si nada TRONÓ y lo que faltó fue
          * saltado: ese `NoSalio` sale marcado, y ni se avisa al cajero ni se reporta a la libreta (que le avisaría al
          * gerente), igual que el camino legado. Una falla real de impresora se avisa y se reporta siempre.
-         * Recibe los nombres de las estaciones que se quedaron sin papel (D6 de Flautas: se calla sólo si TODAS son
-         * «sólo pantalla» cuya pantalla ya la tiene por el servidor).
          */
-        negocioSinCocina: (sinPapel: List<String>) -> Boolean = { false },
+        negocioSinCocina: () -> Boolean = { false },
+        /**
+         * D6 de Flautas: con los planes SALTADOS de este despacho (por plan, no por nombre), ¿los tiene su pantalla por el
+         * servidor? Se pregunta sólo si nada TRONÓ y no hay saltadas de un ciclo anterior. Marca [EstadoDeComanda.NoSalio.pantallaLaRecibe].
+         */
+        pantallaLaRecibe: (saltados: List<TicketPlan>) -> Boolean = { false },
         alCambiarEstado: (EstadoDeComanda) -> Unit = {},
     ): EstadoDeComanda {
         var pendientes = plans
@@ -264,7 +274,8 @@ class ReintentoDeComanda @Inject constructor(
                         encabezado = encabezado,
                     )
                 },
-            ).let { if (it.trabajo == null && negocioSinCocina(sinComanda)) it.copy(sinImpresoraDeCocina = true) else it }
+            ).let { if (it.trabajo == null && negocioSinCocina()) it.copy(sinImpresoraDeCocina = true) else it }
+                .let { if (it.trabajo == null && saltadasPrevias.isEmpty() && pantallaLaRecibe(saltados)) it.copy(pantallaLaRecibe = true) else it }
                 .also { it.saltados = saltados.toList() } // después del `copy`: el cuerpo no viaja en él
         }
         alCambiarEstado(estado)

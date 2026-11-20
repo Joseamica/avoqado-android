@@ -452,10 +452,8 @@ class ComandaDispatcher @Inject constructor(
                 // D2 con «No lleva comanda» (Codex código r1 #2 y r2): la tienda sin cocina que crea sólo «Sin comanda» ya no
                 // entra al legado; lo que dejó sin asignar cae en «SIN ESTACIÓN» y, sin impresora de cocina, no sale. Es el
                 // negocio sin cocina de D2: ni aviso al cajero ni FAILED al gerente. Con una estación con comanda, sí.
-                negocioSinCocina = { sinPapel ->
-                    ((callarSinCocina ?: omitirSinComanda) && sinImpresoraDeCocina(printerService.savedPrinters.value, config)) ||
-                        pantallaLaTienePorElServidor(servidorLaTiene, decidido.respaldo, config, sinPapel)
-                },
+                negocioSinCocina = { (callarSinCocina ?: omitirSinComanda) && sinImpresoraDeCocina(printerService.savedPrinters.value, config) },
+                pantallaLaRecibe = { saltados -> pantallaLaTienePorElServidor(servidorLaTiene, decidido.respaldo, saltados) },
                 alCambiarEstado = alCambiarEstado,
                 encabezado = encabezado,
             )
@@ -485,21 +483,17 @@ class ComandaDispatcher @Inject constructor(
     }
 
     /**
-     * Flautas (20-nov, hz:0555ee15:D6): las que se quedaron sin papel son TODAS estaciones «sólo pantalla» de respaldo (su
-     * pantalla no acusó por el WiFi), no hubo impresora que lo intentara, y la venta ya está en el servidor: su pantalla la
-     * ve por internet. Avisar «No salió la comanda» en cada orden sería falso; la banda de la racha («no se alcanza por el
-     * WiFi») lo sigue diciendo fijo. Sin red (`servidorLaTiene != true`) nadie la tiene y se avisa como siempre.
+     * Flautas (20-nov, hz:0555ee15:D6): los planes que se quedaron sin papel son TODOS de estaciones «sólo pantalla» de
+     * respaldo (su pantalla no acusó por el WiFi), no hubo impresora que lo intentara, y la venta ya está en el servidor: su
+     * pantalla la ve por internet. Por ID de estación, nunca por nombre (Codex r1 #3: una estación real puede llamarse «SIN
+     * ESTACIÓN»; lo sin ruta no tiene id y nunca se calla). Sin red (`servidorLaTiene != true`) nadie la tiene.
      */
     private fun pantallaLaTienePorElServidor(
         servidorLaTiene: Boolean?,
         respaldo: List<String>,
-        config: PrintConfig,
-        sinPapel: List<String>,
-    ): Boolean {
-        if (servidorLaTiene != true || respaldo.isEmpty() || sinPapel.isEmpty()) return false
-        val nombresDeRespaldo = config.stations.filter { it.id in respaldo }.map { it.name }.toSet()
-        return sinPapel.all { it in nombresDeRespaldo }
-    }
+        saltados: List<TicketPlan>,
+    ): Boolean =
+        servidorLaTiene == true && saltados.isNotEmpty() && saltados.all { it.stationId != null && it.stationId in respaldo }
 
     /** El despacho no llegó a decidir el papel (truena o se cancela): todas sus filas guardadas sin acuse se sueltan. */
     private suspend fun soltarSinPapel(entregas: List<EntregaKds>, acusadas: Set<String>) {

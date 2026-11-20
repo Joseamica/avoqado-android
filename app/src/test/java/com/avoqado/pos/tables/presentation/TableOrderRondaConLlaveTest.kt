@@ -554,24 +554,41 @@ class TableOrderRondaConLlaveTest {
 
     /** D6 de Flautas (20-nov): la pantalla de cocina ya tiene la ronda por el servidor y no hay impresora: la mesa no avisa. */
     @Test
-    fun `D6 una comanda callada (la pantalla la tiene por el servidor) no se avisa en la mesa`() = runTest {
+    fun `D6 una comanda que su pantalla ya recibe por el servidor no se avisa en la mesa`() = runTest {
+        val (vm, store) = rondaQueTermina(
+            EstadoDeComanda.NoSalio(estaciones = listOf("COCINA 1"), causa = null, orderNumber = "ORD-1", pantallaLaRecibe = true),
+        )
+
+        assertNotEquals("No salió la comanda de: COCINA 1", vm.actionMessage.value)
+        verify(exactly = 0) { store.guardar(any(), any()) }
+    }
+
+    /**
+     * Codex r1 #4: la marca D2 («negocio sin cocina») NO calla la mesa. Una caja que todavía no descargó la config la pone
+     * aunque el negocio sí tenga cocina; sin red, el mesero perdería el único aviso de que la ronda no llegó.
+     */
+    @Test
+    fun `D6 la marca de negocio sin cocina sigue avisando en la mesa`() = runTest {
+        val (vm, _) = rondaQueTermina(
+            EstadoDeComanda.NoSalio(estaciones = listOf("Cocina"), causa = null, orderNumber = "ORD-1", sinImpresoraDeCocina = true),
+        )
+
+        assertEquals("No salió la comanda de: Cocina", vm.actionMessage.value)
+    }
+
+    /** Manda una ronda en línea cuyo despacho termina en [estado]; devuelve la mesa y el almacén de pendientes. */
+    private fun kotlinx.coroutines.test.TestScope.rondaQueTermina(estado: EstadoDeComanda): Pair<TableOrderViewModel, ComandasPendientesStore> {
         coEvery { repository.addRound(any(), any(), any(), any()) } returns Result.success(UpdatedOrder(id = "o1", version = 4))
         val store = mockk<ComandasPendientesStore>(relaxed = true)
-        val callada = EstadoDeComanda.NoSalio(
-            estaciones = listOf("COCINA 1"), causa = null, orderNumber = "ORD-1", sinImpresoraDeCocina = true,
-        )
         every { dispatcher.despacharEnFondo(any(), any(), any(), any(), any(), any(), any()) } answers {
-            arg<(EstadoDeComanda) -> Unit>(6).invoke(callada)
+            arg<(EstadoDeComanda) -> Unit>(6).invoke(estado)
             Job()
         }
         val vm = vm(store)
         vm.addProduct(cafe)
-
         vm.sendRound { _, _ -> }
         advanceUntilIdle()
-
-        assertNotEquals("No salió la comanda de: COCINA 1", vm.actionMessage.value)
-        verify(exactly = 0) { store.guardar(any(), any()) }
+        return vm to store
     }
 
     /**
