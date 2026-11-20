@@ -304,6 +304,27 @@ data class ApplyOrderDiscountRequest(
     val reasonComment: String? = null,
 )
 
+/**
+ * Encargo 7133e3 (hz:0555ee15:D2): POST .../orders/:orderId/discounts/manual — «Descuento manual» de la cuenta de MESAS (% o fijo),
+ * como el de MOSTRADOR. [llave] la crea la caja al tocar y la repiten el reintento y la cola sin red: el SERVIDOR no lo aplica dos veces.
+ */
+@Serializable
+data class ApplyManualOrderDiscountRequest(
+    /** `PERCENTAGE` o `FIXED_AMOUNT` (nombres EXACTOS del SERVIDOR). */
+    val type: String,
+    val value: Double,
+    val name: String? = null,
+    val llave: String,
+    val reason: String? = null,
+    val reasonComment: String? = null,
+)
+
+/** El descuento manual de la mesa que se manda: lo mismo viaja en el POST y, sin red, en el `manual` del intent `APPLY_DISCOUNT`. */
+data class DescuentoManualDeMesa(val type: String, val value: Double, val name: String, val llave: String)
+
+/** 7133e3: qué pasó con el descuento manual. [GUARDADO_SIN_RED] = quedó en la cola y se aplica al volver la conexión. */
+enum class DesenlaceDelManual { APLICADO, GUARDADO_SIN_RED }
+
 /** POST .../orders/:orderId/items/:itemId/comp body — "Dar de cortesía". */
 @Serializable
 data class CompItemRequest(val reason: String)

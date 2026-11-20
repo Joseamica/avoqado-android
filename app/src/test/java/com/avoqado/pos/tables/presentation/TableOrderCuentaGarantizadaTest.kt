@@ -597,7 +597,7 @@ class TableOrderCuentaGarantizadaTest {
     @Test fun `las diecisiete llamadas de escritura reales llevan la barrera de generacion`() {
         val path = "src/main/java/com/avoqado/pos/tables/presentation/TableOrderViewModel.kt"
         val source = listOf(File(path), File("app/$path")).first { it.exists() }.readText()
-        val names = listOf("addRound", "applyOrderDiscount", "applyServiceCharge", "assignOrder", "cancelOrder", "clearTable", "compItem", "compWholeOrder", "mergeOrders", "moveOrder", "redeemLoyaltyPoints", "removeOrderDiscount", "removeServiceCharge", "splitOrder", "splitOrderBySeat", "updateOrderDetails")
+        val names = listOf("addRound", "applyManualOrderDiscount", "applyOrderDiscount", "applyServiceCharge", "assignOrder", "cancelOrder", "clearTable", "compItem", "compWholeOrder", "mergeOrders", "moveOrder", "redeemLoyaltyPoints", "removeOrderDiscount", "removeServiceCharge", "splitOrder", "splitOrderBySeat", "updateOrderDetails")
         for (name in names) {
             val real = Regex("repository\\.$name\\(").findAll(source).count()
             val wrapped = Regex("mutar\\s*\\{\\s*repository\\.$name\\(").findAll(source).count()
