@@ -352,6 +352,9 @@ class KitchenPreparationRepository @Inject constructor(
                 localOrderRefs.singleOrNull()?.let { put("localOrderId", it) }
                 selected.first().sourceKey?.let { put("sourceKey", it) }
                 put("action", action.name)
+                // D17 (Codex r5 #4): el SERVIDOR revisa el interruptor de la cocina para TODO «Liberar» que salió de su pantalla,
+                // también si quien lo tocó es gerente.
+                if (fromKitchen && action == PreparationAction.RELEASE) put("origen", "COCINA")
                 reason?.let { put("reason", it) }
                 putJsonArray("items") { selected.forEach { row -> add(buildJsonObject {
                     if (row.id.startsWith("local:")) {

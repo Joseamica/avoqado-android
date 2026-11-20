@@ -171,6 +171,12 @@ class KDSViewModel @Inject constructor(
      * `publicar` (con lo que dice el servidor o la foto) no las vuelve a enseñar un instante antes de leer la proyección.
      */
     private var ocultasPorTerminadas: Set<String> = emptySet()
+    /**
+     * Codex r5 #3: hasta la primera proyección de este ViewModel (al abrir la app, también sin red) no se sabe qué comandas con
+     * tiempos terminó la cocina: la primera pintura no las enseña y aparecen al leer la proyección (milisegundos), en vez de
+     * enseñar un instante una que ya estaba lista.
+     */
+    private var proyeccionLeida = false
     /** Codex 3.6 (#2): la estación de la que viene [delServidor] (lectura buena o foto del aparato); `null` = nada todavía. */
     private var estacionDelServidor: String? = null
     private var locales: List<KdsTicketLocal> = emptyList()
@@ -363,7 +369,10 @@ class KDSViewModel @Inject constructor(
      */
     private fun publicar(desdeServidor: Boolean, sonar: Boolean = true) {
         val todas = juntarPorFolio(delServidor, locales).filterNot { it.id in bumpsVigentes() }
-        val juntas = sinTerminadasEnCocina(todas, capacidadesDePreparacion()).filterNot { it.id in ocultasPorTerminadas }
+        val juntas = sinTerminadasEnCocina(todas, capacidadesDePreparacion()).filterNot {
+            it.id in ocultasPorTerminadas ||
+                (!proyeccionLeida && it.preparationVersion == 1 && capacidadesDePreparacion().kitchenDoneVersion >= 1)
+        }
         val claves = juntas.map { it.sourceKey ?: it.id }.toSet()
         if (sonar && hasLoadedFromAPI && (claves - previousOrderIds).isNotEmpty()) playNotificationSound()
         previousOrderIds = claves
@@ -391,12 +400,15 @@ class KDSViewModel @Inject constructor(
             }) }
             val visibles = sinTerminadasEnCocina(proyectadas, capacidadesDePreparacion())
             ocultasPorTerminadas = (proyectadas.map { it.id }.toSet() - visibles.map { it.id }.toSet())
+            proyeccionLeida = true
             _comandas.value = visibles
             repository.notice.value?.let { _aviso.value = AvisoDeCocina(it, esError = false) }
             } catch (e: kotlinx.coroutines.CancellationException) { throw e }
             catch (e: Exception) {
                 if (epoch == preparationEpoch) {
                     preparationDelivery?.setDisplayedKeys(null, emptySet())
+                    // Sin la proyección, la cocina ve lo que dice el servidor (nunca se queda sin las comandas con tiempos).
+                    _comandas.value = sinTerminadasEnCocina(todas, capacidadesDePreparacion())
                     _aviso.value = AvisoDeCocina(e.message ?: "No se pudo recuperar la preparación guardada", esError = true)
                 }
             }

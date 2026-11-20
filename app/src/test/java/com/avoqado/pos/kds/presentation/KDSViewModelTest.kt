@@ -341,16 +341,16 @@ class KDSViewModelTest {
             prefs, roleManager, planManager, mockk(relaxed = true),
             receptor, ticketsLocales, preparationRepository = preparacion,
         )
-        vm.refrescar()
-        advanceUntilIdle()
-        assertEquals(listOf("k1"), vm.comandas.value.map { it.id })
-
+        // Desde la PRIMERA pintura (abrir la app sin red, Codex r5 #3) y en las siguientes (r4 D4): ni un instante con la copia vieja.
         val pinturas = mutableListOf<List<String>>()
         val vigia = backgroundScope.launch { vm.comandas.collect { pinturas.add(it.map { o -> o.id }) } }
         vm.refrescar()
         advanceUntilIdle()
+        assertEquals(listOf("k1"), vm.comandas.value.map { it.id })
+        vm.refrescar()
+        advanceUntilIdle()
         vigia.cancel()
-        assertTrue(pinturas.none { "k5" in it }) // Codex r4 D4: ni un instante con la copia vieja
+        assertTrue(pinturas.none { "k5" in it })
     }
 
     @Test

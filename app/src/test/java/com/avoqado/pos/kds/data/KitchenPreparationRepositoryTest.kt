@@ -206,6 +206,15 @@ class KitchenPreparationRepositoryTest {
         }
     }
 
+    @Test fun `D17 Liberar desde la cocina viaja marcado para que el servidor revise el interruptor`() = runTest {
+        val retenida = line.copy(preparation = PreparationCounts(HELD = 1))
+        val repo = repository(capability = """{"version":1,"enabled":true,"kitchenCanRelease":true,"kitchenDoneVersion":1}""")
+        repo.act("v1", listOf(retenida), PreparationAction.RELEASE, 1, fromKitchen = true, withPaper = false)
+        coVerify { outbox.enqueue("v1", "KDS_ITEM_PROGRESS", match { it["origen"]?.toString() == "\"COCINA\"" }, any(), false, null, any(), "staff-a") }
+        repo.act("v1", listOf(line), PreparationAction.START, 1)
+        coVerify { outbox.enqueue("v1", "KDS_ITEM_PROGRESS", match { it["action"]?.toString() == "\"START\"" && it["origen"] == null }, any(), false, null, any(), "staff-a") }
+    }
+
     @Test fun `expired session retains confirmed capability without calling it offline`() = runTest {
         val repo = repository()
         every { call.execute() } answers {
