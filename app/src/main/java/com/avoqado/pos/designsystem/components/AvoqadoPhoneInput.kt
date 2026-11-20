@@ -132,7 +132,9 @@ fun AvoqadoPhoneInput(
                 modifier = Modifier.weight(1f),
                 contentAlignment = Alignment.CenterStart,
             ) {
-                if (digits.isEmpty()) {
+                val visible = textoVisibleDelCampo(escrito, digits, country.dialCode)
+                // La ayuda sale sólo con el campo vacío: con «+52 1» escrito todavía no hay dígitos, pero sí texto (Codex r5).
+                if (visible.isEmpty()) {
                     Text(
                         text = placeholder,
                         style = MaterialTheme.typography.bodyLarge,
@@ -143,7 +145,7 @@ fun AvoqadoPhoneInput(
                     // Se ve lo escrito (con su «+»); a quien lo usa le llegan sólo los dígitos, sin la lada repetida: con México
                     // elegido, «+52 55 9187 3922» da «5591873922» (antes «525591873922» y el WhatsApp salía a «+52525591873922»),
                     // igual pegado que tecleado. Regla en core/util/Telefono.kt.
-                    value = textoVisibleDelCampo(escrito, digits, country.dialCode),
+                    value = visible,
                     onValueChange = { nuevo ->
                         escrito = filtrarTecleoDelCampoConBandera(nuevo)
                         onDigitsChange(digitosNacionales(escrito, country.dialCode))
