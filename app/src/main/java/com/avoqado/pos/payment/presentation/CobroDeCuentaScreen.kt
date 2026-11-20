@@ -375,6 +375,14 @@ class CobroDeCuentaViewModel @Inject constructor(
 
 enum class CierreDeCuenta { ABIERTA, PAGADA, CANCELADA }
 
+/**
+ * hz:bdd815fd:D5: lo que faltaba de [cuenta] según el SERVIDOR (`preBillBalance.remainingBalanceCents`), si es exactamente lo que cobra
+ * esta pantalla ([cents]). null si la cuenta no lo trajo (SERVIDOR viejo: el importe salió de `total`) o no coincide: entonces el cobro
+ * sale como siempre, sin el dato.
+ */
+internal fun saldoLeidoDelServidor(cuenta: com.avoqado.pos.tables.data.OrderDetail, cents: Int): Int? =
+    cuenta.preBillBalance?.remainingBalanceCents?.takeIf { it == cents && it >= 0 }
+
 @Composable
 fun CobroDeCuentaScreen(
     orderId: String,
@@ -421,6 +429,9 @@ fun CobroDeCuentaScreen(
                 // D13: la foto de antes de leer esta cuenta, con los pagos que trajo ESTA misma cuenta (de donde sale el saldo que se cobra);
                 // lo que llegue después lo frena la puerta del efectivo.
                 dineroConocido = viewModel.dineroConocido.copy(pagosContados = cuenta.payments.filter { it.status == "COMPLETED" }.map { it.id }.toSet()),
+                // hz:bdd815fd:D5: lo que faltaba según ESTA pantalla, sólo si lo dijo el SERVIDOR (`preBillBalance`); si un abono entra
+                // antes de que la terminal reciba el cobro, el SERVIDOR no cobra y lo dice.
+                saldoLeidoDeLaCuenta = saldoLeidoDelServidor(cuenta, cents),
                 onCuentaConSaldo = { cobrar = false; scope.launch { if (enLinea) viewModel.ofertaParaCobrar(orderId, cuentaDelCarrito() == orderId) } },
                 onPaymentCommitted = { restanteTrasCobrar = it.remainingBalanceCents },
                 onDone = {

@@ -762,6 +762,23 @@ class TerminalPaymentServiceHttpTest {
     }
 
     @Test
+    fun `D5 Pedidos Cobrar manda lo que faltaba segun su pantalla en el cuerpo, y un cobro sin el dato no lleva la llave`() = runBlocking {
+        enqueue(200, """{"success":true,"status":"success","paymentId":"pay-1"}""")
+        service.sendPaymentToTerminal(terminalId = "t1", amountCents = 2500, orderId = "orden-abierta", expectedRemainingCents = 2500)
+        val conDato = cuerpoDelCobro()
+        assertTrue("el cuerpo debe llevar lo que faltaba: $conDato", conDato.contains("\"expectedRemainingCents\":2500"))
+        assertFalse("el dato de vales no viaja: $conDato", conDato.contains("expectedBalanceBeforeCents"))
+    }
+
+    @Test
+    fun `D5 un cobro sin lectura de pantalla NO manda la llave expectedRemainingCents`() = runBlocking {
+        enqueue(200, """{"success":true,"status":"success","paymentId":"pay-1"}""")
+        service.sendPaymentToTerminal(terminalId = "t1", amountCents = 25, orderId = "order-1")
+        val cuerpo = cuerpoDelCobro()
+        assertFalse("el cuerpo de siempre no lleva la llave: $cuerpo", cuerpo.contains("expectedRemainingCents"))
+    }
+
+    @Test
     fun `P1 D53 el 412 de la cuenta que cambio se ensena tal cual y suelta la llave porque el cobro no se creo`() = runBlocking {
         val texto = "La cuenta AREA-80 cambió mientras se cobraba: ahora falta \$79.50. No se cobró la tarjeta. Sal del cobro y cobra el saldo pendiente."
         server.enqueue(MockResponse().setResponseCode(412).setBody(

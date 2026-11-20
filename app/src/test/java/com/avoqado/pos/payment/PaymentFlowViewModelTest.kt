@@ -3867,6 +3867,80 @@ class PaymentFlowViewModelTest {
         assertEquals(listOf(com.avoqado.pos.onlineorders.data.CobroDeLaBandeja(13400, esFolio = false, fueraDeLaBandeja = true)), contextos)
     }
 
+    /**
+     * hz:bdd815fd:D5 (19-nov): «Pedidos → Cobrar» de una cuenta abierta manda lo que faltaba según su pantalla
+     * (`preBillBalance.remainingBalanceCents`). Si alguien abona en el panel antes de que el SERVIDOR acepte el envío, el SERVIDOR no
+     * cobra (412). El dato se fija al abrir el cobro y el reintento del MISMO cobro lo conserva: releerlo dejaría pasar el abono.
+     */
+    @Test
+    fun `P1 D5 Pedidos Cobrar manda lo que faltaba segun su pantalla y el reintento conserva el primero`() = runTest {
+        coEvery {
+            terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any(), any(), any(), any(), any())
+        } returns TerminalPaymentResult.Error("Terminal offline")
+
+        viewModel.startPaymentFlow(carritoDeSaldoPendiente(2500), resumeOrderId = "orden-abierta", saldoLeidoDeLaCuenta = 2500)
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        viewModel.selectTerminalAndPay("t1")
+        advanceUntilIdle()
+        viewModel.retry()
+        viewModel.selectTerminalAndPay("t1")
+        advanceUntilIdle()
+
+        coVerify(exactly = 2) {
+            terminalPaymentService.sendPaymentToTerminal(
+                terminalId = "t1", amountCents = 2500, tipCents = any(), rating = any(), orderId = "orden-abierta",
+                processedByStaffId = any(), customerId = any(), deLaBandeja = any(), expectedBalanceBeforeCents = any(),
+                expectedRemainingCents = 2500,
+            )
+        }
+    }
+
+    @Test
+    fun `D5 una cuenta que ya existe sin lectura de su pantalla (partes 2 a N) NO manda lo que faltaba`() = runTest {
+        // Las partes 2..N de una venta partida en tienda arman su saldo en el aparato: no es una lectura del SERVIDOR.
+        coEvery {
+            terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any(), any(), any(), any(), any())
+        } returns TerminalPaymentResult.Error("Terminal offline")
+
+        viewModel.startPaymentFlow(carritoDeSaldoPendiente(2500), resumeOrderId = "orden-partida")
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        viewModel.selectTerminalAndPay("t1")
+        advanceUntilIdle()
+
+        coVerify(exactly = 1) {
+            terminalPaymentService.sendPaymentToTerminal(
+                terminalId = "t1", amountCents = 2500, tipCents = any(), rating = any(), orderId = "orden-partida",
+                processedByStaffId = any(), customerId = any(), deLaBandeja = any(), expectedBalanceBeforeCents = any(),
+                expectedRemainingCents = null,
+            )
+        }
+    }
+
+    @Test
+    fun `D5 un cobro nuevo despues de uno de Pedidos ya no arrastra lo que faltaba de la cuenta anterior`() = runTest {
+        coEvery {
+            terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any(), any(), any(), any(), any())
+        } returns TerminalPaymentResult.Error("Terminal offline")
+
+        viewModel.startPaymentFlow(carritoDeSaldoPendiente(2500), resumeOrderId = "orden-abierta", saldoLeidoDeLaCuenta = 2500)
+        viewModel.startPaymentFlow(carritoDeSaldoPendiente(4000), resumeOrderId = "orden-abierta")
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        viewModel.selectTerminalAndPay("t1")
+        advanceUntilIdle()
+
+        coVerify(exactly = 1) {
+            terminalPaymentService.sendPaymentToTerminal(
+                terminalId = "t1", amountCents = 4000, tipCents = any(), rating = any(), orderId = "orden-abierta",
+                processedByStaffId = any(), customerId = any(), deLaBandeja = any(), expectedBalanceBeforeCents = any(),
+                expectedRemainingCents = null,
+            )
+        }
+    }
+
+    private fun carritoDeSaldoPendiente(cents: Int) = CartState(
+        items = listOf(CartItem(id = "saldo", type = CartItemType.CustomAmount, name = "Saldo pendiente", unitPrice = cents)),
+    )
+
     private fun mesaCobrando() = com.avoqado.pos.tables.data.TableSession.Active(
         tableId = "mesa-5", tableNumber = "5", areaName = null, orderId = "orden-de-la-mesa", orderNumber = "M5",
         version = 1, totalCents = 30000, mode = com.avoqado.pos.tables.data.TableSession.Mode.PAYING,
