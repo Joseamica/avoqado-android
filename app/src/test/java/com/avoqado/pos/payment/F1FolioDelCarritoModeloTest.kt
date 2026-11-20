@@ -679,8 +679,18 @@ class F1FolioDelCarritoModeloTest {
     }
 
     private fun assertBIntacta(caja: Caja, b: CartStateDeB) {
-        assertEquals("B no se toca", b.carrito, caja.carrito.cartState.value)
-        assertEquals(b.cliente, caja.carrito.selectedCustomer.value?.id)
+        val ahora = caja.carrito.cartState.value
+        if (ahora != b.carrito) {
+            // Diagnóstico del intermitente (unión F1 × develop, 20-nov): QUÉ campo de la venta B cambió, no sólo que cambió.
+            val cambios = b.carrito.javaClass.declaredFields.filterNot { java.lang.reflect.Modifier.isStatic(it.modifiers) }.mapNotNull { f ->
+                f.isAccessible = true
+                val antes = f.get(b.carrito)
+                val despues = f.get(ahora)
+                if (antes != despues) "${f.name}: antes=$antes · ahora=$despues" else null
+            }
+            org.junit.Assert.fail("B no se toca; cambió: ${cambios.joinToString(" | ")}")
+        }
+        assertEquals("el cliente de B no se toca", b.cliente, caja.carrito.selectedCustomer.value?.id)
     }
 
     @Test
