@@ -15,10 +15,16 @@ import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.pressKey
 import androidx.compose.ui.test.runComposeUiTest
 import androidx.compose.ui.unit.dp
+import com.avoqado.escritorio.ActividadDeEscritorio
+import com.avoqado.escritorio.Bitacora
+import com.avoqado.escritorio.Escritorio
 import com.avoqado.pos.designsystem.components.AtajosDeTeclado
+import com.avoqado.pos.escritorio.Inyector
 import com.avoqado.pos.designsystem.components.LocalEsEscritorio
 import com.avoqado.pos.tables.presentation.RenglonEnviadoDialog
 import com.avoqado.pos.tables.presentation.ULTIMO_PRODUCTO_SIN_ANULAR
+import java.nio.file.Files
+import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -30,6 +36,15 @@ import kotlin.test.assertNull
  */
 @OptIn(ExperimentalTestApi::class)
 class RenglonEnviadoEnLaEscenaTest {
+    /** El diálogo pide el contexto de escritorio (`ImmersiveWindow`), como en Main. */
+    @BeforeTest fun contextoDeEscritorio() {
+        if (runCatching { Escritorio.contexto }.isSuccess) return
+        val carpeta = Files.createTempDirectory("Avoqado POS renglon enviado")
+        Bitacora.iniciar(carpeta)
+        val actividad = ActividadDeEscritorio(carpeta)
+        Escritorio.instalar(actividad, Inyector.crear(actividad))
+    }
+
     private class Salida {
         var anular: String? = null
         var cortesia: String? = null
