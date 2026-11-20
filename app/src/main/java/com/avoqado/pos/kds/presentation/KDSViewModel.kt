@@ -299,7 +299,12 @@ class KDSViewModel @Inject constructor(
     private suspend fun refrescarTablero() {
         val tablero = _vista.value as? VistaDeCocina.Tablero ?: return
         val venueId = kdsRepository.venueIdActual()
-        if (estacionDelServidor != tablero.estacion.id) { boardOffset = 0; _boardPaging.value = BoardPaging() }
+        if (estacionDelServidor != tablero.estacion.id) {
+            boardOffset = 0; _boardPaging.value = BoardPaging()
+            // Codex r6 #3: lo que la proyección de OTRA estación dejó no vale aquí; la primera pintura vuelve a esperar a la suya.
+            ocultasPorTerminadas = emptySet()
+            proyeccionLeida = false
+        }
         val requestedOffset = boardOffset
         _boardPaging.value = _boardPaging.value.copy(loading = true)
         val lectura = kdsRepository.fetchBoardPage(tablero.estacion.id, requestedOffset)
@@ -370,12 +375,12 @@ class KDSViewModel @Inject constructor(
     private fun publicar(desdeServidor: Boolean, sonar: Boolean = true) {
         val todas = juntarPorFolio(delServidor, locales).filterNot { it.id in bumpsVigentes() }
         val juntas = sinTerminadasEnCocina(todas, capacidadesDePreparacion()).filterNot {
-            it.id in ocultasPorTerminadas ||
-                (!proyeccionLeida && it.preparationVersion == 1 && capacidadesDePreparacion().kitchenDoneVersion >= 1)
+            // Codex r6 #3: antes de la primera proyección de ESTA estación no se sabe cuáles terminó la cocina, sin depender de que ya
+            // se hayan leído las capacidades guardadas.
+            it.id in ocultasPorTerminadas || (!proyeccionLeida && preparationRepository != null && it.preparationVersion == 1)
         }
-        val claves = juntas.map { it.sourceKey ?: it.id }.toSet()
-        if (sonar && hasLoadedFromAPI && (claves - previousOrderIds).isNotEmpty()) playNotificationSound()
-        previousOrderIds = claves
+        val yaHabiaBase = hasLoadedFromAPI
+        sonarSiLleganNuevas(juntas, sonar && yaHabiaBase, reemplazar = true)
         if (desdeServidor) hasLoadedFromAPI = true
         _comandas.value = juntas
         val epoch = ++preparationEpoch
@@ -401,6 +406,8 @@ class KDSViewModel @Inject constructor(
             val visibles = sinTerminadasEnCocina(proyectadas, capacidadesDePreparacion())
             ocultasPorTerminadas = (proyectadas.map { it.id }.toSet() - visibles.map { it.id }.toSet())
             proyeccionLeida = true
+            // Codex r6 #2: la comanda con tiempos que la primera pintura no enseñó suena aquí, cuando aparece.
+            sonarSiLleganNuevas(visibles, sonar && yaHabiaBase, reemplazar = false)
             _comandas.value = visibles
             repository.notice.value?.let { _aviso.value = AvisoDeCocina(it, esError = false) }
             } catch (e: kotlinx.coroutines.CancellationException) { throw e }
@@ -413,6 +420,16 @@ class KDSViewModel @Inject constructor(
                 }
             }
         }
+    }
+
+    /**
+     * Suena si hay comandas que no estaban (M3). La primera pintura deja la base (`reemplazar`); la de la proyección sólo SUMA lo
+     * que aparece en ella, para que una comanda con tiempos que llegó suene una vez, al aparecer.
+     */
+    private fun sonarSiLleganNuevas(lista: List<KDSOrder>, sonar: Boolean, reemplazar: Boolean) {
+        val claves = lista.map { it.sourceKey ?: it.id }.toSet()
+        if (sonar && (claves - previousOrderIds).isNotEmpty()) playNotificationSound()
+        previousOrderIds = if (reemplazar) claves else previousOrderIds + claves
     }
 
     /** Las capacidades confirmadas (sin red, las guardadas). Función y no la propiedad: `publicar` puede correr antes de inicializarla. */
@@ -438,7 +455,7 @@ class KDSViewModel @Inject constructor(
             orderItemId = item.orderItemId, externalId = item.externalId, sourceKey = order.sourceKey,
             stationId = order.printStationId, orderNumber = order.orderNumber, productName = item.productName,
             quantity = item.quantity, serviceCourse = item.serviceCourse, orderPromotionId = item.orderPromotionId,
-            preparation = counts, preparationRevision = item.preparationRevision,
+            preparation = counts, preparationRevision = item.preparationRevision, stationCount = item.stationCount,
         ) }
 
     val preparationCapabilities = preparationRepository?.capabilities

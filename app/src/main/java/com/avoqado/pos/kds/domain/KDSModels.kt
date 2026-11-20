@@ -73,6 +73,8 @@ data class KDSOrderItem(
     val preparation: PreparationCounts? = null,
     val preparationRevision: Int = 0,
     val pendingPreparation: Boolean = false,
+    /** D17: en cuántas estaciones se prepara (lo manda el SERVIDOR nuevo). La cocina no libera uno de varias: lo libera la caja. */
+    val stationCount: Int = 1,
 )
 
 /**

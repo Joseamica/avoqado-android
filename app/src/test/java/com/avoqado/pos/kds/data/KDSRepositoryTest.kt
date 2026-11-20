@@ -65,6 +65,11 @@ class KDSRepositoryTest {
         val url = server.takeRequest(1, TimeUnit.SECONDS)!!.requestUrl!!
         assertEquals("1", url.queryParameter("urgencyVersion")); assertEquals("100", url.queryParameter("offset"))
     }
+    @Test fun `D17 cada platillo trae en cuantas estaciones se prepara (1 si el servidor no lo dice)`() = runTest {
+        server.enqueue(MockResponse().setBody(lista(comanda(itemJson = ",\"stationCount\":2"), comanda())))
+        val items = repo.fetchOrders("st-barra").getOrThrow().map { it.items.single().stationCount }
+        assertEquals(listOf(2, 1), items)
+    }
     @Test
     fun `la lista del vigilante pide las mas nuevas sin estacion ni urgencia`() = runTest {
         server.enqueue(MockResponse().setBody(lista(comanda(extraJson = ",\"needsPrint\":true"))))

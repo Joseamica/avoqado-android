@@ -354,6 +354,7 @@ class KDSRepository @Inject constructor(
                     kotlinx.serialization.json.Json.decodeFromString<com.avoqado.pos.kds.domain.PreparationCounts>(it.toString())
                 },
                 preparationRevision = json.optInt("preparationRevision", 0),
+                stationCount = json.optInt("stationCount", 1).coerceAtLeast(1),
             )
         } catch (e: Exception) {
             Log.e(TAG, "Parse item error: ${e.message}")
