@@ -792,6 +792,46 @@ class TerminalPaymentServiceHttpTest {
         assertTrue("la llave se soltó: el SERVIDOR no creó el cobro", idsPendientes().isEmpty())
     }
 
+    // MARK: - hz:bdd815fd:D4 · la cuenta cambió: «no se creó» y el saldo nuevo viajan al flujo
+
+    private fun respondeCuentaCambio(remainingCents: Int, nombrar: (String) -> String = { it }) {
+        server.dispatcher = object : okhttp3.mockwebserver.Dispatcher() {
+            override fun dispatch(request: okhttp3.mockwebserver.RecordedRequest): MockResponse {
+                if (request.method == "GET") return MockResponse().setResponseCode(404)
+                val id = org.json.JSONObject(request.body.readUtf8()).getString("requestId")
+                val texto = "La cuenta AREA-80 cambió mientras se cobraba: ahora falta \$79.50. No se cobró la tarjeta."
+                return MockResponse().setResponseCode(412).setBody(
+                    """{"success":false,"code":"ORDER_BALANCE_CHANGED","message":"$texto","errorMessage":"$texto","details":{"requestId":"${nombrar(id)}","remainingCents":$remainingCents,"expectedBalanceBeforeCents":8000}}""",
+                )
+            }
+        }
+    }
+
+    @Test
+    fun `P1 D4 el 412 de la cuenta que cambio nombrando ESTA solicitud consta como no creado y trae el saldo del SERVIDOR`() = runBlocking {
+        respondeCuentaCambio(remainingCents = 7950)
+
+        val result = service.sendPaymentToTerminal(terminalId = "t1", amountCents = 8000, orderId = "order-vales", expectedBalanceBeforeCents = 8000)
+
+        val error = result as TerminalPaymentResult.Error
+        assertTrue("el SERVIDOR no creó el cobro", error.noSeCreo)
+        assertTrue("es la cuenta que cambió", error.cuentaCambio)
+        assertTrue(error.message, error.message.startsWith("La cuenta AREA-80 cambió"))
+        assertTrue("la llave se soltó", idsPendientes().isEmpty())
+        assertEquals("no hay nada que consultar", 1, server.requestCount)
+    }
+
+    @Test
+    fun `D4 un 412 de la cuenta que cambio que nombra OTRA solicitud no se toma como la salida de esta`() = runBlocking {
+        respondeCuentaCambio(remainingCents = 7950) { "otra-solicitud" }
+
+        val result = service.sendPaymentToTerminal(terminalId = "t1", amountCents = 8000, orderId = "order-vales", expectedBalanceBeforeCents = 8000)
+
+        val error = result as TerminalPaymentResult.Error
+        assertFalse("sin correlación no prueba nada de ésta", error.cuentaCambio)
+        assertFalse(error.noSeCreo)
+    }
+
     // MARK: - La sonda de terminales corre SOLA
     //
     // Medido el 2026-08-16 en hardware: un CASHIER cobrando veía, en la pantalla

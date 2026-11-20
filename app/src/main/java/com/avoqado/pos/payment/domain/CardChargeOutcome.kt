@@ -65,7 +65,12 @@ sealed class CardChargeOutcome {
      * D58: [sinCobroNiRechazo] = nadie cobró y nadie rechazó (cancelación aceptada, la terminal se liberó sin evidencia, un cajero
      * confirmó que no se cobró): la pantalla lo dice neutro, no «Error en el pago». Un rechazo del banco o un fallo queda en false.
      */
-    data class NotCharged(val message: String, val sinCobroNiRechazo: Boolean = false) : CardChargeOutcome()
+    data class NotCharged(
+        val message: String,
+        val sinCobroNiRechazo: Boolean = false,
+        /** hz:bdd815fd:D4: la lápida de «la cuenta cambió» (D53): el flujo relee los vales y vuelve al carrito con el saldo nuevo. */
+        val cuentaCambio: Boolean = false,
+    ) : CardChargeOutcome()
 
     /** No se pudo determinar. Ni éxito ni fracaso: jamás ofrecer un reintento a ciegas. */
     data class Undetermined(val message: String) : CardChargeOutcome()
@@ -263,6 +268,13 @@ object CardChargeDecision {
     /** Transport classification only; other ambiguous HTTP codes also reconcile above. */
     fun isTransportFailure(httpCode: Int): Boolean = httpCode >= 500 || httpCode == 408
 
+    /** D4: el 412 de D53 («la cuenta cambió mientras se cobraba») y su lápida. */
+    const val CODIGO_CUENTA_CAMBIO = "ORDER_BALANCE_CHANGED"
+    private const val LAPIDA_CUENTA_CAMBIO = "REJECTED_ORDER_BALANCE_CHANGED"
+
+    /** D4: si el SERVIDOR no dio su texto. */
+    const val CUENTA_CAMBIO_RESPALDO = "La cuenta cambió mientras se cobraba. No se cobró la tarjeta."
+
     /** D53: las lápidas de admisión cuyo texto escribe el SERVIDOR con el saldo (D7 «falta $X» y D53 «la cuenta cambió»). */
     private val LAPIDAS_DE_SALDO = setOf("REJECTED_ORDER_AMOUNT_OVER_BALANCE", "REJECTED_ORDER_BALANCE_CHANGED")
 
@@ -342,6 +354,12 @@ object CardChargeDecision {
                 CardChargeOutcome.NotCharged(mensajeDeLaTerminal?.trim()?.takeIf { it.isNotEmpty() } ?: NO_INICIADO_RESPALDO)
             // D53 (Codex r1 #3): la lápida de una cuenta que cambió (o del «falta $X» de D7) trae el texto del SERVIDOR: si se perdió
             // la respuesta del 412, la cajera lee lo mismo por la consulta en vez de un «rechazado» que suena al banco.
+            // hz:bdd815fd:D4: la de D53 lleva a la salida «la cuenta cambió» (relee y vuelve al carrito), traiga texto o no.
+            probe.status == "FAILED" && probe.failureCode == LAPIDA_CUENTA_CAMBIO ->
+                CardChargeOutcome.NotCharged(
+                    probe.errorMessage?.trim()?.takeIf { it.isNotEmpty() } ?: "El cobro fue rechazado. No se cobró la tarjeta.",
+                    cuentaCambio = true,
+                )
             probe.status == "FAILED" && probe.failureCode in LAPIDAS_DE_SALDO && !probe.errorMessage.isNullOrBlank() ->
                 CardChargeOutcome.NotCharged(probe.errorMessage.trim())
             probe.status == "FAILED" -> CardChargeOutcome.NotCharged("El cobro fue rechazado. No se cobró la tarjeta.")

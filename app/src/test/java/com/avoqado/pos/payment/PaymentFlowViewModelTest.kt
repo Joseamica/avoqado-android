@@ -48,6 +48,7 @@ import com.avoqado.pos.payment.presentation.cobraLosValesDeLaSesion
 import com.avoqado.pos.payment.presentation.evidenciaDelCobro
 import com.avoqado.pos.payment.presentation.PaymentCompletion
 import com.avoqado.pos.payment.presentation.tipCentsForPercent
+import com.avoqado.pos.payment.presentation.textoDeCuentaCambiada
 import com.avoqado.pos.pos.data.model.CartItem
 import com.avoqado.pos.pos.data.model.CartItemType
 import com.avoqado.pos.pos.data.model.SelectedModifier
@@ -1197,10 +1198,9 @@ class PaymentFlowViewModelTest {
     }
 
     @Test
-    fun `D53 la parte 2 de una venta de vales dividida no manda saldo esperado (queda como hoy, por decidir)`() = runTest {
-        // Continuación: el «Saldo pendiente» del carrito y el saldo de la orden pueden ser de lecturas distintas (Codex r1 #1 y #2).
-        // Mandar uno de ellos sin que la caja sepa actualizar su renglón trabaría la tarjeta o dejaría pasar el abono. Hasta que el
-        // founder decida, la continuación no lo manda.
+    fun `P1 D4 la parte 2 de una venta de vales dividida manda el Saldo pendiente que ve la cajera`() = runTest {
+        // hz:bdd815fd:D4: la continuación compara lo que la caja cree que falta (su «Saldo pendiente», de donde sale el importe) con
+        // el saldo del SERVIDOR. Si un abono entró en medio, el 412 ya tiene salida (la caja relee y deja el saldo nuevo en el carrito).
         val sesion = conAbono(sesionDeVales("0.00", valeDeArea("a", "3.00")), pagado = "1.50", saldo = "1.50")
         every { areaTicketRepository.session.current() } returns sesion
         coEvery { areaTicketRepository.materialize(any(), any(), any(), any(), any(), any(), any(), any()) } returns sesion
@@ -1215,9 +1215,254 @@ class PaymentFlowViewModelTest {
         coVerify(exactly = 1) {
             terminalPaymentService.sendPaymentToTerminal(
                 terminalId = "t1", amountCents = 150, tipCents = any(), rating = any(), orderId = "order-vales",
+                processedByStaffId = any(), customerId = any(), deLaBandeja = any(), expectedBalanceBeforeCents = 150,
+            )
+        }
+    }
+
+    @Test
+    fun `D4 la parte 2 de una cuenta que no es la de los vales no manda saldo esperado`() = runTest {
+        val sesion = conAbono(sesionDeVales("0.00", valeDeArea("a", "3.00")), pagado = "1.50", saldo = "1.50")
+        every { areaTicketRepository.session.current() } returns sesion
+        coEvery {
+            orderRepository.createOrder(any(), any(), any(), any(), any(), capturedVenueId = any())
+        } returns Result.success(CreateOrderResponse(success = true, data = OrderData(id = "otra-orden")))
+        tarjetaQueFalla()
+        val saldoPendiente = CartItem(id = "saldo", type = CartItemType.CustomAmount, name = "Saldo pendiente", unitPrice = 150)
+
+        viewModel.startPaymentFlow(CartState(items = listOf(saldoPendiente)), resumeOrderId = "otra-orden")
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        viewModel.selectTerminalAndPay("t1")
+        advanceUntilIdle()
+
+        coVerify(exactly = 1) {
+            terminalPaymentService.sendPaymentToTerminal(
+                terminalId = "t1", amountCents = 150, tipCents = any(), rating = any(), orderId = "otra-orden",
                 processedByStaffId = any(), customerId = any(), deLaBandeja = any(), expectedBalanceBeforeCents = null,
             )
         }
+    }
+
+    // MARK: - hz:bdd815fd:D4 · «la cuenta cambió»: la caja relee los vales y vuelve al carrito con el saldo nuevo
+
+    private val textoDelServidor = "La cuenta AREA-80 cambió mientras se cobraba: ahora falta \$2.50. No se cobró la tarjeta."
+
+    private fun tarjetaQueChocaConLaCuentaCambiada() {
+        coEvery {
+            terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any(), any(), any(), any())
+        } returns TerminalPaymentResult.Error(textoDelServidor, requestId = "req-412", noSeCreo = true, cuentaCambio = true)
+    }
+
+    @Test
+    fun `P1 D4 el 412 de la cuenta que cambio relee los vales y sale al carrito con el saldo nuevo, sin pantalla de error`() = runTest {
+        val sesion = sesionDeVales("0.00", valeDeArea("a", "3.00"))
+        every { areaTicketRepository.session.current() } returns sesion
+        coEvery { areaTicketRepository.materialize(any(), any(), any(), any(), any(), any(), any(), any()) } returns sesion
+        coEvery { areaTicketRepository.refresh(any(), any()) } returns conAbono(sesion, pagado = "0.40", saldo = "2.60")
+        tarjetaQueChocaConLaCuentaCambiada()
+        val cart = CartState(items = listOf(lineaDeVale("a", 300)))
+
+        viewModel.startPaymentFlow(cart)
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        viewModel.selectTerminalAndPay("t1")
+        advanceUntilIdle()
+
+        assertTrue("regresa al carrito", viewModel.debeSalir.value)
+        assertFalse("no es una pantalla de error", viewModel.state.value is PaymentFlowState.Error)
+        val aviso = requireNotNull(viewModel.cuentaDeValesCambio.value)
+        assertEquals("order-vales", aviso.orderId)
+        assertEquals("manda la relectura (lo más nuevo)", 260, aviso.saldoCents)
+        assertTrue("la relectura confirmó el abono", aviso.conAbono)
+        assertEquals(cart.identidadDeVenta, aviso.venta)
+        coVerify(exactly = 1) { areaTicketRepository.refresh(any(), any()) }
+        coVerify(exactly = 1) { terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun `P1 D4 si la relectura falla sale igual pero no se toca el carrito (sin saldo confirmado)`() = runTest {
+        val sesion = sesionDeVales("0.00", valeDeArea("a", "3.00"))
+        every { areaTicketRepository.session.current() } returns sesion
+        coEvery { areaTicketRepository.materialize(any(), any(), any(), any(), any(), any(), any(), any()) } returns sesion
+        coEvery { areaTicketRepository.refresh(any(), any()) } throws java.io.IOException("sin red")
+        tarjetaQueChocaConLaCuentaCambiada()
+
+        viewModel.startPaymentFlow(CartState(items = listOf(lineaDeVale("a", 300))))
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        viewModel.selectTerminalAndPay("t1")
+        advanceUntilIdle()
+
+        assertTrue(viewModel.debeSalir.value)
+        val aviso = requireNotNull(viewModel.cuentaDeValesCambio.value)
+        assertNull("sin relectura no hay saldo confirmado", aviso.saldoCents)
+        assertFalse("ni abono confirmado: el carrito no se toca", aviso.conAbono)
+        assertEquals(textoDelServidor, textoDeCuentaCambiada(aviso, carritoAlDia = false))
+    }
+
+    @Test
+    fun `P1 D4 si la respuesta del 412 se perdio, la consulta del cobro lleva a la misma salida`() = runTest {
+        // Codex D53 r3 #1: tras un corte largo la consulta volvía al selector con el importe viejo y sin el texto.
+        val sesion = sesionDeVales("0.00", valeDeArea("a", "3.00"))
+        every { areaTicketRepository.session.current() } returns sesion
+        coEvery { areaTicketRepository.materialize(any(), any(), any(), any(), any(), any(), any(), any()) } returns sesion
+        coEvery { areaTicketRepository.refresh(any(), any()) } returns conAbono(sesion, pagado = "0.50", saldo = "2.50")
+        coEvery {
+            terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any(), any(), any(), any())
+        } returns TerminalPaymentResult.Undetermined("No pudimos confirmar el cobro.", "req-1")
+        coEvery { terminalPaymentService.resolveOutcome("req-1", any(), any()) } returns
+            TerminalPaymentResult.Error(textoDelServidor, requestId = "req-1", cuentaCambio = true)
+
+        viewModel.startPaymentFlow(CartState(items = listOf(lineaDeVale("a", 300))))
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        viewModel.selectTerminalAndPay("t1")
+        advanceUntilIdle()
+        assertTrue(viewModel.state.value is PaymentFlowState.Undetermined)
+
+        viewModel.recheckCardCharge()
+        advanceUntilIdle()
+
+        assertTrue("regresa al carrito", viewModel.debeSalir.value)
+        assertEquals(250, viewModel.cuentaDeValesCambio.value?.saldoCents)
+        assertTrue(viewModel.cuentaDeValesCambio.value!!.conAbono)
+        assertFalse("no vuelve al selector con el importe viejo", viewModel.state.value is PaymentFlowState.SelectingTerminal)
+    }
+
+    @Test
+    fun `D4 la cuenta que cambio fuera de vales (Pedidos, D5) sigue con su pantalla de siempre`() = runTest {
+        // D5 (hz:bdd815fd) usa el mismo 412 ORDER_BALANCE_CHANGED en «Pedidos → Cobrar»: la salida de vales no lo toma.
+        every { areaTicketRepository.session.current() } returns null
+        coEvery {
+            terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any(), any(), any(), any())
+        } returns TerminalPaymentResult.Error(textoDelServidor, requestId = "req-412", noSeCreo = true, cuentaCambio = true)
+        val saldoPendiente = CartItem(id = "saldo", type = CartItemType.CustomAmount, name = "Saldo pendiente", unitPrice = 8000)
+
+        viewModel.startPaymentFlow(CartState(items = listOf(saldoPendiente)), resumeOrderId = "orden-de-pedidos")
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        viewModel.selectTerminalAndPay("t1")
+        advanceUntilIdle()
+
+        assertFalse(viewModel.debeSalir.value)
+        assertNull(viewModel.cuentaDeValesCambio.value)
+        assertEquals(textoDelServidor, (viewModel.state.value as PaymentFlowState.Error).message)
+    }
+
+    @Test
+    fun `D4 un rechazo de saldo que no es la cuenta que cambio sigue en su pantalla de error de siempre`() = runTest {
+        val sesion = sesionDeVales("0.00", valeDeArea("a", "3.00"))
+        every { areaTicketRepository.session.current() } returns sesion
+        coEvery { areaTicketRepository.materialize(any(), any(), any(), any(), any(), any(), any(), any()) } returns sesion
+        coEvery {
+            terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any(), any(), any(), any())
+        } returns TerminalPaymentResult.Error("La cuenta ya tiene un abono: falta \$2.50.", requestId = "req-1")
+
+        viewModel.startPaymentFlow(CartState(items = listOf(lineaDeVale("a", 300))))
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        viewModel.selectTerminalAndPay("t1")
+        advanceUntilIdle()
+
+        assertFalse(viewModel.debeSalir.value)
+        assertNull(viewModel.cuentaDeValesCambio.value)
+        assertTrue(viewModel.state.value is PaymentFlowState.Error)
+    }
+
+    @Test
+    fun `P1 D4 si otro cobro ya liquido la cuenta, el aviso lo dice y no hay saldo que poner`() = runTest {
+        val sesion = sesionDeVales("0.00", valeDeArea("a", "3.00"))
+        every { areaTicketRepository.session.current() } returns sesion
+        coEvery { areaTicketRepository.materialize(any(), any(), any(), any(), any(), any(), any(), any()) } returns sesion
+        coEvery { areaTicketRepository.refresh(any(), any()) } returns
+            conAbono(sesion, pagado = "3.00", saldo = "0.00").let { it.copy(status = "PAID", order = it.order!!.copy(paymentStatus = "PAID")) }
+        tarjetaQueChocaConLaCuentaCambiada()
+
+        viewModel.startPaymentFlow(CartState(items = listOf(lineaDeVale("a", 300))))
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        viewModel.selectTerminalAndPay("t1")
+        advanceUntilIdle()
+
+        val aviso = requireNotNull(viewModel.cuentaDeValesCambio.value)
+        assertTrue(aviso.pagada)
+        assertEquals(0, aviso.saldoCents)
+        assertFalse("pagada: el carrito no se toca solo", aviso.conAbono)
+        val texto = textoDeCuentaCambiada(aviso, carritoAlDia = false)
+        assertTrue(texto, texto.contains("ya pagó esta cuenta"))
+    }
+
+    @Test
+    fun `P1 D4 la consulta relee el apartado del envio aunque un latido ya haya soltado la sesion`() = runTest {
+        // Codex D4 r3 #1: se perdió el 412, otra caja liquidó la cuenta y el latido soltó la sesión antes de «Volver a consultar».
+        val sesion = sesionDeVales("0.00", valeDeArea("a", "3.00"))
+        var vigente: AreaTicketCheckout? = sesion
+        every { areaTicketRepository.session.current() } answers { vigente }
+        coEvery { areaTicketRepository.materialize(any(), any(), any(), any(), any(), any(), any(), any()) } returns sesion
+        coEvery { areaTicketRepository.refresh(any(), any()) } returns
+            conAbono(sesion, pagado = "3.00", saldo = "0.00").let { it.copy(status = "PAID", order = it.order!!.copy(paymentStatus = "PAID")) }
+        coEvery {
+            terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any(), any(), any(), any())
+        } returns TerminalPaymentResult.Undetermined("No pudimos confirmar el cobro.", "req-1")
+        coEvery { terminalPaymentService.resolveOutcome("req-1", any(), any()) } returns
+            TerminalPaymentResult.Error(textoDelServidor, requestId = "req-1", cuentaCambio = true)
+
+        viewModel.startPaymentFlow(CartState(items = listOf(lineaDeVale("a", 300))))
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        viewModel.selectTerminalAndPay("t1")
+        advanceUntilIdle()
+        vigente = null
+        viewModel.recheckCardCharge()
+        advanceUntilIdle()
+
+        coVerify { areaTicketRepository.refresh(match { it.id == sesion.id }, any()) }
+        assertTrue("la relectura vio que ya está pagada", viewModel.cuentaDeValesCambio.value?.pagada == true)
+    }
+
+    @Test
+    fun `D4 un cambio sin pagos (un cargo agregado) no toca el carrito`() = runTest {
+        val sesion = sesionDeVales("0.00", valeDeArea("a", "3.00"))
+        every { areaTicketRepository.session.current() } returns sesion
+        coEvery { areaTicketRepository.materialize(any(), any(), any(), any(), any(), any(), any(), any()) } returns sesion
+        coEvery { areaTicketRepository.refresh(any(), any()) } returns sesion.copy(order = sesion.order!!.copy(remainingBalance = "3.30", total = "3.30"))
+        tarjetaQueChocaConLaCuentaCambiada()
+
+        viewModel.startPaymentFlow(CartState(items = listOf(lineaDeVale("a", 300))))
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        viewModel.selectTerminalAndPay("t1")
+        advanceUntilIdle()
+
+        val aviso = requireNotNull(viewModel.cuentaDeValesCambio.value)
+        assertEquals(330, aviso.saldoCents)
+        assertFalse("sin pagos no se marca abono", aviso.conAbono)
+    }
+
+    @Test
+    fun `P1 D4 si la cajera cancelo con el envio en vuelo, el desenlace tardio no se le aplica a ningun carrito`() = runTest {
+        // Codex D4 r2 #1 y #3: un aviso tardío podía caer sobre otro cobro o religar una orden ya soltada. Queda como hoy:
+        // `handleStaleCardResult` lo registra y el siguiente «Cobrar» lleva a la salida de siempre.
+        val sesion = sesionDeVales("0.00", valeDeArea("a", "3.00"))
+        every { areaTicketRepository.session.current() } returns sesion
+        coEvery { areaTicketRepository.materialize(any(), any(), any(), any(), any(), any(), any(), any()) } returns sesion
+        coEvery { areaTicketRepository.refresh(any(), any()) } returns conAbono(sesion, pagado = "0.50", saldo = "2.50")
+        val respuesta = CompletableDeferred<TerminalPaymentResult>()
+        coEvery {
+            terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any(), any(), any(), any())
+        } coAnswers { respuesta.await() }
+
+        viewModel.startPaymentFlow(CartState(items = listOf(lineaDeVale("a", 300))))
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        viewModel.selectTerminalAndPay("t1")
+        advanceUntilIdle()
+        viewModel.cancelarVenta()
+        advanceUntilIdle()
+        respuesta.complete(TerminalPaymentResult.Error(textoDelServidor, requestId = "req-412", noSeCreo = true, cuentaCambio = true))
+        advanceUntilIdle()
+
+        assertNull(viewModel.cuentaDeValesCambio.value)
+    }
+
+    @Test
+    fun `D4 el aviso dice el saldo nuevo si el carrito ya lo trae y si no el texto del servidor`() {
+        val aviso = PaymentFlowViewModel.CuentaDeValesCambio("order-vales", 7950, textoDelServidor, "venta-1")
+        val alDia = textoDeCuentaCambiada(aviso, carritoAlDia = true)
+        assertTrue(alDia, alDia.contains("No se cobró la tarjeta") && alDia.contains("79.50") && alDia.contains("el carrito ya trae"))
+        assertEquals(textoDelServidor, textoDeCuentaCambiada(aviso, carritoAlDia = false))
+        assertEquals(textoDelServidor, textoDeCuentaCambiada(aviso.copy(saldoCents = null), carritoAlDia = true))
     }
 
     @Test

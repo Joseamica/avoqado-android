@@ -1925,6 +1925,34 @@ fun CheckoutScreen(
         ) {}
     }
 
+    // 🔴 DINERO (hz:bdd815fd:D4). El cobro con tarjeta de los vales se detuvo sin cobrar: la cuenta cambió mientras se cobraba. Ya con
+    // el cobro cerrado, el carrito queda en «Saldo pendiente» por lo que de verdad falta (ver `PaymentFlowViewModel.salirPorCuentaCambiada`)
+    // y el aviso lo dice. Si el carrito ya es otra venta, no se toca: el aviso fijo «Cobrar saldo» la ofrece.
+    val cuentaDeValesCambio by paymentFlowViewModel.cuentaDeValesCambio.collectAsState()
+    cuentaDeValesCambio?.let { aviso ->
+        var carritoAlDia by remember(aviso) { mutableStateOf<Boolean?>(null) }
+        LaunchedEffect(aviso, showPaymentFlow) {
+            if (!showPaymentFlow && carritoAlDia == null) {
+                carritoAlDia = aviso.conAbono && !aviso.pagada &&
+                    cartViewModel.ponerSaldoTrasCuentaCambiada(aviso.orderId, aviso.saldoCents, aviso.venta)
+            }
+        }
+        carritoAlDia?.let { alDia ->
+            AvoqadoDialog(
+                title = "La cuenta cambió",
+                description = com.avoqado.pos.payment.presentation.textoDeCuentaCambiada(aviso, carritoAlDia = alDia),
+                onDismiss = { paymentFlowViewModel.reconocerCuentaDeValesCambio() },
+                actionButton = {
+                    PrimaryButton(
+                        text = "Entendido",
+                        onClick = { paymentFlowViewModel.reconocerCuentaDeValesCambio() },
+                        fullWidth = true,
+                    )
+                },
+            ) {}
+        }
+    }
+
     // 🔴 LA COMANDA QUE NO SALIÓ, fuera del cobro.
     //
     // El aviso vivía SÓLO dentro de `PaymentFlowScreen`, y el cajero cierra esa pantalla en
