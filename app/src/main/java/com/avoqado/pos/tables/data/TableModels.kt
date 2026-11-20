@@ -329,6 +329,13 @@ enum class DesenlaceDelManual { APLICADO, GUARDADO_SIN_RED }
 @Serializable
 data class CompItemRequest(val reason: String)
 
+/** POST .../orders/:orderId/items/:itemId/void — «Anular producto» (Flautas, 20-nov). La respuesta trae la versión nueva. */
+@Serializable
+data class VoidItemRequest(val reason: String)
+
+@Serializable
+data class VoidItemResponse(val success: Boolean = true, val data: UpdatedOrder? = null)
+
 /** Minimal `{ success }` envelope for mutations whose payload we don't consume
  *  (pay-cash, clear-table). Retrofit + kotlinx can't deserialize `Any`. */
 @Serializable

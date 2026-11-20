@@ -165,6 +165,10 @@ internal const val DESCUENTO_MANUAL_GUARDADO_SIN_RED =
 internal const val DESCUENTO_MANUAL_SIN_RESPUESTA =
     "Sin conexión: no supimos si el descuento se aplicó. Revisa «Aplicados» al volver la red antes de darlo otra vez."
 
+/** «Anular producto» (Codex r1 #9): la red cayó a media llamada; no se sabe si se anuló. La cuenta se relee al volver la señal. */
+internal const val ANULAR_SIN_CONFIRMAR =
+    "Sin conexión: no supimos si el producto se anuló. Revisa la cuenta al volver la red antes de anularlo otra vez."
+
 /** 7133e3: el valor como lo guarda el SERVIDOR (2 decimales, mitad hacia arriba). */
 internal fun valorDelManual(value: Double): Double =
     java.math.BigDecimal(value.toString()).setScale(2, java.math.RoundingMode.HALF_UP).toDouble()
@@ -1662,6 +1666,35 @@ class TableOrderViewModel @Inject constructor(
         }
     }
 
+    /**
+     * «Anular producto» (Flautas, 20-nov): quita UN renglón ya enviado de la cuenta. Mismas puertas que la cortesía: sin red no se
+     * encola (dice «Sin conexión»), un cobro con saldo en curso lo frena y, sin `orders:void`, el SERVIDOR pide el PIN del gerente.
+     */
+    fun voidSentItem(itemId: String, reason: String) {
+        val session = tableSession.current() ?: return
+        val vId = venueId ?: return
+        bloqueoDeSaldo(vId, session)?.let { showBlockedReason(it); return }
+        if (!requireOnline("anular un producto enviado")) return
+        viewModelScope.launch {
+            mutarCuenta(vId, session) { mutar { repository.voidItem(vId, session.orderId, itemId, reason) } }.fold(
+                onSuccess = { version ->
+                    // La versión que devolvió el SERVIDOR: sin ella, el siguiente Enviar daría 409 hasta releer la cuenta.
+                    if (version != null && tableSession.contextoActual() == contextoDeSesion && tableSession.current()?.orderId == session.orderId)
+                        tableSession.updateVersion(version)
+                    showMessage("Producto anulado — $reason")
+                    repository.refresh(vId)
+                },
+                onFailure = { e ->
+                    // Codex r1 #9: sin respuesta (WiFi sin salida, corte a medias) no se sabe si el SERVIDOR lo anuló: se dice así, en
+                    // gris, y la relectura de `mutar` enseña la cuenta real en cuanto vuelva la señal. Nunca «no se anuló» a ciegas.
+                    // Codex r4 #5: un 502–504 del intermediario tampoco dice si el SERVIDOR lo anuló (igual que al enviar una ronda).
+                    if (com.avoqado.pos.core.data.network.ServerErrorText.isOffline(e) || isNetworkError(e)) showSinRed(ANULAR_SIN_CONFIRMAR)
+                    else showError(com.avoqado.pos.core.data.network.ServerErrorText.humanize(e, "No se pudo anular el producto"))
+                },
+            )
+        }
+    }
+
     fun consumeActionMessage() {
         _actionMessage.value = null
         _mensajeSinRed.value = null
@@ -2346,6 +2379,11 @@ class TableOrderViewModel @Inject constructor(
         runCatching { syncOutbox.observarEstado(llave).first() }.getOrNull() ==
             com.avoqado.pos.core.data.local.database.SyncIntentEntity.STATUS_REJECTED
 
+    /** Codex r4 #1: ¿el SERVIDOR ya confirmó esa ronda (en esta vida del VM o en la cola)? Si no se puede leer, no. */
+    private suspend fun rondaConfirmada(llave: String): Boolean = llave in rondasConfirmadas ||
+        runCatching { syncOutbox.observarEstado(llave).first() }.getOrNull() ==
+            com.avoqado.pos.core.data.local.database.SyncIntentEntity.STATUS_ACKED
+
     /** La reimpresión tarda (timeout de impresora ~10 s): la pantalla lo dice. */
     private val _isReprinting = MutableStateFlow(false)
     val isReprinting: StateFlow<Boolean> = _isReprinting.asStateFlow()
@@ -2373,7 +2411,12 @@ class TableOrderViewModel @Inject constructor(
             printConfigRepository.refresh(vId)
             // Codex r1 (R3), r2 y r3: una ronda que el SERVIDOR ya rechazó no se vuelve a mandar a cocina (el gerente la revisa en
             // la cola). Se pregunta después del refresco de impresoras y otra vez justo antes de cada hoja (abajo).
-            val enCola = candidatasEnCola.filter { line -> rondaDe(line.externalId)?.let { !rondaRechazada(it) } ?: true }
+            // Codex r4 #1 y r5 #3 de «Anular producto»: una ronda que el SERVIDOR ya CONFIRMÓ tampoco sale de la cola: lo suyo que sigue
+            // en la cuenta ya viene en `sentItems`, y lo que no (otra caja lo anuló o lo separó) no debe volver a cocina. También sin la
+            // cuenta al día: una copia de menos en una reimpresión es mejor que cocinar algo anulado.
+            val enCola = candidatasEnCola.filter { line ->
+                rondaDe(line.externalId)?.let { !rondaRechazada(it) && !rondaConfirmada(it) } ?: true
+            }
             if (sentItems.isEmpty() && enCola.isEmpty()) {
                 _isReprinting.value = false
                 showMessage("No hay artículos enviados para reimprimir")
