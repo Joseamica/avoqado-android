@@ -895,6 +895,11 @@ class TableServiceRepository @Inject constructor(
         Unit
     }.onFailure { Log.e(TAG, "❌ compItem failed: ${it.message}") }
 
+    /** «Anular producto»: quita UN renglón enviado. Sólo en línea, como la cortesía (no se encola). Devuelve la versión nueva. */
+    suspend fun voidItem(venueId: String, orderId: String, itemId: String, reason: String): Result<Int?> = runCatching {
+        apiService.voidOrderItem(venueId, orderId, itemId, VoidItemRequest(reason)).data?.version
+    }.onFailure { Log.e(TAG, "❌ voidItem failed: ${it.message}") }
+
     /** "Anular cuenta": cancels the table's open order (server releases the table). */
     suspend fun cancelarEnLinea(venueId: String, orderId: String, reason: String): Result<Unit> = runCatching {
         apiService.cancelOrder(venueId, orderId, CancelOrderRequest(reason))

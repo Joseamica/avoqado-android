@@ -1662,6 +1662,31 @@ class TableOrderViewModel @Inject constructor(
         }
     }
 
+    /**
+     * «Anular producto» (Flautas, 20-nov): quita UN renglón ya enviado de la cuenta. Mismas puertas que la cortesía: sin red no se
+     * encola (dice «Sin conexión»), un cobro con saldo en curso lo frena y, sin `orders:void`, el SERVIDOR pide el PIN del gerente.
+     */
+    fun voidSentItem(itemId: String, reason: String) {
+        val session = tableSession.current() ?: return
+        val vId = venueId ?: return
+        bloqueoDeSaldo(vId, session)?.let { showBlockedReason(it); return }
+        if (!requireOnline("anular un producto enviado")) return
+        viewModelScope.launch {
+            mutarCuenta(vId, session) { mutar { repository.voidItem(vId, session.orderId, itemId, reason) } }.fold(
+                onSuccess = { version ->
+                    // La versión que devolvió el SERVIDOR: sin ella, el siguiente Enviar daría 409 hasta releer la cuenta.
+                    if (version != null && tableSession.contextoActual() == contextoDeSesion && tableSession.current()?.orderId == session.orderId)
+                        tableSession.updateVersion(version)
+                    showMessage("Producto anulado — $reason")
+                    repository.refresh(vId)
+                },
+                onFailure = { e ->
+                    showError(com.avoqado.pos.core.data.network.ServerErrorText.humanize(e, "No se pudo anular el producto"))
+                },
+            )
+        }
+    }
+
     fun consumeActionMessage() {
         _actionMessage.value = null
         _mensajeSinRed.value = null

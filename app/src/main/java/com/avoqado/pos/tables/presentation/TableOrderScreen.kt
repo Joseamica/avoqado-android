@@ -1576,10 +1576,16 @@ fun TableOrderScreen(
     }
 
     compTarget?.let { target ->
-        CortesiaDialog(
+        // Flautas (20-nov): lo enviado se anula o se regala, en la misma ventana.
+        RenglonEnviadoDialog(
             productName = target.productName ?: "Artículo",
+            sinAnular = if (check?.items?.size == 1) ULTIMO_PRODUCTO_SIN_ANULAR else null,
             onDismiss = { compTarget = null },
-            onConfirm = { reason ->
+            onAnular = { reason ->
+                compTarget = null
+                viewModel.voidSentItem(target.id, reason)
+            },
+            onCortesia = { reason ->
                 compTarget = null
                 viewModel.compSentItem(target.id, reason)
             },
