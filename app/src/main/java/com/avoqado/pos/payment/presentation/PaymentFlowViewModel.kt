@@ -3792,7 +3792,6 @@ class PaymentFlowViewModel @Inject constructor(
                 if (saldoEsperado == null && !createdOrderId.isNullOrBlank()) {
                     Log.w("💳", "F1: sin saldo conocido de la cuenta $createdOrderId: el cobro sale sin expectedRemainingCents")
                 }
-                terminalPaymentService.saldoEsperadoDelProximoEnvio = saldoEsperado
                 // D4: sin suspender de por medio, así el `requestId` que se anota es el de ESTE envío.
                 pendingGrantQueue?.let {
                     terminalPaymentService.antesDelProximoEnvio = { requestId ->
@@ -3823,7 +3822,8 @@ class PaymentFlowViewModel @Inject constructor(
                     // D53: el cobro de vales lleva lo que debía su orden al armarla; si cambió, el SERVIDOR no cobra.
                     expectedBalanceBeforeCents = saldoEsperadoDeLosVales(createdOrderId),
                     // hz:bdd815fd:D5: «Pedidos → Cobrar» lleva lo que faltaba según su pantalla; si cambió, el SERVIDOR no cobra.
-                    expectedRemainingCents = loQueFaltabaEnPantalla(createdOrderId),
+                    // F1: si no, el saldo de la venta de Mostrador ligada a su orden.
+                    expectedRemainingCents = loQueFaltabaEnPantalla(createdOrderId) ?: saldoEsperado,
                 )
                 // 🔴 Codex android r1 #1: sólo la respuesta de ESTE flujo es su «último intento». La del envío original de A que llega
                 // con B ya abierto (el cajero salió con [Seguir]) iba aquí ANTES de mirar la generación, y Esc en B volvía a observar

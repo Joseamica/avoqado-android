@@ -22,8 +22,9 @@ data class FolioEnDuda(
 data class DesenlaceDeFolio(val venueId: String, val orderId: String, val requestId: String?)
 
 /**
- * 🔴 F1 bloque 2 (412 `REMAINING_BALANCE_MISMATCH`): el SERVIDOR rechazó ESTE envío porque el saldo de la cuenta no es el que vio la
- * caja. Nada llegó al lector. La caja toma [cents] como saldo vigente de su venta y vuelve a cobrar desde ahí; nunca reenvía sola.
+ * 🔴 F1 bloque 2, con el 412 único de develop (`ORDER_BALANCE_CHANGED`, detalle `remainingCents`): el SERVIDOR rechazó ESTE envío de
+ * una venta de Mostrador porque su importe pasa de lo que falta. Nada llegó al lector. La caja toma [cents] como saldo vigente de su
+ * venta y vuelve a cobrar desde ahí; nunca reenvía sola.
  */
 data class SaldoVigente(val venueId: String, val identidadDeVenta: String, val orderId: String, val cents: Int)
 

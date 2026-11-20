@@ -179,15 +179,15 @@ class F1FolioDelCarritoModeloTest {
             every { t.pendienteDeLaVenta(any()) } answers { firstArg<String?>()?.let { pendientesLocales[it] } }
             every { t.sigueEnDuda(any()) } answers { pendientesLocales.containsKey(firstArg()) }
             every { t.dudaDeLaVenta(any()) } answers { firstArg<String?>()?.let { pendientesLocales[it] } }
-            every { t.saldoEsperadoDelProximoEnvio = any() } answers { saldosEsperados += firstArg<Int?>() }
             every { t.folios } returns foliosDeTarjeta
             every { t.pendientesDeOtrasVentas(any()) } returns emptyList()
             every { t.intentoEnVuelo() } returns null
             every { t.contextoDe(any()) } returns null
-            coEvery { t.sendPaymentToTerminal(any(), any(), any(), any(), any(), any(), any(), any()) } answers {
+            coEvery { t.sendPaymentToTerminal(any(), any(), any(), any(), any(), any(), any(), any(), any(), any()) } answers {
                 val folio = arg<String?>(4)
                 envios += folio
                 montos += arg<Int>(1)
+                saldosEsperados += arg<Int?>(9) // `expectedRemainingCents`, parámetro del envío (unión con develop: ya no hay ranura)
                 folio?.let { pendientesLocales[it] }?.let { return@answers TerminalPaymentResult.Undetermined("x", it, inherited = true) }
                 val requestId = "req-${envios.size}"
                 folio?.let { intentos[requestId] = it }

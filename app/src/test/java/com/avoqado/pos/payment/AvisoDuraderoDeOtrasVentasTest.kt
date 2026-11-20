@@ -333,16 +333,16 @@ class AvisoDuraderoDeOtrasVentasTest {
     }
 
     /**
-     * F1 bloque 2 (412 `REMAINING_BALANCE_MISMATCH`): la caja vio que faltaban $60 y otra caja ya abonó. El SERVIDOR rechaza ESTE
-     * envío sin tocar el lector y dice cuánto falta. La pantalla lo dice, la venta toma ese saldo y nada se reenvía solo; la
-     * solicitud rechazada no queda como duda.
+     * F1 bloque 2, ya con el 412 único de develop (`ORDER_BALANCE_CHANGED`, detalle `remainingCents`): la caja vio que faltaban $60
+     * y otra caja ya abonó. El SERVIDOR rechaza ESTE envío sin tocar el lector y dice cuánto falta. La pantalla lo dice, la venta
+     * toma ese saldo y nada se reenvía solo; la solicitud rechazada no queda como duda.
      */
     @Test
     fun saldoCambio_412_muestraElSaldoVigenteYNoReenvia() = runTest {
         codigoDelPost = 412
-        respuestaDelPost = """{"success":false,"status":"failed","code":"REMAINING_BALANCE_MISMATCH",""" +
-            """"message":"El cobro no cuadra con lo que falta de la cuenta 1234: falta ${'$'}30.00. Revisa el reparto y vuelve a intentar.",""" +
-            """"details":{"requestId":"{requestId}","remainingBalanceCents":3000,"expectedRemainingCents":6000}}"""
+        respuestaDelPost = """{"success":false,"status":"failed","code":"ORDER_BALANCE_CHANGED",""" +
+            """"message":"La cuenta 1234 cambió mientras se cobraba: ahora falta ${'$'}30.00. No se cobró la tarjeta. Sal del cobro y cobra el saldo pendiente.",""" +
+            """"details":{"requestId":"{requestId}","remainingCents":3000,"expectedRemainingCents":6000}}"""
         val vm = nuevaVenta()
         val venta = cuenta(6_000)
 

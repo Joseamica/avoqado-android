@@ -357,26 +357,6 @@ class TerminalPaymentServiceHttpTest {
         return """{"success":false,"status":"failed","code":"TERMINAL_BUSY","errorMessage":"La terminal t1 está ocupada por un cobro de ${'$'}125.50 enviado hace 3 min desde Sunmi D3","message":"La terminal t1 está ocupada por un cobro de ${'$'}125.50 enviado hace 3 min desde Sunmi D3","blockingRequest":$bloqueador$details}"""
     }
 
-    /**
-     * F1 bloque 2: `expectedRemainingCents` viaja SÓLO en el envío para el que se fijó, y un SERVIDOR viejo que no lo conoce contesta
-     * lo de siempre: el desenlace es idéntico al de un envío sin él, y sin él el cuerpo no trae la llave.
-     */
-    @Test
-    fun servidorViejo_ignoraElCampo() = runBlocking {
-        enqueue(409, busyBody("otro-cobro", scope = "TERMINAL"))
-        enqueue(409, busyBody("otro-cobro", scope = "TERMINAL"))
-
-        service.saldoEsperadoDelProximoEnvio = 6_000
-        val con = service.sendPaymentToTerminal(terminalId = "t1", amountCents = 6_000, orderId = "orden-a")
-        val sin = service.sendPaymentToTerminal(terminalId = "t1", amountCents = 6_000, orderId = "orden-a")
-
-        val cuerpoCon = server.takeRequest().body.readUtf8()
-        val cuerpoSin = server.takeRequest().body.readUtf8()
-        assertTrue(cuerpoCon, cuerpoCon.contains("\"expectedRemainingCents\":6000"))
-        assertFalse("se consume en un solo envío; sin él, el cuerpo de siempre", cuerpoSin.contains("expectedRemainingCents"))
-        assertEquals(sin, con.let { (it as TerminalPaymentResult.Error).copy(requestId = (sin as TerminalPaymentResult.Error).requestId) })
-    }
-
     // MARK: - F1 bloque 4: el importe del intento, por (sucursal, solicitud)
 
     private fun pesos(cents: Int) = String.format(java.util.Locale.US, "\$%.2f", cents / 100.0)
@@ -912,8 +892,37 @@ class TerminalPaymentServiceHttpTest {
         assertTrue("el SERVIDOR no creó el cobro", error.noSeCreo)
         assertTrue("es la cuenta que cambió", error.cuentaCambio)
         assertTrue(error.message, error.message.startsWith("La cuenta AREA-80 cambió"))
+        assertEquals("unión F1 × develop: lo que de verdad falta, del SERVIDOR (remainingCents)", 7950, error.saldoVigenteCents)
         assertTrue("la llave se soltó", idsPendientes().isEmpty())
         assertEquals("no hay nada que consultar", 1, server.requestCount)
+    }
+
+    /**
+     * Unión F1 × develop (mapa-union-android.md §4, N5). El 412 propio de F1 (`REMAINING_BALANCE_MISMATCH`) ya no existe en el
+     * SERVIDOR: si llegara, es un rechazo más de esta solicitud (no se creó) sin saldo vigente; el único 412 de saldo es
+     * `ORDER_BALANCE_CHANGED`. Y el cuerpo lleva UNA sola llave `expectedRemainingCents`: la del parámetro.
+     */
+    @Test
+    fun `F1 el 412 viejo REMAINING_BALANCE_MISMATCH ya no trae saldo vigente y el cuerpo lleva una sola llave de saldo`() = runBlocking {
+        var cuerpo = ""
+        server.dispatcher = object : okhttp3.mockwebserver.Dispatcher() {
+            override fun dispatch(request: okhttp3.mockwebserver.RecordedRequest): MockResponse {
+                if (request.method == "GET") return MockResponse().setResponseCode(404)
+                cuerpo = request.body.readUtf8()
+                val id = org.json.JSONObject(cuerpo).getString("requestId")
+                return MockResponse().setResponseCode(412).setBody(
+                    """{"success":false,"code":"REMAINING_BALANCE_MISMATCH","message":"no cuadra","details":{"requestId":"$id","remainingBalanceCents":3000}}""",
+                )
+            }
+        }
+
+        val result = service.sendPaymentToTerminal(terminalId = "t1", amountCents = 6_000, orderId = "orden-a", expectedRemainingCents = 6_000)
+
+        val error = result as TerminalPaymentResult.Error
+        assertNull("sin saldo vigente: ese código ya no es el 412 de saldo", error.saldoVigenteCents)
+        assertFalse(error.cuentaCambio)
+        assertEquals("una sola llave: $cuerpo", 1, Regex("\"expectedRemainingCents\"").findAll(cuerpo).count())
+        assertTrue(cuerpo, cuerpo.contains("\"expectedRemainingCents\":6000"))
     }
 
     @Test
