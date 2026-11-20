@@ -55,29 +55,6 @@ class SaldoDeLaOrdenHttpTest {
         assertEquals("/api/v1/mobile/venues/venue-1/orders/orden-1", server.takeRequest().path)
     }
 
-    /**
-     * F1 ronda 4 (Ajuste 3): el campo OPCIONAL `order.pendingCardPayment` (`{ amountCents, tipCents | null } | null`) del SERVIDOR nuevo. Con
-     * propina, sin propina conocida (`null`), `null` y ausente (SERVIDOR viejo). Un valor que no se entiende no inventa un aviso.
-     */
-    @Test
-    fun `F1 r4 - lee la tarjeta por confirmar del SERVIDOR, si la manda`() = runBlocking {
-        val casos = listOf(
-            """{"amountCents":4000,"tipCents":500}""" to com.avoqado.pos.payment.data.ImporteDelIntento(4000, 500),
-            """{"amountCents":4000,"tipCents":null}""" to com.avoqado.pos.payment.data.ImporteDelIntento(4000, null),
-            """{"amountCents":4000}""" to com.avoqado.pos.payment.data.ImporteDelIntento(4000, null),
-            "null" to null,
-            """{"amountCents":"x"}""" to null,
-        )
-        for ((campo, esperado) in casos) {
-            server.enqueue(MockResponse().setBody(
-                """{"order":{"paymentStatus":"pending","status":"PENDING","preBillBalance":{"remainingBalanceCents":18000},"pendingCardPayment":$campo}}"""))
-            val saldo = repository.saldoDeLaOrden("orden-1")
-            assertEquals(campo, OrderRepository.SaldoDeLaOrden(18000, "PENDING", "PENDING", tarjetaPorConfirmar = esperado), saldo)
-        }
-        server.enqueue(MockResponse().setBody("""{"order":{"paymentStatus":"pending","preBillBalance":{"remainingBalanceCents":18000}}}"""))
-        assertNull("SERVIDOR viejo: sin aviso", repository.saldoDeLaOrden("orden-1")?.tarjetaPorConfirmar)
-    }
-
     @Test
     fun `un 401 es no se pudo confirmar, sin renovar la sesion`() = runBlocking {
         server.enqueue(MockResponse().setResponseCode(401))

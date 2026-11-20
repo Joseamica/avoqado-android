@@ -108,10 +108,6 @@ class F1FolioDelCarritoModeloTest {
         var conPropina = false
         /** Qué contesta el próximo envío a la terminal (null = la tarjeta queda en duda). */
         var proximoEnvio: ((folio: String?, requestId: String) -> TerminalPaymentResult)? = null
-        /** El SERVIDOR ya recibió el envío, pero su respuesta no llega a la app (la app muere antes). */
-        var respuestaColgada: kotlinx.coroutines.CompletableDeferred<Unit>? = null
-        /** El cliente que viajó con cada envío a la terminal (r4-parcial #1: nada sale sin el cliente de la venta). */
-        val clientesDeEnvio = mutableListOf<String?>()
 
         /** Folios con un intento que SÍ pasó según la lista durable («SÍ pasó» marcado, cabo del bloque 2). */
         val cobrados = mutableSetOf<String>()
@@ -188,21 +184,16 @@ class F1FolioDelCarritoModeloTest {
             every { t.pendientesDeOtrasVentas(any()) } returns emptyList()
             every { t.intentoEnVuelo() } returns null
             every { t.contextoDe(any()) } returns null
-            coEvery { t.sendPaymentToTerminal(any(), any(), any(), any(), any(), any(), any(), any()) } coAnswers {
+            coEvery { t.sendPaymentToTerminal(any(), any(), any(), any(), any(), any(), any(), any()) } answers {
                 val folio = arg<String?>(4)
                 envios += folio
                 montos += arg<Int>(1)
-                clientesDeEnvio += arg<String?>(6)
-                folio?.let { pendientesLocales[it] }?.let { return@coAnswers TerminalPaymentResult.Undetermined("x", it, inherited = true) }
+                folio?.let { pendientesLocales[it] }?.let { return@answers TerminalPaymentResult.Undetermined("x", it, inherited = true) }
                 val requestId = "req-${envios.size}"
                 folio?.let { intentos[requestId] = it }
-                // Un 409 (otra caja) no deja llave: el servicio la suelta al recibirlo (r4, como antes de F1). Sólo la duda propia la deja.
-                val resultado = proximoEnvio?.invoke(folio, requestId)
+                proximoEnvio?.invoke(folio, requestId)
                     ?: TerminalPaymentResult.Undetermined("x", requestId).also { folio?.let { pendientesLocales[it] = requestId } }
-                respuestaColgada?.await()
-                resultado
             }
-            every { t.soltarLlaveSiEs(any()) } answers { pendientesLocales.values.remove(firstArg<String>()) }
             coEvery { t.resolveOutcome(any(), any(), any()) } coAnswers {
                 consultasColgadas[firstArg()]?.await()
                 desenlaces[firstArg()] ?: TerminalPaymentResult.Undetermined("x", firstArg())
@@ -444,32 +435,24 @@ class F1FolioDelCarritoModeloTest {
             despues.cobro.state.value is PaymentFlowState.Undetermined)
     }
 
-    /** El `409 ORDER` del intento [intento] de otra caja sobre la cuenta que se manda. */
-    private fun Servidor.ocupadaPor(intento: String) {
-        proximoEnvio = { _, requestId ->
-            TerminalPaymentResult.Error("Esta venta tiene un cobro pendiente de confirmar.", requestId = requestId, noSeCreo = true,
-                bloqueador = BloqueadorDeCobro(intento, "ORDER"))
+    @Test
+    fun ordenRemota_seGuardaSinPendienteLocal() = runTest {
+        val servidor = Servidor()
+        // Otra caja alcanzó a mandar primero una tarjeta sobre A: el servidor contesta 409 con alcance ORDER.
+        servidor.proximoEnvio = { _, requestId ->
+            TerminalPaymentResult.Error("Esta venta ya tiene un cobro pendiente", requestId = requestId, noSeCreo = true,
+                bloqueador = BloqueadorDeCobro("req-otra-caja", "ORDER"))
         }
-    }
-
-    /** A se manda y otra caja ya tenía [intento] sobre ella (409 ORDER): «Tarjeta por confirmar» → [Seguir]. A queda en pantalla. */
-    private fun TestScope.aTras409DeOtraCaja(caja: Caja, intento: String) {
-        caja.servidor.ocupadaPor(intento)
+        val caja = Caja(servidor)
         caja.armar("cli-ana", "Ana")
         assertTrue(caja.cobrar())
         caja.tarjeta()
         advanceUntilIdle()
-        assertEquals("montaje: «Tarjeta por confirmar» del intento de la otra caja", intento,
-            (caja.cobro.state.value as? PaymentFlowState.Error)?.tarjetaDeLaCuenta)
-        caja.seguir()
-        assertEquals("montaje: A en pantalla con sus $180", 18_000, caja.carrito.cartState.value.totalCents)
-    }
+        assertEquals("montaje: «Revisar ese cobro»", "req-otra-caja", (caja.cobro.state.value as? PaymentFlowState.Error)?.revisarCobroId)
 
-    @Test
-    fun ordenRemota_seGuardaSinPendienteLocal() = runTest {
-        val servidor = Servidor()
-        val caja = Caja(servidor)
-        aTras409DeOtraCaja(caja, "req-otra-caja")
+        caja.cobro.revisarCobroQueOcupa()
+        advanceUntilIdle()
+        caja.seguir()
 
         assertTrue("A se puede guardar aunque esta tablet nunca mandó ese cobro", caja.guardar())
         assertTrue("ni se fabricó un pendiente local", servidor.pendientesLocales.isEmpty())
@@ -481,27 +464,47 @@ class F1FolioDelCarritoModeloTest {
     }
 
     /**
-     * Codex final r1 #5, sin recordar el intento de la otra caja (ronda 4): sobre A esta caja recibió `409 ORDER` por la tarjeta de $40 de la
-     * caja 1 y guardó A. Al retomar manda el saldo del SERVIDOR: con la caja 1 ya abonada, $60 (y su copia también). Ese intento no se consulta.
+     * Codex final r1 #5: sobre A, esta caja recibió `409 ORDER` por la tarjeta de $40 de la caja 1 y guardó A. Al retomar se consulta
+     * el intento BLOQUEADOR guardado: mientras siga en duda, la cuenta sigue frenada; ya resuelto (la caja 1 abonó), toma el saldo del
+     * SERVIDOR ($60) y suelta la duda. Antes se quedaba con la duda «por ser de otra caja» y los $180 en el carrito.
      */
     @Test
-    fun segundaCaja_tras409_primeraAbona_alRetomarTomaElSaldoDelServidor() = runTest {
+    fun segundaCaja_tras409_primeraAbona_alRetomarTomaElSaldoYSueltaLaDuda() = runTest {
         val servidor = Servidor()
+        servidor.proximoEnvio = { _, requestId ->
+            TerminalPaymentResult.Error("Esta venta ya tiene un cobro pendiente", requestId = requestId, noSeCreo = true,
+                bloqueador = BloqueadorDeCobro("req-otra-caja", "ORDER"))
+        }
         val caja = Caja(servidor)
-        aTras409DeOtraCaja(caja, "req-otra-caja")
+        caja.armar("cli-ana", "Ana")
+        assertTrue(caja.cobrar())
+        caja.tarjeta()
+        advanceUntilIdle()
+        caja.cobro.revisarCobroQueOcupa()
+        advanceUntilIdle()
+        caja.seguir()
         assertTrue(caja.guardar())
         val identidadDeA = caja.guardados.savedCarts.value.single().folio!!.identidadDeVenta
         servidor.proximoEnvio = null
 
+        // La caja 1 ya registró un abono en A, pero su tarjeta sigue en duda: el freno se conserva.
         servidor.saldos["order-a"] = OrderRepository.SaldoDeLaOrden(6_000, "PARTIAL", "PENDING")
+        assertEquals(Restauracion.Hecha, caja.retomar())
+        advanceUntilIdle()
+        assertEquals("en duda: la cuenta no cambia", 18_000, caja.carrito.cartState.value.totalCents)
+        caja.carrito.addProduct(refresco)
+        assertEquals("ni se edita", com.avoqado.pos.pos.presentation.cart.CUENTA_LIGADA_GUARDALA, caja.carrito.avisoDeVales.value)
+        assertTrue(caja.guardar())
+
+        // La caja 1 termina su abono de $40: el intento bloqueador ya pasó.
+        servidor.desenlaces["req-otra-caja"] = TerminalPaymentResult.Success(paymentId = "pay-caja-1", requestId = "req-otra-caja")
         assertEquals(Restauracion.Hecha, caja.retomar())
         advanceUntilIdle()
         assertEquals("toma el saldo del SERVIDOR", 6_000, caja.carrito.cartState.value.totalCents)
         assertEquals(identidadDeA, caja.carrito.cartState.value.identidadDeVenta)
         assertEquals("y su copia también", listOf("Saldo pendiente" to 6_000),
             caja.guardados.savedCarts.value.single().items.map { it.name to it.unitPrice })
-        io.mockk.coVerify(exactly = 0) { servidor.terminal.resolveOutcome("req-otra-caja", any(), any()) }
-        assertTrue(caja.cobrar())
+        assertTrue("sin la duda, se cobra", caja.cobrar())
         assertEquals("sobre A", "order-a", caja.carrito.chargingAgainstOrderId)
         caja.tarjeta()
         advanceUntilIdle()
@@ -509,18 +512,40 @@ class F1FolioDelCarritoModeloTest {
         assertEquals(listOf("order-a"), servidor.ordenesCreadas.map { it.first })
     }
 
+    /** El `409 ORDER` del intento [intento] de otra caja sobre la cuenta que se manda. */
+    private fun Servidor.ocupadaPor(intento: String) {
+        proximoEnvio = { _, requestId ->
+            TerminalPaymentResult.Error("Esta venta ya tiene un cobro pendiente", requestId = requestId, noSeCreo = true,
+                bloqueador = BloqueadorDeCobro(intento, "ORDER"))
+        }
+    }
+
+    /** A se manda, otra caja ya tenía [intento] sobre ella: «Revisar ese cobro» → [Seguir]. A queda en pantalla, en duda ajena. */
+    private fun TestScope.aEnDudaDeOtraCaja(caja: Caja, intento: String) {
+        caja.servidor.ocupadaPor(intento)
+        caja.armar("cli-ana", "Ana")
+        assertTrue(caja.cobrar())
+        caja.tarjeta()
+        advanceUntilIdle()
+        caja.cobro.revisarCobroQueOcupa()
+        advanceUntilIdle()
+        caja.seguir()
+        assertEquals("montaje: A en pantalla con sus $180", 18_000, caja.carrito.cartState.value.totalCents)
+    }
+
     /**
      * Codex final r2 #1: tras el `409 ORDER` la cajera da [Seguir] y deja A en pantalla (no la guarda ni la retoma). La caja 1 termina su
-     * abono de $0.50. «Cobrar» desde esa misma pantalla manda el saldo que enseña ($180): el SERVIDOR contesta 412 y la cuenta toma lo que de
-     * verdad falta. Antes salía sin `expectedRemainingCents` y el margen de $1 admitía $180 cuando faltaban $179.50.
+     * abono de $0.50. «Cobrar» desde esa misma pantalla manda el saldo que enseña ($180): el SERVIDOR contesta 412 y la cuenta relee A
+     * (el intento ajeno y su saldo). Antes salía sin `expectedRemainingCents` y el margen de $1 admitía $180 cuando faltaban $179.50.
      */
     @Test
     fun segundaCaja_seguirSinGuardar_primeraAbona_cobrarMandaElSaldoQueEnsena() = runTest {
         val servidor = Servidor()
         val caja = Caja(servidor)
-        aTras409DeOtraCaja(caja, "req-otra-caja")
+        aEnDudaDeOtraCaja(caja, "req-otra-caja")
 
-        // La caja 1 termina su abono de $0.50: A debe $179.50.
+        // La caja 1 termina su abono de $0.50: su intento ya pasó y A debe $179.50.
+        servidor.desenlaces["req-otra-caja"] = TerminalPaymentResult.Success(paymentId = "pay-caja-1", requestId = "req-otra-caja")
         servidor.saldos["order-a"] = OrderRepository.SaldoDeLaOrden(17_950, "PARTIAL", "PENDING")
         servidor.proximoEnvio = { _, requestId -> servidor.admision(requestId, saldoReal = 17_950, conAbono = true) }
         assertTrue(caja.cobrar())
@@ -532,7 +557,7 @@ class F1FolioDelCarritoModeloTest {
         assertTrue("nada llegó al lector", servidor.admitidos.isEmpty())
         caja.atenderSaldoVigente()
         advanceUntilIdle()
-        assertEquals("la cuenta queda con lo que de verdad falta", 17_950, caja.carrito.cartState.value.totalCents)
+        assertEquals("la cuenta relee A: queda lo que de verdad falta", 17_950, caja.carrito.cartState.value.totalCents)
         assertEquals("y sigue siendo A", listOf("order-a"), servidor.ordenesCreadas.map { it.first })
         assertEquals("su copia sigue (el cierre del cobro no la suelta)", "order-a" to 17_950,
             caja.guardados.savedCarts.value.single().let { it.folio?.orderId to it.folio?.saldoCents })
@@ -545,364 +570,51 @@ class F1FolioDelCarritoModeloTest {
         assertEquals("el lector sólo recibe lo que falta", listOf(17_950), servidor.admitidos)
     }
 
-    // MARK: - Familia 1 · ronda 4: el POS ya no recuerda la duda de OTRA caja (`plan-android-simplificar-r4.md`)
-
     /**
-     * Codex plan r4 #3 (Ajuste 2): el `409 ORDER` enseña «Tarjeta por confirmar · $X» con el importe del intento que nombró (con propina; sin
-     * ella «antes de propina»; sin base, «Importe por confirmar») y sólo [Seguir]: ni «Reintentar» ni «Revisar ese cobro» ni «espera a que
-     * termine». A ese intento no se le pregunta nada.
+     * Codex final r2 #5: una relectura del intento X de A sale y se queda esperando. Mientras, la caja recibe `409 ORDER` por un intento
+     * NUEVO Y de otra caja sobre A y lo deja en duda. Cuando por fin vuelve la respuesta de X (con su abono), no puede borrar Y: ni de la
+     * pantalla ni de la copia guardada. Antes se aplicaba a la duda vigente sin mirar que fuera la misma.
      */
     @Test
-    fun cuatrocientosNueveOrder_tarjetaPorConfirmarConElImporteDelIntento_ySoloSeguir() = runTest {
-        for ((importe, texto) in listOf(
-            com.avoqado.pos.payment.data.ImporteDelIntento(4_000, 500) to "\$45.00",
-            com.avoqado.pos.payment.data.ImporteDelIntento(4_000, null) to "\$40.00 antes de propina",
-            null to null,
-        )) {
-            disco = PrefsDeDosCapas()
-            val servidor = Servidor()
-            every { servidor.terminal.importeDelIntento(any(), "req-y") } returns importe
-            servidor.ocupadaPor("req-y")
-            val caja = Caja(servidor)
-            caja.armar("cli-ana", "Ana")
-            assertTrue(caja.cobrar())
-            caja.tarjeta()
-            advanceUntilIdle()
-
-            val error = caja.cobro.state.value as PaymentFlowState.Error
-            assertEquals("$texto: la tarjeta de la cuenta", "req-y", error.tarjetaDeLaCuenta)
-            assertNull("$texto: sin «Revisar ese cobro»", error.revisarCobroId)
-            assertEquals(texto, caja.cobro.textoDeLaTarjetaDeLaCuenta { com.avoqado.pos.core.util.formatMoneyFromCents(it) })
-            io.mockk.coVerify(exactly = 0) { servidor.terminal.resolveOutcome("req-y", any(), any()) }
-
-            caja.seguir()
-            assertEquals("$texto: [Seguir] deja a A en pantalla", "cli-ana", caja.carrito.selectedCustomer.value?.id)
-            assertTrue(caja.cobrar())
-            assertEquals("$texto: y A sigue en su folio", "order-a", caja.carrito.chargingAgainstOrderId)
-        }
-    }
-
-    /**
-     * Codex plan r4 #2 (Ajuste 1): tras el `409 ORDER`, [Seguir] → «Guardar» → atender a B → retomar A. Sin el intento de la otra caja en el
-     * POS, el carrito reconoce a A por su folio: cerrar el cobro no borra su copia, «Guardar» la acepta sin duda y «Retomar» relee su saldo en
-     * el SERVIDOR, que también trae el aviso (Ajuste 3). B es otra venta aunque lleve lo mismo.
-     */
-    @Test
-    fun tras409_seguir_guardar_atenderB_retomarA_releeSuSaldo() = runTest {
+    fun respuestaTardiaDeX_noBorraLaDudaNuevaY() = runTest {
         val servidor = Servidor()
         val caja = Caja(servidor)
-        aTras409DeOtraCaja(caja, "req-y")
-        val identidadDeA = caja.carrito.cartState.value.identidadDeVenta
-        assertEquals("cerrar el cobro no borra la copia de A", "order-a", caja.guardados.savedCarts.value.single().folio?.orderId)
+        aEnDudaDeOtraCaja(caja, "req-x")
 
-        assertTrue("«Guardar» acepta la cuenta con su folio y sin duda", caja.guardar())
-        caja.armar("cli-beto", "Beto")
-        assertTrue(caja.cobrar())
-        assertNull("B es otra venta", caja.carrito.chargingAgainstOrderId)
-        servidor.proximoEnvio = null
-        caja.tarjeta()
-        advanceUntilIdle()
-        assertEquals(listOf("order-a" to "cli-ana", "order-b" to "cli-beto"), servidor.ordenesCreadas)
-        caja.seguir()
-        assertTrue(caja.guardar())
-
-        // La caja 1 sigue con su tarjeta: el SERVIDOR lo dice al retomar A (no se guarda) y el efectivo sigue permitido.
-        val deLaCaja1 = com.avoqado.pos.payment.data.ImporteDelIntento(4_000, 500)
-        servidor.saldos["order-a"] = OrderRepository.SaldoDeLaOrden(18_000, "PENDING", "PENDING", tarjetaPorConfirmar = deLaCaja1)
-        assertEquals(Restauracion.Hecha, caja.retomarFolio("order-a"))
-        advanceUntilIdle()
-        assertEquals("el aviso sale del SERVIDOR", com.avoqado.pos.pos.presentation.cart.tarjetaPorConfirmarEnLaCuenta(deLaCaja1),
-            caja.carrito.avisoDeVales.value)
-        assertEquals("Tarjeta por confirmar · \$45.00", caja.carrito.avisoDeVales.value)
-        assertEquals("cli-ana", caja.carrito.selectedCustomer.value?.id)
-        assertEquals(identidadDeA, caja.carrito.cartState.value.identidadDeVenta)
-        assertEquals(18_000, caja.carrito.cartState.value.totalCents)
-        assertTrue("con el aviso, el cobro se abre (el efectivo sigue permitido)", caja.cobrar())
-        caja.salir()
-        assertTrue("«Guardar» otra vez, sin duda", caja.guardar())
-
-        // La caja 1 abonó $120: retomar A trae lo que de verdad falta, y sin tarjeta pendiente no hay aviso.
+        // X ya pasó (abono de $120) y una relectura de A sale; su consulta de X se queda colgada.
+        servidor.desenlaces["req-x"] = TerminalPaymentResult.Success(paymentId = "pay-x", requestId = "req-x")
         servidor.saldos["order-a"] = OrderRepository.SaldoDeLaOrden(6_000, "PARTIAL", "PENDING")
-        caja.carrito.consumeAvisoDeVales()
-        assertEquals(Restauracion.Hecha, caja.retomarFolio("order-a"))
-        advanceUntilIdle()
-        assertNull("sin tarjeta pendiente en el SERVIDOR, sin aviso", caja.carrito.avisoDeVales.value)
-        assertEquals("quedan $60", 6_000, caja.carrito.cartState.value.totalCents)
-        assertEquals(identidadDeA, caja.carrito.cartState.value.identidadDeVenta)
-        assertTrue(caja.cobrar())
-        assertEquals("order-a", caja.carrito.chargingAgainstOrderId)
-        caja.tarjeta()
-        advanceUntilIdle()
-        assertEquals(6_000, servidor.saldosEsperados.last())
-        assertEquals(listOf("order-a", "order-b"), servidor.ordenesCreadas.map { it.first })
-    }
-
-    /** r2 #4 con el folio sin duda (tras el `409 ORDER`): otro cliente sobre A cargaría a A la venta de B. Primero se guarda A. */
-    @Test
-    fun tras409_otroCliente_requiereGuardar() = runTest {
-        val caja = Caja(Servidor())
-        aTras409DeOtraCaja(caja, "req-y")
-        caja.carrito.setSelectedCustomer("cli-beto", "Beto")
-        assertEquals("el cliente de A no cambia", "cli-ana", caja.carrito.selectedCustomer.value?.id)
-        assertEquals(com.avoqado.pos.pos.presentation.cart.CUENTA_LIGADA_GUARDALA, caja.carrito.avisoDeVales.value)
-    }
-
-    /**
-     * Ajuste 1: una copia guardada ANTES de este cambio puede traer el intento de otra caja (`origen = OTRA_CAJA`). Se lee sin romper y se
-     * trata como folio sin duda ajena: al abrir la app se relee su saldo en el SERVIDOR (ese intento no se consulta) y «Retomar» vuelve contra
-     * su folio con ese saldo.
-     */
-    @Test
-    fun copiaGuardadaAntesDeEsteCambio_conOtraCaja_seRetomaComoFolio() = runTest {
-        disco = PrefsDeDosCapas(mutableMapOf("carts" to """[{"id":"copia-vieja","name":"Cuenta","items":[""" +
-            """{"productId":"prod-pizza","name":"Pizza","unitPrice":15000,"quantity":1},""" +
-            """{"productId":"prod-refresco","name":"Refresco","unitPrice":3000,"quantity":1}],""" +
-            """"attachedCustomerId":"cli-ana","attachedCustomerName":"Ana","venueId":"venue-1",""" +
-            """"folio":{"orderId":"order-a","venueId":"venue-1","identidadDeVenta":"venta-a","requestId":"req-y","origen":"OTRA_CAJA","enDuda":true}}]"""))
-        val servidor = Servidor()
-        servidor.saldos["order-a"] = OrderRepository.SaldoDeLaOrden(18_000, "PENDING", "PENDING")
-        val caja = Caja(servidor)
-        advanceUntilIdle()
-
-        val folio = caja.guardados.savedCarts.value.single().folio
-        assertEquals("se lee sin romper y queda sin duda ajena", Triple("order-a", false, 18_000),
-            Triple(folio?.orderId, folio?.enDuda, folio?.saldoCents))
-        io.mockk.coVerify(exactly = 0) { servidor.terminal.resolveOutcome("req-y", any(), any()) }
-        assertEquals(Restauracion.Hecha, caja.retomar())
-        advanceUntilIdle()
-        assertEquals("venta-a", caja.carrito.cartState.value.identidadDeVenta)
-        assertEquals("cli-ana", caja.carrito.selectedCustomer.value?.id)
-        assertTrue(caja.cobrar())
-        assertEquals("order-a", caja.carrito.chargingAgainstOrderId)
-        caja.tarjeta()
-        advanceUntilIdle()
-        assertEquals("con su saldo del SERVIDOR", 18_000, servidor.saldosEsperados.last())
-        assertTrue("sin abrir otro folio", servidor.ordenesCreadas.isEmpty())
-    }
-
-    /** Ajuste 1: sin red, «Retomar» abre A con su último saldo conocido y lo dice; el cobro sale con ese saldo (el SERVIDOR decide). */
-    @Test
-    fun retomarSinRed_abreAConSuUltimoSaldoConocido() = runTest {
-        val servidor = Servidor()
-        val caja = Caja(servidor)
-        aTras409DeOtraCaja(caja, "req-y")
-        assertTrue(caja.guardar())
-        servidor.saldos["order-a"] = OrderRepository.SaldoDeLaOrden(6_000, "PARTIAL", "PENDING")
-        assertEquals(Restauracion.Hecha, caja.retomar())
-        advanceUntilIdle()
-        assertTrue(caja.guardar())
-        servidor.saldos.remove("order-a") // sin red
-
-        val despues = reiniciar(servidor)
-        assertEquals(Restauracion.Hecha, despues.retomar())
-        advanceUntilIdle()
-        assertEquals(com.avoqado.pos.pos.presentation.cart.ULTIMO_SALDO_CONOCIDO, despues.carrito.avisoDeVales.value)
-        assertEquals("el último saldo conocido", 6_000, despues.carrito.cartState.value.totalCents)
-        assertTrue(despues.cobrar())
-        assertEquals("order-a", despues.carrito.chargingAgainstOrderId)
-        assertEquals(6_000, despues.carrito.saldoDelFolioConocido())
-    }
-
-    /**
-     * Codex final r4-parcial #1 (y plan de rediseño #9): la app muere entre el `409 ORDER` y su respuesta. Ya no hay ancla que reenviar: al
-     * abrir, A está en «Carritos guardados» con su folio (la copia de antes de la tarjeta) y nada se reenvía; cuando la otra caja termina, A
-     * se cobra sobre su folio y con su cliente. Antes el reenvío del ancla salía sin cliente ni vendedor y el SERVIDOR lo rechazaba.
-     */
-    @Test
-    fun muereTras409_alAbrirAEstaConSuFolio_yNadaSeReenvia() = runTest {
-        val servidor = Servidor()
-        servidor.ocupadaPor("req-y")
-        servidor.respuestaColgada = kotlinx.coroutines.CompletableDeferred()
-        val caja = Caja(servidor)
-        caja.armar("cli-ana", "Ana")
-        assertTrue(caja.cobrar())
-        caja.tarjeta()
+        val consultaDeX = kotlinx.coroutines.CompletableDeferred<Unit>()
+        servidor.consultasColgadas["req-x"] = consultaDeX
+        servidor.foliosDeTarjeta.emit(com.avoqado.pos.payment.data.DesenlaceDeFolio("venue-1", "order-a", "req-x"))
         runCurrent()
-        // La app muere aquí.
-        servidor.respuestaColgada = null
-        servidor.proximoEnvio = null
-        servidor.saldos["order-a"] = OrderRepository.SaldoDeLaOrden(18_000, "PENDING", "PENDING")
-        val despues = reiniciar(servidor)
-        advanceUntilIdle()
 
-        val copia = despues.guardados.savedCarts.value.single()
-        assertEquals("A está con su folio y su cliente", "order-a" to "cli-ana", copia.folio?.orderId to copia.attachedCustomerId)
-        assertEquals("nada se reenvía al abrir", 1, servidor.envios.size)
-        assertEquals(Restauracion.Hecha, despues.retomar())
-        advanceUntilIdle()
-        assertTrue(despues.cobrar())
-        assertEquals("order-a", despues.carrito.chargingAgainstOrderId)
-        despues.tarjeta()
-        advanceUntilIdle()
-        assertEquals(listOf("order-a", "order-a"), servidor.envios)
-        assertEquals("el cobro de A sale con su cliente", listOf("cli-ana", "cli-ana"), servidor.clientesDeEnvio)
-        assertEquals(listOf("order-a"), servidor.ordenesCreadas.map { it.first })
-    }
-
-    /**
-     * Codex final r4-parcial #2: una respuesta vieja del primer envío K1 (el del 409 de otra caja) no toca el intento nuevo K2 de esta tablet
-     * sobre A. Ya no hay nada de K1 que escribir: la duda de A es la de la lista de esta tablet (K2), y una relectura no la suelta.
-     */
-    @Test
-    fun respuestaViejaDeK1_noTocaLaDudaNuevaK2() = runTest {
-        val servidor = Servidor()
-        val caja = Caja(servidor)
-        aTras409DeOtraCaja(caja, "req-y")
-        servidor.proximoEnvio = null
+        // Mientras tanto otra caja manda Y sobre A: la cajera lo revisa y da [Seguir].
+        servidor.ocupadaPor("req-y")
         assertTrue(caja.cobrar())
         caja.tarjeta()
         advanceUntilIdle()
+        caja.cobro.revisarCobroQueOcupa()
+        advanceUntilIdle()
         caja.seguir()
-        assertEquals("montaje: K2 en la lista de esta tablet", mapOf("order-a" to "req-2"), servidor.pendientesLocales)
+        assertEquals("montaje: la copia ya es de Y", "req-y", caja.guardados.savedCarts.value.single().folio?.requestId)
 
-        // Llega tarde lo del primer envío: su aviso, y una consulta que contestaría el 409 de entonces.
-        servidor.saldos["order-a"] = OrderRepository.SaldoDeLaOrden(18_000, "PENDING", "PENDING")
-        servidor.desenlaces["req-1"] = TerminalPaymentResult.Error("Esta venta tiene un cobro pendiente de confirmar.", requestId = "req-1",
-            noSeCreo = true, bloqueador = BloqueadorDeCobro("req-y", "ORDER"))
-        servidor.foliosDeTarjeta.emit(com.avoqado.pos.payment.data.DesenlaceDeFolio("venue-1", "order-a", "req-1"))
+        // Vuelve la respuesta de X.
+        consultaDeX.complete(Unit)
         advanceUntilIdle()
 
-        io.mockk.coVerify(exactly = 0) { servidor.terminal.resolveOutcome("req-1", any(), any()) }
+        assertEquals("Y sigue en pantalla: la cuenta no cambia", 18_000, caja.carrito.cartState.value.totalCents)
         caja.carrito.addProduct(refresco)
-        assertEquals("A sigue en duda por K2: no se edita", com.avoqado.pos.pos.presentation.cart.CUENTA_LIGADA_GUARDALA, caja.carrito.avisoDeVales.value)
+        assertEquals("ni se edita", com.avoqado.pos.pos.presentation.cart.CUENTA_LIGADA_GUARDALA, caja.carrito.avisoDeVales.value)
+        val copia = caja.guardados.savedCarts.value.single().folio
+        assertEquals("la copia sigue en duda por Y", "req-y" to true, copia?.requestId to copia?.enDuda)
+
+        // Y se resuelve: su propia relectura sí decide.
+        servidor.desenlaces["req-y"] = TerminalPaymentResult.Error("Rechazada", requestId = "req-y")
         assertTrue(caja.guardar())
-        assertEquals("la copia sigue en duda", "order-a" to true, caja.guardados.savedCarts.value.single().folio.let { it?.orderId to it?.enDuda })
         assertEquals(Restauracion.Hecha, caja.retomar())
-        assertTrue(caja.cobrar())
-        caja.tarjeta()
         advanceUntilIdle()
-        assertTrue("mientras K2 siga, espera la suya", caja.cobro.state.value is PaymentFlowState.Undetermined)
-        assertEquals("ningún intento nuevo", setOf("req-1", "req-2"), servidor.intentos.keys)
-        assertEquals(listOf("order-a"), servidor.ordenesCreadas.map { it.first })
-    }
-
-    /**
-     * Codex final r4-parcial #3: A ya estaba ligada a su folio (tras el 409 de otra caja) y esta tablet vuelve a mandar una tarjeta; la app
-     * muere entre la copia de antes de la tarjeta y la respuesta. Al abrir, la duda de A la dice la lista de esta tablet (la llave de ESE
-     * envío), no lo que diga la copia: A no se cobra otra vez con tarjeta mientras esa llave siga.
-     */
-    @Test
-    fun muereEntreLaCopiaYLaRespuesta_alAbrirLaDudaLaDiceLaListaDeLaTablet() = runTest {
-        val servidor = Servidor()
-        val caja = Caja(servidor)
-        aTras409DeOtraCaja(caja, "req-y")
-        servidor.proximoEnvio = null
-        servidor.respuestaColgada = kotlinx.coroutines.CompletableDeferred()
-        assertTrue(caja.cobrar())
-        caja.tarjeta()
-        runCurrent()
-        // La app muere aquí, con la llave de ESTE envío en la lista.
-        servidor.respuestaColgada = null
-        servidor.saldos["order-a"] = OrderRepository.SaldoDeLaOrden(18_000, "PENDING", "PENDING")
-        val despues = reiniciar(servidor)
-        advanceUntilIdle()
-
-        assertEquals("order-a", despues.guardados.savedCarts.value.single().folio?.orderId)
-        assertEquals(Restauracion.Hecha, despues.retomar())
-        advanceUntilIdle()
-        despues.carrito.addProduct(refresco)
-        assertEquals("en duda propia: no se edita", com.avoqado.pos.pos.presentation.cart.CUENTA_LIGADA_GUARDALA, despues.carrito.avisoDeVales.value)
-        assertTrue(despues.cobrar())
-        despues.tarjeta()
-        advanceUntilIdle()
-        assertTrue("no sale otra tarjeta: espera la suya", despues.cobro.state.value is PaymentFlowState.Undetermined)
-        assertEquals("sólo los dos intentos de antes", setOf("req-1", "req-2"), servidor.intentos.keys)
-        assertEquals(listOf("order-a"), servidor.ordenesCreadas.map { it.first })
-    }
-
-    /**
-     * Codex final r4-parcial #4: mientras llega el `409 ORDER`, la lista de personal vacía el carrito (el vendedor ya no aparece). Ya no hay
-     * nada de la otra caja que guardar: la copia de A de antes de la tarjeta se queda en «Carritos guardados» con su folio y su cliente, y al
-     * retomarla vuelve contra ese folio. Antes el carrito vacío daba por guardado el intento de la otra caja sin escribirlo.
-     */
-    @Test
-    fun laListaDePersonalVaciaElCarrito_tras409_AsigueEnCarritosGuardados() = runTest {
-        val servidor = Servidor()
-        servidor.ocupadaPor("req-y")
-        val caja = Caja(servidor)
-        caja.carrito.selectStaff("staff-de-baja", "Mesera")
-        caja.armar("cli-ana", "Ana")
-        assertTrue(caja.cobrar())
-        caja.tarjeta()
-        advanceUntilIdle()
-        caja.carrito.fetchStaff() // el vendedor ya no aparece: el carrito se vacía
-        advanceUntilIdle()
-        assertTrue("montaje: el carrito se vació", caja.carrito.cartState.value.isEmpty)
-
-        caja.seguir()
-        val copia = caja.guardados.savedCarts.value.single()
-        assertEquals("A sigue en «Carritos guardados» con su folio y su cliente", "order-a" to "cli-ana",
-            copia.folio?.orderId to copia.attachedCustomerId)
-        assertEquals(Restauracion.Hecha, caja.retomar())
-        assertTrue(caja.cobrar())
-        assertEquals("order-a", caja.carrito.chargingAgainstOrderId)
-        assertEquals(listOf("order-a"), servidor.ordenesCreadas.map { it.first })
-    }
-
-    /**
-     * Codex final r4-parcial #5: tras el `409 ORDER` la cajera guarda A, la borra con «Eliminar» en «Carritos guardados» y atiende a B. El POS
-     * no guardaba nada de la otra caja: lo que frena el doble cobro es el SERVIDOR. Desde «Cuentas abiertas», otra tarjeta sobre A vuelve a
-     * recibir el `409` («Tarjeta por confirmar») y nada llega al lector.
-     */
-    @Test
-    fun eliminarLaCopiaDeA_elServidorSigueFrenandoLaTarjeta() = runTest {
-        val servidor = Servidor()
-        val caja = Caja(servidor)
-        aTras409DeOtraCaja(caja, "req-y")
-        assertTrue(caja.guardar())
-        caja.carrito.deleteSavedCart(caja.guardados.savedCarts.value.single().id)
-        caja.armar("cli-beto", "Beto")
-        assertTrue(caja.cobrar())
-        assertNull("B es otra venta", caja.carrito.chargingAgainstOrderId)
-
-        val cuenta = com.avoqado.pos.tables.data.OrderDetail(id = "order-a", status = "PENDING", paymentStatus = "PENDING", total = 180.0,
-            preBillBalance = com.avoqado.pos.tables.data.PreBillBalance(18_000, 0, 18_000))
-        caja.cobrarCuentaAbierta(cuenta)
-        caja.tarjeta()
-        advanceUntilIdle()
-        assertEquals("el SERVIDOR la frena otra vez", "req-y", (caja.cobro.state.value as? PaymentFlowState.Error)?.tarjetaDeLaCuenta)
-        assertTrue("ni se fabricó un pendiente local", servidor.pendientesLocales.isEmpty())
-        assertEquals(listOf("order-a"), servidor.ordenesCreadas.map { it.first })
-    }
-
-    /**
-     * Codex final r3 #5 y plan de rediseño #9 («Seguir» no puede trabar la caja), sin ancla: el disco deja de escribir justo después del envío
-     * y el SERVIDOR contesta `409 ORDER`. [Seguir] sale; «Guardar» deja atender a B aunque el disco siga fallando (A ya estaba en «Carritos
-     * guardados» con su folio desde antes de la tarjeta). La app muere: al abrir, A está con su folio y se cobra sobre él.
-     */
-    @Test
-    fun guardadoFalla_tras409_salePorB_muere_alAbrirAEstaConSuFolio() = runTest {
-        val servidor = Servidor()
-        servidor.proximoEnvio = { _, requestId ->
-            disco.commitFalla = true // el disco deja de escribir justo después del envío
-            TerminalPaymentResult.Error("Esta venta tiene un cobro pendiente de confirmar.", requestId = requestId, noSeCreo = true,
-                bloqueador = BloqueadorDeCobro("req-y", "ORDER"))
-        }
-        val caja = Caja(servidor)
-        caja.armar("cli-ana", "Ana")
-        assertTrue(caja.cobrar())
-        caja.tarjeta()
-        advanceUntilIdle()
-        assertEquals("req-y", (caja.cobro.state.value as? PaymentFlowState.Error)?.tarjetaDeLaCuenta)
-        assertTrue("ninguna llave se queda", servidor.pendientesLocales.isEmpty())
-
-        caja.seguir()
-        assertEquals("[Seguir] sale: A sigue en pantalla", "cli-ana", caja.carrito.selectedCustomer.value?.id)
-        assertTrue("«Guardar» deja atender a B aunque el disco falle", caja.guardar())
-        assertEquals(com.avoqado.pos.pos.presentation.cart.CUENTA_EN_DUDA_SIN_GUARDAR, caja.carrito.avisoDeVales.value)
-        caja.armar("cli-beto", "Beto")
-        assertEquals("B en pantalla", "cli-beto", caja.carrito.selectedCustomer.value?.id)
-
-        servidor.proximoEnvio = null
-        servidor.saldos["order-a"] = OrderRepository.SaldoDeLaOrden(18_000, "PENDING", "PENDING")
-        val despues = reiniciar(servidor)
-        advanceUntilIdle()
-        assertEquals("al abrir, A está con su folio", "order-a" to "cli-ana",
-            despues.guardados.savedCarts.value.single().let { it.folio?.orderId to it.attachedCustomerId })
-        assertEquals(Restauracion.Hecha, despues.retomar())
-        assertTrue(despues.cobrar())
-        assertEquals("A sigue en su folio", "order-a", despues.carrito.chargingAgainstOrderId)
-        assertEquals(listOf("order-a"), servidor.ordenesCreadas.map { it.first })
+        assertEquals("con Y resuelto, A toma su saldo", 6_000, caja.carrito.cartState.value.totalCents)
     }
 
     // MARK: - Fila 1: A recién creada con la tarjeta en duda
@@ -1114,13 +826,13 @@ class F1FolioDelCarritoModeloTest {
         assertTrue(caja.cobrar())
         caja.tarjeta()
         advanceUntilIdle()
-        // La app muere con «Tarjeta por confirmar» en pantalla. Ronda 4: la copia no guarda el intento de la otra caja.
+        // La app muere con «Terminal ocupada» en pantalla.
 
-        servidor.saldos["order-a"] = OrderRepository.SaldoDeLaOrden(18_000, "PENDING", "PENDING")
         val despues = reiniciar(servidor)
-        advanceUntilIdle()
         val folio = despues.guardados.savedCarts.value.single().folio
-        assertEquals("con su folio, sin duda ajena", Triple("order-a", false, 18_000), Triple(folio?.orderId, folio?.enDuda, folio?.saldoCents))
+        assertEquals("order-a", folio?.orderId)
+        assertEquals("req-otra-caja", folio?.requestId)
+        assertEquals("OTRA_CAJA", folio?.origen)
         assertTrue("sin pendiente local fabricado", servidor.pendientesLocales.isEmpty())
         assertEquals(Restauracion.Hecha, despues.retomar())
         assertTrue(despues.cobrar())

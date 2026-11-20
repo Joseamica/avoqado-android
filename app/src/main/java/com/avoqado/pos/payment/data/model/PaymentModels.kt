@@ -130,17 +130,7 @@ sealed class PaymentFlowState {
      * @param revisarCobroId C1 (22-oct): la terminal (o la venta) la ocupa OTRO cobro y éste es su id: la pantalla ofrece
      *   «Revisar ese cobro». `null` cuando no hay a quién preguntar (cualquier otro error, o el servidor mandó `"unknown"`).
      */
-    data class Error(
-        val message: String,
-        val source: PaymentErrorSource,
-        val revisarCobroId: String? = null,
-        /**
-         * 🔴 F1 ronda 4 (Ajuste 2, Codex plan r4 #3): el `409 ORDER` nombró este intento (casi siempre de OTRA caja) sobre la cuenta. La
-         * pantalla dice «Tarjeta por confirmar · $X» con SU importe y sólo [Seguir]: el SERVIDOR decide la siguiente tarjeta, no un recuerdo
-         * del POS. `null` = cualquier otro error.
-         */
-        val tarjetaDeLaCuenta: String? = null,
-    ) : PaymentFlowState()
+    data class Error(val message: String, val source: PaymentErrorSource, val revisarCobroId: String? = null) : PaymentFlowState()
 
     /**
      * 🔴 Tercer desenlace del cobro con tarjeta: **no se sabe si se cobró**.

@@ -1599,11 +1599,6 @@ class OrderRepository @Inject constructor(
         val paymentStatus: String?,
         /** F1 bloque 2: el estado de la orden (`CANCELLED`…); null en respuestas que no lo traen. */
         val status: String? = null,
-        /**
-         * F1 ronda 4 (Ajuste 3): `order.pendingCardPayment` del SERVIDOR (OPCIONAL): una tarjeta de esta cuenta sigue sin desenlace, con su
-         * importe. null = no hay, o el SERVIDOR es anterior. Sólo para el aviso al abrir la cuenta: no se guarda.
-         */
-        val tarjetaPorConfirmar: ImporteDelIntento? = null,
     )
 
     /**
@@ -1633,12 +1628,6 @@ class OrderRepository @Inject constructor(
                 remainingCents = saldo,
                 paymentStatus = order["paymentStatus"]?.jsonPrimitive?.contentOrNull?.uppercase(),
                 status = order["status"]?.jsonPrimitive?.contentOrNull?.uppercase(),
-                // F1 ronda 4 (Ajuste 3): opcional; null, ausente o ilegible = sin aviso. `tipCents` null = «antes de propina».
-                tarjetaPorConfirmar = (order["pendingCardPayment"] as? kotlinx.serialization.json.JsonObject)?.let { t ->
-                    t["amountCents"]?.jsonPrimitive?.contentOrNull?.toIntOrNull()?.let {
-                        ImporteDelIntento(it, t["tipCents"]?.jsonPrimitive?.contentOrNull?.toIntOrNull())
-                    }
-                },
             )
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e

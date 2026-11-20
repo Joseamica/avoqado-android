@@ -458,32 +458,6 @@ class TerminalPaymentServiceHttpTest {
         assertEquals(1, server.requestCount)
     }
 
-    /**
-     * 🔴 F1 ronda 4 (`plan-android-simplificar-r4.md`, reescribe las dos pruebas del ancla de `39eee5f2`): el `409 ORDER` de una CUENTA (con
-     * folio) suelta la llave de ese envío como cualquier otro 409, y una llave que quedó con su lápida (`REJECTED_ORDER_BUSY`, la app murió
-     * antes de la respuesta) se lee como «no se cobró» de ESE envío y sale de la lista, sin reenviar nada. Lo que frena otra tarjeta sobre la
-     * cuenta es el SERVIDOR (su 409), no un recuerdo del POS.
-     */
-    @Test
-    fun `F1 r4 - el 409 ORDER de una cuenta suelta la llave y su lapida no se reenvia`() = runBlocking {
-        enqueue(409, busyBody("cobro-y", scope = "ORDER"))
-        val result = service.sendPaymentToTerminal(terminalId = "t1", amountCents = 6_000, orderId = "orden-a") as TerminalPaymentResult.Error
-        assertEquals(BloqueadorDeCobro("cobro-y", "ORDER"), result.bloqueador)
-        assertTrue(result.noSeCreo)
-        assertTrue("la llave se suelta", idsPendientes().isEmpty())
-        assertEquals(1, server.requestCount)
-
-        pendientes = PendientesDeTarjeta.agregar(null, "req-a", "orden-a",
-            """{"requestId":"req-a","venueId":"venue-1","terminalId":"t1","orderId":"orden-a","amountCents":6000,"tipCents":500}""")
-        enqueue(200, """{"status":"FAILED","inProgress":false,"failureCode":"REJECTED_ORDER_BUSY","outcome":"NOT_CHARGED"}""")
-        val lapida = service.resolveOutcome("req-a", enSegundoPlano = true)
-        assertTrue("$lapida", lapida is TerminalPaymentResult.Error)
-        assertTrue("sale de la lista", idsPendientes().isEmpty())
-        assertEquals("sólo la consulta: nada se reenvía", 2, server.requestCount)
-        server.takeRequest()
-        assertEquals("GET", server.takeRequest().method)
-    }
-
     /** Codex android r1 #8: el aviso de 10 min (y «Cobros por confirmar») sólo con las dudas de la sucursal activa; una vieja sin sucursal se ve. */
     @Test
     fun `Codex r1 8 - los pendientes de otras ventas son solo de la sucursal activa`() {

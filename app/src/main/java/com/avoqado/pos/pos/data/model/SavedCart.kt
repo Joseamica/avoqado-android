@@ -55,12 +55,12 @@ data class FolioGuardado(
     val orderId: String,
     val venueId: String,
     val identidadDeVenta: String,
-    // F1 ronda 4: ya no guarda el intento ni su origen (`requestId`, `origen`). Una copia vieja que los trae se lee igual (el almacén ignora
-    // llaves que no conoce) y vuelve como folio sin duda ajena: la duda propia la dice la lista de la tablet; la de otra caja, el SERVIDOR.
+    val requestId: String? = null,
+    /** `LOCAL` u `OTRA_CAJA` ([com.avoqado.pos.payment.data.FolioEnDuda.Origen]). */
+    val origen: String? = null,
     /** La llave de una creación de orden cuya respuesta se perdió: se recupera con el MISMO `externalId`. */
     val creacionIncierta: String? = null,
-    /** F1 bloque 2: false = el intento ya se resolvió y la cuenta sigue abierta en su folio (se cobra el resto sobre A). Ronda 4: true sólo
-     *  pide releerla al abrir la app; la duda misma la dice la lista de la tablet. */
+    /** F1 bloque 2: false = el intento ya se resolvió y la cuenta sigue abierta en su folio (se cobra el resto sobre A). */
     val enDuda: Boolean = true,
     /** F1 bloque 2: el saldo base de la cuenta según el SERVIDOR (viaja como `expectedRemainingCents`). null = no se sabe. */
     val saldoCents: Int? = null,
