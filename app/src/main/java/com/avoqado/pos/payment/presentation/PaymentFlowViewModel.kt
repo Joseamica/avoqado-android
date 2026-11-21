@@ -2988,6 +2988,7 @@ class PaymentFlowViewModel @Inject constructor(
             conProductos = hasProductItems(cart),
             ventaNueva = createdOrderId == null && mesaDelCobro == null && esPagoCompleto() && sesionDelCobro == null &&
                 origenDelCobro == com.avoqado.pos.payment.domain.OrigenDelCobro.NORMAL && !cuentaDeTarjetas.value,
+            totalCents = cart.totalCents,
         )
     }
 
@@ -3012,7 +3013,11 @@ class PaymentFlowViewModel @Inject constructor(
                 stampRewardId = cart.pendingStampRewardId,
             )
         }
-        val venta = com.avoqado.pos.maquina.VentaPorCobrar(venueId, cart.llaveParaLaMaquina, pedido, currentBaseAmount(), currentTipCents)
+        // Codex código r1 #14: los renglones del ticket de la caja, por si no hay red para cotizar (con red mandan los del SERVIDOR).
+        val renglones = com.avoqado.pos.maquina.renglonesParaCongelar(papelDelCobro(currentBaseAmount(), cobrado = currentBaseAmount()).renglones)
+        val venta = com.avoqado.pos.maquina.VentaPorCobrar(
+            venueId, cart.llaveParaLaMaquina, pedido, currentBaseAmount(), currentTipCents, renglonesLocales = renglones,
+        )
         // Codex código r1 #1: la venta queda apartada en ESTE toque, antes de pedir el turno o cotizar: la tarjeta (F4) ya no sale.
         if (!caja.apartar()) return
         selectedMethod = PaymentMethod.CASH
@@ -3032,6 +3037,9 @@ class PaymentFlowViewModel @Inject constructor(
         selectedTender = null
         lastCashTenderedCents = c.creditCents
         cierreDeLaMaquina = c
+        // Codex código r1 #17: el folio de la comanda es el de la orden que nace con el cierre (`maquina-<folio>`, como la arma el
+        // SERVIDOR): con él la estación «sólo pantalla» recibe la entrega por WiFi y el papel de respaldo queda marcado.
+        externalIdDeLaVenta = "maquina-${c.referenceCC}"
         _state.value = PaymentFlowState.Success(
             totalAmount = c.dueCents,
             method = PaymentMethod.CASH,
@@ -6612,17 +6620,19 @@ class PaymentFlowViewModel @Inject constructor(
         val papel = com.avoqado.pos.printing.data.model.TotalesDelTicket.desdeLoCobrado(
             cobrado = receiptTotal - currentTipCents,
             propina = currentTipCents,
-            subtotalBruto = delPapel.subtotalBruto,
+            subtotalBruto = cierreDeLaMaquina?.renglones?.takeIf { resolvedMethod == PaymentMethod.CASH }?.sumOf { it.totalPrice }
+                ?: delPapel.subtotalBruto,
             cargo = delPapel.cargo,
             impuestoAgregado = delPapel.impuestoAgregado,
         )
-        val renglones = delPapel.renglones
+        // C7: la venta de la máquina todavía no tiene folio del SERVIDOR (nace con el cierre): el de la máquina. Codex código r1 #14: y
+        // sus renglones son los congelados al empezar (los que cotizó el SERVIDOR), no los del carrito.
+        val maquinaDelTicket = cierreDeLaMaquina.takeIf { resolvedMethod == PaymentMethod.CASH }
+        val renglones = maquinaDelTicket?.renglones ?: delPapel.renglones
         val resolvedChange = changeCents ?: successState?.changeAmount
 
         // Folio real del backend; solo si falta cae a los últimos 4 del id (mejor
         // algo que "---", pero lo normal es el folio).
-        // C7: la venta de la máquina todavía no tiene folio del SERVIDOR (nace con el cierre): el de la máquina.
-        val maquinaDelTicket = cierreDeLaMaquina.takeIf { resolvedMethod == PaymentMethod.CASH }
         val folio = maquinaDelTicket?.referenceCC ?: createdOrderNumber?.takeIf { it.isNotBlank() }
             ?: createdOrderId?.takeLast(4)
             ?: "---"

@@ -66,6 +66,7 @@ fun MaquinaDeEfectivoSheet(onDismiss: () -> Unit, viewModel: MaquinaDeEfectivoVi
                 onImprimirComprobante = viewModel::imprimirComprobante,
                 onResolver = viewModel::resolver,
                 onResolverCerrado = viewModel::avisoDeResolverVisto,
+                onVerMasComprobantes = viewModel::verMasComprobantes,
             )
             estado.listo?.let { AvoqadoSuccessToast(message = it, onDismiss = viewModel::toastVisto) }
         }
@@ -84,6 +85,7 @@ internal fun ContenidoDeLaMaquina(
     onImprimirComprobante: (String) -> Unit = {},
     onResolver: (String, com.avoqado.pos.maquina.ResolucionDelGerente) -> Unit = { _, _ -> },
     onResolverCerrado: () -> Unit = {},
+    onVerMasComprobantes: () -> Unit = {},
 ) {
     var resolviendoFolio by remember { mutableStateOf<String?>(null) }
     // Al resolverse, la duda sale de la lista: el diálogo se cierra solo.
@@ -197,6 +199,12 @@ internal fun ContenidoDeLaMaquina(
                         OutlinedButton(onClick = { onImprimirComprobante(c.referenceCC) }) { Text("Imprimir comprobante") }
                     }
                 }
+                // Codex código r1 #13: ninguna deuda se queda fuera por el tope de la página.
+                if (estado.comprobantesTotal > estado.comprobantes.size) {
+                    OutlinedButton(onClick = onVerMasComprobantes, modifier = Modifier.fillMaxWidth()) {
+                        Text("Ver más (${estado.comprobantesTotal - estado.comprobantes.size})")
+                    }
+                }
             }
         }
     }
@@ -211,7 +219,10 @@ private fun DialogoDeResolver(
     folio: String,
     onResolver: (String, com.avoqado.pos.maquina.ResolucionDelGerente) -> Unit,
     onCerrar: () -> Unit,
-) = ResolverAMano(estado.puedeResolver, estado.resolviendo, estado.avisoDeResolver, onResolver = { onResolver(folio, it) }, onCerrar = onCerrar)
+) = ResolverAMano(
+    estado.puedeResolver, estado.resolviendo, estado.avisoDeResolver, estado.enEspera.firstOrNull { it.referenceCC == folio }?.creadoEn,
+    onResolver = { onResolver(folio, it) }, onCerrar = onCerrar,
+)
 
 @Composable
 private fun Nota(texto: String, error: Boolean = false) {

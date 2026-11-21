@@ -186,11 +186,14 @@ internal object CobroEnMaquinaSql {
         "UPDATE cobros_en_maquina SET cancelPedido = :cancelvalue, cancelPedidoEn = :ahora " +
             "WHERE referenceCC = :referenceCC AND estado = 'EN_CURSO'"
 
-    /** El desenlace y la marca de «por subir» en UN `UPDATE`: la fila es la cola (R4-1). */
+    /**
+     * El desenlace y la marca de «por subir» en UN `UPDATE`: la fila es la cola (R4-1). Codex código r1 #15: `cierreEn` es la hora que
+     * dice la máquina (`conocido`), o la de la PC sólo para mostrar (`conocido = 0`: sube sin hora). #13: lo físico que se le debe.
+     */
     const val CERRAR: String =
         "UPDATE cobros_en_maquina SET estado = :estado, creditCents = :creditCents, " +
-            "changeDispensedCents = :changeDispensedCents, cierreEn = :cierreEn, cierreConocido = 1, " +
-            "resueltoPor = 'MAQUINA', subido = 0, mensajesCrudos = :crudos " +
+            "changeDispensedCents = :changeDispensedCents, cierreEn = :cierreEn, cierreConocido = :conocido, " +
+            "resueltoPor = 'MAQUINA', subido = 0, mensajesCrudos = :crudos, aDeberCents = :aDeber " +
             "WHERE referenceCC = :referenceCC AND estado = 'EN_CURSO'"
 
     const val A_ESPERANDO: String =
@@ -278,7 +281,9 @@ internal object CobroEnMaquinaSql {
      * `conflicto` y completo en `respuestaServidor`.
      */
     const val MARCAR_SUBIDO: String =
-        "UPDATE cobros_en_maquina SET subido = 1, conflicto = :conflicto, respuestaServidor = :respuesta " +
+        "UPDATE cobros_en_maquina SET subido = 1, conflicto = :conflicto, respuestaServidor = :respuesta, " +
+            // Codex código r1 #13: lo que dice el SERVIDOR que se debe (cambio físico + diferencia de precio) manda sobre lo físico.
+            "aDeberCents = COALESCE(:aDeber, aDeberCents) " +
             "WHERE referenceCC = :referenceCC AND estado IN ('PAGADO', 'CANCELADO', 'GUARDADO') AND subido = 0"
 
     /** Un rechazo SIN incidencia en el SERVIDOR (400) o una respuesta con otros importes: visible, y deja de reintentarse. */
@@ -297,17 +302,32 @@ internal object CobroEnMaquinaSql {
     const val RESOLVER: String =
         "UPDATE cobros_en_maquina SET estado = 'RESUELTO', resueltoPor = :resueltoPor, creditCents = :creditCents, " +
             "changeDispensedCents = :changeDispensedCents, subido = 1, dudaSubida = 1, conflicto = :conflicto, " +
-            "respuestaServidor = :respuesta, desenlaceDelServidor = :desenlace WHERE referenceCC = :referenceCC AND estado = 'ESPERANDO'"
+            "respuestaServidor = :respuesta, desenlaceDelServidor = :desenlace, aDeberCents = COALESCE(:aDeber, aDeberCents) " +
+            "WHERE referenceCC = :referenceCC AND estado = 'ESPERANDO'"
 
     /**
-     * C7: los cobros de [venueId] que pueden deber algo al cliente (un PAGADO con su respuesta, un CANCELADO), los más nuevos
-     * primero y acotados: la pantalla filtra los que de verdad deben ([deudaDelComprobante]).
+     * C7 y Codex código r1 #13: los cobros de [venueId] que le deben algo al cliente (cambio que no dio, dinero que no devolvió o la
+     * diferencia de precio), filtrados EN la consulta y por páginas: el tope ya no deja fuera una deuda detrás de cobros que no deben.
+     * Un GUARDADO no tiene comprobante (nadie está para recibirlo).
      */
     const val CON_COMPROBANTE: String =
-        "SELECT * FROM cobros_en_maquina WHERE venueId = :venueId " +
-            "AND ((estado IN ('PAGADO', 'RESUELTO') AND respuestaServidor IS NOT NULL) OR estado = 'CANCELADO' " +
-            "OR (estado = 'RESUELTO' AND creditCents > changeDispensedCents)) " +
-            "ORDER BY creadoEn DESC, referenceCC DESC LIMIT 50"
+        "SELECT * FROM cobros_en_maquina WHERE venueId = :venueId AND aDeberCents > 0 " +
+            "AND (estado IN ('PAGADO', 'CANCELADO') OR (estado = 'RESUELTO' AND desenlaceDelServidor IN ('PAGADO', 'CANCELADO'))) " +
+            "ORDER BY creadoEn DESC, referenceCC DESC LIMIT :limite"
+
+    const val CONTAR_COMPROBANTES: String =
+        "SELECT COUNT(*) FROM cobros_en_maquina WHERE venueId = :venueId AND aDeberCents > 0 " +
+            "AND (estado IN ('PAGADO', 'CANCELADO') OR (estado = 'RESUELTO' AND desenlaceDelServidor IN ('PAGADO', 'CANCELADO')))"
+
+    /**
+     * Codex código r1 #12: las ventas pagadas (por la máquina, o las que un gerente resolvió como venta) cuyo ticket no salió: la PC se
+     * cerró entre el PAGADO y la impresión, o la impresora falló. Se ofrecen con un botón; nunca se imprimen solas. Sin las que quedaron
+     * como incidencia (no son venta).
+     */
+    const val TICKETS_SIN_IMPRIMIR: String =
+        "SELECT * FROM cobros_en_maquina WHERE venueId = :venueId AND ticketImpreso = 0 " +
+            "AND (estado = 'PAGADO' OR (estado = 'RESUELTO' AND desenlaceDelServidor = 'PAGADO' AND conflicto IS NULL)) " +
+            "ORDER BY creadoEn ASC, referenceCC ASC LIMIT 50"
 
     /** C7: el ticket del cobro salió de verdad (resultado real de la impresora). */
     const val MARCAR_TICKET_IMPRESO: String = "UPDATE cobros_en_maquina SET ticketImpreso = 1 WHERE referenceCC = :referenceCC"

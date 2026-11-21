@@ -109,14 +109,19 @@ class MaquinaDeEfectivoViewModelTest {
             com.avoqado.pos.printing.data.PrinterService.PrintOutcome.Printed(1) andThen
             com.avoqado.pos.printing.data.PrinterService.PrintOutcome.OutOfPaper
         io.mockk.coEvery { maquina.dudasEnEspera() } returns emptyList()
+        io.mockk.coEvery { maquina.comprobantes(100) } returns listOf(fila to 500, fila.copy(referenceCC = "AQ000000000002") to 300)
+        io.mockk.coEvery { maquina.cuantosComprobantes() } returns 2
         every { maquina.puedeResolver() } returns false
         val vm = vm(maquina).abierta()
+        assertEquals("Codex r1 #13: hay más deudas que las de la página", 2, vm.estado.value.comprobantesTotal)
 
         assertEquals(listOf(com.avoqado.pos.maquina.ui.ComprobantePorImprimir("AQ000000000001", 500)), vm.estado.value.comprobantes)
         vm.imprimirComprobante("AQ000000000001")
         vm.esperar("impreso") { it.listo == "¡Comprobante impreso!" }
         vm.imprimirComprobante("AQ000000000001")
         vm.esperar("sin papel, con el resultado real") { it.aviso == "La impresora no tiene papel" }
+        vm.verMasComprobantes()
+        vm.esperar("la siguiente página") { it.comprobantes.size == 2 }
     }
 
     @Test

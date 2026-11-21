@@ -204,7 +204,7 @@ class CobroConMaquinaTest {
         assertEquals(EstadoDelIntento.PAGADO, fila.estado)
         assertEquals(20_000 to 1_250, fila.creditCents to fila.changeDispensedCents)
         assertFalse(fila.subido)
-        assertTrue(fila.cierreConocido)
+        assertFalse("Codex r1 #15: el status sin fecha no da hora física; la de la PC sólo es para enseñar", fila.cierreConocido)
         assertEquals(testScheduler.currentTime, fila.cierreEn)
         assertEquals("MAQUINA", fila.resueltoPor)
         assertTrue(fila.mensajesCrudos.contains("Pago Completado"))
@@ -227,6 +227,34 @@ class CobroConMaquinaTest {
         val fila = dao.fila(ref)!!
         assertEquals(EstadoDelIntento.PAGADO, fila.estado)
         assertEquals("se le deben 5 pesos", 500, fila.creditCents - fila.dueCents - fila.changeDispensedCents)
+        assertEquals("Codex r1 #13: queda anotado lo que se debe", 500, fila.aDeberCents)
+    }
+
+    @Test
+    fun `P1 Codex r1 #15 el cierre guarda la hora de la maquina como hora conocida`() = runTest {
+        val cobro = CobroConMaquina(canal, dao, { testScheduler.currentTime }, backgroundScope, Random(7), {}) {
+            java.time.ZoneId.of("America/Mexico_City")
+        }
+        val ref = cobroPropio(cobro)
+        val cierre = JSONObject(pagoCompletado(ref, credit = due, change = 0)).put("fecha", "2026-11-18 15:48:20").toString()
+
+        canal.llega(cierre); runCurrent()
+
+        val fila = dao.fila(ref)!!
+        assertTrue(fila.cierreConocido)
+        assertEquals(java.time.Instant.parse("2026-11-18T21:48:20Z").toEpochMilli(), fila.cierreEn)
+    }
+
+    @Test
+    fun `P1 Codex r1 #14 con la cotizacion vencida no se guarda ni se manda nada`() = runTest {
+        val cobro = nuevoCobro()
+        advanceTimeBy(10_000)
+
+        assertEquals(ResultadoDeInicio.CotizacionVencida, cobro.cobrar(venta.copy(vigenteHasta = testScheduler.currentTime - 1)))
+        assertTrue(dao.todas().isEmpty())
+        assertTrue(canal.enviados.isEmpty())
+        assertTrue(cobro.cobrar(venta.copy(vigenteHasta = testScheduler.currentTime + 1, renglonesJson = "[]")) is ResultadoDeInicio.Iniciado)
+        assertEquals("[]", dao.todas().single().renglonesJson)
     }
 
     @Test
@@ -529,7 +557,7 @@ class CobroConMaquinaTest {
     @Test
     fun `P1 Codex r1 #4 sin enlace con dinero adentro, a los 30 s queda ESPERANDO aunque el enlace no vuelva`() = runTest {
         var avisos = 0
-        val cobro = CobroConMaquina(canal, dao, { testScheduler.currentTime }, backgroundScope, Random(7)) { avisos++ }
+        val cobro = CobroConMaquina(canal, dao, { testScheduler.currentTime }, backgroundScope, Random(7), alTerminar = { avisos++ })
         val ref = cobroPropio(cobro)
         canal.llega(credito(5_000)); runCurrent()
         canal.caer(); runCurrent()
@@ -693,9 +721,9 @@ class CobroConMaquinaTest {
     @Test
     fun `cada cierre, cada duda y cada huerfano recuperado avisan a la subida, despues de guardarse`() = runTest {
         val avisos = mutableListOf<String?>()
-        val cobro = CobroConMaquina(canal, dao, { testScheduler.currentTime }, backgroundScope, Random(7)) {
+        val cobro = CobroConMaquina(canal, dao, { testScheduler.currentTime }, backgroundScope, Random(7), alTerminar = {
             avisos += dao.todas().lastOrNull()?.estado
-        }
+        })
         val ref = cobroPropio(cobro)
         assertTrue(avisos.isEmpty())
 

@@ -357,7 +357,7 @@ class MaquinaDeEfectivoTest {
         runCurrent()
         canal.llega("""{"comando":"sockets","cobrando":true,"Due":50,"Credit":0,"changeBar":"012220222000"}""")
         runCurrent()
-        assertEquals(LaMaquinaAhora(Conexion.CONECTADA, ocupada = true, cambio = NivelDeCambio.POCO), m.ahora.value)
+        assertEquals(LaMaquinaAhora(Conexion.CONECTADA, ocupada = true, cambio = NivelDeCambio.POCO, changeBar = "012220222000"), m.ahora.value)
 
         canal.llega("""{"comando":"sockets","cobrando":false,"Due":0,"Credit":0,"changeBar":"022220222000"}""")
         canal.conexion.value = Conexion.DESCONECTADA
@@ -368,19 +368,21 @@ class MaquinaDeEfectivoTest {
 
     @Test
     fun `la fila de la maquina`() {
-        val bien = LaMaquinaAhora(Conexion.CONECTADA, ocupada = false, cambio = NivelDeCambio.SUFICIENTE)
-        assertEquals(FilaDeLaMaquina(visible = true, habilitada = true, motivo = null, pocoCambio = false),
-            filaDeLaMaquina(bien, conProductos = true, ventaNueva = true, ventaEnDuda = false, cobroVivo = false))
+        val bien = LaMaquinaAhora(Conexion.CONECTADA, ocupada = false, cambio = NivelDeCambio.SUFICIENTE, changeBar = "022220222000")
+        assertEquals(FilaDeLaMaquina(visible = true, habilitada = true, motivo = null, avisoDeCambio = null),
+            filaDeLaMaquina(bien, conProductos = true, ventaNueva = true, ventaEnDuda = false, cobroVivo = false, dueCents = 18_000))
+        assertEquals("Codex r1 #16: un total que termina en .50", TEXTO_PODRIA_DEBER_50,
+            filaDeLaMaquina(bien, true, true, false, false, dueCents = 18_750).avisoDeCambio)
         assertFalse("sin productos no aparece", filaDeLaMaquina(bien, false, true, false, false).visible)
         assertEquals(TEXTO_NO_RESPONDE, filaDeLaMaquina(bien.copy(conexion = Conexion.CONECTANDO), true, true, false, false).motivo)
         assertEquals(TEXTO_OCUPADA, filaDeLaMaquina(bien.copy(ocupada = true), true, true, false, false).motivo)
         assertEquals(TEXTO_OCUPADA, filaDeLaMaquina(bien, true, true, false, cobroVivo = true).motivo)
         assertEquals(TEXTO_VENTA_EN_DUDA, filaDeLaMaquina(bien, true, true, ventaEnDuda = true, cobroVivo = false).motivo)
         assertEquals(TEXTO_SOLO_VENTA_COMPLETA, filaDeLaMaquina(bien, true, ventaNueva = false, false, false).motivo)
-        listOf(NivelDeCambio.POCO, NivelDeCambio.DESCONOCIDO).forEach { nivel ->
-            val fila = filaDeLaMaquina(bien.copy(cambio = nivel), true, true, false, false)
-            assertTrue("$nivel avisa", fila.pocoCambio)
-            assertTrue("$nivel deja seguir", fila.habilitada)
+        listOf("021220222000", null).forEach { barra ->
+            val fila = filaDeLaMaquina(bien.copy(changeBar = barra), true, true, false, false, dueCents = 18_000)
+            assertEquals("$barra avisa", TEXTO_POCO_CAMBIO, fila.avisoDeCambio)
+            assertTrue("$barra deja seguir", fila.habilitada)
         }
         assertFalse(filaDeLaMaquina(bien.copy(ocupada = true), true, true, false, false).habilitada)
     }
@@ -410,7 +412,7 @@ class MaquinaDeEfectivoTest {
         assertNull("sin respuesta todavía", comprobanteDeLaMaquina(pagadoSubido, "LG"))
         assertNull("sin excedente", comprobanteDeLaMaquina(pagadoSubido.copy(respuestaServidor = """{"outcome":"PAGADO","excedenteCents":0}"""), "LG"))
 
-        val c = comprobanteDeLaMaquina(pagadoSubido.copy(respuestaServidor = """{"outcome":"PAGADO","excedenteCents":500}"""), "LG")!!
+        val c = comprobanteDeLaMaquina(pagadoSubido.copy(respuestaServidor = """{"outcome":"PAGADO","excedenteCents":500}""", aDeberCents = 500), "LG")!!
 
         assertEquals("AQ000000000001", c.orderNumber)
         assertEquals(com.avoqado.pos.printing.receiptlayout.KIND_COMPROBANTE_DE_LA_MAQUINA, c.kind)
@@ -418,18 +420,35 @@ class MaquinaDeEfectivoTest {
             com.avoqado.pos.printing.receiptlayout.ReceiptCashMachine("AQ000000000001", 500, title = "COMPROBANTE DE DIFERENCIA"),
             c.cashMachine,
         )
-        assertNull("GUARDADO nunca", comprobanteDeLaMaquina(pagadoSubido.copy(estado = EstadoDelIntento.GUARDADO, creditCents = 5_000, changeDispensedCents = 0), "LG"))
-        assertEquals(1_000L, comprobanteDeLaMaquina(pagadoSubido.copy(estado = EstadoDelIntento.CANCELADO, creditCents = 5_000, changeDispensedCents = 4_000), "LG")!!.cashMachine!!.owedCents)
+        assertNull("GUARDADO nunca", comprobanteDeLaMaquina(pagadoSubido.copy(estado = EstadoDelIntento.GUARDADO, creditCents = 5_000, changeDispensedCents = 0, aDeberCents = 5_000), "LG"))
+        assertEquals(1_000L, comprobanteDeLaMaquina(pagadoSubido.copy(estado = EstadoDelIntento.CANCELADO, creditCents = 5_000, changeDispensedCents = 4_000, aDeberCents = 1_000), "LG")!!.cashMachine!!.owedCents)
         assertEquals("el desenlace del gerente sale de su respuesta", 700L,
-            comprobanteDeLaMaquina(pagadoSubido.copy(estado = EstadoDelIntento.RESUELTO, respuestaServidor = """{"outcome":"PAGADO","excedenteCents":700}"""), "LG")!!.cashMachine!!.owedCents)
+            comprobanteDeLaMaquina(pagadoSubido.copy(estado = EstadoDelIntento.RESUELTO, respuestaServidor = """{"outcome":"PAGADO","excedenteCents":700}""", aDeberCents = 700), "LG")!!.cashMachine!!.owedCents)
+        val cambio = comprobanteDeLaMaquina(pagadoSubido.copy(aDeberCents = 500), "LG")!!
+        assertEquals("Codex r1 #13: también el cambio físico que no dio", 500L, cambio.cashMachine!!.owedCents)
+        assertEquals("COMPROBANTE DE LA MÁQUINA", cambio.cashMachine!!.title)
+    }
+
+    @Test
+    fun `P1 Codex r1 #13 la deuda vieja no se pierde detras de 60 cobros que no deben, y se pagina`() = runTest {
+        dao.insertar(pagadoSubido.copy(referenceCC = "AQ0000000000ZZ", creadoEn = 0, creditCents = 10_000, dueCents = 8_000, saleCents = 8_000, changeDispensedCents = 1_500, aDeberCents = 500))
+        (1..60).forEach { i -> dao.insertar(pagadoSubido.copy(referenceCC = "AQ" + i.toString().padStart(12, '0'), creadoEn = i.toLong())) }
+        val m = maquina()
+
+        assertEquals(listOf("AQ0000000000ZZ" to 500), m.comprobantes().map { it.first.referenceCC to it.second })
+        assertEquals(1, m.cuantosComprobantes())
+        (1..60).forEach { i -> dao.insertar(pagadoSubido.copy(referenceCC = "AQD" + i.toString().padStart(11, '0'), creadoEn = 100L + i, aDeberCents = 100)) }
+        assertEquals(50, m.comprobantes().size)
+        assertEquals(61, m.cuantosComprobantes())
+        assertEquals("con «Ver más» llega a la vieja", "AQ0000000000ZZ", m.comprobantes(limite = 100).last().first.referenceCC)
     }
 
     @Test
     fun `los comprobantes son los de la sucursal que deben algo y se reimprimen`() = runTest {
-        dao.insertar(pagadoSubido.copy(respuestaServidor = """{"outcome":"PAGADO","excedenteCents":500}"""))
+        dao.insertar(pagadoSubido.copy(respuestaServidor = """{"outcome":"PAGADO","excedenteCents":500}""", aDeberCents = 500))
         dao.insertar(pagadoSubido.copy(referenceCC = "AQ000000000002", respuestaServidor = """{"outcome":"PAGADO","excedenteCents":0}"""))
-        dao.insertar(pagadoSubido.copy(referenceCC = "AQ000000000003", estado = EstadoDelIntento.CANCELADO, creditCents = 5_000, changeDispensedCents = 0, creadoEn = 2))
-        dao.insertar(pagadoSubido.copy(referenceCC = "AQ000000000004", venueId = "venue-2", respuestaServidor = """{"outcome":"PAGADO","excedenteCents":900}"""))
+        dao.insertar(pagadoSubido.copy(referenceCC = "AQ000000000003", estado = EstadoDelIntento.CANCELADO, creditCents = 5_000, changeDispensedCents = 0, creadoEn = 2, aDeberCents = 5_000))
+        dao.insertar(pagadoSubido.copy(referenceCC = "AQ000000000004", venueId = "venue-2", respuestaServidor = """{"outcome":"PAGADO","excedenteCents":900}""", aDeberCents = 900))
         coEvery { impresora.manualPrintReceipt(any()) } returns PrinterService.PrintOutcome.Printed(1)
         val m = maquina()
 
@@ -443,14 +462,17 @@ class MaquinaDeEfectivoTest {
     // MARK: - El gerente resuelve (R4-4, R5#8)
 
     @Test
-    fun `R5#8 la hora del comprobante es de hoy o de ayer en la zona del negocio, y sin hora es null`() {
-        val ahora = java.time.ZonedDateTime.parse("2026-11-20T18:30:00-06:00[America/Mexico_City]")
-        assertEquals(Instant.parse("2026-11-21T00:05:00Z"), com.avoqado.pos.maquina.ui.horaDelComprobante("18:05", ahora))
-        assertEquals("todavía no llega: es de ayer", Instant.parse("2026-11-20T01:15:00Z"),
-            com.avoqado.pos.maquina.ui.horaDelComprobante("19:15", ahora))
-        assertEquals(Instant.parse("2026-11-20T15:07:00Z"), com.avoqado.pos.maquina.ui.horaDelComprobante("9:07", ahora))
-        assertNull(com.avoqado.pos.maquina.ui.horaDelComprobante("", ahora))
-        assertNull(com.avoqado.pos.maquina.ui.horaDelComprobante("las seis", ahora))
+    fun `R5#8 y Codex r1 #15 la hora del comprobante es del dia en que empezo el cobro, o con su fecha, y sin hora es null`() {
+        // El cobro empezó el viernes 20 a las 18:00; el gerente lo revisa el lunes: la hora sola es del viernes, no del lunes.
+        val inicio = java.time.ZonedDateTime.parse("2026-11-20T18:00:00-06:00[America/Mexico_City]")
+        assertEquals(Instant.parse("2026-11-21T00:05:00Z"), com.avoqado.pos.maquina.ui.horaDelComprobante("18:05", inicio))
+        assertEquals("antes de que empezara: del día siguiente", Instant.parse("2026-11-21T15:07:00Z"),
+            com.avoqado.pos.maquina.ui.horaDelComprobante("9:07", inicio))
+        assertEquals("con su fecha, como la imprime la máquina", Instant.parse("2026-11-18T21:48:20Z"),
+            com.avoqado.pos.maquina.ui.horaDelComprobante("2026-11-18 15:48:20", inicio))
+        assertEquals(Instant.parse("2026-11-18T21:48:00Z"), com.avoqado.pos.maquina.ui.horaDelComprobante("2026-11-18 15:48", inicio))
+        assertNull(com.avoqado.pos.maquina.ui.horaDelComprobante("", inicio))
+        assertNull(com.avoqado.pos.maquina.ui.horaDelComprobante("las seis", inicio))
     }
 
     @Test
@@ -511,7 +533,7 @@ class MaquinaDeEfectivoTest {
         val m = maquina()
         val ref = dudaDe(m)
         val cuerpo = slot<JSONObject>()
-        coEvery { api.resolverDuda("venue-1", ref, capture(cuerpo)) } returns RespuestaDelServidor(200, """{"success":true}""")
+        coEvery { api.resolverDuda("venue-1", ref, capture(cuerpo)) } returns RespuestaDelServidor(200, ecoDelGerente(ref, "PAGADO", 20_000, 1_250))
         val hora = Instant.parse("2026-11-20T18:05:00Z")
 
         val r = m.resolver(ref, ResolucionDelGerente(Desenlace.PAGADO, 20_000, 1_250, hora, null, " Ticket 0042 "))
@@ -524,6 +546,85 @@ class MaquinaDeEfectivoTest {
         assertEquals("Ticket 0042", b.getString("evidence"))
         assertTrue(b.isNull("cancelMode"))
         verify { subida.disparar() }
+        val fila = dao.fila(ref)!!
+        assertEquals("lo que contestó ya quedó en la fila (la misma lectura que la subida)", EstadoDelIntento.RESUELTO, fila.estado)
+        assertEquals("PAGADO", fila.desenlaceDelServidor)
+    }
+
+    private fun ecoDelGerente(ref: String, outcome: String, credit: Int, change: Int, extra: JSONObject.() -> Unit = {}) =
+        JSONObject().put("success", true).put("ack", "TERMINADO").put("referenceCC", ref).put("outcome", outcome)
+            .put("resolvedBy", "GERENTE").put("dueCents", 18_750).put("saleCents", 18_000).put("tipCents", 750)
+            .put("creditCents", credit).put("changeDispensedCents", change).put("owedCents", 0).apply(extra).toString()
+
+    @Test
+    fun `P1 Codex r1 #11 un PAGADO del gerente que el servidor guardo como incidencia no es venta y lo dice`() = runTest {
+        val m = maquina()
+        val ref = dudaDe(m)
+        coEvery { api.resolverDuda(any(), any(), any()) } returns RespuestaDelServidor(
+            202,
+            ecoDelGerente(ref, "PAGADO", 20_000, 0) {
+                put("incident", "NO_SE_PUDO_REGISTRAR").put("incidentId", "cinc000000000000000000005").put("motivo", "VENTA_RECHAZADA")
+                    .put("owedKind", "CAMBIO").put("owedCents", 1_250)
+            },
+        )
+
+        val r = m.resolver(ref, ResolucionDelGerente(Desenlace.PAGADO, 20_000, 0, null, null, "Ticket 0042"))
+
+        assertEquals(ResultadoDeResolver.Incidencia("Registrado como incidencia: la venta ya no se pudo armar", 1_250), r)
+        val fila = dao.fila(ref)!!
+        assertEquals(EstadoDelIntento.RESUELTO, fila.estado)
+        assertEquals("Registrado como incidencia: la venta ya no se pudo armar", fila.conflicto)
+        assertEquals("su comprobante con folio", 1_250, fila.aDeberCents)
+        assertTrue("no es una venta: sin ticket pendiente", dao.ticketsSinImprimir("venue-1").isEmpty())
+    }
+
+    @Test
+    fun `P1 Codex r1 #12 un PAGADO cuyo ticket no salio se ofrece con un boton y el que no imprime sigue pendiente`() = runTest {
+        val pagado = pagadoSubido.copy(
+            subido = false, creditCents = 20_000, changeDispensedCents = 1_000, quoteId = null,
+            renglonesJson = """[{"name":"Café","quantity":2,"unitCents":9000,"totalCents":18000}]""",
+        )
+        dao.insertar(pagado)
+        dao.insertar(pagado.copy(referenceCC = "AQ000000000002", ticketImpreso = true))
+        val impresos = mutableListOf<com.avoqado.pos.printing.data.model.ReceiptData>()
+        coEvery { impresora.manualPrintReceipt(capture(impresos)) } returns PrinterService.PrintOutcome.OutOfPaper andThen PrinterService.PrintOutcome.Printed(1)
+        val m = maquina()
+        assertEquals(1, m.ticketsSinImprimir().first())
+
+        assertEquals("sin papel: sigue pendiente", 0, m.imprimirTicketsPendientes())
+        assertEquals(1, m.ticketsSinImprimir().first())
+        assertEquals(1, m.imprimirTicketsPendientes())
+        assertEquals(0, m.ticketsSinImprimir().first())
+
+        val t = impresos.last()
+        assertEquals("AQ000000000001", t.orderNumber)
+        assertEquals(listOf("Café" to 18_000), t.items.map { it.name to it.totalPrice })
+        assertEquals(20_000 to 1_000, t.cashTendered to t.changeAmount)
+        assertEquals(com.avoqado.pos.printing.receiptlayout.ReceiptCashMachine("AQ000000000001", 1_000, priceToConfirm = true), t.cashMachine)
+    }
+
+    @Test
+    fun `P1 Codex r1 #14 la cotizacion congela sus renglones y una vencida antes del paycash se vuelve a pedir`() = runTest {
+        var pedidas = 0
+        coEvery { api.cotizar(any(), any()) } answers {
+            pedidas++
+            RespuestaDelServidor(200, JSONObject(cotizacion(18_000, 750).cuerpo)
+                .put("renglones", org.json.JSONArray().put(JSONObject().put("name", "Café del servidor").put("quantity", 1).put("unitCents", 18_000).put("totalCents", 18_000)))
+                .toString())
+        }
+        // La PC se pausa entre cotizar y mandar el cobro: pasa la vigencia (el reloj de la PC salta 11 min la primera vez).
+        var ahora = 0L
+        var saltos = 0
+        coEvery { turno.turnoActual() } answers { if (saltos++ == 0) ahora += 11 * 60_000L; "turno-1" }
+        val m = MaquinaDeEfectivo(
+            prefs, boveda, dao, api, subida, turno, RoleManager(sesion), impresora, sesion, canal, backgroundScope, { ahora }, Random(7),
+        )
+
+        val r = m.cobrar(venta().copy(renglonesLocales = """[{"name":"Café local","quantity":1,"unitCents":17000,"totalCents":17000}]"""))
+
+        assertTrue(r is InicioEnLaMaquina.Iniciado)
+        assertEquals("se volvió a cotizar", 2, pedidas)
+        assertEquals(listOf("Café del servidor"), renglonesDelTicket(dao.todas().single().renglonesJson)!!.map { it.name })
     }
 
     @Test

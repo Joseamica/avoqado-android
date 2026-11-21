@@ -36,9 +36,21 @@ class ReglasDeLaMaquinaTest {
     }
 
     @Test
-    fun `P1 sin billetes de 20 ni de 50 es poco cambio aunque haya de 100 o mas`() {
-        assertEquals(NivelDeCambio.POCO, nivelDeCambio("222222002222"))
-        assertEquals(NivelDeCambio.POCO, nivelDeCambio("022220002000"))
+    fun `P1 Codex r1 #16 sin billetes de 20, 50 ni 100 es poco cambio, con uno de 100 alcanza`() {
+        assertEquals(NivelDeCambio.POCO, nivelDeCambio("222222000222"))
+        assertEquals(NivelDeCambio.POCO, nivelDeCambio("022220000000"))
+        assertEquals("el billete de 100 entra en la regla del plan", NivelDeCambio.SUFICIENTE, nivelDeCambio("022220002000"))
+        assertEquals(NivelDeCambio.SUFICIENTE, nivelDeCambio("222222002222"))
+    }
+
+    @Test
+    fun `P1 Codex r1 #16 un total que termina en 50 centavos avisa que la maquina podria deberlos, salvo con monedas de 50`() {
+        assertEquals(TEXTO_PODRIA_DEBER_50, avisoDeCambio("022220222000", 18_750))
+        assertEquals("la máquina real nunca trae tubo de 50 centavos", TEXTO_PODRIA_DEBER_50, avisoDeCambio("022220222000", 50))
+        assertNull(avisoDeCambio("222220222000", 18_750))
+        assertNull(avisoDeCambio("022220222000", 18_700))
+        assertEquals("poco cambio manda", TEXTO_POCO_CAMBIO, avisoDeCambio("021220222000", 18_750))
+        assertEquals("sin barra no se sabe: poco cambio", TEXTO_POCO_CAMBIO, avisoDeCambio(null, 18_700))
     }
 
     /**

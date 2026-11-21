@@ -345,6 +345,7 @@ fun PaymentFlowScreen(
                         onRetryTerminals = { viewModel.probeTerminalAvailability(background = false) },
                         maquina = vistaDeLaMaquina,
                         onCobrarConMaquina = viewModel::cobrarConMaquina,
+                        onImprimirTicketsDeLaMaquina = { viewModel.maquina?.imprimirTicketsPendientes() },
                         onResolverOtraDeLaMaquina = { ref, r ->
                             viewModel.maquina?.resolverOtra(ref, r)
                                 ?: com.avoqado.pos.maquina.ResultadoDeResolver.NoSe(com.avoqado.pos.maquina.TEXTO_SIN_PERMISO_RESOLVER)
@@ -362,7 +363,9 @@ fun PaymentFlowScreen(
             }
             is PaymentFlowState.SelectingPaymentMethod -> {
                 val caja = viewModel.maquina
-                if (caja != null && vistaDeLaMaquina != null && (vistaDeLaMaquina.cobro != null || vistaDeLaMaquina.resuelto != null)) {
+                if (caja != null && vistaDeLaMaquina != null &&
+                    (vistaDeLaMaquina.cobro != null || vistaDeLaMaquina.resuelto != null || vistaDeLaMaquina.incidencia != null)
+                ) {
                     // C5: el cobro de ESTA venta en la máquina (o lo que decidió el gerente).
                     com.avoqado.pos.maquina.ui.PantallaDeLaMaquina(vista = vistaDeLaMaquina, caja = caja, onSalir = cancelarElCobro)
                 } else PaymentMethodSelectionScreen(
@@ -389,6 +392,7 @@ fun PaymentFlowScreen(
                     onSaldoSelected = { scopeDeSaldo.launch { viewModel.actualizarFilaDeSaldo(); if (viewModel.conductaDelSaldo.value.habilitada) { identificadaDeSaldo = null; muestraSaldo = true } } },
                     maquina = vistaDeLaMaquina,
                     onCobrarConMaquina = viewModel::cobrarConMaquina,
+                    onImprimirTicketsDeLaMaquina = { viewModel.maquina?.imprimirTicketsPendientes() },
                     onResolverOtraDeLaMaquina = { ref, r ->
                         viewModel.maquina?.resolverOtra(ref, r)
                             ?: com.avoqado.pos.maquina.ResultadoDeResolver.NoSe(com.avoqado.pos.maquina.TEXTO_SIN_PERMISO_RESOLVER)

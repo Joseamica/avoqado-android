@@ -121,11 +121,20 @@ internal open class CobroEnMaquinaSobreSqlite : CobroEnMaquinaDao, AutoCloseable
         actualizar(CobroEnMaquinaSql.PEDIR_CANCEL, "referenceCC" to referenceCC, "cancelvalue" to cancelvalue, "ahora" to ahora)
             .also { alPedirCancel() }
 
-    override suspend fun cerrar(referenceCC: String, estado: String, creditCents: Int, changeDispensedCents: Int, cierreEn: Long, crudos: String) =
-        actualizar(
-            CobroEnMaquinaSql.CERRAR, "referenceCC" to referenceCC, "estado" to estado, "creditCents" to creditCents,
-            "changeDispensedCents" to changeDispensedCents, "cierreEn" to cierreEn, "crudos" to crudos,
-        )
+    override suspend fun cerrar(
+        referenceCC: String,
+        estado: String,
+        creditCents: Int,
+        changeDispensedCents: Int,
+        cierreEn: Long,
+        crudos: String,
+        conocido: Boolean,
+        aDeber: Int,
+    ) = actualizar(
+        CobroEnMaquinaSql.CERRAR, "referenceCC" to referenceCC, "estado" to estado, "creditCents" to creditCents,
+        "changeDispensedCents" to changeDispensedCents, "cierreEn" to cierreEn, "crudos" to crudos, "conocido" to if (conocido) 1 else 0,
+        "aDeber" to aDeber,
+    )
 
     override suspend fun aEsperando(referenceCC: String, crudos: String) =
         actualizar(CobroEnMaquinaSql.A_ESPERANDO, "referenceCC" to referenceCC, "crudos" to crudos)
@@ -159,8 +168,9 @@ internal open class CobroEnMaquinaSobreSqlite : CobroEnMaquinaDao, AutoCloseable
 
     override suspend fun esperanAlGerente(venueId: String) = filas(CobroEnMaquinaSql.ESPERAN_AL_GERENTE, "venueId" to venueId)
 
-    override suspend fun marcarSubido(referenceCC: String, conflicto: String?, respuesta: String?) =
-        actualizar(CobroEnMaquinaSql.MARCAR_SUBIDO, "referenceCC" to referenceCC, "conflicto" to conflicto, "respuesta" to respuesta)
+    override suspend fun marcarSubido(referenceCC: String, conflicto: String?, respuesta: String?, aDeber: Int?) = actualizar(
+        CobroEnMaquinaSql.MARCAR_SUBIDO, "referenceCC" to referenceCC, "conflicto" to conflicto, "respuesta" to respuesta, "aDeber" to aDeber,
+    )
 
     override suspend fun anotarConflicto(referenceCC: String, conflicto: String) =
         actualizar(CobroEnMaquinaSql.ANOTAR_CONFLICTO, "referenceCC" to referenceCC, "conflicto" to conflicto)
@@ -176,12 +186,23 @@ internal open class CobroEnMaquinaSobreSqlite : CobroEnMaquinaDao, AutoCloseable
         conflicto: String?,
         respuesta: String?,
         desenlace: String?,
+        aDeber: Int?,
     ) = actualizar(
         CobroEnMaquinaSql.RESOLVER, "referenceCC" to referenceCC, "resueltoPor" to resueltoPor, "creditCents" to creditCents,
         "changeDispensedCents" to changeDispensedCents, "conflicto" to conflicto, "respuesta" to respuesta, "desenlace" to desenlace,
+        "aDeber" to aDeber,
     )
 
-    override suspend fun conComprobante(venueId: String) = filas(CobroEnMaquinaSql.CON_COMPROBANTE, "venueId" to venueId)
+    override suspend fun conComprobante(venueId: String, limite: Int) =
+        filas(CobroEnMaquinaSql.CON_COMPROBANTE, "venueId" to venueId, "limite" to limite)
+
+    override suspend fun contarComprobantes(venueId: String): Int =
+        preparar(CobroEnMaquinaSql.CONTAR_COMPROBANTES, "venueId" to venueId).use { st -> st.executeQuery().let { it.next(); it.getInt(1) } }
+
+    override suspend fun ticketsSinImprimir(venueId: String) = filas(CobroEnMaquinaSql.TICKETS_SIN_IMPRIMIR, "venueId" to venueId)
+
+    override fun observarTicketsSinImprimir(venueId: String) =
+        cambios.map { filas(CobroEnMaquinaSql.TICKETS_SIN_IMPRIMIR, "venueId" to venueId) }
 
     override suspend fun marcarTicketImpreso(referenceCC: String) =
         actualizar(CobroEnMaquinaSql.MARCAR_TICKET_IMPRESO, "referenceCC" to referenceCC)

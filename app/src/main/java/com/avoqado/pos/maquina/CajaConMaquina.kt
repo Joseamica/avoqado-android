@@ -17,6 +17,8 @@ data class VentaEnPantalla(
     val conProductos: Boolean,
     /** Sin orden en el SERVIDOR, sin mesa, sin dividir, del cobro de siempre: la máquina sólo cobra carritos nuevos (R4-1). */
     val ventaNueva: Boolean,
+    /** El total local (Codex código r1 #16: el aviso de los 50 centavos). */
+    val totalCents: Int = 0,
 )
 
 /** Un `PAGADO` de la máquina (o el que confirmó un gerente) que la caja convierte en venta cobrada. */
@@ -27,6 +29,8 @@ data class CierreEnPantalla(
     val changeDispensedCents: Int,
     /** Sin cotización con red el precio se confirma al subir: el ticket dice «Precio por confirmar» (R5#9). */
     val precioPorConfirmar: Boolean,
+    /** Codex código r1 #14: los renglones congelados al empezar (los de la cotización): el ticket sale de éstos, no del carrito. */
+    val renglones: List<com.avoqado.pos.printing.data.model.ReceiptItem>? = null,
 ) {
     /** Lo que la máquina le quedó a deber de cambio (sin billetes ni monedas para darlo). */
     val aDeberCents: Int get() = (creditCents - dueCents - changeDispensedCents).coerceAtLeast(0)
@@ -52,6 +56,12 @@ data class VistaDeLaMaquina(
     val resuelto: Desenlace?,
     /** Codex código r1 #7: las OTRAS dudas de esta PC en la sucursal (la de esta venta ya se ve en su pantalla). */
     val enEspera: List<CobroEnEspera> = emptyList(),
+    /** Codex código r1 #11: el gerente declaró PAGADO y el SERVIDOR lo guardó como incidencia: no hay venta. */
+    val incidencia: String? = null,
+    /** Codex código r1 #12: ventas pagadas de la sucursal cuyo ticket no salió. */
+    val ticketsSinImprimir: Int = 0,
+    /** Cuándo empezó el cobro de esta venta (Codex código r1 #15: la hora del comprobante se lee desde ese día). */
+    val inicioDelCobro: Long? = null,
 )
 
 /**
@@ -76,6 +86,8 @@ class CajaConMaquina(
         val resuelto: Desenlace? = null,
         /** Codex código r1 #7: la duda de esta venta leída del disco (tras reiniciar no hay cobro vivo que la muestre). */
         val guardada: EstadoDelCobro.Esperando? = null,
+        val incidencia: String? = null,
+        val inicio: Long? = null,
     )
 
     private val local = MutableStateFlow(Local())
@@ -87,14 +99,18 @@ class CajaConMaquina(
     private var enVuelo = false
 
     val vista: StateFlow<VistaDeLaMaquina?> =
-        combine(local, maquina.ahora, maquina.cobro.estado, maquina.avisoDeSubida, maquina.enEspera()) { l, ahora, estado, avisoDeSubida, dudas ->
+        combine(
+            local, maquina.ahora, maquina.cobro.estado, maquina.avisoDeSubida,
+            combine(maquina.enEspera(), maquina.ticketsSinImprimir()) { d, t -> d to t },
+        ) { l, ahora, estado, avisoDeSubida, (dudas, sinImprimir) ->
             val v = l.venta ?: return@combine null
             // El cobro vivo de esta venta; si no lo hay (se reinició la app), su duda guardada (Codex código r1 #7).
             val mio = estado.takeIf { folioDe(it) != null && folioDe(it) == l.miFolio }
                 ?: l.guardada?.takeIf { it.referenceCC == l.miFolio }
             VistaDeLaMaquina(
-                fila = filaDeLaMaquina(ahora, v.conProductos, v.ventaNueva, l.ventaEnDuda, cobroVivo = vivo(estado) || l.apartada),
-                cobro = mio,
+                fila = filaDeLaMaquina(ahora, v.conProductos, v.ventaNueva, l.ventaEnDuda, cobroVivo = vivo(estado) || l.apartada, dueCents = v.totalCents),
+                // Lo que decidió el gerente (o su incidencia) se ve en lugar de la duda.
+                cobro = mio.takeIf { l.resuelto == null && l.incidencia == null },
                 ventaEnDuda = l.ventaEnDuda || l.apartada || mio != null,
                 aviso = l.aviso,
                 avisoDeSubida = avisoDeSubida,
@@ -103,6 +119,9 @@ class CajaConMaquina(
                 avisoDeResolver = l.avisoDeResolver,
                 resuelto = l.resuelto,
                 enEspera = dudas.filter { it.referenceCC != l.miFolio }.map { CobroEnEspera(it.referenceCC, it.dueCents, it.creadoEn) },
+                incidencia = l.incidencia,
+                ticketsSinImprimir = sinImprimir,
+                inicioDelCobro = l.inicio,
             )
         }.stateIn(scope, SharingStarted.Eagerly, null)
 
@@ -120,7 +139,7 @@ class CajaConMaquina(
                 if (estado.desenlace == Desenlace.PAGADO && pagados.add(estado.referenceCC)) {
                     alPagar(
                         CierreEnPantalla(estado.referenceCC, estado.dueCents, estado.creditCents, estado.changeDispensedCents,
-                            precioPorConfirmar = !l.miCotizada),
+                            precioPorConfirmar = !l.miCotizada, renglones = renglonesDelTicket(maquina.fila(estado.referenceCC)?.renglonesJson)),
                     )
                 }
             }
@@ -143,7 +162,7 @@ class CajaConMaquina(
             local.value.takeIf { it.venta == venta }?.let { l ->
                 local.value = if (intento == null || l.miFolio != null) l.copy(ventaEnDuda = enDuda)
                 else l.copy(ventaEnDuda = true, miFolio = intento.referenceCC, miCotizada = intento.quoteId != null,
-                    guardada = EstadoDelCobro.Esperando(intento.referenceCC, intento.dueCents))
+                    guardada = EstadoDelCobro.Esperando(intento.referenceCC, intento.dueCents), inicio = intento.creadoEn)
             }
         }
     }
@@ -177,7 +196,8 @@ class CajaConMaquina(
             return when (val r = maquina.cobrar(v)) {
                 is InicioEnLaMaquina.Iniciado -> {
                     val fila = maquina.fila(r.referenceCC)
-                    local.value = local.value.copy(miFolio = r.referenceCC, miCotizada = fila?.quoteId != null, ventaEnDuda = true)
+                    local.value = local.value.copy(miFolio = r.referenceCC, miCotizada = fila?.quoteId != null, ventaEnDuda = true,
+                        inicio = fila?.creadoEn)
                     true
                 }
                 is InicioEnLaMaquina.NoSeCobra -> {
@@ -194,6 +214,11 @@ class CajaConMaquina(
 
     fun cancelarPorElCliente() = maquina.cobro.cancelarPorElCliente()
 
+    /** Codex código r1 #12: «Imprimir» los tickets que no salieron (nunca solos). */
+    fun imprimirTicketsPendientes() {
+        scope.launch { maquina.imprimirTicketsPendientes() }
+    }
+
     fun sigoAqui() = maquina.cobro.sigoAqui()
 
     /**
@@ -202,7 +227,7 @@ class CajaConMaquina(
      */
     fun listo() {
         val l = local.value
-        local.value = l.copy(miFolio = null, resuelto = null, avisoDeResolver = null, guardada = null)
+        local.value = l.copy(miFolio = null, resuelto = null, avisoDeResolver = null, guardada = null, incidencia = null, inicio = null)
         val v = l.venta ?: return
         scope.launch {
             val enDuda = maquina.ventaBloqueada(v.llaveDeVenta)
@@ -225,11 +250,16 @@ class CajaConMaquina(
                 if (pagados.add(folio)) {
                     alPagar(
                         CierreEnPantalla(folio, fila?.dueCents ?: 0, resultado.creditCents, resultado.changeDispensedCents,
-                            precioPorConfirmar = fila?.quoteId == null),
+                            precioPorConfirmar = fila?.quoteId == null, renglones = renglonesDelTicket(fila?.renglonesJson)),
                     )
                 }
             } else {
                 local.value = local.value.copy(resuelto = resultado.desenlace)
+            }
+            // Codex código r1 #11: sin venta no hay ticket ni comanda; sólo el comprobante con folio si se le debe al cliente.
+            is ResultadoDeResolver.Incidencia -> {
+                local.value = local.value.copy(incidencia = resultado.texto)
+                if (resultado.debeCents > 0 && comprobantes.add(folio)) scope.launch { maquina.imprimirComprobanteUnaVez(folio) }
             }
         }
     }

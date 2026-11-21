@@ -151,6 +151,28 @@ class SubidaDeLaMaquinaTest {
     }
 
     @Test
+    fun `P1 Codex r1 #15 un cierre sin la hora de la maquina sube sin hora, nunca con la de la PC como conocida`() = runBlocking {
+        insertar(pagado.copy(cierreConocido = false))
+        cuando("POST", ".*/cash-machine/sales", ok(evidencia(pagado)))
+
+        subida.subir()
+
+        val c = cuerpo(pedido()).getJSONObject("cierre")
+        assertFalse(c.getBoolean("occurredAtKnown"))
+        assertTrue(c.isNull("occurredAt"))
+    }
+
+    @Test
+    fun `Codex r1 #13 lo que el servidor dice que se debe queda en la fila (cambio fisico mas diferencia de precio)`() = runBlocking {
+        insertar(pagado.copy(aDeberCents = 0))
+        cuando("POST", ".*/cash-machine/sales", ok(evidencia(pagado).put("excedenteCents", 300).put("owedCents", 300)))
+
+        subida.subir()
+
+        assertEquals(300, dao.fila(REF_1)!!.aDeberCents)
+    }
+
+    @Test
     fun `CANCELADO y GUARDADO suben sin pedido y con el modo de su cancel`() = runBlocking {
         val cancelado = final(REF_1, EstadoDelIntento.CANCELADO, credit = 5_000, change = 5_000, cancel = "1")
         val guardado = final(REF_2, EstadoDelIntento.GUARDADO, credit = 5_000, change = 0, cancel = "2").copy(creadoEn = 2_000)

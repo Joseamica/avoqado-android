@@ -57,7 +57,16 @@ interface CobroEnMaquinaDao {
     suspend fun pedirCancel(referenceCC: String, cancelvalue: String, ahora: Long): Int
 
     @Query(CobroEnMaquinaSql.CERRAR)
-    suspend fun cerrar(referenceCC: String, estado: String, creditCents: Int, changeDispensedCents: Int, cierreEn: Long, crudos: String): Int
+    suspend fun cerrar(
+        referenceCC: String,
+        estado: String,
+        creditCents: Int,
+        changeDispensedCents: Int,
+        cierreEn: Long,
+        crudos: String,
+        conocido: Boolean = true,
+        aDeber: Int = 0,
+    ): Int
 
     @Query(CobroEnMaquinaSql.A_ESPERANDO)
     suspend fun aEsperando(referenceCC: String, crudos: String): Int
@@ -102,7 +111,7 @@ interface CobroEnMaquinaDao {
     suspend fun esperanAlGerente(venueId: String): List<CobroEnMaquinaEntity>
 
     @Query(CobroEnMaquinaSql.MARCAR_SUBIDO)
-    suspend fun marcarSubido(referenceCC: String, conflicto: String?, respuesta: String?): Int
+    suspend fun marcarSubido(referenceCC: String, conflicto: String?, respuesta: String?, aDeber: Int? = null): Int
 
     @Query(CobroEnMaquinaSql.ANOTAR_CONFLICTO)
     suspend fun anotarConflicto(referenceCC: String, conflicto: String): Int
@@ -122,10 +131,21 @@ interface CobroEnMaquinaDao {
         conflicto: String?,
         respuesta: String?,
         desenlace: String?,
+        aDeber: Int? = null,
     ): Int
 
     @Query(CobroEnMaquinaSql.CON_COMPROBANTE)
-    suspend fun conComprobante(venueId: String): List<CobroEnMaquinaEntity>
+    suspend fun conComprobante(venueId: String, limite: Int): List<CobroEnMaquinaEntity>
+
+    @Query(CobroEnMaquinaSql.CONTAR_COMPROBANTES)
+    suspend fun contarComprobantes(venueId: String): Int
+
+    @Query(CobroEnMaquinaSql.TICKETS_SIN_IMPRIMIR)
+    suspend fun ticketsSinImprimir(venueId: String): List<CobroEnMaquinaEntity>
+
+    /** Codex código r1 #12: los tickets pendientes en vivo (la franja de Cobrar). */
+    @Query(CobroEnMaquinaSql.TICKETS_SIN_IMPRIMIR)
+    fun observarTicketsSinImprimir(venueId: String): kotlinx.coroutines.flow.Flow<List<CobroEnMaquinaEntity>>
 
     @Query(CobroEnMaquinaSql.MARCAR_TICKET_IMPRESO)
     suspend fun marcarTicketImpreso(referenceCC: String): Int

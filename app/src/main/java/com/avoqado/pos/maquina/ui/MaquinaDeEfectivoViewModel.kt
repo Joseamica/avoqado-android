@@ -49,6 +49,8 @@ data class EstadoDeLaMaquina(
     val listo: String? = null,
     /** C7: lo que la máquina les debe a clientes (diferencia de precio o dinero no devuelto), los más nuevos primero. */
     val comprobantes: List<ComprobantePorImprimir> = emptyList(),
+    /** Codex código r1 #13: cuántos cobros le deben algo a clientes en la sucursal (la lista enseña los más nuevos; «Ver más»). */
+    val comprobantesTotal: Int = 0,
     /** Codex código r1 #7: los cobros de esta PC «Esperando a la máquina» en la sucursal, con «Resolver con gerente». */
     val enEspera: List<com.avoqado.pos.maquina.CobroEnEspera> = emptyList(),
     val puedeResolver: Boolean = false,
@@ -94,6 +96,15 @@ class MaquinaDeEfectivoViewModel @Inject constructor(
 
     /** La red local NO usa el cliente de la API: a la máquina no se le manda la sesión. */
     private val okHttpDeLaRedLocal by lazy { OkHttpClient() }
+
+    /** Codex código r1 #13: cuántos comprobantes se enseñan; «Ver más» lo sube. */
+    private var limiteDeComprobantes = COMPROBANTES_POR_PAGINA
+
+    /** Codex código r1 #13: la siguiente página de lo que la máquina les debe a clientes. */
+    fun verMasComprobantes() {
+        limiteDeComprobantes += COMPROBANTES_POR_PAGINA
+        viewModelScope.launch { refrescar() }
+    }
 
     /** Seam de pruebas. */
     internal var probador: suspend (String) -> Boolean = { ip -> probarConexion(ip, okHttpDeLaRedLocal) }
@@ -229,8 +240,9 @@ class MaquinaDeEfectivoViewModel @Inject constructor(
             }
             Lectura(prefs.ip, prefs.activa, credencial != null, cobros.hayPendientesDeLaMaquina())
         }
-        val comprobantes = runCatching { maquinaDeEfectivo?.comprobantes().orEmpty() }.getOrDefault(emptyList())
+        val comprobantes = runCatching { maquinaDeEfectivo?.comprobantes(limiteDeComprobantes).orEmpty() }.getOrDefault(emptyList())
             .map { (fila, debe) -> ComprobantePorImprimir(fila.referenceCC, debe) }
+        val comprobantesTotal = runCatching { maquinaDeEfectivo?.cuantosComprobantes() ?: 0 }.getOrDefault(comprobantes.size)
         val enEspera = runCatching { maquinaDeEfectivo?.dudasEnEspera().orEmpty() }.getOrDefault(emptyList())
             .map { com.avoqado.pos.maquina.CobroEnEspera(it.referenceCC, it.dueCents, it.creadoEn) }
         val emparejadaConOtra = (prefs.nombreDeLaSucursal ?: "otra sucursal")
@@ -240,6 +252,7 @@ class MaquinaDeEfectivoViewModel @Inject constructor(
                 cargado = true, ocupado = false, ip = if (campo) ip.orEmpty() else it.ip, ipGuardada = ip, activa = activa,
                 conCredencial = conCredencial, hayPendientes = pendientes, aviso = aviso, listo = listo, comprobantes = comprobantes,
                 enEspera = enEspera, puedeResolver = maquinaDeEfectivo?.puedeResolver() == true, emparejadaConOtra = emparejadaConOtra,
+                comprobantesTotal = maxOf(comprobantesTotal, comprobantes.size),
             )
         }
     }
@@ -251,5 +264,6 @@ class MaquinaDeEfectivoViewModel @Inject constructor(
 
     private companion object {
         const val TAG = "💵Maquina"
+        const val COMPROBANTES_POR_PAGINA = 50
     }
 }

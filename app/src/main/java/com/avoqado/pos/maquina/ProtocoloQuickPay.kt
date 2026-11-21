@@ -30,6 +30,8 @@ sealed interface MensajeDeLaMaquina {
         val dueCents: Int,
         val changeDispensedCents: Int,
         val changeBar: String?,
+        /** Codex código r1 #15: la hora LOCAL de la máquina (manual 2.0.0: `AAAA-MM-DD HH:MM:SS`), tal cual llegó. */
+        val fecha: String? = null,
     ) : MensajeDeLaMaquina
 
     /** En el manual 2.0.0 el `pong` sólo trae `conexiones` y `tarjeta`: [cobrando] casi siempre es null. */
@@ -58,6 +60,7 @@ fun leerMensaje(json: String): MensajeDeLaMaquina? {
             dueCents = centavos(o.opt("Due")) ?: return null,
             changeDispensedCents = centavos(o.opt("changeDispensed")) ?: return null,
             changeBar = o.opt("changeBar") as? String,
+            fecha = o.opt("fecha") as? String,
         )
         "pong" -> MensajeDeLaMaquina.Pong(o.opt("cobrando") as? Boolean)
         else -> MensajeDeLaMaquina.Otro(comando)
@@ -78,6 +81,17 @@ private fun centavos(valor: Any?): Int? {
 }
 
 enum class Cierre { PAGADO, CANCELADO }
+
+private val FECHA_DE_LA_MAQUINA = java.time.format.DateTimeFormatter.ofPattern("uuuu-MM-dd HH:mm:ss")
+    .withResolverStyle(java.time.format.ResolverStyle.STRICT)
+
+/**
+ * Codex código r1 #15: la hora física de un `status`, de SU `fecha` (la hora local de la máquina, `AAAA-MM-DD HH:MM:SS`, manual 2.0.0) en
+ * la zona del negocio. Sin `fecha` o ilegible → null: el cierre sube sin hora conocida («por conciliar»), nunca con el reloj de la PC.
+ */
+fun horaDeLaMaquina(fecha: String?, zona: java.time.ZoneId): Long? = fecha?.trim()?.let {
+    runCatching { java.time.LocalDateTime.parse(it, FECHA_DE_LA_MAQUINA).atZone(zona).toInstant().toEpochMilli() }.getOrNull()
+}
 
 /**
  * El desenlace en efectivo de este `status`, o null si no cierra. Sólo con `cobrando:false` y el texto completo, con

@@ -94,6 +94,16 @@ class PaymentFlowViewModelMaquinaTest {
     private val areaTicketRepository = mockk<AreaTicketRepository>(relaxed = true)
 
     private val canal = MaquinaDeEfectivoTest.CanalFalso()
+    /** Codex r1 #17: la comanda real, espiada para ver con qué folio sale. */
+    private val comandas by lazy {
+        io.mockk.spyk(
+            ComandaDispatcher(
+                printConfigRepository,
+                ReintentoDeComanda(mockk<ComandaPrinter>(relaxed = true), reporteDeComandas = mockk<ReporteDeComandas>(relaxed = true)),
+                printerService,
+            ),
+        )
+    }
     private val dao = CobroEnMaquinaSobreSqlite()
     private val prefs = MaquinaDeEfectivoPrefs(AjustesDeLaMaquinaTest.contextoConPreferencias())
     private val boveda = object : BovedaDeLaMaquina {
@@ -145,11 +155,7 @@ class PaymentFlowViewModelMaquinaTest {
             secureStorage = secureStorage,
             comandasPendientesStore = ComandasPendientesStore(AlmacenEnMemoria()),
             replayDeComandas = mockk(relaxed = true),
-            comandaDispatcher = ComandaDispatcher(
-                printConfigRepository,
-                ReintentoDeComanda(mockk<ComandaPrinter>(relaxed = true), reporteDeComandas = mockk<ReporteDeComandas>(relaxed = true)),
-                printerService,
-            ),
+            comandaDispatcher = comandas,
             tableSession = TableSession(),
             syncOutbox = mockk(relaxed = true),
             customerDisplay = com.avoqado.pos.customerdisplay.CustomerDisplayState(),
@@ -164,6 +170,11 @@ class PaymentFlowViewModelMaquinaTest {
         JSONObject().put("comando", "status").put("cobrando", cobrando).put("Status", estado ?: JSONObject.NULL)
             .put("referenceCC", ref).put("Credit", credit / 100.0).put("Due", due / 100.0)
             .put("changeDispensed", change / 100.0).put("changeBar", "022220222000").toString()
+
+    private fun ecoDelGerente(ref: String, outcome: String = "PAGADO", credit: Int = 20_000, change: Int = 2_000, due: Int = 18_000, extra: JSONObject.() -> Unit = {}) =
+        JSONObject().put("success", true).put("ack", "TERMINADO").put("referenceCC", ref).put("outcome", outcome)
+            .put("resolvedBy", "GERENTE").put("dueCents", due).put("saleCents", due).put("tipCents", 0)
+            .put("creditCents", credit).put("changeDispensedCents", change).put("owedCents", 0).apply(extra).toString()
 
     /** Abre el cobro y lo manda a la máquina; devuelve el folio. */
     private fun TestScope.mandarALaMaquina(vm: PaymentFlowViewModel, cart: CartState = CartState(items = listOf(cafe))): String {
@@ -302,7 +313,7 @@ class PaymentFlowViewModelMaquinaTest {
     fun `P1 Codex r1 #7 tras reiniciar, la pantalla de la maquina recupera la duda de esta venta y el gerente la resuelve`() = runTest {
         val vm = vm()
         every { secureStorage.venuePermissions } returns listOf("payments:create", "cash-machine:resolve")
-        coEvery { api.resolverDuda("venue-1", "AQ000000000007", any()) } returns RespuestaDelServidor(200, "{}")
+        coEvery { api.resolverDuda("venue-1", "AQ000000000007", any()) } returns RespuestaDelServidor(200, ecoDelGerente("AQ000000000007"))
         val cart = CartState(items = listOf(cafe))
         // Lo que dejó el proceso anterior: la venta quedó «Esperando a la máquina» y la app se cerró.
         dao.insertar(
@@ -324,7 +335,8 @@ class PaymentFlowViewModelMaquinaTest {
     fun `Codex r1 #7 las otras dudas de esta PC se ven en Cobrar y resolverlas no cobra la venta en pantalla`() = runTest {
         val vm = vm()
         every { secureStorage.venuePermissions } returns listOf("payments:create", "cash-machine:resolve")
-        coEvery { api.resolverDuda("venue-1", "AQ000000000008", any()) } returns RespuestaDelServidor(200, "{}")
+        coEvery { api.resolverDuda("venue-1", "AQ000000000008", any()) } returns
+            RespuestaDelServidor(200, ecoDelGerente("AQ000000000008", credit = 5_000, change = 0, due = 5_000))
         dao.insertar(
             com.avoqado.pos.maquina.CobroEnMaquinaEntity(
                 "AQ000000000008", "venue-1", "otra-venta", "{}", 5_000, 0, 5_000, null, null, 1, EstadoDelIntento.ESPERANDO,
@@ -344,8 +356,8 @@ class PaymentFlowViewModelMaquinaTest {
     fun `R4-4 el gerente resuelve con su sesion que la maquina cobro y la venta queda cobrada`() = runTest {
         val vm = vm()
         every { secureStorage.venuePermissions } returns listOf("payments:create", "cash-machine:resolve")
-        coEvery { api.resolverDuda("venue-1", any(), any()) } returns RespuestaDelServidor(200, "{}")
-        mandarALaMaquina(vm)
+        val ref = mandarALaMaquina(vm)
+        coEvery { api.resolverDuda("venue-1", ref, any()) } returns RespuestaDelServidor(200, ecoDelGerente(ref))
         advanceTimeBy(3_001)
         runCurrent()
         assertTrue(vm.maquina!!.vista.value!!.cobro is EstadoDelCobro.Esperando)
@@ -521,6 +533,83 @@ class PaymentFlowViewModelMaquinaTest {
         assertEquals(ref, c.orderNumber)
         assertEquals(2_000L, c.cashMachine!!.owedCents)
         assertTrue(dao.fila(ref)!!.ticketImpreso)
+    }
+
+    @Test
+    fun `P1 Codex r1 #11 un PAGADO del gerente que quedo como incidencia no cobra la venta ni imprime su ticket`() = runTest {
+        val impresos = mutableListOf<ReceiptData>()
+        coEvery { printerService.manualPrintReceipt(capture(impresos)) } returns PrinterService.PrintOutcome.Printed(1)
+        val vm = vm()
+        every { secureStorage.venuePermissions } returns listOf("payments:create", "cash-machine:resolve")
+        val ref = mandarALaMaquina(vm)
+        coEvery { api.resolverDuda("venue-1", ref, any()) } returns RespuestaDelServidor(
+            202,
+            ecoDelGerente(ref, change = 0) {
+                put("incident", "NO_SE_PUDO_REGISTRAR").put("incidentId", "cinc000000000000000000006").put("motivo", "VENTA_RECHAZADA")
+                    .put("owedCents", 2_000)
+            },
+        )
+        advanceTimeBy(3_001)
+        runCurrent()
+
+        vm.maquina!!.resolver(ResolucionDelGerente(Desenlace.PAGADO, 20_000, 0, null, null, "Ticket 0042"))
+        runCurrent()
+
+        assertTrue("no hay venta", vm.state.value is PaymentFlowState.SelectingPaymentMethod)
+        assertEquals("Registrado como incidencia: la venta ya no se pudo armar", vm.maquina!!.vista.value!!.incidencia)
+        assertNull("se ve el resultado, no la duda", vm.maquina!!.vista.value!!.cobro)
+        val papel = impresos.single()
+        assertEquals("sólo el comprobante del dinero, con su folio", KIND_COMPROBANTE_DE_LA_MAQUINA, papel.kind)
+        assertEquals(ref, papel.orderNumber)
+        assertEquals(2_000L, papel.cashMachine!!.owedCents)
+    }
+
+    @Test
+    fun `P1 Codex r1 #14 el ticket sale con los renglones que cotizo el servidor, no con los del carrito`() = runTest {
+        val impresos = mutableListOf<ReceiptData>()
+        coEvery { printerService.manualPrintReceipt(capture(impresos)) } returns PrinterService.PrintOutcome.Printed(1)
+        val vm = vm()
+        coEvery { api.cotizar("venue-1", any()) } returns RespuestaDelServidor(
+            200,
+            JSONObject().put("quoteId", "q-1").put("saleCents", 18_000).put("tipCents", 0).put("totalCents", 18_000).put("cobrableEnMaquina", true)
+                .put("renglones", org.json.JSONArray().put(JSONObject().put("name", "Café (precio del servidor)").put("quantity", 1).put("unitCents", 18_000).put("totalCents", 18_000)))
+                .toString(),
+        )
+
+        pagar(vm)
+
+        assertEquals(listOf("Café (precio del servidor)" to 18_000), impresos.single().items.map { it.name to it.totalPrice })
+    }
+
+    @Test
+    fun `P1 Codex r1 #17 la comanda de la venta de la maquina lleva el folio de su orden para la pantalla de cocina`() = runTest {
+        coEvery { printerService.manualPrintReceipt(any()) } returns PrinterService.PrintOutcome.Printed(1)
+        val vm = vm()
+
+        val ref = pagar(vm)
+        runCurrent()
+
+        coVerify {
+            comandas.dispatch(
+                any(), any(), any(), any(), any(), any(), any(), any(), false, "sale:maquina-$ref",
+                any(), any(), any(), any(), any(), any(), any(), any(), any(),
+            )
+        }
+    }
+
+    @Test
+    fun `P1 Codex r1 #12 un ticket que no salio se ofrece en Cobrar con su boton`() = runTest {
+        coEvery { printerService.manualPrintReceipt(any()) } returns PrinterService.PrintOutcome.NoPrinter andThen PrinterService.PrintOutcome.Printed(1)
+        val vm = vm()
+        pagar(vm)
+        assertFalse(dao.todas().single().ticketImpreso)
+
+        assertEquals(1, vm.maquina!!.vista.value!!.ticketsSinImprimir)
+        vm.maquina!!.imprimirTicketsPendientes()
+        runCurrent()
+
+        assertTrue(dao.todas().single().ticketImpreso)
+        assertEquals(0, vm.maquina!!.vista.value!!.ticketsSinImprimir)
     }
 
     @Test

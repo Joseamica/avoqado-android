@@ -225,8 +225,8 @@ class SubidaDeLaMaquina @Inject constructor(
             !repite(fila, json, desenlaceQueSube(fila), conLoQueEntro = true) -> dao.anotarConflicto(fila.referenceCC, TEXTO_RESPUESTA_DISTINTA)
             // El cierre tardío terminó el folio en el SERVIDOR: la duda queda resuelta con lo que él dice.
             tardio -> dao.resolver(fila.referenceCC, json.optString("resolvedBy").ifBlank { "MAQUINA" }, fila.creditCents,
-                fila.changeDispensedCents, incidencia, cuerpo, json.optString("outcome"))
-            else -> dao.marcarSubido(fila.referenceCC, incidencia, cuerpo)
+                fila.changeDispensedCents, incidencia, cuerpo, json.optString("outcome"), json.centavos("owedCents"))
+            else -> dao.marcarSubido(fila.referenceCC, incidencia, cuerpo, json.centavos("owedCents"))
         }
     }
 
@@ -236,25 +236,11 @@ class SubidaDeLaMaquina @Inject constructor(
 
     /** `ABIERTO`: el SERVIDOR ya la tiene. `RESUELTO`: la decisión del gerente (o su incidencia) con lo que tecleó. */
     private suspend fun aplicarDuda(fila: CobroEnMaquinaEntity, json: JSONObject, cuerpo: String) {
-        val outcome = json.optString("outcome")
-        val credit = json.centavos("creditCents")
-        val change = json.centavos("changeDispensedCents")
         when {
             json.optString("referenceCC") != fila.referenceCC -> dao.anotarConflicto(fila.referenceCC, TEXTO_RESPUESTA_DISTINTA)
             json.optString("status") == "ABIERTO" -> dao.marcarDudaSubida(fila.referenceCC, true)
             json.optString("status") != "RESUELTO" -> Unit   // no se entiende: se pregunta otra vez
-            outcome !in DESENLACES || credit == null || change == null || !repite(fila, json, outcome, conLoQueEntro = false) ->
-                dao.anotarConflicto(fila.referenceCC, TEXTO_RESPUESTA_DISTINTA)
-            else -> dao.resolver(
-                referenceCC = fila.referenceCC,
-                resueltoPor = json.optString("resolvedBy").ifBlank { "GERENTE" },
-                creditCents = credit,
-                changeDispensedCents = change,
-                conflicto = json.optString("incident").takeIf { it.isNotBlank() }?.let { textoDeIncidencia(json.optString("motivo")) },
-                // El desenlace del gerente vive aquí ([desenlace]); `cancelPedido` sigue siendo lo que pidió la PC.
-                respuesta = cuerpo,
-                desenlace = outcome,
-            )
+            !dao.resolverConElEco(fila, json, cuerpo) -> dao.anotarConflicto(fila.referenceCC, TEXTO_RESPUESTA_DISTINTA)
         }
     }
 
@@ -272,8 +258,9 @@ class SubidaDeLaMaquina @Inject constructor(
             .put("outcome", outcome)
             .put("dueCents", fila.dueCents).put("saleCents", fila.saleCents).put("tipCents", fila.tipCents)
             .put("creditCents", fila.creditCents).put("changeDispensedCents", fila.changeDispensedCents)
+            // Codex código r1 #15: la hora sólo sube si la dijo la máquina; la de la PC nunca pasa por «conocida».
             .put("occurredAtKnown", fila.cierreConocido && fila.cierreEn != null)
-            .put("occurredAt", fila.cierreEn?.let(::iso) ?: JSONObject.NULL)
+            .put("occurredAt", fila.cierreEn?.takeIf { fila.cierreConocido }?.let(::iso) ?: JSONObject.NULL)
             .put("saleShiftId", fila.saleShiftId ?: JSONObject.NULL)
         val cuerpo = JSONObject().put("referenceCC", fila.referenceCC).put("cierre", cierre)
         if (outcome == EstadoDelIntento.PAGADO) cuerpo.put("pedido", JSONObject(fila.pedidoJson))
@@ -309,13 +296,42 @@ class SubidaDeLaMaquina @Inject constructor(
         }
     }.getOrNull()
 
-    private fun JSONObject.centavos(campo: String): Int? = (opt(campo) as? Number)?.toInt()
-
     private companion object {
         const val TAG = "💵SubidaMaquina"
         const val CADA_MS = 60_000L
-        val DESENLACES = setOf("PAGADO", "CANCELADO", "GUARDADO")
     }
+}
+
+private val DESENLACES = setOf("PAGADO", "CANCELADO", "GUARDADO")
+
+private fun JSONObject.centavos(campo: String): Int? = (opt(campo) as? Number)?.toInt()
+
+/** Codex código r1 #11: el folio quedó como incidencia (el dinero sin venta): su texto, o null si es venta o cierre. */
+fun incidenciaDelEco(json: JSONObject): String? =
+    json.optString("incident").takeIf { it.isNotBlank() && it != "null" }?.let { textoDeIncidencia(json.optString("motivo")) }
+
+/**
+ * La evidencia TERMINADA de una duda (la decisión del gerente, o su incidencia) en la fila: UN solo lugar que la lee, para la subida y
+ * para la respuesta que recibe el propio gerente al resolver (Codex código r1 #11). false = no es de este folio o no cuadra.
+ */
+internal suspend fun CobroEnMaquinaDao.resolverConElEco(fila: CobroEnMaquinaEntity, json: JSONObject, cuerpo: String): Boolean {
+    val outcome = json.optString("outcome")
+    val credit = json.centavos("creditCents") ?: return false
+    val change = json.centavos("changeDispensedCents") ?: return false
+    if (outcome !in DESENLACES || json.optString("referenceCC") != fila.referenceCC) return false
+    if (json.centavos("dueCents") != fila.dueCents || json.centavos("saleCents") != fila.saleCents || json.centavos("tipCents") != fila.tipCents) return false
+    resolver(
+        referenceCC = fila.referenceCC,
+        resueltoPor = json.optString("resolvedBy").ifBlank { "GERENTE" },
+        creditCents = credit,
+        changeDispensedCents = change,
+        conflicto = incidenciaDelEco(json),
+        // El desenlace del gerente vive aquí ([desenlace]); `cancelPedido` sigue siendo lo que pidió la PC.
+        respuesta = cuerpo,
+        desenlace = outcome,
+        aDeber = json.centavos("owedCents"),
+    )
+    return true
 }
 
 /**

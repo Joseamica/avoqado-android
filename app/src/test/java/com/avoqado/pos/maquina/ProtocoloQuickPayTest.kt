@@ -29,10 +29,21 @@ class ProtocoloQuickPayTest {
             MensajeDeLaMaquina.Status(
                 cobrando = true, estado = null, referenceCC = "VENTA-000123",
                 creditCents = 0, dueCents = 12_500, changeDispensedCents = 0, changeBar = "022210221000",
+                fecha = "2026-11-18 15:48:19",
             ),
             m,
         )
         assertNull(m.cierre())
+    }
+
+    @Test
+    fun `P1 Codex r1 #15 la hora fisica es la fecha del status en la zona del negocio, y sin ella no hay hora`() {
+        val mexico = java.time.ZoneId.of("America/Mexico_City")
+        val m = leerMensaje(STATUS_PAGO_COMPLETADO) as MensajeDeLaMaquina.Status
+        assertEquals(java.time.Instant.parse("2026-11-18T21:48:20Z").toEpochMilli(), horaDeLaMaquina(m.fecha, mexico))
+        assertNull(horaDeLaMaquina(null, mexico))
+        assertNull("ilegible: nunca el reloj de la PC", horaDeLaMaquina("18/11/2026 15:48", mexico))
+        assertNull(horaDeLaMaquina("2026-11-31 15:48:20", mexico))
     }
 
     @Test

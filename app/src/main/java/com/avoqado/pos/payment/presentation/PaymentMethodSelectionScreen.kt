@@ -116,6 +116,8 @@ fun PaymentMethodSelectionScreen(
     /** Codex código r1 #7: «Resolver con gerente» de las otras dudas de esta PC. */
     onResolverOtraDeLaMaquina: suspend (String, com.avoqado.pos.maquina.ResolucionDelGerente) -> com.avoqado.pos.maquina.ResultadoDeResolver =
         { _, _ -> com.avoqado.pos.maquina.ResultadoDeResolver.NoSe(com.avoqado.pos.maquina.TEXTO_SIN_PERMISO_RESOLVER) },
+    /** Codex código r1 #12: «Imprimir» los tickets de la máquina que no salieron. */
+    onImprimirTicketsDeLaMaquina: () -> Unit = {},
 ) {
     val conMaquina = maquina != null && LocalEsEscritorio.current
     val metodosVigentes by rememberUpdatedState(metodosHabilitados)
@@ -247,6 +249,7 @@ fun PaymentMethodSelectionScreen(
                     onClick = { if (metodosVigentes) onCobrarConMaquina() },
                 )
                 com.avoqado.pos.maquina.ui.CobrosEnEsperaDeLaMaquina(maquina.enEspera, maquina.puedeResolver, onResolverOtraDeLaMaquina)
+                com.avoqado.pos.maquina.ui.TicketsSinImprimirDeLaMaquina(maquina.ticketsSinImprimir, onImprimirTicketsDeLaMaquina)
             } else
             // Efectivo row: label + suggested amounts + Personalizado
             Row(

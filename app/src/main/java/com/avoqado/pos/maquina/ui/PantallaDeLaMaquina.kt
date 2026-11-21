@@ -37,7 +37,6 @@ import com.avoqado.pos.maquina.EstadoDelCobro
 import com.avoqado.pos.maquina.FilaDeLaMaquina
 import com.avoqado.pos.maquina.TEXTO_AYUDA
 import com.avoqado.pos.maquina.TEXTO_ESPERANDO
-import com.avoqado.pos.maquina.TEXTO_POCO_CAMBIO
 import com.avoqado.pos.maquina.TEXTO_SIGUES_AHI
 import com.avoqado.pos.maquina.TEXTO_SIN_PERMISO_RESOLVER
 import com.avoqado.pos.maquina.VistaDeLaMaquina
@@ -66,7 +65,7 @@ internal fun FilaEfectivoEnLaMaquina(fila: FilaDeLaMaquina, aviso: String?, avis
                 fontWeight = FontWeight.Medium,
                 color = if (activa) MaterialTheme.colorScheme.onSurface else gris,
             )
-            val razon = fila.motivo ?: TEXTO_POCO_CAMBIO.takeIf { fila.pocoCambio }
+            val razon = fila.motivo ?: fila.avisoDeCambio
             razon?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
             aviso?.let { Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error) }
             avisoDeSubida?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
@@ -114,16 +113,37 @@ internal fun CobrosEnEsperaDeLaMaquina(
             puedeResolver = puedeResolver,
             resolviendo = resolviendo,
             aviso = aviso,
+            inicio = enEspera.firstOrNull { it.referenceCC == ref }?.creadoEn,
             onResolver = { r ->
                 scope.launch {
                     resolviendo = true
                     val resultado = onResolver(ref, r)
                     resolviendo = false
-                    if (resultado is com.avoqado.pos.maquina.ResultadoDeResolver.NoSe) aviso = resultado.texto else abierta = null
+                    when (resultado) {
+                        is com.avoqado.pos.maquina.ResultadoDeResolver.NoSe -> aviso = resultado.texto
+                        // Codex código r1 #11: sin venta; se dice el motivo y el diálogo se queda para leerlo.
+                        is com.avoqado.pos.maquina.ResultadoDeResolver.Incidencia -> aviso = resultado.texto
+                        is com.avoqado.pos.maquina.ResultadoDeResolver.Resuelto -> abierta = null
+                    }
                 }
             },
             onCerrar = { abierta = null },
         )
+    }
+}
+
+/** Codex código r1 #12: «Hay N tickets sin imprimir» con su botón (nunca se imprimen solos). */
+@Composable
+internal fun TicketsSinImprimirDeLaMaquina(cuantos: Int, onImprimir: () -> Unit) {
+    if (cuantos <= 0) return
+    Row(Modifier.fillMaxWidth().padding(vertical = AvoqadoTheme.spacing.sm), verticalAlignment = Alignment.CenterVertically) {
+        Text(
+            com.avoqado.pos.maquina.textoDeTicketsSinImprimir(cuantos),
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.error,
+            modifier = Modifier.weight(1f),
+        )
+        OutlinedButton(onClick = onImprimir) { Text("Imprimir") }
     }
 }
 
@@ -150,7 +170,7 @@ fun PantallaDeLaMaquina(vista: VistaDeLaMaquina, caja: CajaConMaquina, onSalir: 
                 is EstadoDelCobro.Cobrando -> {
                     Titulo("Paga en la máquina")
                     Importes(c.dueCents, c.creditCents)
-                    if (vista.fila.pocoCambio) Nota(TEXTO_POCO_CAMBIO)
+                    vista.fila.avisoDeCambio?.let { Nota(it) }
                     if (c.propio) {
                         Spacer(Modifier.height(AvoqadoTheme.spacing.xl))
                         OutlinedButton(onClick = caja::cancelarPorElCliente) { Text("Cancelar y devolverme mi dinero") }
@@ -178,9 +198,13 @@ fun PantallaDeLaMaquina(vista: VistaDeLaMaquina, caja: CajaConMaquina, onSalir: 
                         Titulo("Se canceló el cobro")
                     } else {
                         Titulo(if (c.desenlace == Desenlace.CANCELADO) "Cobro cancelado: recoge tu dinero" else "Pagado")
-                        val debe = c.creditCents - c.changeDispensedCents
-                        if (c.desenlace == Desenlace.CANCELADO && debe > 0) {
-                            Nota("Te debemos ${formatMoneyFromCents(debe)}: pasa a caja a cobrarlo · Folio ${c.referenceCC}")
+                        // Codex código r1 #13: también el cambio que no dio un PAGADO (no sólo lo que no devolvió un CANCELADO).
+                        val debe = com.avoqado.pos.maquina.deudaFisica(c.desenlace, c.dueCents, c.creditCents, c.changeDispensedCents)
+                        if (debe > 0) {
+                            Nota(
+                                if (c.desenlace == Desenlace.PAGADO) com.avoqado.pos.maquina.textoDeLaDeuda(debe.toLong(), c.referenceCC)
+                                else "Te debemos ${formatMoneyFromCents(debe)}: pasa a caja a cobrarlo · Folio ${c.referenceCC}",
+                            )
                         }
                     }
                     Spacer(Modifier.height(AvoqadoTheme.spacing.xl))
@@ -196,7 +220,13 @@ fun PantallaDeLaMaquina(vista: VistaDeLaMaquina, caja: CajaConMaquina, onSalir: 
                     Spacer(Modifier.height(AvoqadoTheme.spacing.md))
                     OutlinedButton(onClick = onSalir) { Text("Salir") }
                 }
-                EstadoDelCobro.Libre, null -> vista.resuelto?.let { d ->
+                EstadoDelCobro.Libre, null -> if (vista.incidencia != null) {
+                    // Codex código r1 #11: el gerente dijo PAGADO, pero el SERVIDOR lo guardó como incidencia: no hay venta.
+                    Titulo(vista.incidencia)
+                    Nota("No se cobró la venta: el dinero quedó registrado para que el gerente lo revise.")
+                    Spacer(Modifier.height(AvoqadoTheme.spacing.xl))
+                    PrimaryButton(text = "Listo", onClick = caja::listo, fullWidth = true)
+                } else vista.resuelto?.let { d ->
                     Titulo(if (d == Desenlace.CANCELADO) "El gerente lo resolvió: la máquina devolvió el dinero" else "El gerente lo resolvió: la máquina guardó el dinero")
                     Spacer(Modifier.height(AvoqadoTheme.spacing.xl))
                     PrimaryButton(text = "Listo", onClick = caja::listo, fullWidth = true)

@@ -13,6 +13,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.security.SecureRandom
 import java.time.Instant
+import java.time.ZoneId
 import java.util.Random
 
 /** Una venta congelada para cobrarse en la máquina. `Due = sale + tip` (R3#6). */
@@ -25,6 +26,10 @@ data class VentaParaLaMaquina(
     val tipCents: Int,
     val saleShiftId: String? = null,
     val quoteId: String? = null,
+    /** Codex código r1 #14: los renglones congelados (los de la cotización, o los del carrito sin red): el ticket sale de aquí. */
+    val renglonesJson: String? = null,
+    /** Codex código r1 #14: hasta cuándo vale la cotización para EMPEZAR el cobro (reloj de la PC). null = sin cotización. */
+    val vigenteHasta: Long? = null,
 )
 
 sealed interface ResultadoDeInicio {
@@ -37,6 +42,8 @@ sealed interface ResultadoDeInicio {
     data object Ocupado : ResultadoDeInicio
     /** El `paycash` no salió (sin conexión): no quedó fila. */
     data object SinConexion : ResultadoDeInicio
+    /** Codex código r1 #14: la cotización venció antes del `paycash`: no se guardó ni se mandó nada; hay que volver a cotizar. */
+    data object CotizacionVencida : ResultadoDeInicio
 }
 
 enum class Desenlace { PAGADO, CANCELADO, GUARDADO }
@@ -70,6 +77,15 @@ sealed interface EstadoDelCobro {
     /** «Esperando a la máquina»: la PC no sabe cómo terminó. Sólo lo resuelve un gerente (R4-4), nunca la PC sola. */
     data class Esperando(val referenceCC: String, val dueCents: Int) : EstadoDelCobro
 }
+
+/**
+ * Codex código r1 #13: lo que la máquina le quedó a deber al cliente por lo FÍSICO, con la fórmula del SERVIDOR (`deudaDelCierre`):
+ * PAGADO, el cambio que no dio; CANCELADO, lo que no devolvió; GUARDADO, lo que se quedó (sin comprobante: nadie está para recibirlo).
+ */
+fun deudaFisica(desenlace: Desenlace, dueCents: Int, creditCents: Int, changeCents: Int): Int = when (desenlace) {
+    Desenlace.PAGADO -> creditCents - dueCents - changeCents
+    Desenlace.CANCELADO, Desenlace.GUARDADO -> creditCents - changeCents
+}.coerceAtLeast(0)
 
 /**
  * El desenlace de un `status` de cierre de NUESTRO folio y `Due`, con las mismas reglas que el SERVIDOR (`validarCierre`):
@@ -112,6 +128,8 @@ class CobroConMaquina(
     private val aleatorio: Random = SecureRandom(),
     /** C4: un cierre o una duda ya están en disco; la subida ([SubidaDeLaMaquina.disparar]) los manda sin esperar a su reloj. */
     private val alTerminar: () -> Unit = {},
+    /** Codex código r1 #15: la zona en que la máquina escribe su `fecha` (la del negocio). */
+    private val zona: () -> ZoneId = { ZoneId.systemDefault() },
 ) {
     private val _estado = MutableStateFlow<EstadoDelCobro>(EstadoDelCobro.Libre)
     val estado: StateFlow<EstadoDelCobro> = _estado.asStateFlow()
@@ -160,11 +178,13 @@ class CobroConMaquina(
         val due = venta.saleCents + venta.tipCents
         if (venta.saleCents < 0 || venta.tipCents < 0 || !cobrableEnMaquina(due)) return@withLock ResultadoDeInicio.NoCobrable
         val ahora = reloj()
+        // Codex código r1 #14: justo antes del `paycash` (con el candado): una cotización vencida no empieza el cobro.
+        if (venta.vigenteHasta != null && ahora > venta.vigenteHasta) return@withLock ResultadoDeInicio.CotizacionVencida
         val ref = nuevaReferencia(ahora, aleatorio)
         val fila = CobroEnMaquinaEntity(
             referenceCC = ref, venueId = venta.venueId, llaveDeVenta = venta.llaveDeVenta, pedidoJson = venta.pedidoJson,
             saleCents = venta.saleCents, tipCents = venta.tipCents, dueCents = due, saleShiftId = venta.saleShiftId,
-            quoteId = venta.quoteId, creadoEn = ahora, estado = EstadoDelIntento.EN_CURSO,
+            quoteId = venta.quoteId, creadoEn = ahora, estado = EstadoDelIntento.EN_CURSO, renglonesJson = venta.renglonesJson,
         )
         if (!dao.abrirIntento(fila)) return@withLock ResultadoDeInicio.VentaConIntento
         val generacion = cliente.generacion.value
@@ -226,7 +246,8 @@ class CobroConMaquina(
                 val tardio = m.cierre()?.takeIf { m.dueCents == a.due && a.generacionPropia != null && r.generacion == a.generacionPropia }
                     ?.let { desenlaceDelCierre(it, a.cancelPedido, a.due, m.creditCents, m.changeDispensedCents) }
                 if (tardio != null) {
-                    dao.anotarCierreTardio(a.ref, tardio.name, m.creditCents, m.changeDispensedCents, reloj(), true, crudos(a))
+                    val hora = horaDeLaMaquina(m.fecha, zona())
+                    dao.anotarCierreTardio(a.ref, tardio.name, m.creditCents, m.changeDispensedCents, hora ?: reloj(), hora != null, crudos(a))
                 } else {
                     dao.anotarEvidencia(a.ref, crudos(a))
                 }
@@ -285,8 +306,13 @@ class CobroConMaquina(
     private suspend fun cerrar(a: Intento, m: MensajeDeLaMaquina.Status, cierre: Cierre) {
         val desenlace = desenlaceDelCierre(cierre, a.cancelPedido, a.due, m.creditCents, m.changeDispensedCents)
             ?: return aEsperando(a)   // contradictorio: el crudo ya va en la evidencia
-        // El desenlace y «por subir» en UN `UPDATE`: la fila es la cola (R4-1).
-        dao.cerrar(a.ref, desenlace.name, m.creditCents, m.changeDispensedCents, reloj(), crudos(a))
+        // El desenlace y «por subir» en UN `UPDATE`: la fila es la cola (R4-1). Codex código r1 #15: la hora es la que dice la máquina;
+        // sin ella, la de la PC sólo para enseñar y el cierre sube sin hora conocida. #13: lo físico que se le debe al cliente.
+        val hora = horaDeLaMaquina(m.fecha, zona())
+        dao.cerrar(
+            a.ref, desenlace.name, m.creditCents, m.changeDispensedCents, hora ?: reloj(), crudos(a), conocido = hora != null,
+            aDeber = deudaFisica(desenlace, a.due, m.creditCents, m.changeDispensedCents),
+        )
         alTerminar()
         a.fase = Fase.CERRADO
         a.desenlace = desenlace

@@ -37,18 +37,25 @@ internal fun centavosDeTexto(texto: String): Int? {
     return runCatching { pesos.movePointRight(2).setScale(0, RoundingMode.UNNECESSARY).intValueExact() }.getOrNull()
 }
 
+private val FECHA_Y_HORA = java.time.format.DateTimeFormatter.ofPattern("uuuu-MM-dd HH:mm[:ss]")
+    .withResolverStyle(java.time.format.ResolverStyle.STRICT)
+
 /**
- * R5#8: la hora del comprobante de la máquina («18:05») como instante, en la zona del negocio. Es de hoy, o de ayer si a esta
- * hora todavía no llega. Vacío o ilegible = null («hora y turno por conciliar»), nunca la hora de inicio ni la de ahora.
+ * R5#8 y Codex código r1 #15: la hora del comprobante de la máquina como instante, en la zona del negocio. Con su fecha («2026-11-18
+ * 15:48», como la imprime la máquina) vale tal cual; sólo con la hora («15:48») es del día en que EMPEZÓ el cobro ([inicio]), o del
+ * siguiente si es antes de que empezara: el gerente que revisa el lunes un comprobante del viernes no lo manda al lunes. Vacío o ilegible
+ * = null («hora y turno por conciliar»), nunca la hora de inicio ni la de ahora.
  */
-internal fun horaDelComprobante(texto: String, ahora: ZonedDateTime): Instant? {
+internal fun horaDelComprobante(texto: String, inicio: ZonedDateTime): Instant? {
+    val t = texto.trim()
+    runCatching { return java.time.LocalDateTime.parse(t, FECHA_Y_HORA).atZone(inicio.zone).toInstant() }
     val hora = try {
-        LocalTime.parse(texto.trim().padStart(5, '0'))
+        LocalTime.parse(t.padStart(5, '0'))
     } catch (e: DateTimeParseException) {
         return null
     }
-    val hoy = ahora.with(hora).withSecond(0).withNano(0)
-    return (if (hoy.isAfter(ahora)) hoy.minusDays(1) else hoy).toInstant()
+    val ese = inicio.with(hora).withSecond(0).withNano(0)
+    return (if (ese.isBefore(inicio.withSecond(0).withNano(0))) ese.plusDays(1) else ese).toInstant()
 }
 
 private enum class Opcion(val etiqueta: String, val desenlace: Desenlace) {
@@ -65,7 +72,7 @@ private enum class Modo(val etiqueta: String, val valor: String?) { DEVOLVIO("Lo
  */
 @Composable
 internal fun ResolverAMano(vista: VistaDeLaMaquina, onResolver: (ResolucionDelGerente) -> Unit, onCerrar: () -> Unit) =
-    ResolverAMano(vista.puedeResolver, vista.resolviendo, vista.avisoDeResolver, onResolver, onCerrar)
+    ResolverAMano(vista.puedeResolver, vista.resolviendo, vista.avisoDeResolver, vista.inicioDelCobro, onResolver, onCerrar)
 
 /** Codex código r1 #7: el mismo formulario para la duda de esta venta, para las otras dudas de Cobrar y para Ajustes. */
 @Composable
@@ -73,6 +80,8 @@ internal fun ResolverAMano(
     puedeResolver: Boolean,
     resolviendo: Boolean,
     aviso: String?,
+    /** Cuándo empezó ese cobro (la hora sola se lee desde ese día). */
+    inicio: Long?,
     onResolver: (ResolucionDelGerente) -> Unit,
     onCerrar: () -> Unit,
 ) {
@@ -104,7 +113,9 @@ internal fun ResolverAMano(
                             desenlace = o.desenlace,
                             creditCents = credit,
                             changeDispensedCents = change,
-                            horaDelComprobante = horaDelComprobante(hora, VenueTimeZone.now()),
+                            horaDelComprobante = horaDelComprobante(
+                                hora, VenueTimeZone.at(Instant.ofEpochMilli(inicio ?: System.currentTimeMillis())),
+                            ),
                             cancelMode = modo?.valor.takeIf { o != Opcion.COBRO },
                             evidencia = vio,
                         ),
@@ -131,7 +142,7 @@ internal fun ResolverAMano(
             }
             AvoqadoPillTextField(value = entro, onValueChange = { entro = it }, placeholder = "Entró (ej. 200.00)", keyboardType = KeyboardType.Decimal)
             AvoqadoPillTextField(value = cambio, onValueChange = { cambio = it }, placeholder = "Cambio que dio (ej. 12.50)", keyboardType = KeyboardType.Decimal)
-            AvoqadoPillTextField(value = hora, onValueChange = { hora = it }, placeholder = "Hora del comprobante (ej. 18:05)")
+            AvoqadoPillTextField(value = hora, onValueChange = { hora = it }, placeholder = "Fecha y hora del comprobante (ej. 2026-11-18 15:48)")
             AvoqadoPillTextField(value = vio, onValueChange = { vio = it }, placeholder = "Lo que viste en la máquina")
             aviso?.let { Text(it, color = MaterialTheme.colorScheme.error) }
             Spacer(Modifier.height(AvoqadoTheme.spacing.xs))
