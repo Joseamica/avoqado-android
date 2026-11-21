@@ -65,6 +65,18 @@ class KDSRepositoryTest {
         val url = server.takeRequest(1, TimeUnit.SECONDS)!!.requestUrl!!
         assertEquals("1", url.queryParameter("urgencyVersion")); assertEquals("100", url.queryParameter("offset"))
     }
+    @Test fun `QA 3 el orden dentro de la tarjeta es el de la ronda, no el que devuelve la base`() = runTest {
+        val dos = "{\"id\":\"k1\",\"orderNumber\":\"101\",\"orderType\":\"DINE_IN\",\"orderId\":\"o1\",\"status\":\"NEW\",\"createdAt\":\"2026-11-21T07:00:00.000Z\"," +
+            "\"items\":[{\"id\":\"cmwq2b\",\"productName\":\"Cerveza\",\"quantity\":1,\"modifiers\":[]}," +
+            "{\"id\":\"cmwq2a\",\"productName\":\"Jugo\",\"quantity\":1,\"modifiers\":[]}]}"
+        server.enqueue(MockResponse().setBody(lista(dos)))
+        assertEquals(listOf("Jugo", "Cerveza"), repo.fetchOrders("st-barra").getOrThrow().single().items.map { it.productName })
+    }
+    @Test fun `D15 el renglon anulado en la caja trae removedAt y el viejo no`() = runTest {
+        server.enqueue(MockResponse().setBody(lista(comanda(itemJson = ",\"removedAt\":\"2026-11-20T18:00:00.000Z\""), comanda(itemJson = ",\"removedAt\":null"), comanda())))
+        val items = repo.fetchOrders("st-barra").getOrThrow().map { it.items.single().removedAt }
+        assertEquals(listOf("2026-11-20T18:00:00.000Z", null, null), items)
+    }
     @Test fun `D17 cada platillo trae en cuantas estaciones se prepara (1 si el servidor no lo dice)`() = runTest {
         server.enqueue(MockResponse().setBody(lista(comanda(itemJson = ",\"stationCount\":2"), comanda())))
         val items = repo.fetchOrders("st-barra").getOrThrow().map { it.items.single().stationCount }

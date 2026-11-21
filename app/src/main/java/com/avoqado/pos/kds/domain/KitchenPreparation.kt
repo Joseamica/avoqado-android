@@ -140,6 +140,8 @@ data class PreparationLine(
     val localOrderId: String? = null,
     val unavailableReason: String? = null,
     val draftRoundKey: String? = null,
+    /** D15: la caja lo anuló (su nombre ya trae «ANULADO · »). Ya no se prepara ni se entrega: el SERVIDOR rechaza cualquier acción. */
+    val removedAt: String? = null,
 ) {
     /** Survives a LAN provisional row becoming a server row. Never identifies a component by SKU. */
     val stableKey: String get() = if (externalId != null && sourceKey != null)
@@ -179,6 +181,9 @@ fun selectUrgentProducts(rows: List<PreparationLine>, keys: Set<String>): List<P
 )
 @Serializable data class PreparationLocalLine(val base: PreparationLine, val effects: List<PreparationEffect> = emptyList()) {
     fun projected(rejected: Set<String> = emptySet()): PreparationLine {
+        // D15 (Codex r2 #2): lo anulado en la caja manda el SERVIDOR; un avance guardado aquí (p. ej. «Reabrir» sin red) no lo
+        // vuelve a pintar pendiente mientras llega su rechazo.
+        if (base.removedAt != null) return base
         var line = base
         for (effect in effects) {
             if (effect.intentId in rejected || effect.expectedRevision < line.preparationRevision) continue
@@ -189,5 +194,23 @@ fun selectUrgentProducts(rows: List<PreparationLine>, keys: Set<String>): List<P
                 preparationRevision = line.preparationRevision + 1)
         }
         return line
+    }
+}
+
+/**
+ * QA del conjunto 2 (21-nov): lo que se pidió desde `vista` (la fila que la pantalla enseñaba) ya está hecho IGUAL en `ahora` (la copia
+ * de este aparato, que recibió un instante antes el mismo avance de otro aparato por el WiFi del local): justo una revisión después, el
+ * mismo cambio y el producto completo en su destino. Igual que la convergencia entre aparatos y que el SERVIDOR: sólo «Liberar» o
+ * «Marcar listo» completos; lo parcial o cualquier otro cambio no cuenta.
+ */
+fun mismoAvanceYaHecho(vista: PreparationLine, ahora: PreparationLine, action: PreparationAction, quantity: Int,
+    from: PreparationState?): Boolean {
+    if (ahora.preparationRevision != vista.preparationRevision + 1) return false
+    val esperado = runCatching { vista.preparation.move(action, quantity, from) }.getOrNull() ?: return false
+    if (PreparationState.entries.any { esperado[it] != ahora.preparation[it] }) return false
+    return when (action) {
+        PreparationAction.RELEASE -> esperado.HELD == 0
+        PreparationAction.READY -> esperado.PREPARING == 0
+        else -> false
     }
 }

@@ -315,6 +315,69 @@ class KDSViewModelTest {
         assertEquals(listOf("k9"), vm.recientes.value.map { it.id })
     }
 
+    // QA del conjunto 2 (21-nov): con una sola tarjeta la cabecera seguía diciendo «1–2 de 2».
+    @Test
+    fun `la cabecera cuenta las tarjetas que se ven, no solo la ultima lectura del servidor`() {
+        val leida = KDSViewModel.BoardPaging(offset = 0, total = 2, count = 2)
+        assertEquals("1–1 de 1 comandas", rangoDeComandas(leida, 1)) // la cocina terminó una aquí (sin red)
+        assertEquals("1–2 de 2 comandas", rangoDeComandas(KDSViewModel.BoardPaging(total = 1, count = 1), 2)) // llegó una por WiFi
+        assertEquals("0–0 de 0 comandas", rangoDeComandas(leida, 0))
+        assertEquals("101–150 de 205 comandas", rangoDeComandas(KDSViewModel.BoardPaging(offset = 100, total = 205, count = 50), 50))
+    }
+
+    // QA del conjunto (20-nov): al volver la red, «Recientes» se quedaba en «Sin conexión…» hasta cerrarla y abrirla otra vez.
+    @Test
+    fun `al primer sondeo bueno la hoja de Recientes abierta deja el Sin conexion y vuelve a leer`() = runTest {
+        coEvery { repo.fetchRecientes("st-barra") } returns Result.failure(IOException("sin red"))
+        val vm = armar()
+        vm.abrirRecientes()
+        advanceUntilIdle()
+        assertEquals(AvisoDeCocina(AccionDeCocina.RECIENTES.sinRed, esError = false), vm.recientesNoLeidas.value)
+
+        coEvery { repo.fetchRecientes("st-barra") } returns Result.success(listOf(comanda("k9", 500)))
+        vm.refrescar() // el sondeo del tablero ya contesta
+        advanceUntilIdle()
+
+        assertNull(vm.recientesNoLeidas.value)
+        assertEquals(listOf("k9"), vm.recientes.value.map { it.id })
+    }
+
+    // QA del conjunto (20-nov): «Sin conexión. Se usa la capacidad confirmada…» se quedaba en la barra con la red de vuelta.
+    @Test
+    fun `al primer sondeo bueno ningun aviso de Sin conexion se queda en la barra y se reconfirman las capacidades`() = runTest {
+        val preparacion = mockk<com.avoqado.pos.kds.data.KitchenPreparationRepository>(relaxed = true)
+        every { preparacion.capabilities } returns kotlinx.coroutines.flow.MutableStateFlow(
+            com.avoqado.pos.kds.domain.PreparationCapabilities(version = 1, enabled = true, kitchenDoneVersion = 1))
+        coEvery { preparacion.merge(any(), any(), any()) } answers { secondArg() }
+        coEvery { preparacion.pendingKeys(any(), any()) } returns emptySet()
+        val avisoDelRepositorio = kotlinx.coroutines.flow.MutableStateFlow<String?>("Sin conexión. Se usa la capacidad confirmada en este aparato.")
+        every { preparacion.notice } returns avisoDelRepositorio
+        coEvery { preparacion.refreshCapabilities("v1") } answers { avisoDelRepositorio.value = null }
+        val conTiempos = comanda("k5", 500).copy(preparationVersion = 1, items = listOf(KDSOrderItem(id = "i-k5", productName = "Pozole",
+            quantity = 1, externalId = "sync:r:0", preparation = com.avoqado.pos.kds.domain.PreparationCounts(PENDING = 1))))
+        every { repo.venueIdActual() } returns "v1"
+        every { printConfig.getCurrentConfig() } answers { config }
+        every { prefs.estacion("v1") } returns "st-barra"
+        every { prefs.foto(any(), any(), any()) } returns null
+        every { roleManager.role } returns "KITCHEN"
+        every { roleManager.canManagePrinters } returns false
+        every { planManager.hasFeature("KITCHEN_DISPLAY") } returns true
+        coEvery { repo.fetchOrders(any()) } returns Result.success(listOf(conTiempos))
+        coEvery { repo.fetchBoardPage(any(), any()) } coAnswers { repo.fetchOrders(firstArg()).map { KDSRepository.BoardPage(it) } }
+        coEvery { repo.fetchDeliveryChannels() } returns Result.success(emptyList())
+        val vm = KDSViewModel(
+            repo, mockk(relaxed = true), mockk(relaxed = true), printConfig, Provider { cola },
+            prefs, roleManager, planManager, mockk(relaxed = true),
+            receptor, ticketsLocales, preparationRepository = preparacion,
+        )
+
+        vm.refrescar()
+        advanceUntilIdle()
+
+        assertNull(vm.aviso.value) // la lectura del tablero fue buena: el «Sin conexión» viejo del repositorio no se pinta
+        coVerify { preparacion.refreshCapabilities("v1") }
+    }
+
     @Test
     fun `D17 la comanda que la cocina termino sale del tablero y no vuelve a parpadear con la copia vieja`() = runTest {
         val preparacion = mockk<com.avoqado.pos.kds.data.KitchenPreparationRepository>(relaxed = true)

@@ -44,6 +44,43 @@ class PreparationPeerProgressTest {
         assertNotNull(runCatching { command.copy(items = List(21) { item }).validate() }.exceptionOrNull())
         assertNotNull(runCatching { command.copy(staffId = "").validate() }.exceptionOrNull())
     }
+    // QA del conjunto (20-nov): caja y cocina liberan el MISMO tiempo casi a la vez, con la hoja de esa mesa cerrada en la caja.
+    private val todo get() = command.copy(quantity = 3, intentId = "otro", deliveryId = "otro:0")
+    private fun conPropio(action: PreparationAction = PreparationAction.RELEASE, reason: String? = null) =
+        PreparationLocalLine(row, listOf(PreparationEffect("mio", 0, action, 3, null, reason)))
+
+    @Test fun `el mismo liberar completo de otro aparato converge sin rechazo ni cambio`() {
+        val propio = conPropio()
+        assertEquals(propio, applyPreparationPeerProgress(propio, item, todo))
+        assertEquals(PreparationCounts(PENDING = 3), propio.projected().preparation)
+    }
+    @Test fun `Codex r5 #3 su ACKED adelanta la copia, y si despues se rechaza el avance propio sigue lo confirmado`() {
+        val adelantada = applyPreparationPeerProgress(conPropio(), item, todo.copy(phase = "ACKED"))
+        assertEquals(1, adelantada.base.preparationRevision)
+        assertEquals(PreparationCounts(PENDING = 3), adelantada.projected().preparation)
+        val sinElPropio = adelantada.copy(effects = adelantada.effects.filterNot { it.intentId == "mio" }) // su REJECTED
+        assertEquals(PreparationCounts(PENDING = 3), sinElPropio.projected().preparation)
+    }
+    @Test fun `Codex r5 #2 un avance igual desde otro estado con el mismo numero de revision no converge`() {
+        val dos = row.copy(quantity = 2, preparation = PreparationCounts(PENDING = 1, PREPARING = 1))
+        val propio = PreparationLocalLine(dos, listOf(PreparationEffect("mio", 0, PreparationAction.READY, 1)))
+        val otroAntes = PreparationCounts(PREPARING = 1, READY = 1) // el otro aparato estaba en otro estado en «su» revisión 0
+        val ajeno = PreparationPeerItem(dos.sourceKey!!, dos.externalId!!, dos.stationId, 2, 0, otroAntes)
+        val listo = PreparationPeerProgress(venueId = "v1", deviceId = "d2", staffId = "staff2", deliveryId = "otro:0",
+            intentId = "otro", action = PreparationAction.READY, quantity = 1, items = listOf(ajeno))
+        assertNotNull(runCatching { applyPreparationPeerProgress(propio, ajeno, listo) }.exceptionOrNull())
+    }
+    @Test fun `un avance distinto sigue chocando, pero su ACKED adelanta la copia vieja en vez de rechazarla en cada pasada`() {
+        val propio = conPropio(PreparationAction.CANCEL, "Se fue")
+        assertNotNull(runCatching { applyPreparationPeerProgress(propio, item, todo) }.exceptionOrNull())
+        val adelantada = applyPreparationPeerProgress(propio, item, todo.copy(phase = "ACKED"))
+        assertEquals(1, adelantada.base.preparationRevision)
+        assertEquals(PreparationCounts(PENDING = 3), adelantada.projected().preparation) // lo confirmado por el servidor
+    }
+    @Test fun `liberar parcial igual desde la misma revision no converge (como en el servidor)`() {
+        val parcial = PreparationLocalLine(row, listOf(PreparationEffect("mio", 0, PreparationAction.RELEASE, 1)))
+        assertNotNull(runCatching { applyPreparationPeerProgress(parcial, item, command.copy(intentId = "otro", deliveryId = "otro:0")) }.exceptionOrNull())
+    }
     @Test fun `business rejection removes only the matching projection and ack waits for canonical baseline`() {
         val applied = applyPreparationPeerProgress(PreparationLocalLine(row), item, command)
         assertEquals(applied, applyPreparationPeerProgress(applied, item, command.copy(phase = "ACKED")))

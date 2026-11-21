@@ -309,7 +309,9 @@ class KDSRepository @Inject constructor(
                 needsPrint = json.optBoolean("needsPrint", false),
                 orderNumber = orderNumber,
                 orderType = displayType,
-                items = items,
+                // QA del conjunto 3 (21-nov): el orden dentro de la tarjeta es el de la ronda (el id del renglón de la comanda), no el
+                // que devuelve la base: actualizar un producto lo movía al final y el 2.º toque de una ráfaga caía en otro.
+                items = items.sortedBy { it.id },
                 createdAt = createdAt,
                 status = status,
                 startedAt = startedAt,
@@ -355,6 +357,7 @@ class KDSRepository @Inject constructor(
                 },
                 preparationRevision = json.optInt("preparationRevision", 0),
                 stationCount = json.optInt("stationCount", 0).takeIf { it >= 1 },
+                removedAt = json.optString("removedAt", "").takeIf { it.isNotBlank() && it != "null" },
             )
         } catch (e: Exception) {
             Log.e(TAG, "Parse item error: ${e.message}")

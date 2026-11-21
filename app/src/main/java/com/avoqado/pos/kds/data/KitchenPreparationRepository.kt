@@ -289,7 +289,7 @@ class KitchenPreparationRepository @Inject constructor(
         val ids = local.flatMap { it.effects.map(PreparationEffect::intentId) }.distinct()
         val statuses = ids.chunked(200).flatMap { intents.preparationStatuses(venueId, it) }.associateBy { it.id }
         val rejected = statuses.values.filter { it.status == SyncIntentEntity.STATUS_REJECTED }.map { it.id }.toSet()
-        if (rejected.isNotEmpty()) _notice.value = "Una acción no fue aceptada: ${statuses[rejected.first()]?.message ?: "otro compañero cambió el producto"}. Revisa su estado antes de repetirla."
+        if (rejected.isNotEmpty()) _notice.value = "Una acción no fue aceptada: ${(statuses[rejected.first()]?.message ?: "otro compañero cambió el producto").trimEnd().removeSuffix(".")}. Revisa su estado antes de repetirla."
         val corrected = local.map { saved -> saved.copy(effects = saved.effects.filterNot { it.intentId in rejected }) }
         cache.upsertAll(corrected.map { cached(venueId, it) })
         corrected.map { it.projected() }
@@ -338,9 +338,15 @@ class KitchenPreparationRepository @Inject constructor(
             validateDraftOrigins(venueId, selected)
             checkOrigin()
             val id = UUID.randomUUID().toString()
-            val snapshots = selected.map { row ->
-                val saved = cache.get(rowKey(venueId, row))?.let { json.decodeFromString<PreparationLocalLine>(it.json) }
-                    ?: PreparationLocalLine(row)
+            val guardadas = selected.map { row ->
+                cache.get(rowKey(venueId, row))?.let { json.decodeFromString<PreparationLocalLine>(it.json) } ?: PreparationLocalLine(row)
+            }
+            // QA del conjunto 2 (21-nov): la caja y esta pantalla tocaron a la vez el mismo «Liberar»; el de la caja llegó por el WiFi un
+            // instante antes. Si lo pedido ya está hecho igual en todas las filas, termina en silencio (sin aviso y sin mandar nada).
+            val yaHechas = guardadas.map { it.projected() }
+            if (selected.indices.all { mismoAvanceYaHecho(selected[it], yaHechas[it], action, quantity, from) }) return@atomic yaHechas
+            val snapshots = selected.mapIndexed { index, row ->
+                val saved = guardadas[index]
                 check(saved.effects.size < 20) { "Hay 20 acciones de este producto por sincronizar. Conecta antes de continuar." }
                 val projected = saved.projected()
                 check(projected.preparationRevision == row.preparationRevision) { "Este producto cambió. Actualiza su estado." }
