@@ -112,6 +112,11 @@ class VigilanteDePedidosEnLinea internal constructor(
     private val puedeImprimirComanda: suspend (orderId: String) -> Boolean = { true },
     /** R2-6: no se pudo leer ese pedido: el mismo descanso que una comanda que no salió (`ImpresionDePedidoEnLinea.descansar`). */
     private val descansarComanda: (orderId: String) -> Unit = {},
+    /**
+     * D661 · Ruling 48: ¿una ventana de la caja es la ACTIVA del sistema? WINDOWS lo publica desde `Main.kt`; ANDROID nunca lo cambia (true).
+     * Sólo decide el encabezado que ofrece la tarjeta: el sondeo, el timbre y la banda no cambian.
+     */
+    private val ventanaActiva: () -> Boolean = { VentanaActiva.activa.value },
 ) : DefaultLifecycleObserver {
 
     @Inject
@@ -414,6 +419,7 @@ class VigilanteDePedidosEnLinea internal constructor(
      * Un sondeo de «Por pagar» (con latido sólo si la persona cobra). Devuelve cuánto esperar al siguiente. Nunca suena.
      * R2-1 (Ruling 35): sólo el compás ([delCompas]), con la ventana a la vista ([seVe]), le dice al SERVIDOR que esta caja avisa los pagados
      * en línea: es el que suena y obedece el `pollSeconds`. Minimizada (WINDOWS) sigue leyendo y sonando, pero no ofrece la tarjeta.
+     * Ruling 48: en WINDOWS además una ventana de la caja tiene que ser la ACTIVA ([ventanaActiva]); tapada por otro programa, tampoco.
      */
     private suspend fun sondearFolios(delCompas: Boolean): Long {
         val consultar = consultarPorPagar ?: return INTERVALO_MS
@@ -433,7 +439,7 @@ class VigilanteDePedidosEnLinea internal constructor(
             actualizarAbiertos()
         }
         val resultado = try {
-            consultar(puedeCobrar(), delCompas && seVe())
+            consultar(puedeCobrar(), delCompas && seVe() && ventanaActiva())
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {

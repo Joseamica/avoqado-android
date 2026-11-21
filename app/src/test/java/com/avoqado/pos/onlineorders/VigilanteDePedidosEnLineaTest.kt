@@ -71,6 +71,8 @@ class VigilanteDePedidosEnLineaTest {
         var sonidos = 0
         var venue: String? = "v1"
         var seVe = true
+        /** Ruling 48: una ventana de la caja es la activa (WINDOWS); en ANDROID siempre. */
+        var activa = true
         lateinit var vigilante: VigilanteDePedidosEnLinea
     }
 
@@ -731,7 +733,7 @@ class VigilanteDePedidosEnLineaTest {
             scope = backgroundScope, venueActual = { f.venue },
             consultarPorPagar = folios::leer, puedeCobrar = { true }, foliosGuardados = { folios.guardada },
             leerPedido = comandas::leer, imprimirComanda = comandas::imprimir, puedeImprimirComanda = puedeImprimir,
-            descansarComanda = descansar, seVe = { f.seVe },
+            descansarComanda = descansar, seVe = { f.seVe }, ventanaActiva = { f.activa },
         )
         return f
     }
@@ -1128,6 +1130,43 @@ class VigilanteDePedidosEnLineaTest {
         f.vigilante.onStart(owner); runCurrent()
         assertEquals(listOf("c1"), comandas.leidos)
         assertEquals(listOf("c1"), descansos)
+        f.vigilante.onStop(owner)
+    }
+
+    // MARK: - Ronda 3 · Familia 1 (Ruling 48): quién le dice a la tienda «aquí avisan»
+
+    @Test
+    fun `R3 Family 1 a window that is visible but not active does not announce it can alert`() = runTest {
+        val folios = Folios(Result.success(listaD661(listOf(tarjeta("t1")))))
+        val f = armarD661(folios)
+        f.vigilante.onStart(owner); runCurrent()
+        assertEquals(listOf(true), folios.avisos)
+        // Un navegador maximizado encima de la caja de WINDOWS: sin minimizar, pero ya no es la ventana activa.
+        f.activa = false
+        advanceTimeBy(30_000); runCurrent()
+        assertEquals(listOf(true, false), folios.avisos)
+        // El timbre, la banda y el sondeo no cambian: sólo lo que se anuncia.
+        assertEquals(listOf("t1"), banda(f))
+        assertEquals(listOf(true, true), folios.latidos)
+        // De vuelta a la caja: la siguiente lectura del compás se anuncia otra vez.
+        f.activa = true
+        advanceTimeBy(30_000); runCurrent()
+        assertEquals(listOf(true, false, true), folios.avisos)
+        // Minimizada sigue sin anunciarse (R2-1).
+        f.seVe = false
+        advanceTimeBy(30_000); runCurrent()
+        assertEquals(listOf(true, false, true, false), folios.avisos)
+        f.vigilante.onStop(owner)
+    }
+
+    @Test
+    fun `R3 Family 1 ANDROID never publishes the active window, so a visible tablet keeps announcing`() = runTest {
+        // Nadie publica `VentanaActiva` en ANDROID: el vigilante sin el parámetro la lee y se anuncia como en la ronda 2.
+        assertTrue(com.avoqado.pos.onlineorders.data.VentanaActiva.activa.value)
+        val folios = Folios(Result.success(listaD661(listOf(tarjeta("t1")))))
+        val f = armarConFolios(folios)
+        f.vigilante.onStart(owner); runCurrent()
+        assertEquals(listOf(true), folios.avisos)
         f.vigilante.onStop(owner)
     }
 }
