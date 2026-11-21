@@ -82,10 +82,16 @@ class CobrosEnMaquinaRoomTest {
             assertFalse(dao.abrirIntento(intento("AQ000000000002")))
             assertTrue(dao.abrirIntento(intento("AQ000000000003", llave = "venta-2")))
 
-            assertEquals(1, dao.cerrar("AQ000000000001", EstadoDelIntento.PAGADO, 20_000, 1_250, 99, "crudo"))
-            assertEquals(0, dao.cerrar("AQ000000000001", EstadoDelIntento.PAGADO, 1, 1, 100, "otro"))
+            // Codex código r2, bloque A: el mensaje va al diario de SU folio ANTES de decidir; repetido no cambia nada.
+            assertTrue(dao.anotarMensaje("AQ000000000001", 1, "crudo", 20_000, 18_750))
+            assertFalse(dao.anotarMensaje("AQ000000000001", 2, "crudo", 20_000, 18_750))
+            assertTrue(dao.anotarMensaje("AQ000000000003", 1, "otro", 9_000, 100), "es evidencia de su folio…")
+            assertEquals(0, dao.porReferencia("AQ000000000003")!!.creditCents, "…pero el dinero de otro Due no se le atribuye")
+            assertEquals(1, dao.cerrar("AQ000000000001", EstadoDelIntento.PAGADO, 20_000, 1_250, 99))
+            assertEquals(0, dao.cerrar("AQ000000000001", EstadoDelIntento.PAGADO, 1, 1, 100))
+            assertFalse(dao.anotarMensaje("AQ000000000001", 1, "tarde", null, null), "lo final ya no cambia")
             val pagado = dao.porReferencia("AQ000000000001")!!
-            assertEquals(listOf<Any?>(EstadoDelIntento.PAGADO, 20_000, 1_250, 99L, true, false, "MAQUINA", "crudo"),
+            assertEquals(listOf<Any?>(EstadoDelIntento.PAGADO, 20_000, 1_250, 99L, true, false, "MAQUINA", "g1 crudo"),
                 listOf(pagado.estado, pagado.creditCents, pagado.changeDispensedCents, pagado.cierreEn, pagado.cierreConocido,
                     pagado.subido, pagado.resueltoPor, pagado.mensajesCrudos))
             assertFalse(dao.abrirIntento(intento("AQ000000000004")), "una venta pagada no se vuelve a cobrar")
@@ -93,8 +99,11 @@ class CobrosEnMaquinaRoomTest {
 
             assertEquals(1, dao.marcarSubido("AQ000000000001", null, """{"outcome":"PAGADO","excedenteCents":500}"""))
             assertEquals("""{"outcome":"PAGADO","excedenteCents":500}""", dao.porReferencia("AQ000000000001")!!.respuestaServidor)
-            assertEquals(1, dao.marcarTicketImpreso("AQ000000000001"))
-            assertTrue(dao.porReferencia("AQ000000000001")!!.ticketImpreso)
+            // Codex código r2 H9: el papel se reclama una sola vez (un ganador) y se marca con el resultado real.
+            assertEquals(1, dao.reclamarTicket("AQ000000000001"))
+            assertEquals(0, dao.reclamarTicket("AQ000000000001"), "el segundo no gana")
+            assertEquals(1, dao.terminarTicket("AQ000000000001", 1))
+            assertEquals(1, dao.porReferencia("AQ000000000001")!!.ticketImpreso)
         } finally {
             base.close()
             carpeta.toFile().deleteRecursively()

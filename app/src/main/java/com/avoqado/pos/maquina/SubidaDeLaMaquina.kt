@@ -156,18 +156,7 @@ class SubidaDeLaMaquina @Inject constructor(
             }
             if (!aplicar(fila, leerAcuse(r), esDuda, porPost = true)) return@withContext true
         }
-        // Codex código r1 #6: el cierre tardío de una duda que el SERVIDOR ya tiene sube como cierre (después de la duda: ella congela
-        // el carrito). La fila sigue en duda hasta su TERMINADO.
-        for (fila in dao.tardiosParaSubir(venueId)) {
-            val cuerpo = runCatching { cuerpoDelCierre(fila) }.getOrNull() ?: continue
-            val r = try {
-                api.subirCierre(venueId, credencial, cuerpo)
-            } catch (e: IOException) {
-                return@withContext true
-            }
-            if (!aplicar(fila, leerAcuse(r), esDuda = false, porPost = true)) return@withContext true
-        }
-        for (fila in esperan) {
+        for (fila in esperan.filter(::consultable)) {
             // Rediseño del SERVIDOR (r6-1): una duda ABIERTA puede tener ya su desenlace sin terminar, y sólo REENVIARLA lo reanuda (y sube
             // lo nuevo que vio la PC, que el SERVIDOR agrega). La que quedó en conflicto ya tiene su incidencia: reenviarla daría el mismo 409,
             // así que sólo se consulta por su folio (Codex código r1 #9).
@@ -186,7 +175,13 @@ class SubidaDeLaMaquina @Inject constructor(
     }
 
     private suspend fun hayTrabajo(venueId: String) =
-        dao.paraSubir(venueId).isNotEmpty() || dao.tardiosParaSubir(venueId).isNotEmpty() || dao.esperanAlGerente(venueId).isNotEmpty()
+        dao.paraSubir(venueId).isNotEmpty() || dao.esperanAlGerente(venueId).any(::consultable)
+
+    /**
+     * Codex código r2 H8: una duda cuyo folio el SERVIDOR atribuye a OTRA PC ya no se consulta (su decisión nunca le llega a ésta). Sí
+     * vuelve a subir cuando su diario trae algo nuevo (su propio cierre físico): el SERVIDOR lo agrega a la incidencia.
+     */
+    private fun consultable(fila: CobroEnMaquinaEntity) = !(fila.conflicto != null && motivoDelConflicto(fila.respuestaServidor) == OTRA_PC)
 
     /**
      * Aplica el acuse (leído en UN solo lugar: [leerAcuse]). false = la pasada se corta (sesión vencida, sin emparejar o sin permiso: lo
@@ -205,17 +200,20 @@ class SubidaDeLaMaquina @Inject constructor(
             is Acuse.Rechazo -> dao.anotarConflicto(fila.referenceCC, acuse.texto)
             // Con su incidencia DURABLE en el SERVIDOR (409/422) ya no es de la PC: queda visible y deja de frenar cerrar sesión.
             is Acuse.ConIncidencia -> when {
-                // Codex código r1 #9: la duda en conflicto no frena y se sigue consultando por su folio.
+                // Codex código r1 #9: la duda en conflicto no frena (se consulta por su folio salvo que sea de otra PC, H8).
                 esDuda -> {
                     if (porPost) acuse.deviceIdDeEstaPc?.let(prefs::recordarDispositivo)
-                    dao.marcarDudaEnConflicto(fila.referenceCC, acuse.texto, acuse.cuerpo)
+                    dao.marcarDudaEnConflicto(fila.referenceCC, acuse.texto, acuse.cuerpo, fila.mensajesCrudos, fila.creditCents)
                 }
-                fila.estado == EstadoDelIntento.ESPERANDO -> dao.marcarTardioSubido(fila.referenceCC, acuse.texto, acuse.cuerpo)
+                // Codex código r2 H8: el folio es de OTRA PC: lo de esta PC nunca queda como subido; su incidencia sí se ve.
+                acuse.motivo == OTRA_PC && acuse.duenoDelFolio.let { it == null || it != prefs.dispositivo } ->
+                    dao.marcarDeOtraPc(fila.referenceCC, acuse.texto, acuse.cuerpo)
                 else -> dao.marcarSubido(fila.referenceCC, acuse.texto, acuse.cuerpo)
             }
-            // La duda ABIERTA: el SERVIDOR ya la tiene; su `version` es la que mandará el gerente al resolverla (r6-4).
+            // La duda ABIERTA: el SERVIDOR ya la tiene; su `version` es la que mandará el gerente al resolverla (r6-4). Codex código r2
+            // H1: el acuse es de la evidencia que se mandó; si llegó otra mientras tanto, sigue por subir.
             is Acuse.Recibido -> if (esDuda && esDeEstaPc(acuse.deviceId, porPost)) {
-                dao.marcarDudaAbierta(fila.referenceCC, acuse.json.centavos("version"))
+                dao.marcarDudaAbierta(fila.referenceCC, acuse.json.centavos("version"), fila.mensajesCrudos, fila.creditCents)
             }
             is Acuse.Terminado -> when {
                 !esDeEstaPc(acuse.deviceId, porPost) -> Unit   // el folio es de otra PC (o el acuse no dice de quién): no se retira nada
@@ -240,19 +238,9 @@ class SubidaDeLaMaquina @Inject constructor(
 
     private suspend fun aplicarCierre(fila: CobroEnMaquinaEntity, acuse: Acuse.Terminado) {
         val json = acuse.json
-        val tardio = fila.estado == EstadoDelIntento.ESPERANDO
-        when {
-            !repite(fila, json, desenlaceQueSube(fila), conLoQueEntro = true) -> dao.anotarConflicto(fila.referenceCC, TEXTO_RESPUESTA_DISTINTA)
-            // El cierre tardío terminó el folio en el SERVIDOR: la duda queda resuelta con lo que él dice.
-            tardio -> dao.resolver(fila.referenceCC, json.optString("resolvedBy").ifBlank { "MAQUINA" }, fila.creditCents,
-                fila.changeDispensedCents, acuse.incidencia, acuse.cuerpo, json.optString("outcome"), json.centavos("owedCents"))
-            else -> dao.marcarSubido(fila.referenceCC, acuse.incidencia, acuse.cuerpo, json.centavos("owedCents"))
-        }
+        if (!repite(fila, json, fila.estado, conLoQueEntro = true)) dao.anotarConflicto(fila.referenceCC, TEXTO_RESPUESTA_DISTINTA)
+        else dao.marcarSubido(fila.referenceCC, acuse.incidencia, acuse.cuerpo, json.centavos("owedCents"))
     }
-
-    /** El desenlace que sube esta fila: el suyo, o el de su cierre tardío (Codex código r1 #6). */
-    private fun desenlaceQueSube(fila: CobroEnMaquinaEntity): String =
-        if (fila.estado == EstadoDelIntento.ESPERANDO) fila.cierreTardio.orEmpty() else fila.estado
 
     /** R5#7: el mismo folio, desenlace e importes. De una duda, lo que entró y el cambio los decide el gerente. */
     private fun repite(fila: CobroEnMaquinaEntity, json: JSONObject, outcome: String, conLoQueEntro: Boolean): Boolean =
@@ -263,7 +251,7 @@ class SubidaDeLaMaquina @Inject constructor(
                 json.centavos("changeDispensedCents") == fila.changeDispensedCents))
 
     private fun cuerpoDelCierre(fila: CobroEnMaquinaEntity): JSONObject {
-        val outcome = desenlaceQueSube(fila)
+        val outcome = fila.estado
         val cierre = JSONObject()
             .put("outcome", outcome)
             .put("dueCents", fila.dueCents).put("saleCents", fila.saleCents).put("tipCents", fila.tipCents)
@@ -275,8 +263,13 @@ class SubidaDeLaMaquina @Inject constructor(
         val cuerpo = JSONObject().put("referenceCC", fila.referenceCC).put("cierre", cierre)
         // r6-6: el emparejamiento con que ESTA PC empezó el cobro.
         cuerpo.put("bindingId", fila.bindingId ?: JSONObject.NULL)
+        // Codex código r2 H15: el carrito viaja SIEMPRE: el primer mensaje del folio lo congela en el SERVIDOR (D2), también un
+        // CANCELADO o un GUARDADO (el gerente ve qué partidas y qué cliente tenía el dinero). El de un PAGADO tiene que leerse.
         if (outcome == EstadoDelIntento.PAGADO) cuerpo.put("pedido", JSONObject(fila.pedidoJson))
-        else cierre.put("cancelMode", fila.cancelPedido ?: JSONObject.NULL)
+        else {
+            runCatching { JSONObject(fila.pedidoJson) }.getOrNull()?.let { cuerpo.put("pedido", it) }
+            cierre.put("cancelMode", fila.cancelPedido ?: JSONObject.NULL)
+        }
         return cuerpo
     }
 
@@ -290,12 +283,11 @@ class SubidaDeLaMaquina @Inject constructor(
         .put("bindingId", fila.bindingId ?: JSONObject.NULL)
 
     /**
-     * Codex código r1 #6: lo ÚLTIMO que quedó en disco de este folio (lo que entró, cuándo, y los mensajes de la máquina tal cual). Una
-     * observación nueva del mismo folio cambia este texto y el SERVIDOR la agrega a la duda; una retransmisión idéntica no.
+     * Codex código r1 #6 y r2 H13: lo ÚLTIMO que quedó en disco de este folio: lo que entró y su diario, sin horas de la PC. Una
+     * observación nueva del mismo folio cambia este texto y el SERVIDOR la agrega a la duda; un mensaje físico repetido no (el diario no
+     * lo vuelve a anotar), así que tampoco sube la versión que revisa el gerente.
      */
-    private fun loUltimoQueVio(fila: CobroEnMaquinaEntity): String =
-        "Entró ${com.avoqado.pos.core.util.formatMoneyFromCents(fila.creditCents)}" +
-            (fila.ultimoCreditoEn?.let { " (${iso(it)})" } ?: "") + "\n" + fila.mensajesCrudos
+    private fun loUltimoQueVio(fila: CobroEnMaquinaEntity): String = textoDeLoQueVio(fila)
 
     private fun iso(ms: Long) = Instant.ofEpochMilli(ms).toString()
 
@@ -307,6 +299,12 @@ class SubidaDeLaMaquina @Inject constructor(
 }
 
 private val DESENLACES = setOf("PAGADO", "CANCELADO", "GUARDADO")
+
+/** Codex código r2 H8: el `motivo` del 409 de conflicto guardado en la fila. */
+private const val OTRA_PC = "OTRA_PC"
+
+private fun motivoDelConflicto(respuesta: String?): String? =
+    respuesta?.let { runCatching { JSONObject(it).optJSONObject("details")?.optString("motivo") }.getOrNull() }
 
 private fun JSONObject.centavos(campo: String): Int? = (opt(campo) as? Number)?.toInt()
 
@@ -322,8 +320,15 @@ sealed interface Acuse {
     /**
      * 409/422 con su incidencia durable en el SERVIDOR. [deviceIdDeEstaPc]: en un conflicto `OTRA_EVIDENCIA` el dueño del folio es quien
      * lo mandó (con `OTRA_PC` sería otro), así que su `deviceId` es el de esta PC (para reconocer después el acuse de su consulta).
+     * Codex código r2 H8: [motivo] (`OTRA_PC`, `OTRA_EVIDENCIA`…) y [duenoDelFolio], el `deviceId` que el SERVIDOR dice dueño.
      */
-    data class ConIncidencia(val texto: String, val cuerpo: String, val deviceIdDeEstaPc: String? = null) : Acuse
+    data class ConIncidencia(
+        val texto: String,
+        val cuerpo: String,
+        val deviceIdDeEstaPc: String? = null,
+        val motivo: String? = null,
+        val duenoDelFolio: String? = null,
+    ) : Acuse
     /** r6-4: el gerente vio otra versión de la evidencia (409 `CASH_MACHINE_DOUBT_CHANGED`). */
     data class OtraVersion(val version: Int?) : Acuse
     /** Un rechazo sin incidencia (un 400): sólo está en esta PC. */
@@ -352,9 +357,11 @@ fun leerAcuse(r: RespuestaDelServidor): Acuse {
             Acuse.OtraVersion(json?.optJSONObject("details")?.let { d -> (d.opt("version") as? Number)?.toInt() })
         r.codigo in 400..499 -> {
             val texto = ServerErrorText.fromResponseBody(r.cuerpo, "El servidor rechazó este cobro (${r.codigo})")
-            val delDueno = json?.optJSONObject("details")?.takeIf { it.optString("motivo") == "OTRA_EVIDENCIA" }
-                ?.optString("deviceId")?.takeIf { it.isNotBlank() && it != "null" }
-            if (incidenciaDe(r.cuerpo) != null) Acuse.ConIncidencia(texto, r.cuerpo, delDueno) else Acuse.Rechazo(texto)
+            val detalles = json?.optJSONObject("details")
+            val motivo = detalles?.optString("motivo")?.takeIf { it.isNotBlank() && it != "null" }
+            val dueno = detalles?.takeIf { !it.isNull("deviceId") }?.optString("deviceId")?.takeIf { it.isNotBlank() }
+            val delDueno = dueno.takeIf { motivo == "OTRA_EVIDENCIA" }
+            if (incidenciaDe(r.cuerpo) != null) Acuse.ConIncidencia(texto, r.cuerpo, delDueno, motivo, dueno) else Acuse.Rechazo(texto)
         }
         (r.codigo == 200 || r.codigo == 202) && json != null -> {
             val deviceId = json.optString("deviceId").takeIf { !json.isNull("deviceId") && it.isNotBlank() }
@@ -382,6 +389,10 @@ private fun incidenciaDe(cuerpo: String): String? = runCatching {
         o?.optString("incidentId")?.takeIf { it.isNotBlank() && it != "null" }
     }
 }.getOrNull()
+
+/** Lo que la PC vio de un folio en duda (lo que sube y lo que lee el gerente): lo que entró y el diario. */
+fun textoDeLoQueVio(fila: CobroEnMaquinaEntity): String =
+    "Entró ${com.avoqado.pos.core.util.formatMoneyFromCents(fila.creditCents)}\n" + fila.mensajesCrudos
 
 /** Codex código r1 #11: el folio quedó como incidencia (el dinero sin venta): su texto, o null si es venta o cierre. */
 fun incidenciaDelEco(json: JSONObject): String? =

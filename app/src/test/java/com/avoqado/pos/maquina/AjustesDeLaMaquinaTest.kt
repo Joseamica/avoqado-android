@@ -113,15 +113,21 @@ class AjustesDeLaMaquinaTest {
             dao.insertar(fila("AQ000000000002", EstadoDelIntento.CANCELADO, subido = true))
             dao.insertar(fila("AQ000000000003", EstadoDelIntento.GUARDADO, subido = true))
             dao.insertar(fila("AQ000000000004", EstadoDelIntento.RESUELTO))
-            // Codex código r1 #9: lo que el SERVIDOR ya guardó como incidencia (la duda subida, en conflicto o no) ya no frena.
+            // Codex código r2 H8: el cierre cuyo folio es de OTRA PC tiene su incidencia en el SERVIDOR: no frena (ni la sesión ni la máquina).
+            dao.insertar(fila("AQ000000000007", EstadoDelIntento.PAGADO).copy(conflicto = "otra PC", respuestaServidor = "{}"))
+            assertEquals(0, dao.pendientes(null))
+            assertFalse(dao.hayPendientesDeLaMaquina())
+            // Codex código r1 #9: lo que el SERVIDOR ya guardó como incidencia (la duda subida, en conflicto o no) ya no frena la SESIÓN…
             dao.insertar(fila("AQ000000000005", EstadoDelIntento.ESPERANDO, dudaSubida = true))
             dao.insertar(fila("AQ000000000006", EstadoDelIntento.ESPERANDO, dudaSubida = true).copy(conflicto = "otra PC", respuestaServidor = "{}"))
             assertEquals(0, dao.pendientes(null))
-            assertFalse(dao.hayPendientesDeLaMaquina())
+            // …pero Codex código r2 H1: mientras el dinero de una venta siga en duda, la PC conserva su máquina (no se desempareja).
+            assertTrue(dao.hayPendientesDeLaMaquina())
+            assertEquals(2, dao.frenanLaMaquina())
 
             val frenan = listOf(
                 fila("AQ00000000000A", EstadoDelIntento.EN_CURSO),
-                fila("AQ00000000000B", EstadoDelIntento.ESPERANDO, dudaSubida = true).copy(cierreTardio = "PAGADO"),   // su cierre no ha subido
+                fila("AQ00000000000B", EstadoDelIntento.ESPERANDO).copy(conflicto = "400 sin incidencia"),   // el SERVIDOR no la tiene
                 fila("AQ00000000000C", EstadoDelIntento.ESPERANDO),
                 fila("AQ00000000000D", EstadoDelIntento.PAGADO),
                 fila("AQ00000000000E", EstadoDelIntento.CANCELADO),

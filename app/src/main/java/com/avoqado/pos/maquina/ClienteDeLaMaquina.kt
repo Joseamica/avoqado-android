@@ -41,9 +41,9 @@ interface CanalDeLaMaquina {
     fun enviar(json: String, generacion: Int): Boolean
 
     /**
-     * R4-6 (Codex código r1 #3): manda [json] (un `cancel`, que no lleva folio) sólo si, ATÓMICAMENTE con lo que llega, la conexión
-     * abierta es la de [generacion] y el ÚLTIMO `status` que llegó por ella es de [referenceCC] y [dueCents] y sigue cobrando. Un
-     * `status` de otra operación (o el cierre del nuestro) que llegó mientras la PC guardaba el modo ya no deja salir nada.
+     * R4-6 (Codex código r1 #3, r2 H14): manda [json] (un `cancel`, que no lleva folio) sólo si, ATÓMICAMENTE con lo que llega, la
+     * conexión abierta es la de [generacion] y [UltimaSenal.esNuestra]: el ÚLTIMO `status` es de [referenceCC] y [dueCents] y sigue
+     * cobrando, y después no llegó una señal de otra operación. Lo que llegó mientras la PC guardaba el modo ya no deja salir nada.
      */
     fun enviarSiSigueSiendoNuestro(json: String, generacion: Int, referenceCC: String, dueCents: Int): Boolean
 
@@ -51,6 +51,32 @@ interface CanalDeLaMaquina {
     fun conectar(ip: String) {}
 
     fun desconectar() {}
+}
+
+/**
+ * R4-6 y Codex código r2 H14: lo último que dijo la máquina, para decidir si un `cancel` sin folio todavía le toca a NUESTRA operación.
+ * Sí sólo si el último `status` es de nuestro folio y `Due`, sigue cobrando y llegó por la conexión de la propiedad, y si DESPUÉS no
+ * llegó una señal de otra operación: un `updateCredit` o un `sockets` cobrando con otro `Due`. Esa señal sólo la borra un `status`
+ * nuevo. La usan el cliente real y los canales de prueba (una sola regla). No es hilo-segura: quien la usa pone el candado.
+ */
+internal class UltimaSenal {
+    private var status: Recibido? = null
+    private var ajenaDespues = false
+
+    fun anotar(r: Recibido) {
+        val due = (status?.mensaje as? MensajeDeLaMaquina.Status)?.dueCents
+        when (val m = r.mensaje) {
+            is MensajeDeLaMaquina.Status -> { status = r; ajenaDespues = false }
+            is MensajeDeLaMaquina.UpdateCredit -> if (m.dueCents != null && m.dueCents != due) ajenaDespues = true
+            is MensajeDeLaMaquina.Sockets -> if (m.cobrando && m.dueCents != due) ajenaDespues = true
+            else -> Unit
+        }
+    }
+
+    fun esNuestra(generacion: Int, referenceCC: String, dueCents: Int): Boolean {
+        val m = status?.mensaje as? MensajeDeLaMaquina.Status ?: return false
+        return !ajenaDespues && status?.generacion == generacion && m.cobrando && m.referenceCC == referenceCC && m.dueCents == dueCents
+    }
 }
 
 /**
@@ -86,7 +112,7 @@ class ClienteDeLaMaquina(
     private var intento: WebSocket? = null          // la conexión vigente, abierta o abriéndose
     private var socketAbierto: WebSocket? = null    // la vigente ya abierta…
     private var generacionAbierta = 0               // …y su generación
-    private var ultimoStatus: Recibido? = null      // el último `status` que llegó (de cualquier generación)
+    private val ultimaSenal = UltimaSenal()         // lo último que dijo la máquina, de cualquier generación
 
     override fun conectar(ip: String) = conectar(ip, PUERTO)
 
@@ -116,12 +142,7 @@ class ClienteDeLaMaquina(
     }
 
     override fun enviarSiSigueSiendoNuestro(json: String, generacion: Int, referenceCC: String, dueCents: Int): Boolean =
-        synchronized(candado) {
-            val ultimo = ultimoStatus
-            val m = ultimo?.mensaje as? MensajeDeLaMaquina.Status
-            ultimo?.generacion == generacion && m != null && m.cobrando && m.referenceCC == referenceCC && m.dueCents == dueCents &&
-                enviar(json, generacion)
-        }
+        synchronized(candado) { ultimaSenal.esNuestra(generacion, referenceCC, dueCents) && enviar(json, generacion) }
 
     private suspend fun mantener(url: HttpUrl) {
         while (true) {
@@ -184,8 +205,8 @@ class ClienteDeLaMaquina(
         override fun onMessage(webSocket: WebSocket, text: String) {
             oyo.set(true)
             val r = leerMensaje(text)?.let { Recibido(generacion, it, text) } ?: return
-            // Con el candado y ANTES de avisar: `enviarSiSigueSiendoNuestro` ve este `status` aunque nadie lo haya procesado.
-            if (r.mensaje is MensajeDeLaMaquina.Status) synchronized(candado) { ultimoStatus = r }
+            // Con el candado y ANTES de avisar: `enviarSiSigueSiendoNuestro` ve este mensaje aunque nadie lo haya procesado.
+            synchronized(candado) { ultimaSenal.anotar(r) }
             _recibidos.tryEmit(r)
         }
 

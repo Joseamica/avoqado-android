@@ -18,8 +18,11 @@ sealed interface MensajeDeLaMaquina {
     data class Sockets(val cobrando: Boolean, val dueCents: Int, val creditCents: Int, val changeBar: String?) :
         MensajeDeLaMaquina
 
-    /** Lo recibido hasta ahora. No trae referencia: es informativo y nunca cierra un cobro (regla 7). */
-    data class UpdateCredit(val creditCents: Int) : MensajeDeLaMaquina
+    /**
+     * Lo recibido hasta ahora. No trae referencia: es informativo y nunca cierra un cobro (regla 7). Codex código r2 H14: trae el `Due`
+     * de la operación en curso; con otro `Due` es de OTRA operación (null = no vino o no se lee).
+     */
+    data class UpdateCredit(val creditCents: Int, val dueCents: Int? = null) : MensajeDeLaMaquina
 
     /** El único mensaje que puede cerrar un cobro (ver [cierre]). [estado] es el campo `Status`. */
     data class Status(
@@ -51,7 +54,7 @@ fun leerMensaje(json: String): MensajeDeLaMaquina? {
             creditCents = centavos(o.opt("Credit")) ?: return null,
             changeBar = o.opt("changeBar") as? String,
         )
-        "updateCredit" -> MensajeDeLaMaquina.UpdateCredit(centavos(o.opt("Credit")) ?: return null)
+        "updateCredit" -> MensajeDeLaMaquina.UpdateCredit(centavos(o.opt("Credit")) ?: return null, centavos(o.opt("Due")))
         "status" -> MensajeDeLaMaquina.Status(
             cobrando = o.opt("cobrando") as? Boolean ?: return null,
             estado = o.opt("Status") as? String,

@@ -28,7 +28,10 @@ data class VentaParaLaMaquina(
     val quoteId: String? = null,
     /** Codex código r1 #14: los renglones congelados (los de la cotización, o los del carrito sin red): el ticket sale de aquí. */
     val renglonesJson: String? = null,
-    /** Codex código r1 #14: hasta cuándo vale la cotización para EMPEZAR el cobro (reloj de la PC). null = sin cotización. */
+    /**
+     * Codex código r1 #14 y r2 H11: hasta cuándo vale la cotización para EMPEZAR el cobro, en el reloj MONÓTONO de la PC (nunca la
+     * hora de Windows, que alguien puede mover). null = sin cotización.
+     */
     val vigenteHasta: Long? = null,
     /** Rediseño del SERVIDOR (r6-6): el emparejamiento vigente al empezar; queda congelado en el intento. */
     val bindingId: String? = null,
@@ -111,16 +114,67 @@ internal fun desenlaceDelCierre(cierre: Cierre, cancelPedido: String?, dueCents:
     }
 }
 
+/** La fase de un intento vivo de ESTA PC (lo que el intento en memoria sabe y el disco no). */
+internal enum class FaseDelIntento { INICIANDO, COBRANDO, SIGUES_AHI, CANCELANDO, RECONECTANDO, CERRADO, ESPERANDO }
+
+/** Lo que un mensaje de la máquina le hace al intento vivo ([decidir]). La evidencia ya está en el diario de su folio. */
+internal enum class Paso {
+    /** No decide nada (otra conexión, `pong`, una máquina libre, o el intento ya no está vivo): sólo queda en el diario. */
+    NADA,
+    /** De otra operación (otro folio, otro `Due`) o un cierre sin la propiedad: la nuestra ya no se sabe → «Esperando». */
+    DUDA,
+    /** El acuse: nuestro folio y `Due`, cobrando, en la conexión donde salió el `paycash`. */
+    GANAR,
+    /** El cierre de nuestro folio y `Due` en la conexión de la propiedad. */
+    CERRAR,
+    /** Nuestro folio sigue vivo (o entró dinero de nuestro `Due`): se enseña y reinicia los plazos; nunca adopta ni cierra. */
+    NOTICIA,
+}
+
+/**
+ * Codex código r2, bloque A: LA regla de qué hace un mensaje con el intento vivo, pura (la prueba la matriz de `CobroConMaquinaTest`).
+ * - Sólo decide un mensaje de la conexión vigilada ([vigilada]) mientras el intento está vivo. Lo demás es evidencia.
+ * - Otra operación —un `status` de otro folio o `Due`, un `updateCredit` o un `sockets` cobrando con otro `Due`— deja la duda (H14).
+ * - Un cierre sólo es nuestro en la conexión de la propiedad ([propia]); sin ella, es duda (H2: nunca un desenlace).
+ */
+internal fun decidir(
+    m: MensajeDeLaMaquina,
+    generacion: Int,
+    referenceCC: String,
+    dueCents: Int,
+    fase: FaseDelIntento?,
+    vigilada: Int?,
+    propia: Int?,
+): Paso {
+    if (fase == null || fase == FaseDelIntento.CERRADO || fase == FaseDelIntento.ESPERANDO || generacion != vigilada) return Paso.NADA
+    return when (m) {
+        is MensajeDeLaMaquina.Pong, is MensajeDeLaMaquina.Otro -> Paso.NADA
+        is MensajeDeLaMaquina.Sockets -> if (m.cobrando && m.dueCents != dueCents) Paso.DUDA else Paso.NADA
+        is MensajeDeLaMaquina.UpdateCredit -> if (m.dueCents != null && m.dueCents != dueCents) Paso.DUDA else Paso.NOTICIA
+        is MensajeDeLaMaquina.Status -> when {
+            m.referenceCC != referenceCC || m.dueCents != dueCents -> Paso.DUDA
+            m.cierre() != null -> if (propia == generacion) Paso.CERRAR else Paso.DUDA
+            fase == FaseDelIntento.INICIANDO -> Paso.GANAR
+            else -> Paso.NOTICIA
+        }
+    }
+}
+
 /**
  * El cobro de una venta en la QuickPay (fase 1a, C3). Cada paso se guarda en `cobros_en_maquina` ANTES de tocar la red, y
  * todo (mensajes, cambios de conexión, relojes y botones) corre bajo un solo candado, en orden.
  *
+ * - **El diario (Codex código r2, bloque A):** cada mensaje se anota PRIMERO en el diario de SU folio ([CobroEnMaquinaDao.anotarMensaje]):
+ *   un `status` por su `referenceCC`, un `updateCredit` sólo si es del `Due` del intento vivo. Así un intento nuevo nunca se queda con
+ *   los mensajes de uno viejo (H4), y lo que llega de una duda es evidencia de ESA fila, también tras reiniciar.
  * - **Propiedad:** se gana sólo con un `status` de nuestro folio y `Due` en la conexión donde salió el `paycash`
  *   ([CobroEnMaquinaEntity.generacionPropia]). Se pierde al caerse esa conexión o al ver otra operación, y no regresa.
- *   Sin ella no corre el abandono, no sale ningún `cancel` y `updateCredit` sólo se muestra.
+ *   Sin ella no corre el abandono, no sale ningún `cancel` y el dinero sólo se enseña. Lo decide [decidir].
  * - **Lo que nunca decide:** `sockets`, `updateCredit`, `pong`, el silencio, una máquina libre y los mensajes de otra
  *   conexión. Un `status` de otra operación (otro folio, `DOTACION`, otro `Due`) deja el intento en duda.
- * - **La duda (`ESPERANDO`)** no la resuelve la PC: lo que la máquina diga después de ese folio se guarda como evidencia.
+ * - **La duda (`ESPERANDO`)** no la resuelve la PC: lo que la máquina diga después de ese folio, cierre incluido, es evidencia (H2).
+ * - **Sin noticias (H3):** un intento vivo sin la propiedad que pasa 30 s sin un mensaje de su folio (reloj monótono, contado desde
+ *   el ÚLTIMO) queda «Esperando», aunque el enlace vaya y venga.
  */
 class CobroConMaquina(
     private val cliente: CanalDeLaMaquina,
@@ -132,27 +186,25 @@ class CobroConMaquina(
     private val alTerminar: () -> Unit = {},
     /** Codex código r1 #15: la zona en que la máquina escribe su `fecha` (la del negocio). */
     private val zona: () -> ZoneId = { ZoneId.systemDefault() },
+    /** Codex código r2 H3 y H11: el reloj monótono (ms) de los plazos; la hora de Windows puede moverse. */
+    private val monotonico: () -> Long = { System.nanoTime() / 1_000_000 },
 ) {
     private val _estado = MutableStateFlow<EstadoDelCobro>(EstadoDelCobro.Libre)
     val estado: StateFlow<EstadoDelCobro> = _estado.asStateFlow()
 
-    private enum class Fase { INICIANDO, COBRANDO, SIGUES_AHI, CANCELANDO, RECONECTANDO, CERRADO, ESPERANDO }
-
-    private class Intento(val ref: String, val due: Int) {
-        var fase = Fase.INICIANDO
+    private class Intento(val ref: String, val due: Int, var ultimaNoticia: Long) {
+        var fase = FaseDelIntento.INICIANDO
         /** La conexión cuyos mensajes cuentan; null mientras se reconecta. */
         var vigilada: Int? = null
-        /** La conexión donde se ganó la propiedad; [propio] sólo mientras sigue siendo [vigilada]. */
+        /** La conexión donde se ganó la propiedad. */
         var generacionPropia: Int? = null
-        var propio = false
         var credit = 0
         var change = 0
         var cancelPedido: String? = null
         var desenlace: Desenlace? = null
-        /** Codex código r1 #4: desde cuándo no hay enlace con la máquina (null = hay, o ya se oyó nuestro folio en la nueva). */
-        var sinEnlaceDesde: Long? = null
-        val crudos = ArrayDeque<String>()
-        val vivo get() = fase != Fase.CERRADO && fase != Fase.ESPERANDO
+        val vivo get() = fase != FaseDelIntento.CERRADO && fase != FaseDelIntento.ESPERANDO
+        /** El cobro es nuestro sólo en la conexión de la propiedad y mientras sigue vivo. */
+        val propio get() = vivo && generacionPropia != null && generacionPropia == vigilada
     }
 
     // Todo lo de abajo cambia sólo con el candado.
@@ -160,8 +212,6 @@ class CobroConMaquina(
     private var activo: Intento? = null
     private var temporizador: Job? = null
     private var turno = 0L
-    /** El reloj armado es el de «sin enlace» (#4): no se vuelve a armar en cada revisión, o nunca dispararía. */
-    private var relojSinEnlace = false
 
     init {
         // UNDISPATCHED: la suscripción queda hecha al construir (`recibidos` no repite lo pasado).
@@ -180,8 +230,7 @@ class CobroConMaquina(
         val due = venta.saleCents + venta.tipCents
         if (venta.saleCents < 0 || venta.tipCents < 0 || !cobrableEnMaquina(due)) return@withLock ResultadoDeInicio.NoCobrable
         val ahora = reloj()
-        // Codex código r1 #14: justo antes del `paycash` (con el candado): una cotización vencida no empieza el cobro.
-        if (venta.vigenteHasta != null && ahora > venta.vigenteHasta) return@withLock ResultadoDeInicio.CotizacionVencida
+        if (venta.vencida()) return@withLock ResultadoDeInicio.CotizacionVencida
         val ref = nuevaReferencia(ahora, aleatorio)
         val fila = CobroEnMaquinaEntity(
             referenceCC = ref, venueId = venta.venueId, llaveDeVenta = venta.llaveDeVenta, pedidoJson = venta.pedidoJson,
@@ -190,23 +239,30 @@ class CobroConMaquina(
             bindingId = venta.bindingId,
         )
         if (!dao.abrirIntento(fila)) return@withLock ResultadoDeInicio.VentaConIntento
+        // Codex código r2 H11: la vigencia se vuelve a ver DESPUÉS de escribir en disco, justo antes del `paycash`.
+        if (venta.vencida()) {
+            dao.borrarSinEnviar(ref)
+            return@withLock ResultadoDeInicio.CotizacionVencida
+        }
         val generacion = cliente.generacion.value
         if (!cliente.enviar(pedirCobro(due, ref, fecha(ahora)), generacion)) {
             dao.borrarSinEnviar(ref)   // no salió nada: no hay evidencia que guardar
             return@withLock ResultadoDeInicio.SinConexion
         }
-        activo = Intento(ref, due).also { it.vigilada = generacion }
+        activo = Intento(ref, due, monotonico()).also { it.vigilada = generacion }
         publicar()
         armar(ESPERA_DEL_STATUS_MS, ::aEsperando)   // acuse perdido: nunca se libera por ver la máquina libre (R2#1)
         ResultadoDeInicio.Iniciado(ref)
     }
+
+    private fun VentaParaLaMaquina.vencida() = vigenteHasta != null && monotonico() > vigenteHasta
 
     /** «Cancelar y devolverme mi dinero»: `cancel "1"`, sólo con la propiedad. */
     fun cancelarPorElCliente() {
         scope.launch {
             candado.withLock {
                 val a = activo ?: return@withLock
-                if (a.propio && (a.fase == Fase.COBRANDO || a.fase == Fase.SIGUES_AHI)) mandarCancel(a, CANCEL_DEVOLVER)
+                if (a.propio && (a.fase == FaseDelIntento.COBRANDO || a.fase == FaseDelIntento.SIGUES_AHI)) mandarCancel(a, CANCEL_DEVOLVER)
             }
         }
     }
@@ -216,8 +272,8 @@ class CobroConMaquina(
         scope.launch {
             candado.withLock {
                 val a = activo ?: return@withLock
-                if (a.fase == Fase.SIGUES_AHI && a.propio) {
-                    a.fase = Fase.COBRANDO
+                if (a.fase == FaseDelIntento.SIGUES_AHI && a.propio) {
+                    a.fase = FaseDelIntento.COBRANDO
                     publicar()
                     armar(ABANDONO_MS, ::preguntarSiSigue)
                 }
@@ -239,67 +295,59 @@ class CobroConMaquina(
 
     private suspend fun alRecibir(r: Recibido) {
         revisarConexion()
-        val a = activo ?: return
         val m = r.mensaje
-        if (a.fase == Fase.ESPERANDO) {
-            if (m is MensajeDeLaMaquina.Status && m.referenceCC == a.ref) {
-                anotar(a, r)
-                // Codex código r1 #6: el cierre de NUESTRO folio y `Due` por la conexión de la propiedad llegó tarde: sube como cierre
-                // (decide el SERVIDOR; la fila sigue en duda). Cualquier otro mensaje del folio es una observación nueva de la duda.
-                val tardio = m.cierre()?.takeIf { m.dueCents == a.due && a.generacionPropia != null && r.generacion == a.generacionPropia }
-                    ?.let { desenlaceDelCierre(it, a.cancelPedido, a.due, m.creditCents, m.changeDispensedCents) }
-                if (tardio != null) {
-                    val hora = horaDeLaMaquina(m.fecha, zona())
-                    dao.anotarCierreTardio(a.ref, tardio.name, m.creditCents, m.changeDispensedCents, hora ?: reloj(), hora != null, crudos(a))
-                } else {
-                    dao.anotarEvidencia(a.ref, crudos(a))
-                }
-                alTerminar()
+        val a = activo?.takeIf { it.vivo }
+        val paso = a?.let { decidir(m, r.generacion, it.ref, it.due, it.fase, it.vigilada, it.generacionPropia) } ?: Paso.NADA
+        // 1. Al diario de SU folio, en disco, antes de decidir (bloque A). Un `updateCredit` no trae folio: es del intento vivo sólo si
+        //    [decidir] lo reconoce como suyo (su `Due`, su conexión).
+        when {
+            m is MensajeDeLaMaquina.Status && m.referenceCC != null -> {
+                val nueva = dao.anotarMensaje(m.referenceCC, r.generacion, r.crudo, m.creditCents, m.dueCents)
+                if (nueva && m.referenceCC != a?.ref) alTerminar()   // una duda con evidencia nueva vuelve a subir
             }
-            return
+            m is MensajeDeLaMaquina.UpdateCredit && a != null && paso == Paso.NOTICIA ->
+                dao.anotarMensaje(a.ref, r.generacion, r.crudo, m.creditCents, a.due)
         }
-        if (a.fase == Fase.CERRADO || r.generacion != a.vigilada) return   // un cierre repetido o un mensaje de otra conexión
-        if (m is MensajeDeLaMaquina.Pong || m is MensajeDeLaMaquina.Otro) return
-        anotar(a, r)
-        when (m) {
-            is MensajeDeLaMaquina.Status -> alStatus(a, m)
-            is MensajeDeLaMaquina.UpdateCredit -> alCredito(a, m.creditCents)
-            else -> Unit   // `sockets` no trae folio: sólo evidencia
+        // La señal de otra operación que deja la duda también es evidencia de ESA duda (sin atribuirle su dinero).
+        if (a != null && paso == Paso.DUDA) dao.anotarMensaje(a.ref, r.generacion, r.crudo, null, null)
+        // 2. Lo que decide para el intento vivo.
+        if (a == null) return
+        when (paso) {
+            Paso.NADA -> Unit
+            Paso.DUDA -> aEsperando(a)
+            Paso.GANAR -> ganar(a, (m as MensajeDeLaMaquina.Status).creditCents)
+            Paso.CERRAR -> (m as MensajeDeLaMaquina.Status).let { cerrar(a, it, it.cierre()!!) }
+            Paso.NOTICIA -> noticia(a, m)
         }
     }
 
-    private suspend fun alStatus(a: Intento, m: MensajeDeLaMaquina.Status) {
-        if (m.referenceCC != a.ref || m.dueCents != a.due) return aEsperando(a)   // otra operación: la nuestra ya no se sabe
-        // Codex código r1 #5: un cierre es nuestro sólo por la conexión en que se ganó la propiedad (`propio` lo dice: se pierde al
-        // caerse y no regresa). El de otra conexión deja la duda, con su texto como evidencia.
-        m.cierre()?.let { return if (a.propio) cerrar(a, m, it) else aEsperando(a) }
-        when (a.fase) {
-            Fase.INICIANDO -> {   // el acuse: la máquina aceptó nuestro folio y Due en esta conexión
-                a.propio = true
-                a.generacionPropia = a.vigilada
-                dao.ganarPropiedad(a.ref, a.vigilada!!, crudos(a))
-                a.fase = Fase.COBRANDO
-                armar(ABANDONO_MS, ::preguntarSiSigue)
-            }
-            Fase.RECONECTANDO -> {   // nuestro folio sigue vivo, pero no se adopta: sin abandono ni cancel
-                a.fase = Fase.COBRANDO
-                a.sinEnlaceDesde = null
-                cancelarTemporizador()
-            }
-            Fase.CANCELANDO -> armar(ESPERA_DEL_CIERRE_MS, ::aEsperando)   // sigue trabajando (p. ej. entregando cambio)
-            else -> Unit
-        }
-        alCredito(a, m.creditCents)
+    private suspend fun ganar(a: Intento, creditCents: Int) {
+        a.generacionPropia = a.vigilada
+        dao.ganarPropiedad(a.ref, a.vigilada!!)
+        a.fase = FaseDelIntento.COBRANDO
+        a.ultimaNoticia = monotonico()
+        a.credit = maxOf(a.credit, creditCents)
+        armar(ABANDONO_MS, ::preguntarSiSigue)
         publicar()
     }
 
-    private suspend fun alCredito(a: Intento, creditCents: Int) {
-        if (creditCents <= a.credit) return
-        a.credit = creditCents
-        if (a.propio) {
-            dao.anotarCredito(a.ref, creditCents, reloj(), crudos(a))
-            if (a.fase == Fase.COBRANDO || a.fase == Fase.SIGUES_AHI) {   // dinero nuevo: el cliente sigue ahí
-                a.fase = Fase.COBRANDO
+    /** Nuestro folio sigue vivo o entró dinero de nuestro `Due`. Sin la propiedad, sólo se enseña y alarga el plazo sin noticias (H3). */
+    private fun noticia(a: Intento, m: MensajeDeLaMaquina) {
+        a.ultimaNoticia = monotonico()
+        val credito = (m as? MensajeDeLaMaquina.Status)?.creditCents ?: (m as MensajeDeLaMaquina.UpdateCredit).creditCents
+        val dineroNuevo = credito > a.credit
+        if (dineroNuevo) a.credit = credito
+        when {
+            // Nuestro folio sigue vivo en la conexión nueva, pero no se adopta: sin abandono ni `cancel`.
+            a.fase == FaseDelIntento.RECONECTANDO -> {
+                a.fase = FaseDelIntento.COBRANDO
+                vigia(a)
+            }
+            a.fase == FaseDelIntento.INICIANDO -> Unit   // el acuse sigue con sus 3 s
+            a.fase == FaseDelIntento.CANCELANDO -> if (m is MensajeDeLaMaquina.Status) armar(ESPERA_DEL_CIERRE_MS, ::aEsperando)
+            !a.propio -> vigia(a)
+            dineroNuevo -> {   // dinero nuevo: el cliente sigue ahí
+                a.fase = FaseDelIntento.COBRANDO
                 armar(ABANDONO_MS, ::preguntarSiSigue)
             }
         }
@@ -308,29 +356,27 @@ class CobroConMaquina(
 
     private suspend fun cerrar(a: Intento, m: MensajeDeLaMaquina.Status, cierre: Cierre) {
         val desenlace = desenlaceDelCierre(cierre, a.cancelPedido, a.due, m.creditCents, m.changeDispensedCents)
-            ?: return aEsperando(a)   // contradictorio: el crudo ya va en la evidencia
+            ?: return aEsperando(a)   // contradictorio: el crudo ya está en el diario
         // El desenlace y «por subir» en UN `UPDATE`: la fila es la cola (R4-1). Codex código r1 #15: la hora es la que dice la máquina;
         // sin ella, la de la PC sólo para enseñar y el cierre sube sin hora conocida. #13: lo físico que se le debe al cliente.
         val hora = horaDeLaMaquina(m.fecha, zona())
         dao.cerrar(
-            a.ref, desenlace.name, m.creditCents, m.changeDispensedCents, hora ?: reloj(), crudos(a), conocido = hora != null,
+            a.ref, desenlace.name, m.creditCents, m.changeDispensedCents, hora ?: reloj(), conocido = hora != null,
             aDeber = deudaFisica(desenlace, a.due, m.creditCents, m.changeDispensedCents),
         )
         alTerminar()
-        a.fase = Fase.CERRADO
+        a.fase = FaseDelIntento.CERRADO
         a.desenlace = desenlace
         a.credit = m.creditCents
         a.change = m.changeDispensedCents
-        a.propio = false
         cancelarTemporizador()
         publicar()
     }
 
     private suspend fun aEsperando(a: Intento) {
-        dao.aEsperando(a.ref, crudos(a))
+        dao.aEsperando(a.ref)
         alTerminar()
-        a.fase = Fase.ESPERANDO
-        a.propio = false
+        a.fase = FaseDelIntento.ESPERANDO
         cancelarTemporizador()
         publicar()
     }
@@ -338,9 +384,10 @@ class CobroConMaquina(
     // MARK: - Conexión
 
     /**
-     * Lee la conexión del cliente tal como está AHORA (no importa qué flujo avisó primero). Caerse la conexión vigilada
-     * quita la propiedad para siempre; al abrir otra, se vigila ésa: si en 3 s no llega un `status` de nuestro folio y
-     * `Due`, el intento queda en duda.
+     * Lee la conexión del cliente tal como está AHORA (no importa qué flujo avisó primero). Caerse la conexión vigilada quita la
+     * propiedad para siempre y arma el plazo sin noticias (30 s desde la ÚLTIMA noticia de nuestro folio: un enlace que parpadea no lo
+     * alarga, H3). Al abrir otra, se vigila ésa: si en 3 s (o antes, si el plazo se acaba) no llega un `status` de nuestro folio y
+     * `Due`, el intento queda en duda. Sólo arma en las transiciones.
      */
     private fun revisarConexion() {
         val a = activo?.takeIf { it.vivo } ?: return
@@ -349,48 +396,45 @@ class CobroConMaquina(
         val vigilada = a.vigilada
         if (vigilada != null && (generacion != vigilada || !conectada)) {
             a.vigilada = null
-            a.propio = false
-            a.fase = Fase.RECONECTANDO
-            if (a.sinEnlaceDesde == null) a.sinEnlaceDesde = reloj()
-            cancelarTemporizador()
+            a.fase = FaseDelIntento.RECONECTANDO
+            vigia(a)
             publicar()
         }
         if (a.vigilada == null && conectada) {
             a.vigilada = generacion
-            armar(ESPERA_DEL_STATUS_MS, ::aEsperando)
-        } else if (a.vigilada == null && !relojSinEnlace) {
-            // Codex código r1 #4: sin enlace, la duda no espera a que vuelva. Con un plazo contado desde la primera caída (un enlace
-            // que parpadea no lo alarga), el intento queda «Esperando» y la duda sube mientras haya internet.
-            val desde = a.sinEnlaceDesde ?: reloj().also { a.sinEnlaceDesde = it }
-            armar((desde + ESPERA_SIN_ENLACE_MS - reloj()).coerceAtLeast(0), ::aEsperando)
-            relojSinEnlace = true
+            armar(minOf(ESPERA_DEL_STATUS_MS, restante(a)), ::aEsperando)
         }
     }
+
+    private fun restante(a: Intento) = (a.ultimaNoticia + ESPERA_SIN_NOTICIAS_MS - monotonico()).coerceAtLeast(0)
+
+    /** Codex código r2 H3: sin la propiedad, 30 s desde la última noticia de nuestro folio → «Esperando». */
+    private fun vigia(a: Intento) = armar(restante(a), ::aEsperando)
 
     // MARK: - Abandono y cancel
 
     private suspend fun preguntarSiSigue(a: Intento) {
-        a.fase = Fase.SIGUES_AHI
+        a.fase = FaseDelIntento.SIGUES_AHI
         publicar()
         armar(SIGUES_AHI_MS) { mandarCancel(it, CANCEL_GUARDAR) }   // el abandono siempre guarda (R3#4)
     }
 
     /**
      * El modo se guarda ANTES del comando. Luego, en un solo paso bajo el candado, se revisa que la conexión siga siendo la
-     * de la propiedad y se manda por ESA generación (R3#2): si cambió o no sale, el intento queda en duda. Que el último
-     * `status` sea nuestro lo garantiza el candado: uno de otra operación ya habría dejado el intento en duda.
+     * de la propiedad y se manda por ESA generación (R3#2): si cambió o no sale, el intento queda en duda, y lo que diga la máquina
+     * después es sólo evidencia (Codex código r2 H2: un `cancel` que no salió nunca clasifica un cierre).
      */
     private suspend fun mandarCancel(a: Intento, cancelvalue: String) {
-        a.cancelPedido = cancelvalue
         dao.pedirCancel(a.ref, cancelvalue, reloj())
         revisarConexion()
         val propia = a.generacionPropia
-        // Codex código r1 #3: la relectura del último `status` y el envío van juntos en el cliente (con lo que llega): si mientras se
-        // guardaba el modo llegó otro folio (o el cierre del nuestro), el `cancel` sin folio no sale.
-        val salio = a.propio && propia != null && a.vigilada == propia &&
+        // Codex código r1 #3 y r2 H14: la relectura de lo último que dijo la máquina y el envío van juntos en el cliente: si mientras se
+        // guardaba el modo llegó otro folio, otro `Due` o el cierre del nuestro, el `cancel` sin folio no sale.
+        val salio = a.propio && propia != null &&
             cliente.enviarSiSigueSiendoNuestro(cancelar(devolver = cancelvalue == CANCEL_DEVOLVER, fecha = fecha(reloj())), propia, a.ref, a.due)
         if (!salio) return aEsperando(a)
-        a.fase = Fase.CANCELANDO
+        a.cancelPedido = cancelvalue
+        a.fase = FaseDelIntento.CANCELANDO
         publicar()
         armar(ESPERA_DEL_CIERRE_MS, ::aEsperando)   // un cancel sin cierre después: duda
     }
@@ -414,32 +458,24 @@ class CobroConMaquina(
     }
 
     private fun cancelarTemporizador() {
-        relojSinEnlace = false
         turno++
         temporizador?.cancel()
         temporizador = null
     }
 
-    // MARK: - Evidencia y pantalla
-
-    private fun anotar(a: Intento, r: Recibido) {
-        a.crudos.addLast("g${r.generacion} t${reloj()} ${r.crudo}")
-        while (a.crudos.size > 1 && a.crudos.sumOf { it.length + 1 } > MAX_CRUDOS) a.crudos.removeFirst()
-    }
-
-    private fun crudos(a: Intento) = a.crudos.joinToString("\n").takeLast(MAX_CRUDOS)
+    // MARK: - Pantalla
 
     private fun publicar() {
         val a = activo
         _estado.value = when (a?.fase) {
             null -> EstadoDelCobro.Libre
-            Fase.INICIANDO -> EstadoDelCobro.Iniciando(a.ref, a.due)
-            Fase.COBRANDO -> EstadoDelCobro.Cobrando(a.ref, a.due, a.credit, a.propio)
-            Fase.SIGUES_AHI -> EstadoDelCobro.SiguesAhi(a.ref, a.due, a.credit, (SIGUES_AHI_MS / 1_000).toInt())
-            Fase.CANCELANDO -> EstadoDelCobro.Cancelando(a.ref, a.due, a.credit, a.cancelPedido!!)
-            Fase.RECONECTANDO -> EstadoDelCobro.Reconectando(a.ref, a.due, a.credit)
-            Fase.CERRADO -> EstadoDelCobro.Cerrado(a.ref, a.desenlace!!, a.due, a.credit, a.change)
-            Fase.ESPERANDO -> EstadoDelCobro.Esperando(a.ref, a.due)
+            FaseDelIntento.INICIANDO -> EstadoDelCobro.Iniciando(a.ref, a.due)
+            FaseDelIntento.COBRANDO -> EstadoDelCobro.Cobrando(a.ref, a.due, a.credit, a.propio)
+            FaseDelIntento.SIGUES_AHI -> EstadoDelCobro.SiguesAhi(a.ref, a.due, a.credit, (SIGUES_AHI_MS / 1_000).toInt())
+            FaseDelIntento.CANCELANDO -> EstadoDelCobro.Cancelando(a.ref, a.due, a.credit, a.cancelPedido!!)
+            FaseDelIntento.RECONECTANDO -> EstadoDelCobro.Reconectando(a.ref, a.due, a.credit)
+            FaseDelIntento.CERRADO -> EstadoDelCobro.Cerrado(a.ref, a.desenlace!!, a.due, a.credit, a.change)
+            FaseDelIntento.ESPERANDO -> EstadoDelCobro.Esperando(a.ref, a.due)
         }
     }
 
@@ -454,8 +490,7 @@ class CobroConMaquina(
         const val SIGUES_AHI_MS = 30_000L
         /** ponytail: plazo propio, no del manual; 30 s cubren entregar cambio. Si la máquina tarda más, ajustar aquí. */
         const val ESPERA_DEL_CIERRE_MS = 30_000L
-        /** Codex código r1 #4. ponytail: plazo propio; diez reconexiones de 3 s. Si la red local del negocio tarda más, ajustar aquí. */
-        const val ESPERA_SIN_ENLACE_MS = 30_000L
-        const val MAX_CRUDOS = 8_192
+        /** Codex código r1 #4 y r2 H3. ponytail: plazo propio; diez reconexiones de 3 s. Si la red local del negocio tarda más, ajustar aquí. */
+        const val ESPERA_SIN_NOTICIAS_MS = 30_000L
     }
 }

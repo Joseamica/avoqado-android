@@ -115,8 +115,13 @@ class ProtocoloQuickPayTest {
     }
 
     @Test
-    fun `el updateCredit (manual 4_2) trae los montos como texto`() {
-        assertEquals(MensajeDeLaMaquina.UpdateCredit(creditCents = 10_000), leerMensaje(UPDATE_CREDIT))
+    fun `el updateCredit (manual 4_2) trae los montos como texto, con el Due de su operacion (Codex r2 H14)`() {
+        assertEquals(MensajeDeLaMaquina.UpdateCredit(creditCents = 10_000, dueCents = 12_500), leerMensaje(UPDATE_CREDIT))
+        assertEquals(
+            "sin Due se lee igual",
+            MensajeDeLaMaquina.UpdateCredit(creditCents = 10_000, dueCents = null),
+            leerMensaje("""{"comando":"updateCredit","Credit":"100"}"""),
+        )
     }
 
     @Test

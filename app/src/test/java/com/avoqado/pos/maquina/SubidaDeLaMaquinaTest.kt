@@ -178,7 +178,7 @@ class SubidaDeLaMaquinaTest {
     }
 
     @Test
-    fun `CANCELADO y GUARDADO suben sin pedido y con el modo de su cancel`() = runBlocking {
+    fun `P1 Codex r2 H15 CANCELADO y GUARDADO suben CON su pedido (el primer mensaje lo congela) y con el modo de su cancel`() = runBlocking {
         val cancelado = final(REF_1, EstadoDelIntento.CANCELADO, credit = 5_000, change = 5_000, cancel = "1")
         val guardado = final(REF_2, EstadoDelIntento.GUARDADO, credit = 5_000, change = 0, cancel = "2").copy(creadoEn = 2_000)
         insertar(cancelado, guardado)
@@ -188,8 +188,8 @@ class SubidaDeLaMaquinaTest {
 
         val primero = cuerpo(pedido())
         val segundo = cuerpo(pedido())
-        assertFalse(primero.has("pedido"))
-        assertFalse(segundo.has("pedido"))
+        assertEquals(JSONObject(pedido).toString(), primero.getJSONObject("pedido").toString())
+        assertEquals(JSONObject(pedido).toString(), segundo.getJSONObject("pedido").toString())
         assertEquals("CANCELADO" to "1", primero.getJSONObject("cierre").let { it.getString("outcome") to it.getString("cancelMode") })
         assertEquals("GUARDADO" to "2", segundo.getJSONObject("cierre").let { it.getString("outcome") to it.getString("cancelMode") })
         assertTrue(dao.fila(REF_1)!!.subido && dao.fila(REF_2)!!.subido)
@@ -415,51 +415,19 @@ class SubidaDeLaMaquinaTest {
         subida.subir()
 
         val lastSeen = cuerpo(pedido()).getString("lastSeen")
-        assertTrue(lastSeen, lastSeen.startsWith("Entró \$50.00 (2025-11-20T11:44:10Z)\n"))
-        assertTrue(lastSeen.endsWith("""{"comando":"sockets","cobrando":true}"""))
+        assertEquals("Codex r2 H13: sin la hora de la PC; sólo lo que entró y el diario", "Entró \$50.00\n" + """{"comando":"sockets","cobrando":true}""", lastSeen)
     }
 
     @Test
-    fun `P1 Codex r1 #6 el cierre tardio sube como cierre despues de la duda y la duda queda resuelta con lo que dice el servidor`() = runBlocking {
-        val tardia = duda(REF_1).copy(
-            cierreTardio = EstadoDelIntento.CANCELADO, cancelPedido = "1", creditCents = 5_000, changeDispensedCents = 5_000,
-            cierreEn = 1_763_640_000_000, cierreConocido = true,
-        )
-        insertar(tardia)
-        val eco = evidencia(tardia, outcome = "CANCELADO", credit = 5_000, change = 5_000)
+    fun `P1 Codex r2 H2 una duda con un cierre en su diario sube como duda, nunca como cierre`() = runBlocking {
+        insertar(duda(REF_1).copy(mensajesCrudos = "g1 " + JSONObject().put("comando", "status").put("Status", "Pago Completado").toString()))
         cuando("POST", ".*/cash-machine/doubts", ok(abierta(1)))
-        cuando("POST", ".*/cash-machine/sales", ok(eco))
 
         subida.subir()
 
-        assertEquals("primero la duda (congela el carrito)", "/api/v1/mobile/venues/venue-1/cash-machine/doubts", pedido().path)
-        val cierre = cuerpo(pedido())
-        assertEquals("CANCELADO" to "1", cierre.getJSONObject("cierre").let { it.getString("outcome") to it.getString("cancelMode") })
-        assertEquals(5_000 to 5_000, cierre.getJSONObject("cierre").let { it.getInt("creditCents") to it.getInt("changeDispensedCents") })
-        assertFalse(cierre.has("pedido"))
-        val fila = dao.fila(REF_1)!!
-        assertEquals(EstadoDelIntento.RESUELTO, fila.estado)
-        assertEquals("CANCELADO", fila.desenlaceDelServidor)
-        assertEquals(Desenlace.CANCELADO, fila.desenlace)
-    }
-
-    @Test
-    fun `Codex r1 #6 un cierre tardio con su incidencia en el servidor no se reenvia y la duda sigue`() = runBlocking {
-        insertar(duda(REF_1).copy(cierreTardio = EstadoDelIntento.PAGADO, creditCents = 18_750, dudaSubida = true, cierreEn = 1, cierreConocido = true))
-        cuando(
-            "POST", ".*/cash-machine/sales",
-            MockResponse().setResponseCode(409).setBody(
-                JSONObject().put("message", "Este folio ya tiene otro desenlace").put("code", "CASH_MACHINE_CLOSE_CONFLICT")
-                    .put("details", JSONObject().put("motivo", "OTRA_EVIDENCIA").put("incidentId", "cinc000000000000000000003")).toString(),
-            ),
-        )
-
-        subida.subir()
-
-        val fila = dao.fila(REF_1)!!
-        assertEquals(EstadoDelIntento.ESPERANDO, fila.estado)
-        assertTrue(fila.subido)
-        assertTrue(dao.tardiosParaSubir("venue-1").isEmpty())
+        assertEquals("/api/v1/mobile/venues/venue-1/cash-machine/doubts", pedido().path)
+        assertEquals(1, servidor.requestCount)
+        assertEquals(EstadoDelIntento.ESPERANDO, dao.fila(REF_1)!!.estado)
     }
 
     @Test
@@ -490,6 +458,69 @@ class SubidaDeLaMaquinaTest {
         assertEquals(EstadoDelIntento.RESUELTO, resueltaAqui.estado)
         assertEquals("CANCELADO", resueltaAqui.desenlaceDelServidor)
         assertEquals("GET", servidor.takeRequest().let { servidor.takeRequest() }.method)
+    }
+
+    @Test
+    fun `P1 Codex r2 H8 una duda cuyo folio es de OTRA PC deja de consultarse y su propio cierre posterior SI sube`() = runBlocking {
+        insertar(duda(REF_1))
+        val deOtraPc = MockResponse().setResponseCode(409).setBody(
+            JSONObject().put("message", "Este folio de la máquina ya tiene otro desenlace o es de otra PC").put("code", "CASH_MACHINE_CLOSE_CONFLICT")
+                .put("details", JSONObject().put("motivo", "OTRA_PC").put("deviceId", "la-otra-pc").put("incidentId", "cinc000000000000000000009"))
+                .toString(),
+        )
+        cuando("POST", ".*/cash-machine/doubts", deOtraPc, deOtraPc)
+
+        assertFalse("no se consulta el folio de la otra PC: no queda trabajo", subida.subir())
+        assertTrue(dao.fila(REF_1)!!.dudaSubida)
+        assertFalse(subida.subir())
+
+        // Después llega a esta PC su propio cierre físico: va al diario y vuelve a subir, para que el SERVIDOR lo tenga.
+        assertTrue(dao.anotarMensaje(REF_1, 1, """{"comando":"status","Status":"Pago Completado","referenceCC":"$REF_1"}""", 20_000, 18_750))
+        subida.subir()
+
+        val pedidos = (1..servidor.requestCount).map { pedido() }
+        assertEquals(listOf("POST", "POST"), pedidos.map { it.method })
+        assertTrue(cuerpo(pedidos.last()).getString("lastSeen").contains("Pago Completado"))
+        assertEquals(EstadoDelIntento.ESPERANDO, dao.fila(REF_1)!!.estado)
+    }
+
+    @Test
+    fun `P1 Codex r2 H8 un cierre cuyo folio el servidor atribuye a OTRA PC nunca queda como subido, se ve y no se reintenta`() = runBlocking {
+        insertar(pagado)
+        cuando(
+            "POST", ".*/cash-machine/sales",
+            MockResponse().setResponseCode(409).setBody(
+                JSONObject().put("message", "Este folio de la máquina ya tiene otro desenlace o es de otra PC").put("code", "CASH_MACHINE_CLOSE_CONFLICT")
+                    .put("details", JSONObject().put("motivo", "OTRA_PC").put("deviceId", "la-otra-pc").put("incidentId", "cinc000000000000000000010"))
+                    .toString(),
+            ),
+        )
+
+        assertFalse(subida.subir())
+
+        val fila = dao.fila(REF_1)!!
+        assertFalse("la otra PC es la dueña del folio", fila.subido)
+        assertEquals("Este folio de la máquina ya tiene otro desenlace o es de otra PC", fila.conflicto)
+        assertEquals("su incidencia ya está en el SERVIDOR: no frena la sesión", 0, dao.pendientes("venue-1"))
+        subida.subir()
+        assertEquals("no se reintenta", 1, servidor.requestCount)
+    }
+
+    @Test
+    fun `P1 Codex r2 H1 un acuse de la evidencia anterior no marca como subida la observacion que llego mientras tanto`() = runBlocking {
+        insertar(duda(REF_1))
+        servidor.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                // Mientras el SERVIDOR contesta la duda, la PC anota una observación nueva en el diario.
+                runBlocking { dao.anotarMensaje(REF_1, 1, """{"comando":"status","Credit":50,"referenceCC":"$REF_1"}""", 5_000, 18_750) }
+                return ok(abierta(1))
+            }
+        }
+
+        assertTrue("queda la observación nueva por subir", subida.subir())
+
+        assertFalse(dao.fila(REF_1)!!.dudaSubida)
+        assertNull("la versión de un acuse viejo tampoco se guarda", dao.fila(REF_1)!!.versionDeLaDuda)
     }
 
     // MARK: - Disparadores (R3#12, R5#6)

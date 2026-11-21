@@ -32,8 +32,8 @@ class CobroConMaquinaTest {
         var aceptaEnviar = true
         var alEnviar: (String) -> Unit = {}
 
-        /** El último `status` que llegó (lo que el cliente real guarda con su candado antes de avisar). */
-        var ultimoStatus: Recibido? = null
+        /** Lo último que llegó: la MISMA regla del cliente real ([UltimaSenal]), que la anota con su candado antes de avisar. */
+        val ultimaSenal = UltimaSenal()
 
         override fun enviar(json: String, generacion: Int): Boolean {
             if (!aceptaEnviar || conexion.value != Conexion.CONECTADA || generacion != this.generacion.value) return false
@@ -42,15 +42,12 @@ class CobroConMaquinaTest {
             return true
         }
 
-        override fun enviarSiSigueSiendoNuestro(json: String, generacion: Int, referenceCC: String, dueCents: Int): Boolean {
-            val m = ultimoStatus?.mensaje as? MensajeDeLaMaquina.Status
-            return ultimoStatus?.generacion == generacion && m != null && m.cobrando && m.referenceCC == referenceCC &&
-                m.dueCents == dueCents && enviar(json, generacion)
-        }
+        override fun enviarSiSigueSiendoNuestro(json: String, generacion: Int, referenceCC: String, dueCents: Int): Boolean =
+            ultimaSenal.esNuestra(generacion, referenceCC, dueCents) && enviar(json, generacion)
 
         fun llega(json: String, gen: Int = generacion.value) {
             val r = Recibido(gen, leerMensaje(json)!!, json)
-            if (r.mensaje is MensajeDeLaMaquina.Status) ultimoStatus = r
+            ultimaSenal.anotar(r)
             check(recibidos.tryEmit(r))
         }
 
@@ -79,8 +76,9 @@ class CobroConMaquinaTest {
     private val due = 18_750
 
     /** Cada instancia con su semilla: dos con la misma semilla y la misma hora sacarían el mismo folio. */
-    private fun TestScope.nuevoCobro(semilla: Long = 7) =
-        CobroConMaquina(canal, dao, { testScheduler.currentTime }, backgroundScope, Random(semilla))
+    private fun TestScope.nuevoCobro(semilla: Long = 7, alTerminar: () -> Unit = {}) = CobroConMaquina(
+        canal, dao, { testScheduler.currentTime }, backgroundScope, Random(semilla), alTerminar, monotonico = { testScheduler.currentTime },
+    )
 
     private fun status(
         ref: String?, due: Int = this.due, credit: Int = 0, change: Int = 0, cobrando: Boolean = true, estado: String? = null,
@@ -96,13 +94,17 @@ class CobroConMaquinaTest {
 
     private fun credito(cents: Int) = """{"comando":"updateCredit","Credit":"$${cents / 100}.${(cents % 100).toString().padStart(2, '0')}"}"""
 
+    /** Codex código r2 H14: el `updateCredit` de APS con el `Due` de su operación. */
+    private fun creditoDe(cents: Int, dueDeLaOperacion: Int) =
+        JSONObject(credito(cents)).put("Due", dueDeLaOperacion / 100.0).toString()
+
     private val pong = """{"comando":"pong","conexiones":2,"tarjeta":false}"""
 
     private fun socketsLibre() = """{"comando":"sockets","cobrando":false,"Due":0,"Credit":0,"changeBar":"022220222000"}"""
 
     /** Inicia el cobro y la máquina lo acepta con nuestro folio y Due en la generación 1: el cobro es nuestro. */
-    private suspend fun TestScope.cobroPropio(cobro: CobroConMaquina): String {
-        val ref = (cobro.cobrar(venta) as ResultadoDeInicio.Iniciado).referenceCC
+    private suspend fun TestScope.cobroPropio(cobro: CobroConMaquina, v: VentaParaLaMaquina = venta): String {
+        val ref = (cobro.cobrar(v) as ResultadoDeInicio.Iniciado).referenceCC
         canal.llega(status(ref))
         runCurrent()
         assertEquals(EstadoDelCobro.Cobrando(ref, due, 0, propio = true), cobro.estado.value)
@@ -160,7 +162,7 @@ class CobroConMaquinaTest {
         assertEquals(ResultadoDeInicio.Ocupado, cobro.cobrar(venta.copy(llaveDeVenta = "venta-2")))
 
         // Otra caja (otro CobroConMaquina sobre la misma base) tampoco abre otro intento de esa venta.
-        val otra = CobroConMaquina(canal, dao, { testScheduler.currentTime }, backgroundScope, Random(9))
+        val otra = nuevoCobro(semilla = 9)
         assertEquals(ResultadoDeInicio.VentaConIntento, otra.cobrar(venta))
         assertEquals(listOf(ref), dao.todas().map { it.referenceCC })
         assertEquals(1, canal.comandos().count { it == "paycash" })
@@ -176,11 +178,11 @@ class CobroConMaquinaTest {
         assertFalse("el mismo folio no se repite", dao.abrirIntento(fila("AQ000000000001", llave = "venta-9")))
         assertTrue(dao.abrirIntento(fila("AQ000000000003", llave = "venta-2")))
 
-        dao.cerrar("AQ000000000001", EstadoDelIntento.CANCELADO, 0, 0, 5, "")
+        dao.cerrar("AQ000000000001", EstadoDelIntento.CANCELADO, 0, 0, 5)
         assertTrue(dao.abrirIntento(fila("AQ000000000004")))
-        dao.cerrar("AQ000000000004", EstadoDelIntento.GUARDADO, 0, 0, 6, "")
+        dao.cerrar("AQ000000000004", EstadoDelIntento.GUARDADO, 0, 0, 6)
         assertTrue(dao.abrirIntento(fila("AQ000000000005")))
-        dao.cerrar("AQ000000000005", EstadoDelIntento.PAGADO, 100, 0, 7, "")
+        dao.cerrar("AQ000000000005", EstadoDelIntento.PAGADO, 100, 0, 7)
         assertFalse(dao.abrirIntento(fila("AQ000000000006")))
         assertEquals(1, dao.bloqueanLaVenta("venta-1"))
     }
@@ -232,9 +234,10 @@ class CobroConMaquinaTest {
 
     @Test
     fun `P1 Codex r1 #15 el cierre guarda la hora de la maquina como hora conocida`() = runTest {
-        val cobro = CobroConMaquina(canal, dao, { testScheduler.currentTime }, backgroundScope, Random(7), {}) {
-            java.time.ZoneId.of("America/Mexico_City")
-        }
+        val cobro = CobroConMaquina(
+            canal, dao, { testScheduler.currentTime }, backgroundScope, Random(7), {}, { java.time.ZoneId.of("America/Mexico_City") },
+            monotonico = { testScheduler.currentTime },
+        )
         val ref = cobroPropio(cobro)
         val cierre = JSONObject(pagoCompletado(ref, credit = due, change = 0)).put("fecha", "2026-11-18 15:48:20").toString()
 
@@ -419,7 +422,8 @@ class CobroConMaquinaTest {
         assertTrue("la máquina ya estaba libre: el cancel le tocaría a otro", canal.cancels().isEmpty())
         val fila = dao.fila(ref)!!
         assertEquals(EstadoDelIntento.ESPERANDO, fila.estado)
-        assertEquals("el cierre llegó por la conexión de la propiedad: sube como cierre", EstadoDelIntento.PAGADO, fila.cierreTardio)
+        assertNull("Codex r2 H2: el cierre que llega con la fila en duda es evidencia, nunca un desenlace", fila.cierreTardio)
+        assertTrue(fila.mensajesCrudos.contains("Pago Completado"))
     }
 
     @Test
@@ -480,7 +484,7 @@ class CobroConMaquinaTest {
     }
 
     @Test
-    fun `P1 Codex r1 #6 el cierre tardio por la conexion de la propiedad sube como cierre y la fila sigue en duda`() = runTest {
+    fun `P1 Codex r2 H2 el cierre que llega con la fila ya en duda es evidencia de la duda, nunca un desenlace`() = runTest {
         val cobro = nuevoCobro()
         val ref = cobroPropio(cobro)
         canal.llega(credito(5_000)); runCurrent()
@@ -493,13 +497,47 @@ class CobroConMaquinaTest {
 
         val fila = dao.fila(ref)!!
         assertEquals(EstadoDelIntento.ESPERANDO, fila.estado)
-        assertEquals(EstadoDelIntento.CANCELADO, fila.cierreTardio)
-        assertEquals(5_000 to 5_000, fila.creditCents to fila.changeDispensedCents)
-        assertEquals("la tarjeta sigue frenada hasta que el SERVIDOR conteste", 1, dao.bloqueanLaVenta(venta.llaveDeVenta))
-        assertEquals(listOf(ref), dao.tardiosParaSubir("venue-1").map { it.referenceCC })
+        assertNull(fila.cierreTardio)
+        assertEquals("el cambio lo teclea el gerente: el diario lo guarda tal cual", 0, fila.changeDispensedCents)
+        assertTrue(fila.mensajesCrudos.endsWith(cancelada(ref, credit = 5_000, change = 5_000)))
+        assertFalse("evidencia nueva: la duda vuelve a subir", fila.dudaSubida)
+        assertEquals("la tarjeta sigue frenada hasta que el gerente decida", 1, dao.bloqueanLaVenta(venta.llaveDeVenta))
+        assertTrue(dao.porSubir().all { it.estado == EstadoDelIntento.ESPERANDO })
+    }
+
+    @Test
+    fun `P1 Codex r2 H2 tras ver otra operacion, el cierre de nuestro folio por la MISMA conexion tampoco es desenlace`() = runTest {
+        val cobro = nuevoCobro()
+        val ref = cobroPropio(cobro)
+        canal.llega(status("DOTACION", due = 50_000)); runCurrent()   // otra operación: la nuestra ya no se sabe
+        assertEquals(EstadoDelIntento.ESPERANDO, dao.fila(ref)!!.estado)
+
+        canal.llega(pagoCompletado(ref, credit = 20_000, change = 1_250)); runCurrent()
+
+        val fila = dao.fila(ref)!!
+        assertEquals(EstadoDelIntento.ESPERANDO, fila.estado)
+        assertNull(fila.cierreTardio)
+        assertEquals(listOf("DOTACION", "Pago Completado"), listOf("DOTACION", "Pago Completado").filter { fila.mensajesCrudos.contains(it) })
+        assertEquals(EstadoDelCobro.Esperando(ref, due), cobro.estado.value)
+    }
+
+    @Test
+    fun `P1 Codex r2 H2 un cancel 2 que se guardo pero no salio nunca clasifica un Transaccion Cancelada como GUARDADO`() = runTest {
+        val cobro = nuevoCobro()
+        val ref = cobroPropio(cobro)
+        canal.llega(credito(5_000)); runCurrent()
+        dao.alPedirCancel = { canal.aceptaEnviar = false }
+        advanceTimeBy(150_001)   // abandono: el modo «2» quedó en disco, pero el `cancel` no salió
+        assertTrue(canal.cancels().isEmpty())
+        assertEquals("2", dao.fila(ref)!!.cancelPedido)
+        canal.aceptaEnviar = true
 
         canal.llega(cancelada(ref, credit = 5_000, change = 0)); runCurrent()
-        assertEquals("sólo el primero", 5_000, dao.fila(ref)!!.changeDispensedCents)
+
+        val fila = dao.fila(ref)!!
+        assertEquals("lo canceló alguien en la pantalla de la máquina: no se sabe si guardó o devolvió", EstadoDelIntento.ESPERANDO, fila.estado)
+        assertNull(fila.cierreTardio)
+        assertEquals(1, dao.bloqueanLaVenta(venta.llaveDeVenta))
     }
 
     @Test
@@ -530,14 +568,43 @@ class CobroConMaquinaTest {
 
         canal.llega(credito(10_000)); runCurrent()
         assertEquals("sin propiedad sólo se muestra", EstadoDelCobro.Cobrando(ref, due, 10_000, propio = false), cobro.estado.value)
-        assertEquals(0, dao.fila(ref)!!.creditCents)
+        assertEquals("Codex r2 H3: pero queda en disco, como evidencia", 10_000, dao.fila(ref)!!.creditCents)
         cobro.cancelarPorElCliente(); runCurrent()
-        advanceTimeBy(600_000)
+        advanceTimeBy(20_000)
         assertTrue("sin propiedad no hay cancel ni abandono", canal.cancels().isEmpty())
 
         canal.llega(cancelada("AQOTRAOPERAC1", credit = 0, change = 0, due = 5_000)); runCurrent()
         assertEquals(EstadoDelCobro.Esperando(ref, due), cobro.estado.value)
-        assertTrue(dao.fila(ref)!!.mensajesCrudos.contains("AQOTRAOPERAC1"))
+        assertTrue("la señal que dejó la duda es evidencia de ella", dao.fila(ref)!!.mensajesCrudos.contains("AQOTRAOPERAC1"))
+    }
+
+    @Test
+    fun `P1 Codex r2 H3 sin la propiedad, 30 s sin noticias de nuestro folio desde la ULTIMA dejan la duda aunque el enlace este arriba`() = runTest {
+        var avisos = 0
+        val cobro = nuevoCobro(alTerminar = { avisos++ })
+        val ref = cobroPropio(cobro)
+        canal.llega(credito(5_000)); runCurrent()
+        canal.caer(); runCurrent()
+        advanceTimeBy(10_000)
+        canal.reconectar(); runCurrent()
+        canal.llega(status(ref, credit = 5_000)); runCurrent()   // un estado intermedio de nuestro folio: no se adopta
+        assertEquals(EstadoDelCobro.Cobrando(ref, due, 5_000, propio = false), cobro.estado.value)
+
+        advanceTimeBy(20_000)
+        canal.llega(pong); canal.llega(socketsLibre()); runCurrent()   // sólo respuestas de conexión: no son noticias
+        canal.llega(credito(10_000)); runCurrent()                    // dinero de nuestro Due: sí es noticia, y va a disco
+        assertEquals(10_000, dao.fila(ref)!!.creditCents)
+        advanceTimeBy(29_999)
+        assertEquals(EstadoDelIntento.EN_CURSO, dao.fila(ref)!!.estado)
+
+        advanceTimeBy(2)
+
+        assertEquals(EstadoDelCobro.Esperando(ref, due), cobro.estado.value)
+        val fila = dao.fila(ref)!!
+        assertEquals(EstadoDelIntento.ESPERANDO, fila.estado)
+        assertEquals("el gerente recibe la duda con lo que entró", 10_000, fila.creditCents)
+        assertEquals(1, avisos)
+        assertEquals(ResultadoDeInicio.Iniciado::class, cobro.cobrar(venta.copy(llaveDeVenta = "venta-2"))::class)
     }
 
     @Test
@@ -557,7 +624,7 @@ class CobroConMaquinaTest {
     @Test
     fun `P1 Codex r1 #4 sin enlace con dinero adentro, a los 30 s queda ESPERANDO aunque el enlace no vuelva`() = runTest {
         var avisos = 0
-        val cobro = CobroConMaquina(canal, dao, { testScheduler.currentTime }, backgroundScope, Random(7), alTerminar = { avisos++ })
+        val cobro = nuevoCobro(alTerminar = { avisos++ })
         val ref = cobroPropio(cobro)
         canal.llega(credito(5_000)); runCurrent()
         canal.caer(); runCurrent()
@@ -721,9 +788,7 @@ class CobroConMaquinaTest {
     @Test
     fun `cada cierre, cada duda y cada huerfano recuperado avisan a la subida, despues de guardarse`() = runTest {
         val avisos = mutableListOf<String?>()
-        val cobro = CobroConMaquina(canal, dao, { testScheduler.currentTime }, backgroundScope, Random(7), alTerminar = {
-            avisos += dao.todas().lastOrNull()?.estado
-        })
+        val cobro = nuevoCobro(alTerminar = { avisos += dao.todas().lastOrNull()?.estado })
         val ref = cobroPropio(cobro)
         assertTrue(avisos.isEmpty())
 
@@ -742,5 +807,175 @@ class CobroConMaquinaTest {
         assertEquals("un huérfano pasó a duda", 3, avisos.size)
         cobro.recuperar()
         assertEquals("sin cambios no avisa", 3, avisos.size)
+    }
+
+    // MARK: - Codex código r2, bloque A: el diario por folio
+
+    @Test
+    fun `P1 Codex r2 H4 el cierre tardio de A va al diario de A aunque B sea el intento vivo, y B no se lo queda`() = runTest {
+        val avisos = mutableListOf<String>()
+        val cobro = nuevoCobro(alTerminar = { avisos += "subida" })
+        val refA = (cobro.cobrar(venta) as ResultadoDeInicio.Iniciado).referenceCC
+        advanceTimeBy(3_001)   // el acuse de A no llegó: A en duda
+        dao.marcarDudaSubida(refA, true)
+        val refB = cobroPropio(cobro, venta.copy(llaveDeVenta = "venta-2"))
+        avisos.clear()
+
+        canal.llega(pagoCompletado(refA, credit = 20_000, change = 1_250)); runCurrent()
+
+        val a = dao.fila(refA)!!
+        assertEquals(EstadoDelIntento.ESPERANDO, a.estado)
+        assertTrue("A conserva su evidencia", a.mensajesCrudos.contains("Pago Completado"))
+        assertEquals(20_000, a.creditCents)
+        assertFalse("y vuelve a subir", a.dudaSubida)
+        val b = dao.fila(refB)!!
+        assertFalse("B nunca toma el dinero de A", b.estado == EstadoDelIntento.PAGADO)
+        assertEquals(0, b.creditCents)
+        assertTrue("la subida se entera de la evidencia nueva de A", avisos.isNotEmpty())
+    }
+
+    @Test
+    fun `P1 Codex r2 H4 tras reiniciar, sin intento vivo, el mensaje de un folio en duda llega a su fila`() = runTest {
+        dao.insertar(
+            CobroEnMaquinaEntity(
+                "AQ000000000007", "venue-1", "venta-7", "{}", 18_000, 750, due, null, null, creadoEn = 1,
+                estado = EstadoDelIntento.ESPERANDO, dudaSubida = true,
+            ),
+        )
+        var avisos = 0
+        nuevoCobro(alTerminar = { avisos++ })
+
+        canal.llega(cancelada("AQ000000000007", credit = 5_000, change = 5_000)); runCurrent()
+
+        val fila = dao.fila("AQ000000000007")!!
+        assertTrue(fila.mensajesCrudos.contains("Transacción Cancelada"))
+        assertEquals(5_000, fila.creditCents)
+        assertFalse(fila.dudaSubida)
+        assertEquals(1, avisos)
+    }
+
+    @Test
+    fun `P1 Codex r2 H13 el mismo mensaje fisico repetido no es evidencia nueva ni vuelve a subir la duda`() = runTest {
+        val cobro = nuevoCobro()
+        val ref = (cobro.cobrar(venta) as ResultadoDeInicio.Iniciado).referenceCC
+        advanceTimeBy(3_001)
+        val intermedio = JSONObject(status(ref, credit = 5_000)).put("fecha", "2026-11-18 15:48:20").toString()
+        canal.llega(intermedio); runCurrent()
+        dao.marcarDudaSubida(ref, true)
+        val antes = dao.fila(ref)!!
+
+        advanceTimeBy(60_000)
+        canal.llega(intermedio); runCurrent()                 // APS repite el MISMO status, con la misma fecha
+        canal.reconectar(); runCurrent()
+        canal.llega(intermedio); runCurrent()                 // y otra vez por otra conexión
+
+        assertEquals("ni la hora de llegada ni la conexión lo vuelven nuevo", antes, dao.fila(ref))
+        assertEquals(1, antes.mensajesCrudos.lines().count { it.endsWith(intermedio) })
+    }
+
+    @Test
+    fun `P1 Codex r2 H14 un updateCredit de otra operacion deja la duda y su dinero no se le atribuye a la nuestra`() = runTest {
+        val cobro = nuevoCobro()
+        val ref = cobroPropio(cobro)
+        canal.llega(creditoDe(5_000, dueDeLaOperacion = due)); runCurrent()
+        assertEquals(5_000, dao.fila(ref)!!.creditCents)
+
+        canal.llega(creditoDe(30_000, dueDeLaOperacion = 50_000)); runCurrent()
+
+        val fila = dao.fila(ref)!!
+        assertEquals(EstadoDelIntento.ESPERANDO, fila.estado)
+        assertEquals("lo de otra operación nunca es nuestro", 5_000, fila.creditCents)
+        assertTrue("la señal ajena queda como evidencia de la duda", fila.mensajesCrudos.endsWith(creditoDe(30_000, dueDeLaOperacion = 50_000)))
+        cobro.cancelarPorElCliente(); advanceTimeBy(600_000)
+        assertTrue("y ningún cancel sin folio", canal.cancels().isEmpty())
+    }
+
+    @Test
+    fun `P1 Codex r2 H14 el cancel sin folio no sale si despues de nuestro status llego dinero de otro Due, hasta un status nuestro nuevo`() {
+        val s = UltimaSenal()
+        fun llega(json: String, gen: Int = 1) = s.anotar(Recibido(gen, leerMensaje(json)!!, json))
+        llega(status("AQ00000000000A"))
+        assertTrue(s.esNuestra(1, "AQ00000000000A", due))
+        llega(creditoDe(5_000, dueDeLaOperacion = due))
+        assertTrue("dinero de nuestro Due no la quita", s.esNuestra(1, "AQ00000000000A", due))
+        llega(credito(6_000))
+        assertTrue("un updateCredit sin Due tampoco", s.esNuestra(1, "AQ00000000000A", due))
+        llega(creditoDe(5_000, dueDeLaOperacion = 50_000))
+        assertFalse("otro Due: otra operación", s.esNuestra(1, "AQ00000000000A", due))
+        llega(socketsLibre())
+        assertFalse("una máquina libre no la regresa", s.esNuestra(1, "AQ00000000000A", due))
+        llega(status("AQ00000000000A", credit = 6_000))
+        assertTrue("sólo un status nuestro nuevo", s.esNuestra(1, "AQ00000000000A", due))
+        llega("""{"comando":"sockets","cobrando":true,"Due":500,"Credit":0,"changeBar":"022220222000"}""")
+        assertFalse(s.esNuestra(1, "AQ00000000000A", due))
+        llega(status("AQ00000000000A"), gen = 2)
+        assertFalse("en otra conexión no", s.esNuestra(1, "AQ00000000000A", due))
+    }
+
+    // MARK: - Codex código r2, bloque A: la matriz de [decidir]
+
+    /**
+     * La regla completa, sobre TODO el producto (tipo de mensaje × folio propio/ajeno × misma/otra conexión × con/sin propiedad × fase),
+     * con sus invariantes; y debajo, la tabla de los casos que importan con el paso esperado.
+     */
+    @Test
+    fun `P1 Codex r2 la matriz de decidir - invariantes sobre todo el producto`() {
+        val ref = "AQ00000000000A"
+        val ajeno = "AQ00000000000Z"
+        data class Caso(val nombre: String, val m: MensajeDeLaMaquina, val propio: Boolean)
+        val mensajes = listOf(
+            Caso("status abierto propio", leerMensaje(status(ref))!!, true),
+            Caso("status abierto ajeno", leerMensaje(status(ajeno))!!, false),
+            Caso("status propio con otro Due", leerMensaje(status(ref, due = 500))!!, false),
+            Caso("pagado propio", leerMensaje(pagoCompletado(ref, credit = due, change = 0))!!, true),
+            Caso("pagado ajeno", leerMensaje(pagoCompletado(ajeno, credit = due, change = 0))!!, false),
+            Caso("cancelada propia", leerMensaje(cancelada(ref, credit = 0, change = 0))!!, true),
+            Caso("DOTACION", leerMensaje(cancelada("DOTACION", credit = 0, change = 0))!!, false),
+            Caso("credito sin Due", leerMensaje(credito(5_000))!!, true),
+            Caso("credito de nuestro Due", leerMensaje(creditoDe(5_000, due))!!, true),
+            Caso("credito de otro Due", leerMensaje(creditoDe(5_000, 500))!!, false),
+            Caso("sockets libre", leerMensaje(socketsLibre())!!, true),
+            Caso("sockets cobrando otro Due", leerMensaje("""{"comando":"sockets","cobrando":true,"Due":5,"Credit":0}""")!!, false),
+            Caso("pong", leerMensaje(pong)!!, true),
+        )
+        val fases = listOf<FaseDelIntento?>(null) + FaseDelIntento.entries
+        var combinaciones = 0
+        for (c in mensajes) for (fase in fases) for (mismaConexion in listOf(true, false)) for (conPropiedad in listOf(true, false)) {
+            combinaciones++
+            val paso = decidir(c.m, generacion = if (mismaConexion) 2 else 1, ref, due, fase, vigilada = 2, propia = if (conPropiedad) 2 else 1)
+            val donde = "${c.nombre} · $fase · misma=$mismaConexion · propiedad=$conPropiedad → $paso"
+            val vivo = fase != null && fase != FaseDelIntento.CERRADO && fase != FaseDelIntento.ESPERANDO
+            if (!vivo || !mismaConexion) assertEquals("sin intento vivo o de otra conexión sólo es diario: $donde", Paso.NADA, paso)
+            if (paso == Paso.CERRAR) assertTrue("sólo cierra lo propio, en la conexión de la propiedad: $donde", c.propio && conPropiedad)
+            if (paso == Paso.GANAR) assertTrue("sólo gana el acuse propio al iniciar: $donde", c.propio && fase == FaseDelIntento.INICIANDO)
+            if (!c.propio && vivo && mismaConexion) assertEquals("lo ajeno deja la duda: $donde", Paso.DUDA, paso)
+            if (c.m is MensajeDeLaMaquina.UpdateCredit || c.m is MensajeDeLaMaquina.Sockets || c.m is MensajeDeLaMaquina.Pong) {
+                assertTrue("nada sin folio cierra ni gana: $donde", paso != Paso.CERRAR && paso != Paso.GANAR)
+            }
+        }
+        assertEquals(13 * 8 * 2 * 2, combinaciones)
+    }
+
+    @Test
+    fun `Codex r2 la tabla de decidir - los casos que importan`() {
+        val ref = "AQ00000000000A"
+        fun d(json: String, fase: FaseDelIntento, gen: Int = 2, propia: Int? = 2) = decidir(leerMensaje(json)!!, gen, ref, due, fase, 2, propia)
+        val tabla = listOf(
+            d(status(ref), FaseDelIntento.INICIANDO, propia = null) to Paso.GANAR,
+            d(status(ref), FaseDelIntento.COBRANDO) to Paso.NOTICIA,
+            d(status(ref), FaseDelIntento.COBRANDO, propia = 1) to Paso.NOTICIA,           // tras reconectar: sólo se enseña
+            d(pagoCompletado(ref, credit = due, change = 0), FaseDelIntento.COBRANDO) to Paso.CERRAR,
+            d(pagoCompletado(ref, credit = due, change = 0), FaseDelIntento.CANCELANDO) to Paso.CERRAR,
+            d(pagoCompletado(ref, credit = due, change = 0), FaseDelIntento.COBRANDO, propia = 1) to Paso.DUDA,   // H2
+            d(pagoCompletado(ref, credit = due, change = 0), FaseDelIntento.INICIANDO, propia = null) to Paso.DUDA,
+            d(cancelada(ref, credit = 0, change = 0), FaseDelIntento.RECONECTANDO, propia = 1) to Paso.DUDA,
+            d(status("DOTACION"), FaseDelIntento.COBRANDO) to Paso.DUDA,
+            d(creditoDe(1_000, 500), FaseDelIntento.SIGUES_AHI) to Paso.DUDA,                // H14
+            d(credito(1_000), FaseDelIntento.SIGUES_AHI) to Paso.NOTICIA,
+            d(socketsLibre(), FaseDelIntento.INICIANDO, propia = null) to Paso.NADA,       // una máquina libre nunca decide
+            d(pagoCompletado(ref, credit = due, change = 0), FaseDelIntento.ESPERANDO) to Paso.NADA,   // la duda: sólo diario
+            d(pagoCompletado(ref, credit = due, change = 0), FaseDelIntento.COBRANDO, gen = 1) to Paso.NADA,   // otra conexión
+        )
+        tabla.forEachIndexed { i, (paso, esperado) -> assertEquals("renglón $i", esperado, paso) }
     }
 }

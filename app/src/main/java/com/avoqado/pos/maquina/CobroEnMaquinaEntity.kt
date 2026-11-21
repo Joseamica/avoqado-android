@@ -46,7 +46,9 @@ data class CobroEnMaquinaEntity(
     val estado: String,
     /** La conexión en que la máquina aceptó nuestro folio y `Due` (la propiedad del cobro). */
     val generacionPropia: Int? = null,
+    /** Ya no se escribe (Codex código r2 H13: la hora de recepción no es evidencia); la columna se queda por las bases v20–v22. */
     val ultimoCreditoEn: Long? = null,
+    /** Lo más que la PC vio entrar de este folio (del diario: su `status` o el `updateCredit` atribuible); al cerrar, lo de la máquina. */
     val creditCents: Int = 0,
     val changeDispensedCents: Int = 0,
     /** `"1"` devolver (botón del cliente) o `"2"` guardar (abandono); se guarda ANTES de mandar el `cancel`. */
@@ -61,8 +63,16 @@ data class CobroEnMaquinaEntity(
     val dudaSubida: Boolean = false,
     /** El 409/422 del SERVIDOR (C4), visible. */
     val conflicto: String? = null,
-    val ticketImpreso: Boolean = false,
-    /** Los últimos mensajes de la máquina de este intento, tal cual llegaron (≤ 8 KB): la evidencia para el gerente. */
+    /**
+     * El papel del folio ([TicketDelCobro]: pendiente, impreso o imprimiéndose). La columna es INTEGER NOT NULL desde la v20 (antes se
+     * leía como Boolean): el 2 de «imprimiéndose» no cambia el esquema (Codex código r2 H9).
+     */
+    val ticketImpreso: Int = TicketDelCobro.PENDIENTE,
+    /**
+     * El DIARIO del folio (Codex código r2, bloque A): cada mensaje físico de la máquina que es de ESTE folio, tal cual llegó y una sola
+     * vez (`g<generación> <json>`, ≤ 8 KB, [DiarioDelFolio]). Se escribe ANTES de decidir nada y por el folio del mensaje, nunca por el
+     * intento en memoria. Es la evidencia para el gerente y lo que sube la duda.
+     */
     val mensajesCrudos: String = "",
     /**
      * v21: la última respuesta FINAL del SERVIDOR, tal cual (`outcome`, `resolvedBy`, los importes con `excedenteCents` y
@@ -77,9 +87,8 @@ data class CobroEnMaquinaEntity(
     /** v22 (Codex código r1 #8): el desenlace que decidió el SERVIDOR de un `RESUELTO`. Sólo `PAGADO` (o desconocido) sigue frenando la tarjeta. */
     val desenlaceDelServidor: String? = null,
     /**
-     * v22 (Codex código r1 #6): el cierre de NUESTRO folio y `Due` que llegó por la conexión de la propiedad DESPUÉS de que el intento
-     * quedó «Esperando»: sube como cierre (la fila sigue en duda hasta que el SERVIDOR conteste TERMINADO). Sus importes van en
-     * `creditCents`/`changeDispensedCents`/`cierreEn`, y `subido` dice si ya llegó.
+     * v22, ya no se escribe (Codex código r2 H2): un cierre que llega con la fila en duda es sólo evidencia en el diario, nunca un
+     * desenlace. La columna se queda por las bases v22.
      */
     val cierreTardio: String? = null,
     /** v22 (Codex código r1 #13): lo que la máquina le debe al cliente (lo físico al cerrar; lo del SERVIDOR al subir). */
@@ -93,6 +102,14 @@ data class CobroEnMaquinaEntity(
  * escritura de un desenlace sólo toca una fila `EN_CURSO`: un cierre repetido o tardío no reescribe lo que ya terminó.
  */
 internal object CobroEnMaquinaSql {
+    /**
+     * Codex código r2 H8: un cierre cuyo folio el SERVIDOR atribuye a OTRA PC (409 `OTRA_PC`) no se marca subido, pero su evidencia ya
+     * está allá como incidencia (`conflicto` + `respuestaServidor`): no frena la sesión ni se reintenta.
+     */
+    private const val SIN_INCIDENCIA_EN_EL_SERVIDOR = "(conflicto IS NULL OR respuestaServidor IS NULL)"
+
+    /** Codex código r2 H1: la evidencia de la fila es la que se mandó (el diario sólo crece: otro texto = otra observación). */
+    private const val LA_MISMA_EVIDENCIA = "mensajesCrudos = :crudos AND creditCents = :creditCents"
 
     /** 🔴 La tabla como la creó la v20 (`MIGRATION_19_20`), congelada: la v21 le agrega [MIGRAR_20_21]. */
     const val CREAR_TABLA_V20: String =
@@ -174,13 +191,18 @@ internal object CobroEnMaquinaSql {
         "DELETE FROM cobros_en_maquina WHERE referenceCC = :referenceCC AND estado = 'EN_CURSO' AND generacionPropia IS NULL"
 
     const val GANAR_PROPIEDAD: String =
-        "UPDATE cobros_en_maquina SET generacionPropia = :generacion, mensajesCrudos = :crudos " +
-            "WHERE referenceCC = :referenceCC AND estado = 'EN_CURSO'"
+        "UPDATE cobros_en_maquina SET generacionPropia = :generacion WHERE referenceCC = :referenceCC AND estado = 'EN_CURSO'"
 
-    /** Codex código r1 #6: el crédito y lo que vio la PC, juntos: la duda sube siempre lo último que quedó en disco. */
-    const val ANOTAR_CREDITO: String =
-        "UPDATE cobros_en_maquina SET creditCents = :creditCents, ultimoCreditoEn = :ahora, mensajesCrudos = :crudos " +
-            "WHERE referenceCC = :referenceCC AND estado = 'EN_CURSO'"
+    /**
+     * Codex código r2, bloque A: el diario de un folio crece con [CobroEnMaquinaDao.anotarMensaje], con la condición de que nadie lo
+     * haya cambiado desde que se leyó (sin carrera aunque dos escriban). Sólo en una fila abierta o en duda; en la duda es evidencia
+     * nueva y vuelve a subir (`dudaSubida = 0`). Lo final ya no cambia: un cierre repetido es retransmisión.
+     */
+    const val ESCRIBIR_DIARIO: String =
+        "UPDATE cobros_en_maquina SET mensajesCrudos = :nuevo, creditCents = :credito, " +
+            "dudaSubida = CASE WHEN estado = 'ESPERANDO' THEN 0 ELSE dudaSubida END " +
+            "WHERE referenceCC = :referenceCC AND mensajesCrudos = :anterior AND creditCents = :creditoAnterior " +
+            "AND estado IN ('EN_CURSO', 'ESPERANDO')"
 
     const val PEDIR_CANCEL: String =
         "UPDATE cobros_en_maquina SET cancelPedido = :cancelvalue, cancelPedidoEn = :ahora " +
@@ -188,17 +210,17 @@ internal object CobroEnMaquinaSql {
 
     /**
      * El desenlace y la marca de «por subir» en UN `UPDATE`: la fila es la cola (R4-1). Codex código r1 #15: `cierreEn` es la hora que
-     * dice la máquina (`conocido`), o la de la PC sólo para mostrar (`conocido = 0`: sube sin hora). #13: lo físico que se le debe.
+     * dice la máquina (`conocido`), o la de la PC sólo para mostrar (`conocido = 0`: sube sin hora). #13: lo físico que se le debe. El
+     * mensaje del cierre ya está en el diario (se anota antes de decidir).
      */
     const val CERRAR: String =
         "UPDATE cobros_en_maquina SET estado = :estado, creditCents = :creditCents, " +
             "changeDispensedCents = :changeDispensedCents, cierreEn = :cierreEn, cierreConocido = :conocido, " +
-            "resueltoPor = 'MAQUINA', subido = 0, mensajesCrudos = :crudos, aDeberCents = :aDeber " +
+            "resueltoPor = 'MAQUINA', subido = 0, aDeberCents = :aDeber " +
             "WHERE referenceCC = :referenceCC AND estado = 'EN_CURSO'"
 
     const val A_ESPERANDO: String =
-        "UPDATE cobros_en_maquina SET estado = 'ESPERANDO', dudaSubida = 0, mensajesCrudos = :crudos " +
-            "WHERE referenceCC = :referenceCC AND estado = 'EN_CURSO'"
+        "UPDATE cobros_en_maquina SET estado = 'ESPERANDO', dudaSubida = 0 WHERE referenceCC = :referenceCC AND estado = 'EN_CURSO'"
 
     /** Al arrancar: un `EN_CURSO` que no es el cobro vivo quedó de un proceso que murió. No se sabe cómo terminó. */
     const val HUERFANOS_A_ESPERANDO: String =
@@ -206,37 +228,29 @@ internal object CobroEnMaquinaSql {
             "WHERE estado = 'EN_CURSO' AND referenceCC != :salvo"
 
     /**
-     * Lo que la máquina dice de un folio en duda se guarda; el estado no cambia (lo resuelve un gerente). Codex código r1 #6: es una
-     * observación nueva y vuelve a subir (`dudaSubida = 0`): el SERVIDOR la agrega a la duda.
-     */
-    const val ANOTAR_EVIDENCIA: String =
-        "UPDATE cobros_en_maquina SET mensajesCrudos = :crudos, dudaSubida = 0 WHERE referenceCC = :referenceCC AND estado = 'ESPERANDO'"
-
-    /**
-     * Codex código r1 #6: el cierre tardío de NUESTRO folio (por la conexión de la propiedad) en una fila que ya está en duda. Sólo el
-     * primero; la fila sigue `ESPERANDO` (la tarjeta sigue frenada) hasta que el SERVIDOR conteste TERMINADO.
-     */
-    const val ANOTAR_CIERRE_TARDIO: String =
-        "UPDATE cobros_en_maquina SET cierreTardio = :desenlace, creditCents = :creditCents, changeDispensedCents = :changeDispensedCents, " +
-            "cierreEn = :cierreEn, cierreConocido = :conocido, subido = 0, mensajesCrudos = :crudos " +
-            "WHERE referenceCC = :referenceCC AND estado = 'ESPERANDO' AND cierreTardio IS NULL"
-
-    /**
-     * R5#2: lo que frena cerrar sesión, cambiar de sucursal y cambiar la IP o desemparejar la máquina: lo que SÓLO está en esta PC. Un
-     * intento abierto, una duda (o su cierre tardío) que el SERVIDOR todavía no tiene, o un cierre final sin acuse. Codex código r1 #9:
-     * lo que el SERVIDOR ya guardó como incidencia (una duda subida, en conflicto o no) ya no frena: se sigue consultando por su folio.
-     * `:venueId` null = todas.
+     * R5#2: lo que frena cerrar sesión y cambiar de sucursal: lo que SÓLO está en esta PC. Un intento abierto, una duda que el SERVIDOR
+     * todavía no tiene, o un cierre final sin acuse. Codex código r1 #9: lo que el SERVIDOR ya guardó como incidencia (una duda subida,
+     * en conflicto o no) ya no frena la sesión; la venta sigue frenada por [BLOQUEAN_LA_VENTA], que no depende de la casilla, y el
+     * emparejamiento por [FRENAN_LA_MAQUINA]. `:venueId` null = todas.
      */
     const val PENDIENTES: String =
         "SELECT COUNT(*) FROM cobros_en_maquina WHERE (:venueId IS NULL OR venueId = :venueId) " +
-            "AND (estado = 'EN_CURSO' " +
-            "OR (estado = 'ESPERANDO' AND (dudaSubida = 0 OR (cierreTardio IS NOT NULL AND subido = 0 AND conflicto IS NULL))) " +
-            "OR (estado IN ('PAGADO', 'CANCELADO', 'GUARDADO') AND subido = 0))"
+            "AND (estado = 'EN_CURSO' OR (estado = 'ESPERANDO' AND dudaSubida = 0) " +
+            "OR (estado IN ('PAGADO', 'CANCELADO', 'GUARDADO') AND subido = 0 AND $SIN_INCIDENCIA_EN_EL_SERVIDOR))"
+
+
+    /**
+     * R5#2 y Codex código r2 H1: lo que frena DESEMPAREJAR la PC o cambiarle la IP o la sucursal (y por eso apagar la máquina): además de
+     * [PENDIENTES], CUALQUIER intento abierto o en duda, aunque el SERVIDOR ya lo tenga. Mientras el dinero de una venta siga en duda, la PC
+     * conserva su máquina. De todas las sucursales.
+     */
+    const val FRENAN_LA_MAQUINA: String =
+        "SELECT COUNT(*) FROM cobros_en_maquina WHERE estado IN ('EN_CURSO', 'ESPERANDO') " +
+            "OR (estado IN ('PAGADO', 'CANCELADO', 'GUARDADO') AND subido = 0 AND $SIN_INCIDENCIA_EN_EL_SERVIDOR)"
 
     const val POR_SUBIR: String =
         "SELECT * FROM cobros_en_maquina " +
             "WHERE (estado IN ('PAGADO', 'CANCELADO', 'GUARDADO') AND subido = 0) OR (estado = 'ESPERANDO' AND dudaSubida = 0) " +
-            "OR (estado = 'ESPERANDO' AND cierreTardio IS NOT NULL AND subido = 0) " +
             "ORDER BY creadoEn ASC, referenceCC ASC"
 
     // MARK: - La subida (C4)
@@ -252,16 +266,6 @@ internal object CobroEnMaquinaSql {
             "OR (estado = 'ESPERANDO' AND dudaSubida = 0 AND (conflicto IS NULL OR respuestaServidor IS NOT NULL))) " +
             "ORDER BY creadoEn ASC, referenceCC ASC"
 
-    /** Codex código r1 #6: los cierres tardíos de dudas que el SERVIDOR ya tiene (la duda va primero: congela el carrito). */
-    const val TARDIOS_PARA_SUBIR: String =
-        "SELECT * FROM cobros_en_maquina WHERE venueId = :venueId AND estado = 'ESPERANDO' AND dudaSubida = 1 " +
-            "AND cierreTardio IS NOT NULL AND subido = 0 AND conflicto IS NULL ORDER BY creadoEn ASC, referenceCC ASC"
-
-    /** El SERVIDOR ya guardó el cierre tardío (o su incidencia): no se reenvía; la duda sigue consultándose. */
-    const val MARCAR_TARDIO_SUBIDO: String =
-        "UPDATE cobros_en_maquina SET subido = 1, conflicto = :conflicto, respuestaServidor = :respuesta " +
-            "WHERE referenceCC = :referenceCC AND estado = 'ESPERANDO' AND cierreTardio IS NOT NULL"
-
     /**
      * Las dudas ya subidas que esperan la decisión del gerente (R5#6): se consultan cada 60 s. Codex código r1 #9: también las que el
      * SERVIDOR guardó en conflicto (con su incidencia): siguen consultándose por su folio hasta que se resuelvan.
@@ -270,10 +274,19 @@ internal object CobroEnMaquinaSql {
         "SELECT * FROM cobros_en_maquina WHERE venueId = :venueId AND estado = 'ESPERANDO' AND dudaSubida = 1 " +
             "ORDER BY creadoEn ASC, referenceCC ASC"
 
-    /** Codex código r1 #9: el SERVIDOR guardó la duda en conflicto con su incidencia: ya la tiene (no frena), se ve y se consulta. */
+    /**
+     * Codex código r1 #9: el SERVIDOR guardó la duda en conflicto con su incidencia: ya la tiene (no frena), se ve. Codex código r2 H1: el
+     * acuse es de la evidencia que SE MANDÓ: si mientras tanto llegó otra al diario, ésa sigue por subir.
+     */
     const val MARCAR_DUDA_EN_CONFLICTO: String =
-        "UPDATE cobros_en_maquina SET dudaSubida = 1, conflicto = :conflicto, respuestaServidor = :respuesta " +
-            "WHERE referenceCC = :referenceCC AND estado = 'ESPERANDO'"
+        "UPDATE cobros_en_maquina SET dudaSubida = CASE WHEN $LA_MISMA_EVIDENCIA THEN 1 ELSE dudaSubida END, " +
+            "conflicto = :conflicto, respuestaServidor = :respuesta WHERE referenceCC = :referenceCC AND estado = 'ESPERANDO'"
+
+
+    /** Codex código r2 H8: el SERVIDOR atribuye este folio a OTRA PC: su incidencia queda visible y no se reintenta; NO es subido. */
+    const val MARCAR_DE_OTRA_PC: String =
+        "UPDATE cobros_en_maquina SET conflicto = :conflicto, respuestaServidor = :respuesta " +
+            "WHERE referenceCC = :referenceCC AND estado IN ('PAGADO', 'CANCELADO', 'GUARDADO') AND subido = 0"
 
     /**
      * El SERVIDOR repitió el folio y los importes (200), guardó el dinero como incidencia (202) o rechazó el cierre DEJANDO su
@@ -291,14 +304,13 @@ internal object CobroEnMaquinaSql {
         "UPDATE cobros_en_maquina SET conflicto = :conflicto WHERE referenceCC = :referenceCC " +
             "AND ((estado IN ('PAGADO', 'CANCELADO', 'GUARDADO') AND subido = 0) OR estado = 'ESPERANDO')"
 
-    /** Rediseño del SERVIDOR (r6-4): la duda ABIERTA, con la `version` de su evidencia (la que manda el gerente al resolverla). */
+    /**
+     * Rediseño del SERVIDOR (r6-4): la duda ABIERTA, con la `version` de su evidencia. Codex código r2 H1: sólo si en la fila sigue la
+     * evidencia que se mandó; si llegó una observación nueva mientras tanto, la fila sigue por subir (un acuse viejo no la tapa).
+     */
     const val MARCAR_DUDA_ABIERTA: String =
         "UPDATE cobros_en_maquina SET dudaSubida = 1, versionDeLaDuda = COALESCE(:version, versionDeLaDuda) " +
-            "WHERE referenceCC = :referenceCC AND estado = 'ESPERANDO'"
-
-    /** r6-4: llegó evidencia nueva mientras el gerente resolvía (409 `CASH_MACHINE_DOUBT_CHANGED`): la versión al día. */
-    const val ANOTAR_VERSION_DE_LA_DUDA: String =
-        "UPDATE cobros_en_maquina SET versionDeLaDuda = :version WHERE referenceCC = :referenceCC AND estado = 'ESPERANDO'"
+            "WHERE referenceCC = :referenceCC AND estado = 'ESPERANDO' AND $LA_MISMA_EVIDENCIA"
 
     /** `1` = el SERVIDOR ya tiene la duda; `0` = la perdió (404 al consultarla): se vuelve a subir. */
     const val MARCAR_DUDA_SUBIDA: String =
@@ -329,17 +341,33 @@ internal object CobroEnMaquinaSql {
             "AND (estado IN ('PAGADO', 'CANCELADO') OR (estado = 'RESUELTO' AND desenlaceDelServidor IN ('PAGADO', 'CANCELADO')))"
 
     /**
-     * Codex código r1 #12: las ventas pagadas (por la máquina, o las que un gerente resolvió como venta) cuyo ticket no salió: la PC se
-     * cerró entre el PAGADO y la impresión, o la impresora falló. Se ofrecen con un botón; nunca se imprimen solas. Sin las que quedaron
-     * como incidencia (no son venta).
+     * Codex código r1 #12 y r2 H9/H10: los cobros pagados (por la máquina, o los que un gerente resolvió como PAGADO) cuyo papel no salió:
+     * la PC se cerró entre el PAGADO y la impresión, la impresora falló, o la PC murió imprimiéndolo (2: se da como copia). Se ofrecen con
+     * un botón; nunca se imprimen solos. El papel lo decide [papelDeLaFila]: con incidencia es el comprobante del dinero, no un ticket.
      */
     const val TICKETS_SIN_IMPRIMIR: String =
-        "SELECT * FROM cobros_en_maquina WHERE venueId = :venueId AND ticketImpreso = 0 " +
-            "AND (estado = 'PAGADO' OR (estado = 'RESUELTO' AND desenlaceDelServidor = 'PAGADO' AND conflicto IS NULL)) " +
+        "SELECT * FROM cobros_en_maquina WHERE venueId = :venueId AND ticketImpreso IN (0, 2) " +
+            "AND (estado = 'PAGADO' OR (estado = 'RESUELTO' AND desenlaceDelServidor = 'PAGADO')) " +
             "ORDER BY creadoEn ASC, referenceCC ASC LIMIT 50"
 
-    /** C7: el ticket del cobro salió de verdad (resultado real de la impresora). */
-    const val MARCAR_TICKET_IMPRESO: String = "UPDATE cobros_en_maquina SET ticketImpreso = 1 WHERE referenceCC = :referenceCC"
+    /**
+     * Codex código r2 H9: quien imprime el papel ORIGINAL de un folio lo reclama primero; sólo uno gana (1 = ganó). Si la PC muere entre
+     * el papel y la marca, el folio queda «imprimiéndose» y se ofrece como reimpresión (copia), nunca como otro original.
+     */
+    const val RECLAMAR_TICKET: String =
+        "UPDATE cobros_en_maquina SET ticketImpreso = 2 WHERE referenceCC = :referenceCC AND ticketImpreso = 0"
+
+    /** El resultado REAL de la impresora para un papel reclamado: 1 salió, 0 no salió (otra vez pendiente), 2 se queda como copia por dar. */
+    const val TERMINAR_TICKET: String =
+        "UPDATE cobros_en_maquina SET ticketImpreso = :valor WHERE referenceCC = :referenceCC AND ticketImpreso = 2"
+}
+
+/** El papel de un folio (columna `ticketImpreso`). */
+object TicketDelCobro {
+    const val PENDIENTE = 0
+    const val IMPRESO = 1
+    /** Reclamado por quien lo imprime; si la PC murió aquí, el papel pudo salir: se ofrece como copia. */
+    const val IMPRIMIENDO = 2
 }
 
 /**
@@ -354,3 +382,22 @@ val CobroEnMaquinaEntity.desenlace: Desenlace?
             ?.let { outcome -> Desenlace.entries.firstOrNull { it.name == outcome } }
         else -> null
     }
+
+/**
+ * Codex código r2, bloque A: el diario de UN folio. Cada mensaje físico va una sola vez: lo que se compara es el mensaje tal cual lo
+ * mandó la máquina, sin la hora en que llegó ni la conexión (H13: APS repite el mismo `status` y eso no es evidencia nueva ni sube la
+ * versión de la duda). Se guarda con su generación (`g<n> <json>`) para quien lo revise. Tope de 8 KB: se van primero los más viejos.
+ */
+internal object DiarioDelFolio {
+    const val MAXIMO = 8_192
+
+    /** El diario con [crudo] agregado, o null si ese mensaje ya estaba. */
+    fun agregar(diario: String, generacion: Int, crudo: String): String? {
+        val fisico = crudo.replace('\r', ' ').replace('\n', ' ')
+        val lineas = diario.lines().filter { it.isNotBlank() }
+        if (lineas.any { it.substringAfter(' ') == fisico }) return null
+        val nuevas = ArrayDeque(lineas + "g$generacion $fisico")
+        while (nuevas.size > 1 && nuevas.sumOf { it.length + 1 } > MAXIMO) nuevas.removeFirst()
+        return nuevas.joinToString("\n")
+    }
+}

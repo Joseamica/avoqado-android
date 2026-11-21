@@ -4,6 +4,7 @@ import com.avoqado.pos.core.data.network.ApiConstants
 import com.avoqado.pos.core.data.network.ForbiddenInterceptor
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -51,6 +52,19 @@ class CierresDeLaMaquinaApi @Inject constructor(private val client: OkHttpClient
     suspend fun cotizar(venueId: String, pedido: JSONObject) =
         llamar(Request.Builder().post(pedido.toString().toRequestBody(JSON)), "/mobile/venues/$venueId/cash-machine/quote", null, rapido)
 
+    /**
+     * `GET …/cash-machine/doubts?status=ABIERTO&kind=ESPERANDO` (R4-4, Codex código r2 H6): las dudas del NEGOCIO para la bandeja del
+     * gerente, con SU sesión (`cash-machine:resolve`), por páginas: `{ data, total, nextCursor }`. [folio]: sólo ése (la evidencia al día
+     * tras un 409 de versión, H7).
+     */
+    suspend fun listarDudas(venueId: String, cursor: String? = null, folio: String? = null): RespuestaDelServidor {
+        val url = (baseUrl + "/mobile/venues/$venueId/cash-machine/doubts").toHttpUrl().newBuilder()
+            .addQueryParameter("status", "ABIERTO").addQueryParameter("kind", "ESPERANDO").addQueryParameter("limit", DUDAS_POR_PAGINA.toString())
+            .apply { cursor?.let { addQueryParameter("cursor", it) }; folio?.let { addQueryParameter("folio", it) } }
+            .build()
+        return llamar(Request.Builder().get(), url.toString().removePrefix(baseUrl), null)
+    }
+
     /** `POST …/cash-machine/doubts/:referenceCC/resolve` (R4-4): el gerente, con SU sesión (`cash-machine:resolve`). */
     suspend fun resolverDuda(venueId: String, referenceCC: String, cuerpo: JSONObject) =
         llamar(Request.Builder().post(cuerpo.toString().toRequestBody(JSON)), "/mobile/venues/$venueId/cash-machine/doubts/$referenceCC/resolve", null)
@@ -72,6 +86,7 @@ class CierresDeLaMaquinaApi @Inject constructor(private val client: OkHttpClient
 
     companion object {
         const val CREDENCIAL = "X-Cash-Machine-Credential"
+        const val DUDAS_POR_PAGINA = 50
         private val JSON = "application/json; charset=utf-8".toMediaType()
     }
 }
