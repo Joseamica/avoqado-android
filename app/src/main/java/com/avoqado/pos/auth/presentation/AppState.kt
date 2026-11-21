@@ -65,6 +65,8 @@ class AppState @Inject constructor(
     private val pendingGrantQueue: com.avoqado.pos.customers.data.PendingGrantQueue? = null,
     /** D72: al volver la red se releen los tiempos de servicio si quedó su aviso. Default para las pruebas de JVM. */
     private val serviceCoursesRepository: com.avoqado.pos.tables.data.ServiceCoursesRepository? = null,
+    /** D17: ¿hay venta a medias? La misma señal del cambio de papel (#325, D3). Default para las pruebas de JVM: nunca. */
+    private val activeCartState: com.avoqado.pos.pos.data.ActiveCartState? = null,
 ) : ViewModel() {
 
     /**
@@ -234,9 +236,14 @@ class AppState @Inject constructor(
     ) {
         if (replaceInFlight) settingsRefreshJob?.cancel() else if (settingsRefreshJob?.isActive == true) return
         settingsRefreshJob = viewModelScope.launch {
+            val antes = if (rebuildNavigation) loQueLaPantallaNoEscucha() else null
             tpvSettingsRepository.refreshSettings()
             if (_isLoggedIn.value) {
-                if (rebuildNavigation) refreshTabs() else {
+                // D17: rehacer la navegación borra el carrito. Tras `/settings` del arranque o del login sólo se rehace si cambió
+                // algo que la pantalla lee al montarse y no escucha, y nunca con una venta a medias (como refreshPaidAccess y el
+                // papel de vales del #325). Iguales, sin red o con error: la venta empezada en esos segundos se queda.
+                val rehacer = rebuildNavigation && loQueLaPantallaNoEscucha() != antes && activeCartState?.hasItems != true
+                if (rehacer) refreshTabs() else {
                     _reservationsEnabled.value = secureStorage.reservationsEnabled
                     _accessVersion.value += 1
                 }
@@ -244,6 +251,19 @@ class AppState @Inject constructor(
             }
         }
     }
+
+    /**
+     * D17: lo que `/settings` puede cambiar y la pantalla sólo lee al montarse (por eso se rehacía): sucursal, rol, permisos
+     * (en cualquier orden) y qué funciones da el plan. El plan se compara por lo que da, no por la foto guardada: ésta trae la
+     * hora de lectura, que cambia en cada respuesta aunque el plan sea el mismo. La terminal, el papel de vales y el modo no
+     * van: ya están en la llave y la cambian solos.
+     */
+    private fun loQueLaPantallaNoEscucha(): List<Any?> = listOf(
+        secureStorage.venueId,
+        secureStorage.userRole,
+        secureStorage.venuePermissions.toSet(),
+        PlanManager.FEATURE_REQUIRED_TIER.keys.filter(planManager::hasFeature),
+    )
 
     /**
      * D3: los momentos en que la compuerta del papel del aparato vuelve a preguntar, y sólo ésos: arranque con sesión,
