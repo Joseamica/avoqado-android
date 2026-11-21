@@ -162,12 +162,14 @@ class KDSViewModel @Inject constructor(
     private var previousOrderIds: Set<String> = emptySet()
     private var hasLoadedFromAPI = false
     /**
-     * D14 (Codex r2): cada lectura del tablero suma uno al arrancar y sólo publica si sigue siendo la última que arrancó,
-     * venga de donde venga (sondeo, abrir o restaurar, páginas, elegir estación, acciones de la cocina). Una que contesta
-     * tarde no pisa a una más nueva que ya pintó: pasaba entre el sondeo y «Anterior», y con la ventana de WINDOWS minimizada
-     * también entre una página y la lectura al restaurar. Todo corre en el hilo principal: no hace falta atómico.
+     * D14 (Codex r2 y r3): cada lectura del tablero toma un número al arrancar. Sólo publica si arrancó DESPUÉS del último
+     * [alOcultarse] o de la última apertura ([pisoDeLecturas]): una lectura de la vez anterior que se vio el tablero (una
+     * página o una acción que quedó en vuelo al minimizar o al mandar la app al fondo) ya no pinta, ni pone la línea base, ni
+     * guarda la foto de la vez nueva. Dentro de una misma apertura no se arbitra entre lecturas, igual que antes de D14.
+     * Todo corre en el hilo principal: no hace falta atómico.
      */
     private var lecturasDelTablero = 0L
+    private var pisoDeLecturas = 0L
 
     /** M4: ids marcados LISTO hace poco → cuándo. Ver `bumpsVigentes()`. */
     private val bumpsRecientes = mutableMapOf<String, Long>()
@@ -208,6 +210,7 @@ class KDSViewModel @Inject constructor(
         // M3: este ViewModel sigue vivo con la pantalla cerrada, así que sin esto lo que llegó mientras tanto sonaba
         // como «comanda nueva». El primer tablero de ESTA apertura es la línea base — nunca suena.
         hasLoadedFromAPI = false
+        pisoDeLecturas = lecturasDelTablero // D14: lo que quedó en vuelo de la vez anterior no pinta en ésta
         aperturas++
         val mia = aperturas
         pantallaVisible = true
@@ -246,6 +249,7 @@ class KDSViewModel @Inject constructor(
      */
     fun alOcultarse() {
         aperturas++
+        pisoDeLecturas = lecturasDelTablero // D14: ninguna lectura en vuelo pinta ya sobre el tablero oculto ni sobre la próxima apertura
         pantallaVisible = false
         preparationDelivery?.setDisplayedKeys(null, emptySet())
         sincronizarReceptor()
@@ -304,8 +308,8 @@ class KDSViewModel @Inject constructor(
         currentCoroutineContext().ensureActive()
         // Codex 3.6 (#7): si mientras tanto eligieron OTRA estación (o cambió la sucursal), esta respuesta es de la anterior:
         // no se pinta bajo el encabezado nuevo, ni se guarda como su foto, ni retira copias locales. La nueva trae la suya.
-        // D14 (Codex r2 #1): y sólo publica la ÚLTIMA lectura que arrancó ([lecturasDelTablero]).
-        val sigue = mia == lecturasDelTablero && (_vista.value as? VistaDeCocina.Tablero)?.estacion?.id == tablero.estacion.id &&
+        // D14 (Codex r2 #1, r3 #1): y sólo si arrancó después de la última vez que el tablero se ocultó o se abrió.
+        val sigue = mia > pisoDeLecturas && (_vista.value as? VistaDeCocina.Tablero)?.estacion?.id == tablero.estacion.id &&
             kdsRepository.venueIdActual() == venueId && boardOffset == requestedOffset
         if (!sigue) return
         lectura.fold(
