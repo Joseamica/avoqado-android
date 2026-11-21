@@ -9,7 +9,9 @@ import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -87,6 +89,9 @@ fun CloseDrawerSheet(
                 // El teclado no tapa esta hoja: Material3 le fija ADJUST_NOTHING
                 // a su ventana, asi que el ajuste va en el contenido.
                 .imePadding()
+                // Codex r1 #3 (F1 P9): con retiros, la línea de cobros por confirmar y el teclado abierto —o una ventana baja de
+                // WINDOWS— el botón «Cerrar caja» se salía de la hoja. Se desplaza.
+                .verticalScroll(rememberScrollState())
                 .fillMaxWidth()
                 .padding(horizontal = AvoqadoTheme.spacing.lg)
                 .padding(bottom = AvoqadoTheme.spacing.xxxl),

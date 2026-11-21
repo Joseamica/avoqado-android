@@ -11,6 +11,8 @@ import com.avoqado.pos.printing.data.model.PaperWidth
  * 🔴 F1, fila 12 / P9 (B4 de `docs/audit/2026-11-17-f1-pantallas/diseno.md`): los cobros con tarjeta por confirmar de ESTE aparato
  * (la lista de la banda «Cobros por confirmar»), en el corte parcial, en «Cerrar caja» y en el corte final, en pantalla y en papel.
  * Sólo informa: NO frena el cierre. Sin red sale igual (la lista vive en el aparato).
+ * 🔴 Codex r1 #1: sin el «No están en el total.» de B4: si la terminal sí registró el cobro y este aparato aún no se entera, ese
+ * cobro YA viene en el desglose del servidor, y el corte lo negaría.
  *
  * @param completo `false` si a alguna fila le falta el importe o la propina: el total es un mínimo («al menos»).
  */
@@ -24,9 +26,6 @@ data class PorConfirmarEnElCorte(val cuantos: Int, val cents: Int, val completo:
     val texto: String get() = "$etiqueta: $importe"
 
     companion object {
-        /** La segunda mitad del texto B4: el desglose y las ventas netas no las cuentan. */
-        const val NO_ESTAN_EN_EL_TOTAL = "No están en el total."
-
         /**
          * Las dudas vivas que ya existían al terminar el turno ([finDelTurnoMillis] = `closedAt`; `null` = la caja sigue abierta).
          * No se corta por la apertura: una duda de un turno anterior que nadie firmó sigue siendo dinero en duda y no se esconde.
@@ -299,7 +298,6 @@ object CorteTicketBuilder {
             p.printLine("COBROS CON TARJETA POR CONFIRMAR")
             p.setBold(false)
             p.printTwoColumns(if (it.cuantos == 1) "1 cobro" else "${it.cuantos} cobros", it.importe)
-            p.printLine(PorConfirmarEnElCorte.NO_ESTAN_EN_EL_TOTAL)
             p.printDivider()
         }
 

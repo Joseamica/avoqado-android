@@ -87,7 +87,9 @@ class CorteConCobrosPorConfirmarTest {
                 val t = papel(linea, ancho, parcial)
                 assertTrue("$ancho parcial=$parcial: falta el título", t.contains("COBROS CON TARJETA POR CONFIRMAR\n"))
                 assertTrue("$ancho parcial=$parcial: falta el importe", t.contains(dosColumnas("2 cobros", "$1,350.00", ancho) + "\n"))
-                assertTrue("$ancho parcial=$parcial: falta «No están en el total.»", t.contains("No están en el total.\n"))
+                // Codex r1 #1: si la terminal sí registró el cobro y el POS aún no se entera, ya viene en el desglose: no se afirma
+                // que «no están en el total».
+                assertFalse(t.contains("No están en el total"))
             }
         }
         assertTrue(papel(PorConfirmarEnElCorte.de(listOf(cobro("a", 2_000)), null)).contains(dosColumnas("1 cobro", "$20.00", PaperWidth.MM58)))
@@ -99,19 +101,21 @@ class CorteConCobrosPorConfirmarTest {
     private fun fuente(ruta: String) = java.io.File("src/main/java/com/avoqado/pos/cashdrawer/$ruta").readText()
 
     @Test
-    fun `P9 el corte en pantalla pinta la linea y que no esta en el total`() {
+    fun `P9 el corte en pantalla pinta la linea sin afirmar que no esta en el total`() {
         val corte = fuente("presentation/DailyReportView.kt")
         assertTrue(corte.contains("porConfirmar: com.avoqado.pos.cashdrawer.data.PorConfirmarEnElCorte? = null"))
-        assertTrue(corte.contains("ReportRow(label = linea.etiqueta, value = linea.importe)"))
-        assertTrue(corte.contains("PorConfirmarEnElCorte.NO_ESTAN_EN_EL_TOTAL"))
+        assertTrue(corte.contains("ReportRow(label = it.etiqueta, value = it.importe)"))
+        assertFalse(corte.contains("No están en el total"))
     }
 
     @Test
-    fun `P9 la hoja Cerrar caja pinta la linea`() {
+    fun `P9 la hoja Cerrar caja pinta la linea y su boton sigue al alcance`() {
         val hoja = fuente("presentation/CloseDrawerSheet.kt")
         assertTrue(hoja.contains("porConfirmar: com.avoqado.pos.cashdrawer.data.PorConfirmarEnElCorte? = null"))
         assertTrue(hoja.contains("porConfirmar?.let"))
         assertTrue(hoja.contains("text = it.texto"))
+        // Codex r1 #3: con retiros, la línea y el teclado abierto (o una ventana baja de WINDOWS), «Cerrar caja» no queda fuera.
+        assertTrue(hoja.contains(".verticalScroll(rememberScrollState())"))
     }
 
     @Test

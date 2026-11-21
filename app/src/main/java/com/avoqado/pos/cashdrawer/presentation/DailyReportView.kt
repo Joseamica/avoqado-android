@@ -292,15 +292,11 @@ fun DailyReportView(
                 }
             }
 
-            // F1 P9: la tarjeta en duda se ve en el corte; el desglose de arriba no la cuenta.
-            porConfirmar?.let { linea ->
+            // F1 P9: la tarjeta en duda se ve en el corte. No se dice si el desglose la cuenta: si la terminal sí la registró,
+            // ya viene arriba (Codex r1 #1).
+            porConfirmar?.let {
                 Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
-                ReportRow(label = linea.etiqueta, value = linea.importe)
-                Text(
-                    text = com.avoqado.pos.cashdrawer.data.PorConfirmarEnElCorte.NO_ESTAN_EN_EL_TOTAL,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                ReportRow(label = it.etiqueta, value = it.importe)
             }
 
             Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxl))
