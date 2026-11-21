@@ -49,11 +49,26 @@ class PreparationPeerProgressTest {
     private fun conPropio(action: PreparationAction = PreparationAction.RELEASE, reason: String? = null) =
         PreparationLocalLine(row, listOf(PreparationEffect("mio", 0, action, 3, null, reason)))
 
-    @Test fun `el mismo liberar completo de otro aparato converge sin rechazo ni cambio, tambien su ACKED`() {
+    @Test fun `el mismo liberar completo de otro aparato converge sin rechazo ni cambio`() {
         val propio = conPropio()
         assertEquals(propio, applyPreparationPeerProgress(propio, item, todo))
-        assertEquals(propio, applyPreparationPeerProgress(propio, item, todo.copy(phase = "ACKED")))
         assertEquals(PreparationCounts(PENDING = 3), propio.projected().preparation)
+    }
+    @Test fun `Codex r5 #3 su ACKED adelanta la copia, y si despues se rechaza el avance propio sigue lo confirmado`() {
+        val adelantada = applyPreparationPeerProgress(conPropio(), item, todo.copy(phase = "ACKED"))
+        assertEquals(1, adelantada.base.preparationRevision)
+        assertEquals(PreparationCounts(PENDING = 3), adelantada.projected().preparation)
+        val sinElPropio = adelantada.copy(effects = adelantada.effects.filterNot { it.intentId == "mio" }) // su REJECTED
+        assertEquals(PreparationCounts(PENDING = 3), sinElPropio.projected().preparation)
+    }
+    @Test fun `Codex r5 #2 un avance igual desde otro estado con el mismo numero de revision no converge`() {
+        val dos = row.copy(quantity = 2, preparation = PreparationCounts(PENDING = 1, PREPARING = 1))
+        val propio = PreparationLocalLine(dos, listOf(PreparationEffect("mio", 0, PreparationAction.READY, 1)))
+        val otroAntes = PreparationCounts(PREPARING = 1, READY = 1) // el otro aparato estaba en otro estado en «su» revisión 0
+        val ajeno = PreparationPeerItem(dos.sourceKey!!, dos.externalId!!, dos.stationId, 2, 0, otroAntes)
+        val listo = PreparationPeerProgress(venueId = "v1", deviceId = "d2", staffId = "staff2", deliveryId = "otro:0",
+            intentId = "otro", action = PreparationAction.READY, quantity = 1, items = listOf(ajeno))
+        assertNotNull(runCatching { applyPreparationPeerProgress(propio, ajeno, listo) }.exceptionOrNull())
     }
     @Test fun `un avance distinto sigue chocando, pero su ACKED adelanta la copia vieja en vez de rechazarla en cada pasada`() {
         val propio = conPropio(PreparationAction.CANCEL, "Se fue")

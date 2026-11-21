@@ -67,20 +67,26 @@ fun applyPreparationPeerProgress(saved: PreparationLocalLine, item: PreparationP
     if (prior != null) require(prior == effect) { "El identificador de esta acción ya tiene otro contenido" }
     if (command.phase == "REJECTED") return saved.copy(effects = saved.effects.filterNot { it.intentId == command.intentId })
     if (prior != null) return saved
-    // QA del conjunto (20-nov): este aparato ya tiene el MISMO avance pendiente (los dos liberan el producto completo, o los dos lo dan
-    // por listo, desde la misma revisión). Converge: se acepta sin cambiar nada, igual que el SERVIDOR (que contesta éxito a la segunda).
-    if (saved.effects.any { convergen(it, effect, item.before) }) return saved
     fun normal(c: PreparationCounts) = if (command.version == 1 && item.before.urgency == null) c.copy(urgency = null) else c
-    val current = saved.projected()
-    val enSuLugar = current.preparationRevision == item.expectedRevision && normal(current.preparation) == item.before
-    // Un ACKED es lo que ya confirmó el SERVIDOR. Si la copia guardada es justo la anterior y sólo un avance propio de esa misma revisión
-    // lo estorba, la copia se adelanta a lo confirmado (lo que traería refrescarla del servidor), en vez de rechazarlo en cada pasada.
-    if (!enSuLugar && command.phase == "ACKED" && saved.base.preparationRevision == item.expectedRevision &&
+    // Un ACKED es lo que ya confirmó el SERVIDOR. Si la copia guardada es justo la anterior (misma revisión y mismo estado) y sólo hay
+    // avances guardados de esa misma revisión, la copia se adelanta a lo confirmado (lo que traería refrescarla del servidor), en vez de
+    // rechazarlo en cada pasada. Va ANTES de converger (Codex r5 #3): si después se rechaza el avance propio, la copia ya dice lo confirmado.
+    if (command.phase == "ACKED" && saved.base.preparationRevision == item.expectedRevision &&
         normal(saved.base.preparation) == item.before && saved.effects.all { it.expectedRevision == item.expectedRevision }) {
         return saved.copy(base = saved.base.copy(preparationRevision = item.expectedRevision + 1,
             preparation = saved.base.preparation.move(command.action, command.quantity, command.from, command.reason, command.intentId)))
     }
-    require(enSuLugar) { "El estado cambió en otro aparato. Actualiza el producto antes de continuar." }
+    // QA del conjunto (20-nov): este aparato ya tiene el MISMO avance pendiente (los dos liberan el producto completo, o los dos lo dan
+    // por listo) desde la misma revisión Y el mismo estado (Codex r5 #2: un mismo número de revisión puede venir de avances distintos).
+    // Converge: se acepta sin cambiar nada, igual que el SERVIDOR (que contesta éxito a la segunda).
+    if (saved.effects.any { propio -> convergen(propio, effect, item.before) && runCatching {
+            saved.copy(effects = saved.effects.takeWhile { it != propio }).projected()
+                .let { antes -> antes.preparationRevision == item.expectedRevision && normal(antes.preparation) == item.before }
+        }.getOrDefault(false) }) return saved
+    val current = saved.projected()
+    require(current.preparationRevision == item.expectedRevision && normal(current.preparation) == item.before) {
+        "El estado cambió en otro aparato. Actualiza el producto antes de continuar."
+    }
     require(saved.effects.size < 20) { "Conecta para sincronizar las acciones guardadas de este producto" }
     return saved.copy(effects = saved.effects + effect)
 }
