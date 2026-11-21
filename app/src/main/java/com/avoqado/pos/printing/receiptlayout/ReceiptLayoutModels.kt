@@ -105,6 +105,24 @@ data class ReceiptSale(
     val paidCents: Long? = null,
     val remainingCents: Long? = null,
     val exchange: ReceiptExchange? = null,
+    /** C7: un cobro de la máquina de efectivo (sólo de las apps; el SERVIDOR no lo manda). */
+    val cashMachine: ReceiptCashMachine? = null,
+)
+
+/** C7: el comprobante de la máquina de efectivo (lo que le debemos al cliente, con el folio de la máquina). Sólo de las apps. */
+const val KIND_COMPROBANTE_DE_LA_MAQUINA = "CASH_MACHINE_DIFFERENCE"
+
+/**
+ * C7 (R3#11, R5#9): un cobro de la máquina de efectivo. [owedCents]: lo que la máquina le quedó a deber al cliente (el cambio que no
+ * dio; en el comprobante, la diferencia). [priceToConfirm]: hecho sin cotizar con red, el precio se confirma al subir. [title]: el
+ * del comprobante.
+ */
+@Serializable
+data class ReceiptCashMachine(
+    val referenceCC: String,
+    val owedCents: Long? = null,
+    val priceToConfirm: Boolean = false,
+    val title: String? = null,
 )
 
 @Serializable
@@ -207,6 +225,10 @@ object ReceiptLabels {
     const val REFERENCIA = "Referencia:"
     const val RECIBIDO = "Recibido:"
     const val CAMBIO = "Cambio:"
+    const val COBRADO_EN_LA_MAQUINA = "Cobrado en la máquina · Ref."
+    const val PRECIO_POR_CONFIRMAR = "Precio por confirmar"
+    const val FOLIO = "Folio:"
+    const val COMPROBANTE_DE_LA_MAQUINA = "COMPROBANTE DE LA MÁQUINA"
     const val ENTREGA_POR_AREA = "ENTREGA POR ÁREA"
     const val PRESENTA_COMPROBANTE = "Presenta este comprobante en el área"
     const val FISCAL_NOTICE = "Este comprobante no es un CFDI"

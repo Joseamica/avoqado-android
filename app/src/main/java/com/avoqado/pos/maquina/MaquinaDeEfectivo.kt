@@ -124,6 +124,37 @@ fun textoDelMotivo(motivo: String?): String = when (motivo) {
     else -> TEXTO_NO_COBRABLE
 }
 
+/**
+ * C7 (R3#11, R5#9): lo que una fila le debe al cliente y el título de su comprobante. Un PAGADO, la diferencia de precio que dijo el
+ * SERVIDOR al subir (`excedenteCents`); un CANCELADO, lo que la máquina no devolvió. null = nada que comprobar (un GUARDADO nunca:
+ * nadie está para recibirlo).
+ */
+fun deudaDelComprobante(fila: CobroEnMaquinaEntity): Pair<String, Int>? = when (fila.desenlace) {
+    Desenlace.PAGADO -> fila.respuestaServidor
+        ?.let { runCatching { JSONObject(it).optInt("excedenteCents", 0) }.getOrNull() }
+        ?.takeIf { it > 0 }
+        ?.let { "COMPROBANTE DE DIFERENCIA" to it }
+    Desenlace.CANCELADO -> (fila.creditCents - fila.changeDispensedCents).takeIf { it > 0 }?.let { "COMPROBANTE DE LA MÁQUINA" to it }
+    else -> null
+}
+
+/** C7: el comprobante de [fila] (mismo folio que la venta), o null si no debe nada. */
+fun comprobanteDeLaMaquina(fila: CobroEnMaquinaEntity, negocio: String): com.avoqado.pos.printing.data.model.ReceiptData? {
+    val (titulo, debe) = deudaDelComprobante(fila) ?: return null
+    return com.avoqado.pos.printing.data.model.ReceiptData(
+        orderNumber = fila.referenceCC,
+        orderType = "",
+        items = emptyList(),
+        subtotal = 0,
+        taxAmount = 0,
+        total = debe,
+        venueName = negocio,
+        date = Date(fila.cierreEn ?: fila.creadoEn),
+        kind = com.avoqado.pos.printing.receiptlayout.KIND_COMPROBANTE_DE_LA_MAQUINA,
+        cashMachine = com.avoqado.pos.printing.receiptlayout.ReceiptCashMachine(fila.referenceCC, debe.toLong(), title = titulo),
+    )
+}
+
 /** La venta que la caja manda a la máquina. Los importes son los LOCALES: sin red se cobran ésos (R4-2). */
 data class VentaPorCobrar(
     val venueId: String,
@@ -353,6 +384,41 @@ class MaquinaDeEfectivo internal constructor(
             respuesta.codigo >= 500 -> ResultadoDeResolver.NoSe(TEXTO_SIN_RED_RESOLVER)
             else -> ResultadoDeResolver.NoSe(ServerErrorText.fromResponseBody(respuesta.cuerpo, TEXTO_SIN_RED_RESOLVER))
         }
+    }
+
+    // MARK: - Ticket y comprobantes (C7)
+
+    /**
+     * El ticket de una venta de la máquina, UNA vez por folio: sale aunque la impresora no tenga la impresión automática (es la
+     * prueba del cliente, sobre todo con deuda) y `ticketImpreso` se marca sólo con el resultado REAL de la impresora.
+     */
+    suspend fun imprimirTicketUnaVez(referenceCC: String, ticket: com.avoqado.pos.printing.data.model.ReceiptData): PrinterService.PrintOutcome? {
+        if (dao.porReferencia(referenceCC)?.ticketImpreso != false) return null
+        val r = printerService.manualPrintReceipt(ticket)
+        if (r is PrinterService.PrintOutcome.Printed) dao.marcarTicketImpreso(referenceCC)
+        return r
+    }
+
+    /** El comprobante de [referenceCC] (reimprimible). null = esa fila no le debe nada al cliente. */
+    suspend fun imprimirComprobante(referenceCC: String): PrinterService.PrintOutcome? {
+        val fila = dao.porReferencia(referenceCC) ?: return null
+        val c = comprobanteDeLaMaquina(fila, secureStorage.venueName ?: "Avoqado") ?: return null
+        return printerService.manualPrintReceipt(c)
+    }
+
+    /** El de un CANCELADO que no devolvió todo, UNA vez al cerrarse (después se reimprime desde Ajustes de la máquina). */
+    suspend fun imprimirComprobanteUnaVez(referenceCC: String) {
+        if (dao.porReferencia(referenceCC)?.ticketImpreso != false) return
+        if (imprimirComprobante(referenceCC) is PrinterService.PrintOutcome.Printed) dao.marcarTicketImpreso(referenceCC)
+    }
+
+    /**
+     * Lo que la máquina les debe a clientes en la sucursal de la sesión, con su comprobante reimprimible. ponytail: los 50 cobros
+     * más nuevos que podrían deber; si un negocio necesita ver más atrás, paginar en el DAO.
+     */
+    suspend fun comprobantes(): List<Pair<CobroEnMaquinaEntity, Int>> {
+        val venueId = secureStorage.venueId ?: return emptyList()
+        return dao.conComprobante(venueId).mapNotNull { f -> deudaDelComprobante(f)?.let { f to it.second } }
     }
 
     /** ¿El permiso de resolver está en la sesión? (la pantalla lo explica sin mandar nada). */

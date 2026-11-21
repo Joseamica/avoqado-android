@@ -60,6 +60,7 @@ fun MaquinaDeEfectivoSheet(onDismiss: () -> Unit, viewModel: MaquinaDeEfectivoVi
                 onEmparejar = viewModel::emparejar,
                 onDesemparejar = viewModel::desemparejar,
                 onCerrar = cerrar,
+                onImprimirComprobante = viewModel::imprimirComprobante,
             )
             estado.listo?.let { AvoqadoSuccessToast(message = it, onDismiss = viewModel::toastVisto) }
         }
@@ -75,6 +76,7 @@ internal fun ContenidoDeLaMaquina(
     onEmparejar: () -> Unit,
     onDesemparejar: () -> Unit,
     onCerrar: () -> Unit,
+    onImprimirComprobante: (String) -> Unit = {},
 ) {
     Column(Modifier.fillMaxSize()) {
         AvoqadoFullscreenHeader(
@@ -147,6 +149,25 @@ internal fun ContenidoDeLaMaquina(
             // El freno ya se ve arriba: no se repite.
             estado.aviso?.takeUnless { it == TEXTO_PENDIENTES_DE_LA_MAQUINA && estado.hayPendientes && estado.activa }
                 ?.let { Nota(it, error = true) }
+
+            // C7 (R5#9, R3#11): lo que la máquina les debe a clientes, con su comprobante (mismo folio) para reimprimir.
+            if (estado.comprobantes.isNotEmpty()) {
+                Text("Lo que la máquina les debe a clientes", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Nota("Se paga con un retiro de caja, con el folio en la nota.")
+                estado.comprobantes.forEach { c ->
+                    androidx.compose.foundation.layout.Row(
+                        Modifier.fillMaxWidth(),
+                        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            "Folio ${c.referenceCC} · ${com.avoqado.pos.core.util.formatMoneyFromCents(c.debeCents)}",
+                            style = MaterialTheme.typography.bodyMedium,
+                            modifier = Modifier.weight(1f),
+                        )
+                        OutlinedButton(onClick = { onImprimirComprobante(c.referenceCC) }) { Text("Imprimir comprobante") }
+                    }
+                }
+            }
         }
     }
 }

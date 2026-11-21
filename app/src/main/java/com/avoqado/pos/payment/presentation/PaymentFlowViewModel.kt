@@ -6240,12 +6240,19 @@ class PaymentFlowViewModel @Inject constructor(
         // (hasta ~1 min con reintentos); si mientras tanto empieza otra venta, siguen con SU recibo, SU orden y SU negocio, nunca
         // con los de la venta nueva, y sus avisos no la pisan.
         val recibo = buildReceiptSnapshot(method, changeCents)?.also { lastReceipt = it }
+        val maquinaDelTicket = cierreDeLaMaquina
         val ordenDeLaComanda = createdOrderId
         val negocioDeLaComanda = secureStorage.venueId
         val venta = ventaEnCurso
 
         viewModelScope.launch {
-            recibo?.let { printerService.autoPrintReceipt(it) }
+            if (maquinaDelTicket != null) {
+                // C7: el ticket de la máquina es la prueba del cliente (con deuda, su único papel): sale aunque la impresora no tenga
+                // la impresión automática, UNA vez por folio y marcado con el resultado real de la impresora.
+                recibo?.let { maquinaDeEfectivo?.imprimirTicketUnaVez(maquinaDelTicket.referenceCC, it) }
+            } else {
+                recibo?.let { printerService.autoPrintReceipt(it) }
+            }
 
             // El cajón va DESPUÉS del ticket: los dos salen por la misma impresora.
             if (abrirCajon) abrirCajonDeDinero()
@@ -6610,7 +6617,9 @@ class PaymentFlowViewModel @Inject constructor(
 
         // Folio real del backend; solo si falta cae a los últimos 4 del id (mejor
         // algo que "---", pero lo normal es el folio).
-        val folio = createdOrderNumber?.takeIf { it.isNotBlank() }
+        // C7: la venta de la máquina todavía no tiene folio del SERVIDOR (nace con el cierre): el de la máquina.
+        val maquinaDelTicket = cierreDeLaMaquina.takeIf { resolvedMethod == PaymentMethod.CASH }
+        val folio = maquinaDelTicket?.referenceCC ?: createdOrderNumber?.takeIf { it.isNotBlank() }
             ?: createdOrderId?.takeLast(4)
             ?: "---"
         // URL del recibo digital para el QR (misma que la pantalla del cliente).
@@ -6671,6 +6680,13 @@ class PaymentFlowViewModel @Inject constructor(
             transactionId = lastPaymentId,
             receiptUrl = receiptUrl,
             areaDeliveryCode = lastAreaDeliveryCode,
+            cashMachine = maquinaDelTicket?.let {
+                com.avoqado.pos.printing.receiptlayout.ReceiptCashMachine(
+                    referenceCC = it.referenceCC,
+                    owedCents = it.aDeberCents.takeIf { debe -> debe > 0 }?.toLong(),
+                    priceToConfirm = it.precioPorConfirmar,
+                )
+            },
         )
     }
 

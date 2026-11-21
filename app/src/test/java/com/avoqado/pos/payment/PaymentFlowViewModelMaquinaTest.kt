@@ -40,6 +40,9 @@ import com.avoqado.pos.pos.presentation.cart.CartState
 import com.avoqado.pos.printing.data.ComandaPrinter
 import com.avoqado.pos.printing.data.ComandasPendientesStore
 import com.avoqado.pos.printing.data.PrinterService
+import com.avoqado.pos.printing.data.model.ReceiptData
+import com.avoqado.pos.printing.receiptlayout.KIND_COMPROBANTE_DE_LA_MAQUINA
+import com.avoqado.pos.printing.receiptlayout.ReceiptCashMachine
 import com.avoqado.pos.printing.data.ReintentoDeComanda
 import com.avoqado.pos.printing.data.ReporteDeComandas
 import com.avoqado.pos.printing.routing.PrintConfig
@@ -60,10 +63,13 @@ import kotlinx.coroutines.test.runTest
 import org.json.JSONObject
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
+import java.io.IOException
 import java.util.Random
 
 /**
@@ -302,6 +308,132 @@ class PaymentFlowViewModelMaquinaTest {
         assertEquals(TEXTO_CON_PREMIO, vm.maquina!!.vista.value!!.aviso)
         assertTrue(dao.todas().isEmpty())
         assertNull(canal.paycash())
+    }
+
+    // MARK: - El ticket (C7)
+
+    private fun TestScope.pagar(vm: PaymentFlowViewModel, credit: Int = 20_000, change: Int = 2_000): String {
+        val ref = mandarALaMaquina(vm)
+        canal.llega(status(ref, 18_000))
+        runCurrent()
+        canal.llega(status(ref, 18_000, credit = credit, change = change, cobrando = false, estado = "Pago Completado"))
+        runCurrent()
+        return ref
+    }
+
+    @Test
+    fun `P1 C7 el primer PAGADO imprime una vez con la foto congelada y marca ticketImpreso con el resultado real`() = runTest {
+        val impresos = mutableListOf<ReceiptData>()
+        coEvery { printerService.manualPrintReceipt(capture(impresos)) } returns PrinterService.PrintOutcome.Printed(1)
+        val vm = vm()
+
+        val ref = pagar(vm)
+
+        val r = impresos.single()
+        assertEquals("el folio de la máquina: la orden todavía no existe", ref, r.orderNumber)
+        assertEquals("Efectivo", r.paymentMethod)
+        assertEquals(20_000 to 2_000, r.cashTendered to r.changeAmount)
+        assertEquals(18_000, r.total)
+        assertEquals(ReceiptCashMachine(ref, owedCents = null, priceToConfirm = false), r.cashMachine)
+        assertTrue(dao.fila(ref)!!.ticketImpreso)
+        coVerify(exactly = 0) { printerService.autoPrintReceipt(any()) }
+
+        vm.reprintReceipt()
+        runCurrent()
+        assertEquals("la reimpresión usa la misma foto", impresos[0], impresos[1])
+    }
+
+    @Test
+    fun `C7 con cambio que la maquina no dio el ticket dice cuanto le debemos`() = runTest {
+        val impresos = mutableListOf<ReceiptData>()
+        coEvery { printerService.manualPrintReceipt(capture(impresos)) } returns PrinterService.PrintOutcome.Printed(1)
+
+        pagar(vm(), credit = 20_000, change = 1_500)   // tenía que dar $20.00: dio $15.00
+
+        assertEquals(500L, impresos.single().cashMachine!!.owedCents)
+    }
+
+    @Test
+    fun `C7 sin papel ni impresora el ticket no queda como impreso`() = runTest {
+        coEvery { printerService.manualPrintReceipt(any()) } returns PrinterService.PrintOutcome.NoPrinter
+
+        val ref = pagar(vm())
+
+        assertFalse(dao.fila(ref)!!.ticketImpreso)
+    }
+
+    @Test
+    fun `P1 C7 un cierre repetido no reimprime ni vuelve a cobrar la venta`() = runTest {
+        coEvery { printerService.manualPrintReceipt(any()) } returns PrinterService.PrintOutcome.Printed(1)
+        val vm = vm()
+        val ref = pagar(vm)
+        val exito = vm.state.value
+
+        canal.llega(status(ref, 18_000, credit = 20_000, change = 2_000, cobrando = false, estado = "Pago Completado"))
+        runCurrent()
+
+        coVerify(exactly = 1) { printerService.manualPrintReceipt(any()) }
+        assertSame(exito, vm.state.value)
+    }
+
+    @Test
+    fun `R5#9 el ticket hecho sin red dice precio por confirmar`() = runTest {
+        val impresos = mutableListOf<ReceiptData>()
+        coEvery { printerService.manualPrintReceipt(capture(impresos)) } returns PrinterService.PrintOutcome.Printed(1)
+        val vm = vm()
+        coEvery { api.cotizar(any(), any()) } throws IOException("sin red")
+
+        pagar(vm)
+
+        assertTrue(impresos.single().cashMachine!!.priceToConfirm)
+    }
+
+    @Test
+    fun `C7 GUARDADO no imprime nada`() = runTest {
+        val vm = vm()
+        val ref = mandarALaMaquina(vm)
+        canal.llega(status(ref, 18_000))
+        runCurrent()
+        canal.llega(status(ref, 18_000, credit = 5_000))
+        runCurrent()
+        advanceTimeBy(120_001)   // «¿Sigues ahí?»
+        runCurrent()
+        advanceTimeBy(30_001)    // nadie contestó: el abandono guarda lo que entró
+        runCurrent()
+        assertEquals("2", JSONObject(canal.enviados.last()).getString("cancelvalue"))
+
+        canal.llega(status(ref, 18_000, credit = 5_000, change = 0, cobrando = false, estado = "Transacción Cancelada"))
+        runCurrent()
+
+        assertEquals(Desenlace.GUARDADO, (vm.maquina!!.vista.value!!.cobro as EstadoDelCobro.Cerrado).desenlace)
+        coVerify(exactly = 0) { printerService.manualPrintReceipt(any()) }
+        coVerify(exactly = 0) { printerService.autoPrintReceipt(any()) }
+    }
+
+    @Test
+    fun `R3#11 un CANCELADO que no devolvio todo imprime su comprobante con el folio, una vez`() = runTest {
+        val impresos = mutableListOf<ReceiptData>()
+        coEvery { printerService.manualPrintReceipt(capture(impresos)) } returns PrinterService.PrintOutcome.Printed(1)
+        val vm = vm()
+        val ref = mandarALaMaquina(vm)
+        canal.llega(status(ref, 18_000))
+        runCurrent()
+        canal.llega(status(ref, 18_000, credit = 5_000))
+        runCurrent()
+        vm.maquina!!.cancelarPorElCliente()
+        runCurrent()
+
+        val cierre = status(ref, 18_000, credit = 5_000, change = 3_000, cobrando = false, estado = "Transacción Cancelada")
+        canal.llega(cierre)
+        runCurrent()
+        canal.llega(cierre)
+        runCurrent()
+
+        val c = impresos.single()
+        assertEquals(KIND_COMPROBANTE_DE_LA_MAQUINA, c.kind)
+        assertEquals(ref, c.orderNumber)
+        assertEquals(2_000L, c.cashMachine!!.owedCents)
+        assertTrue(dao.fila(ref)!!.ticketImpreso)
     }
 
     @Test

@@ -29,6 +29,9 @@ import javax.inject.Inject
 
 enum class PruebaDeConexion { PROBANDO, CONECTADA, NO_RESPONDE }
 
+/** C7 (R5#9, R3#11): un cobro de la máquina que le debe dinero a un cliente, con su comprobante reimprimible. */
+data class ComprobantePorImprimir(val referenceCC: String, val debeCents: Int)
+
 /** Lo que pinta la hoja «Máquina de efectivo». Las reglas de los botones viven aquí, para la hoja y para el ViewModel. */
 data class EstadoDeLaMaquina(
     val cargado: Boolean = false,
@@ -44,6 +47,8 @@ data class EstadoDeLaMaquina(
     val aviso: String? = null,
     /** El texto del toast verde; null cuando ya se vio. */
     val listo: String? = null,
+    /** C7: lo que la máquina les debe a clientes (diferencia de precio o dinero no devuelto), los más nuevos primero. */
+    val comprobantes: List<ComprobantePorImprimir> = emptyList(),
 ) {
     val emparejada: Boolean get() = activa && conCredencial
 
@@ -72,6 +77,8 @@ class MaquinaDeEfectivoViewModel @Inject constructor(
     private val boveda: BovedaDeLaMaquina,
     private val emparejamiento: EmparejamientoDeLaMaquina,
     private val cobros: CobroEnMaquinaDao,
+    /** C7: los comprobantes de lo que la máquina debe. Default por el patrón de las pruebas de JVM; Hilt y Guice lo inyectan. */
+    private val maquinaDeEfectivo: com.avoqado.pos.maquina.MaquinaDeEfectivo? = null,
 ) : ViewModel() {
 
     private val _estado = MutableStateFlow(EstadoDeLaMaquina())
@@ -146,6 +153,29 @@ class MaquinaDeEfectivoViewModel @Inject constructor(
 
     fun toastVisto() = _estado.update { it.copy(listo = null) }
 
+    /** C7: (re)imprime el comprobante de [referenceCC] con el mismo folio; el resultado real de la impresora se dice. */
+    fun imprimirComprobante(referenceCC: String) {
+        val maquina = maquinaDeEfectivo ?: return
+        viewModelScope.launch {
+            val r = try {
+                maquina.imprimirComprobante(referenceCC)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                com.avoqado.pos.printing.data.PrinterService.PrintOutcome.Failed(e.message ?: "Error al imprimir")
+            }
+            _estado.update {
+                when (r) {
+                    is com.avoqado.pos.printing.data.PrinterService.PrintOutcome.Printed -> it.copy(listo = "¡Comprobante impreso!", aviso = null)
+                    com.avoqado.pos.printing.data.PrinterService.PrintOutcome.OutOfPaper -> it.copy(aviso = "La impresora no tiene papel")
+                    com.avoqado.pos.printing.data.PrinterService.PrintOutcome.NoPrinter -> it.copy(aviso = "No hay impresora de recibos en esta PC")
+                    is com.avoqado.pos.printing.data.PrinterService.PrintOutcome.Failed -> it.copy(aviso = "No se pudo imprimir: ${r.reason}")
+                    null -> it.copy(aviso = "Ese cobro ya no le debe nada al cliente")
+                }
+            }
+        }
+    }
+
     /** En disco y red: null = salió bien; si no, el texto para la hoja. */
     private suspend fun intentar(accion: suspend () -> String?): String? = try {
         withContext(Dispatchers.IO) { accion() }
@@ -166,10 +196,12 @@ class MaquinaDeEfectivoViewModel @Inject constructor(
             }
             Lectura(prefs.ip, prefs.activa, credencial != null, cobros.hayPendientesDeLaMaquina())
         }
+        val comprobantes = runCatching { maquinaDeEfectivo?.comprobantes().orEmpty() }.getOrDefault(emptyList())
+            .map { (fila, debe) -> ComprobantePorImprimir(fila.referenceCC, debe) }
         _estado.update {
             it.copy(
                 cargado = true, ocupado = false, ip = if (campo) ip.orEmpty() else it.ip, ipGuardada = ip, activa = activa,
-                conCredencial = conCredencial, hayPendientes = pendientes, aviso = aviso, listo = listo,
+                conCredencial = conCredencial, hayPendientes = pendientes, aviso = aviso, listo = listo, comprobantes = comprobantes,
             )
         }
     }

@@ -74,6 +74,7 @@ class CajaConMaquina(
     /** ¿La máquina cobra en ESTE cobro? Síncrono (la [vista] puede ir un cuadro atrás): lo usan las guardas del punto común. */
     val activa: Boolean get() = local.value.venta != null
     private val pagados = mutableSetOf<String>()
+    private val comprobantes = mutableSetOf<String>()
     private var enVuelo = false
 
     val vista: StateFlow<VistaDeLaMaquina?> =
@@ -98,6 +99,12 @@ class CajaConMaquina(
             maquina.cobro.estado.collect { estado ->
                 val l = local.value
                 if (estado !is EstadoDelCobro.Cerrado || estado.referenceCC != l.miFolio) return@collect
+                // C7 (R3#11): «Te debemos» de un CANCELADO que no devolvió todo, en papel con su folio. GUARDADO: nada.
+                if (estado.desenlace == Desenlace.CANCELADO && estado.creditCents > estado.changeDispensedCents &&
+                    comprobantes.add(estado.referenceCC)
+                ) {
+                    scope.launch { maquina.imprimirComprobanteUnaVez(estado.referenceCC) }
+                }
                 if (estado.desenlace == Desenlace.PAGADO && pagados.add(estado.referenceCC)) {
                     alPagar(
                         CierreEnPantalla(estado.referenceCC, estado.dueCents, estado.creditCents, estado.changeDispensedCents,

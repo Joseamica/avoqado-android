@@ -94,6 +94,25 @@ class MaquinaDeEfectivoViewModelTest {
     }
 
     @Test
+    fun `C7 la hoja enseña lo que la maquina le debe a clientes y reimprime su comprobante`() {
+        val maquina = mockk<MaquinaDeEfectivo>()
+        val fila = CobroEnMaquinaEntity("AQ000000000001", "venue-1", "venta-1", "{}", 18_000, 0, 18_000, null, "q", 1, EstadoDelIntento.PAGADO)
+        io.mockk.coEvery { maquina.comprobantes() } returns listOf(fila to 500)
+        io.mockk.coEvery { maquina.imprimirComprobante("AQ000000000001") } returns
+            com.avoqado.pos.printing.data.PrinterService.PrintOutcome.Printed(1) andThen
+            com.avoqado.pos.printing.data.PrinterService.PrintOutcome.OutOfPaper
+        val vm = MaquinaDeEfectivoViewModel(
+            prefs, boveda, EmparejamientoDeLaMaquina(mockk { every { venueId } returns "venue-1" }, okHttp), cobros, maquina,
+        ).abierta()
+
+        assertEquals(listOf(com.avoqado.pos.maquina.ui.ComprobantePorImprimir("AQ000000000001", 500)), vm.estado.value.comprobantes)
+        vm.imprimirComprobante("AQ000000000001")
+        vm.esperar("impreso") { it.listo == "¡Comprobante impreso!" }
+        vm.imprimirComprobante("AQ000000000001")
+        vm.esperar("sin papel, con el resultado real") { it.aviso == "La impresora no tiene papel" }
+    }
+
+    @Test
     fun `una IP mal escrita no sale al servidor`() {
         val vm = vm().abierta()
 

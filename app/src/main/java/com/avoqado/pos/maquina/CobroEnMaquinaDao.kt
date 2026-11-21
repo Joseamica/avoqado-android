@@ -93,6 +93,9 @@ interface CobroEnMaquinaDao {
         respuesta: String?,
     ): Int
 
+    @Query(CobroEnMaquinaSql.CON_COMPROBANTE)
+    suspend fun conComprobante(venueId: String): List<CobroEnMaquinaEntity>
+
     @Query(CobroEnMaquinaSql.MARCAR_TICKET_IMPRESO)
     suspend fun marcarTicketImpreso(referenceCC: String): Int
 }

@@ -140,6 +140,8 @@ internal open class CobroEnMaquinaSobreSqlite : CobroEnMaquinaDao, AutoCloseable
         "changeDispensedCents" to changeDispensedCents, "conflicto" to conflicto, "respuesta" to respuesta,
     )
 
+    override suspend fun conComprobante(venueId: String) = filas(CobroEnMaquinaSql.CON_COMPROBANTE, "venueId" to venueId)
+
     override suspend fun marcarTicketImpreso(referenceCC: String) =
         actualizar(CobroEnMaquinaSql.MARCAR_TICKET_IMPRESO, "referenceCC" to referenceCC)
 }

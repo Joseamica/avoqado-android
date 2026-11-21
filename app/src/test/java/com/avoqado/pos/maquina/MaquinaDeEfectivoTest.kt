@@ -317,6 +317,48 @@ class MaquinaDeEfectivoTest {
         assertEquals(SincronizacionDelCobro.RECHAZADA, estado("AQ000000000003"))
     }
 
+    // MARK: - Comprobantes (C7, R5#9, R3#11)
+
+    private val pagadoSubido = CobroEnMaquinaEntity(
+        "AQ000000000001", "venue-1", "venta-1", "{}", 18_000, 0, 18_000, null, "q-1", 1, EstadoDelIntento.PAGADO,
+        creditCents = 20_000, changeDispensedCents = 2_000, subido = true, cierreEn = 5,
+    )
+
+    @Test
+    fun `R5#9 el comprobante de diferencia sale del excedente del servidor, con el mismo folio`() {
+        assertNull("sin respuesta todavía", comprobanteDeLaMaquina(pagadoSubido, "LG"))
+        assertNull("sin excedente", comprobanteDeLaMaquina(pagadoSubido.copy(respuestaServidor = """{"outcome":"PAGADO","excedenteCents":0}"""), "LG"))
+
+        val c = comprobanteDeLaMaquina(pagadoSubido.copy(respuestaServidor = """{"outcome":"PAGADO","excedenteCents":500}"""), "LG")!!
+
+        assertEquals("AQ000000000001", c.orderNumber)
+        assertEquals(com.avoqado.pos.printing.receiptlayout.KIND_COMPROBANTE_DE_LA_MAQUINA, c.kind)
+        assertEquals(
+            com.avoqado.pos.printing.receiptlayout.ReceiptCashMachine("AQ000000000001", 500, title = "COMPROBANTE DE DIFERENCIA"),
+            c.cashMachine,
+        )
+        assertNull("GUARDADO nunca", comprobanteDeLaMaquina(pagadoSubido.copy(estado = EstadoDelIntento.GUARDADO, creditCents = 5_000, changeDispensedCents = 0), "LG"))
+        assertEquals(1_000L, comprobanteDeLaMaquina(pagadoSubido.copy(estado = EstadoDelIntento.CANCELADO, creditCents = 5_000, changeDispensedCents = 4_000), "LG")!!.cashMachine!!.owedCents)
+        assertEquals("el desenlace del gerente sale de su respuesta", 700L,
+            comprobanteDeLaMaquina(pagadoSubido.copy(estado = EstadoDelIntento.RESUELTO, respuestaServidor = """{"outcome":"PAGADO","excedenteCents":700}"""), "LG")!!.cashMachine!!.owedCents)
+    }
+
+    @Test
+    fun `los comprobantes son los de la sucursal que deben algo y se reimprimen`() = runTest {
+        dao.insertar(pagadoSubido.copy(respuestaServidor = """{"outcome":"PAGADO","excedenteCents":500}"""))
+        dao.insertar(pagadoSubido.copy(referenceCC = "AQ000000000002", respuestaServidor = """{"outcome":"PAGADO","excedenteCents":0}"""))
+        dao.insertar(pagadoSubido.copy(referenceCC = "AQ000000000003", estado = EstadoDelIntento.CANCELADO, creditCents = 5_000, changeDispensedCents = 0, creadoEn = 2))
+        dao.insertar(pagadoSubido.copy(referenceCC = "AQ000000000004", venueId = "venue-2", respuestaServidor = """{"outcome":"PAGADO","excedenteCents":900}"""))
+        coEvery { impresora.manualPrintReceipt(any()) } returns PrinterService.PrintOutcome.Printed(1)
+        val m = maquina()
+
+        assertEquals(listOf("AQ000000000003" to 5_000, "AQ000000000001" to 500), m.comprobantes().map { it.first.referenceCC to it.second })
+        assertEquals(PrinterService.PrintOutcome.Printed(1), m.imprimirComprobante("AQ000000000001"))
+        assertEquals(PrinterService.PrintOutcome.Printed(1), m.imprimirComprobante("AQ000000000001"))
+        assertNull("no debe nada", m.imprimirComprobante("AQ000000000002"))
+        coVerify(exactly = 2) { impresora.manualPrintReceipt(any()) }
+    }
+
     // MARK: - El gerente resuelve (R4-4, R5#8)
 
     @Test

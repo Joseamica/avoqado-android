@@ -205,6 +205,16 @@ internal object CobroEnMaquinaSql {
             "changeDispensedCents = :changeDispensedCents, subido = 1, dudaSubida = 1, conflicto = :conflicto, " +
             "respuestaServidor = :respuesta WHERE referenceCC = :referenceCC AND estado = 'ESPERANDO'"
 
+    /**
+     * C7: los cobros de [venueId] que pueden deber algo al cliente (un PAGADO con su respuesta, un CANCELADO), los más nuevos
+     * primero y acotados: la pantalla filtra los que de verdad deben ([deudaDelComprobante]).
+     */
+    const val CON_COMPROBANTE: String =
+        "SELECT * FROM cobros_en_maquina WHERE venueId = :venueId " +
+            "AND ((estado IN ('PAGADO', 'RESUELTO') AND respuestaServidor IS NOT NULL) OR estado = 'CANCELADO' " +
+            "OR (estado = 'RESUELTO' AND creditCents > changeDispensedCents)) " +
+            "ORDER BY creadoEn DESC, referenceCC DESC LIMIT 50"
+
     /** C7: el ticket del cobro salió de verdad (resultado real de la impresora). */
     const val MARCAR_TICKET_IMPRESO: String = "UPDATE cobros_en_maquina SET ticketImpreso = 1 WHERE referenceCC = :referenceCC"
 }
