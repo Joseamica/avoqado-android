@@ -105,6 +105,11 @@ class ComandaDispatcher @Inject constructor(
      * y las «sólo pantalla» salen en papel de respaldo, que es el lado seguro.
      */
     private val entregaPorWifi: EntregaPorWifi? = null,
+    /**
+     * D6 de Flautas (Codex r8 #3): qué estaciones tienen pantalla de cocina HOY según el servidor. Hilt y el inyector de
+     * escritorio SIEMPRE la inyectan; sin ella (pruebas viejas) nunca se calla el «No salió», que es el lado seguro.
+     */
+    private val estadoDePantallas: com.avoqado.pos.kds.data.EstadoDePantallasDeCocina? = null,
 ) {
 
     /**
@@ -453,6 +458,7 @@ class ComandaDispatcher @Inject constructor(
                 // entra al legado; lo que dejó sin asignar cae en «SIN ESTACIÓN» y, sin impresora de cocina, no sale. Es el
                 // negocio sin cocina de D2: ni aviso al cajero ni FAILED al gerente. Con una estación con comanda, sí.
                 negocioSinCocina = { (callarSinCocina ?: omitirSinComanda) && sinImpresoraDeCocina(printerService.savedPrinters.value, config) },
+                pantallaLaRecibe = { saltados -> pantallaLaTomaDelServidor(servidorLaTiene, decidido.respaldo, saltados) },
                 alCambiarEstado = alCambiarEstado,
                 encabezado = encabezado,
             )
@@ -479,6 +485,29 @@ class ComandaDispatcher @Inject constructor(
         val orden = lines.withIndex().associate { (i, l) -> l.orderItemId to i }
         val juntas = plans.flatMap { it.lines }.sortedBy { l -> l.orderItemIds.minOfOrNull { orden[it] ?: Int.MAX_VALUE } ?: Int.MAX_VALUE }
         return listOf(TicketPlan(stationId = estacionFija, unrouted = false, lines = juntas))
+    }
+
+    /**
+     * Flautas (20-nov, hz:0555ee15:D6, opción B del founder: «como Square y Toast»): los planes que se quedaron sin papel
+     * son TODOS de estaciones «sólo pantalla» de respaldo (su pantalla no acusó por el WiFi), no hubo impresora que lo
+     * intentara, y la venta ya está en el servidor: la pantalla la toma de ahí. No se avisa «No salió» por orden; si la
+     * pantalla no está conectada lo dice la franja fija (`KitchenDeliveryPolicy.avisoDeRacha`). Por id de estación, nunca por
+     * nombre (una estación real puede llamarse «SIN ESTACIÓN»; lo sin ruta no tiene id y nunca se calla). Sin red
+     * (`servidorLaTiene != true`) nadie la tiene y se avisa.
+     */
+    private fun pantallaLaTomaDelServidor(
+        servidorLaTiene: Boolean?,
+        respaldo: List<String>,
+        saltados: List<TicketPlan>,
+    ): Boolean {
+        // Codex r8 #3: la config de esta caja puede estar vieja (el dueño apagó la pantalla en el panel; una ronda con
+        // preparación usa una config congelada). Sólo se calla si el SERVIDOR, en su último sondeo, sigue teniendo a cada
+        // estación como pantalla de cocina. Sin esa respuesta se avisa como siempre.
+        val pantallas = estadoDePantallas ?: return false
+        return servidorLaTiene == true && saltados.isNotEmpty() && saltados.all { plan ->
+            val id = plan.stationId
+            id != null && id in respaldo && pantallas.esPantallaDelServidor(id)
+        }
     }
 
     /** El despacho no llegó a decidir el papel (truena o se cancela): todas sus filas guardadas sin acuse se sueltan. */

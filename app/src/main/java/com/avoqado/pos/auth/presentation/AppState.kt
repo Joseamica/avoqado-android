@@ -106,6 +106,10 @@ class AppState @Inject constructor(
     @Inject
     lateinit var preparationDelivery: com.avoqado.pos.kds.data.PreparationDeliveryService
 
+    /** D6 de Flautas (opción B): qué pantallas de cocina no están conectadas a internet (lo dice el servidor), para la franja fija. Por miembro. */
+    @Inject
+    lateinit var estadoDePantallas: com.avoqado.pos.kds.data.EstadoDePantallasDeCocina
+
     /**
      * La marca del negocio en la pantalla del cliente (nombre y logo en reposo). Por miembro, como las de arriba; en Windows
      * Guice la inyecta igual. Se pone al día en cada cambio de sesión ([notifyDeviceSessionChanged]).
@@ -134,6 +138,7 @@ class AppState @Inject constructor(
         if (::lanHubService.isInitialized) lanHubService.stop()
         if (::transporteLan.isInitialized) transporteLan.detener()
         if (::replayDeEntregasKds.isInitialized) replayDeEntregasKds.detener()
+        if (::estadoDePantallas.isInitialized) estadoDePantallas.detener()
     }
 
     private fun notifyDeviceSessionChanged() {
@@ -203,6 +208,7 @@ class AppState @Inject constructor(
             // Etapa 3 del KDS (3.5, D12): la red local sigue a la sucursal. Idempotente por venue; con otra reinicia.
             if (::lanHubService.isInitialized) lanHubService.sincronizarVenue(venueId)
             if (::transporteLan.isInitialized) transporteLan.iniciar(venueId)
+            if (::estadoDePantallas.isInitialized) estadoDePantallas.iniciar(viewModelScope, venueId)
             // D12 (paso 2): el hub Premium vive con la sesión, no sólo con el plano de Mesas, para que otra caja de
             // Mostrador pueda pedir el candado de una cuenta. Falla abierto como Mesas; idempotente por venue.
             if (::lanHubService.isInitialized && planManager.hasFeature("OFFLINE_LAN_HUB")) lanHubService.start()
@@ -394,6 +400,18 @@ class AppState @Inject constructor(
         combine(printConfigRepository.config, transporteLan.racha.sinAlcance) { config, sinAlcance ->
             com.avoqado.pos.printing.routing.KitchenDeliveryPolicy.avisoDeRacha(sinAlcance, config)
         }.stateIn(scope = viewModelScope, started = SharingStarted.WhileSubscribed(5_000), initialValue = null)
+    }
+
+    /**
+     * D6 de Flautas (opción B): «La pantalla de cocina de COCINA 1 no está conectada a internet», según el SERVIDOR (la caja
+     * ya no avisa «No salió» orden por orden cuando la venta está en el servidor). La banda sólo lo enseña CON red: sin red
+     * no se afirma nada del servidor. `by lazy`: [estadoDePantallas] se inyecta por miembro después del constructor.
+     */
+    val avisoDePantallas: StateFlow<String?> by lazy {
+        if (!::estadoDePantallas.isInitialized) return@lazy kotlinx.coroutines.flow.MutableStateFlow<String?>(null)
+        estadoDePantallas.sinInternet
+            .map { com.avoqado.pos.printing.routing.KitchenDeliveryPolicy.avisoDePantallasSinInternet(it) }
+            .stateIn(scope = viewModelScope, started = SharingStarted.WhileSubscribed(5_000), initialValue = null)
     }
 
     val showOfflineBanner: StateFlow<Boolean> = combine(

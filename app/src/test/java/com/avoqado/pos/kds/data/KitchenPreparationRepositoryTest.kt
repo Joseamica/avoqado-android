@@ -87,6 +87,25 @@ class KitchenPreparationRepositoryTest {
     }
     private val intents = mockk<SyncIntentDao>(relaxed = true)
 
+    // QA del conjunto 2 (21-nov): caja y pantalla tocan a la vez «Liberar 1»; el de la caja llega por WiFi un instante antes.
+    @Test fun `la pantalla no frena un liberar identico que ya llego de otro aparato, y otro cambio sigue avisando`() = runTest {
+        val repo = repository()
+        val retenida = line.copy(preparation = PreparationCounts(HELD = 1))
+        fun guardada(efecto: com.avoqado.pos.kds.domain.PreparationEffect) = CachedPayloadEntity("preparation:v1:line", "v1",
+            com.avoqado.pos.kds.domain.PreparationPeerProtocol.json.encodeToString(com.avoqado.pos.kds.domain.PreparationLocalLine.serializer(),
+                com.avoqado.pos.kds.domain.PreparationLocalLine(retenida, listOf(efecto))), 100)
+        coEvery { cache.get("preparation:v1:line") } returns guardada(com.avoqado.pos.kds.domain.PreparationEffect("caja", 0, PreparationAction.RELEASE, 1))
+
+        val hecha = repo.act("v1", listOf(retenida), PreparationAction.RELEASE, 1)
+
+        assertEquals(PreparationCounts(PENDING = 1), hecha.single().preparation)
+        coVerify(exactly = 0) { outbox.enqueue(any(), any(), any(), any(), any(), any(), any(), any()) }
+        coEvery { cache.get("preparation:v1:line") } returns guardada(
+            com.avoqado.pos.kds.domain.PreparationEffect("caja", 0, PreparationAction.CANCEL, 1, reason = "Se fue"))
+        assertEquals("Este producto cambió. Actualiza su estado.",
+            runCatching { repo.act("v1", listOf(retenida), PreparationAction.RELEASE, 1) }.exceptionOrNull()?.message)
+    }
+
     @Test fun `urgency requires enabled Pro and the negotiated version before allowing offline work`() = runTest {
         for (capability in listOf(
             """{"version":1,"enabled":true}""",
@@ -206,6 +225,15 @@ class KitchenPreparationRepositoryTest {
         }
     }
 
+    @Test fun `D17 Liberar desde la cocina viaja marcado para que el servidor revise el interruptor`() = runTest {
+        val retenida = line.copy(preparation = PreparationCounts(HELD = 1))
+        val repo = repository(capability = """{"version":1,"enabled":true,"kitchenCanRelease":true,"kitchenDoneVersion":1}""")
+        repo.act("v1", listOf(retenida), PreparationAction.RELEASE, 1, fromKitchen = true, withPaper = false)
+        coVerify { outbox.enqueue("v1", "KDS_ITEM_PROGRESS", match { it["origen"]?.toString() == "\"COCINA\"" }, any(), false, null, any(), "staff-a") }
+        repo.act("v1", listOf(line), PreparationAction.START, 1)
+        coVerify { outbox.enqueue("v1", "KDS_ITEM_PROGRESS", match { it["action"]?.toString() == "\"START\"" && it["origen"] == null }, any(), false, null, any(), "staff-a") }
+    }
+
     @Test fun `expired session retains confirmed capability without calling it offline`() = runTest {
         val repo = repository()
         every { call.execute() } answers {
@@ -239,5 +267,19 @@ class KitchenPreparationRepositoryTest {
             release.countDown()
             refresh.join()
         }
+    }
+
+    @Test fun `D17 con el interruptor prendido la cocina libera con orders update, apagado sigue pidiendo orders create`() = runTest {
+        val apagado = repository(capability = """{"version":1,"enabled":true}""")
+        val prendido = repository(capability = """{"version":1,"enabled":true,"kitchenCanRelease":true,"kitchenDoneVersion":1}""")
+        // después de armarlos: `repository()` vuelve a declarar «todo permitido» y la declaración más nueva gana
+        every { roles.hasVenuePermission("orders:create") } returns false
+        org.junit.Assert.assertFalse(apagado.can(PreparationAction.RELEASE))
+        assertTrue(prendido.canFromKitchen(PreparationAction.RELEASE))
+        org.junit.Assert.assertFalse(prendido.can(PreparationAction.RELEASE)) // «Servicio y entregas» sigue pidiendo orders:create
+        org.junit.Assert.assertFalse(apagado.canFromKitchen(PreparationAction.RELEASE))
+        assertEquals(listOf("orders:update"), prendido.permissionsFor(PreparationAction.RELEASE))
+        assertEquals(listOf("orders:update", "orders:create"), prendido.permissionsFor(PreparationAction.DELIVER))
+        assertEquals(1, prendido.capabilities.value.kitchenDoneVersion)
     }
 }

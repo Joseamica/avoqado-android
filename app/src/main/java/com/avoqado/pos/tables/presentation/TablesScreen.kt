@@ -61,6 +61,8 @@ import com.avoqado.pos.designsystem.components.AvoqadoSuccessToast
 import com.avoqado.pos.designsystem.components.AvoqadoErrorToast
 import com.avoqado.pos.designsystem.components.PlanGateScreen
 import com.avoqado.pos.designsystem.components.PrimaryButton
+import com.avoqado.pos.designsystem.components.clicDerecho
+import com.avoqado.pos.designsystem.components.sinTeclasDeClic
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.designsystem.theme.OnSurfaceDark
 import com.avoqado.pos.designsystem.theme.OutlineVariantDark
@@ -673,6 +675,7 @@ internal fun TableCard(table: DiningTable, onTap: () -> Unit, onLongPress: () ->
                 color = if (selected) Success else if (table.isReserved) ReservedColor else colors.border,
                 shape = RoundedCornerShape(AvoqadoTheme.cornerRadius.md),
             )
+            .clicDerecho(onLongPress)   // mouse: clic derecho = mantener presionado (D9, 20-nov)
             .combinedClickable(onClick = onTap, onLongClick = onLongPress)
             .padding(AvoqadoTheme.spacing.md),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -875,11 +878,14 @@ private fun TableCheckSheet(
                 Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
 
                 if (check != null && check.total > 0) {
+                    // D25: con abonos dice lo que falta (el mismo saldo de la cuenta); se relee si cambia la cuenta del plano.
+                    val saldoDeLaHoja by viewModel.saldoDeLaHoja.collectAsState()
+                    LaunchedEffect(check.id, check.total, check.version) { viewModel.leerSaldoDeLaHoja(table) }
                     // Una sola puerta de cobro (auditoría): el register sembraba el
                     // TOTAL COMPLETO sin restar pagos parciales. Ahora este botón
                     // abre la pantalla de mesa, cuyo Pagar cobra solo lo restante.
                     PrimaryButton(
-                        text = "Cobrar cuenta • ${textoCuentaEnPlano(check)}",
+                        text = textoCobrarCuenta(check, saldoDeLaHoja),
                         onClick = { viewModel.startOrdering(table, onReady = onOpenTableOrder) },
                         fullWidth = true,
                     )
@@ -992,6 +998,104 @@ internal fun CortesiaDialog(
     }
 }
 
+/** Motivos de un renglón ya enviado: primero los de anular, luego los de regalar (Square: lo enviado se anula o se regala). */
+internal val MOTIVOS_DE_RENGLON_ENVIADO = listOf(
+    "Error de entrada",
+    "El cliente cambió de parecer",
+    "El artículo ya no está disponible",
+    "Reclamo del cliente",
+    "Amigos y familia",
+    "Descuento de empleado",
+    "Especial del administrador",
+)
+
+/** Anular el único renglón cancelaría la cuenta sin soltar la mesa: el SERVIDOR lo rechaza y aquí sale en gris con la salida. */
+internal const val ULTIMO_PRODUCTO_SIN_ANULAR =
+    "Es el único producto de la cuenta. Para quitarlo usa «Anular cuenta», o manda primero lo que lo reemplaza y luego anúlalo."
+
+/** Una pieza suelta de una promoción dejaría las demás a precio de combo (Codex r1 #2): el SERVIDOR la rechaza con este texto. */
+internal const val PROMOCION_SIN_ANULAR =
+    "Es parte de una promoción y no se anula suelto. Puedes darlo de cortesía o anular la cuenta completa."
+
+/** Con un cobro en la cuenta el SERVIDOR no anula (Codex r2 #8): el mismo texto, antes de tocar (y antes de pedir un PIN). */
+internal const val CUENTA_CON_PAGOS_SIN_ANULAR =
+    "Esta cuenta ya tiene pagos registrados y ya no se pueden anular sus productos. Si hay que devolver dinero, alguien con permiso lo hace con Reembolso en el POS o en el panel."
+
+/** Por qué «Anular producto» va en gris para [item] de la cuenta [check] (null = se puede). La cortesía no cambia. */
+internal fun motivoParaNoAnular(item: com.avoqado.pos.tables.data.OrderDetailItem, check: com.avoqado.pos.tables.data.OrderDetail?): String? =
+    when {
+        check != null && (check.paymentStatus == "PAID" || check.paymentStatus == "PARTIAL" ||
+            check.payments.any { it.status == "COMPLETED" }) -> CUENTA_CON_PAGOS_SIN_ANULAR
+        item.orderPromotionId != null -> PROMOCION_SIN_ANULAR
+        check?.items?.size == 1 -> ULTIMO_PRODUCTO_SIN_ANULAR
+        else -> null
+    }
+
+/**
+ * Un renglón YA ENVIADO a cocina (Flautas, 20-nov: «un agua de pepino… no, mejor de rompope»): el motivo y dos salidas.
+ * «Anular producto» lo quita de la cuenta; «Dar de cortesía» lo deja en la cuenta en $0. Las dos piden motivo.
+ * POS de Windows (mouse y teclado): todo con un clic, Esc cierra sin hacer nada (lo atiende el diálogo, como «Atrás») y Enter o
+ * Espacio NO confirman (la regla del cobro: «sólo F y mouse cobran»). [sinAnular] ≠ null pone «Anular producto» en gris con esa razón.
+ */
+@Composable
+internal fun RenglonEnviadoDialog(
+    productName: String,
+    sinAnular: String?,
+    onDismiss: () -> Unit,
+    onAnular: (String) -> Unit,
+    onCortesia: (String) -> Unit,
+) {
+    var selected by remember { mutableStateOf<String?>(null) }
+    val enWindows = com.avoqado.pos.designsystem.components.LocalEsEscritorio.current
+
+    AvoqadoDialog(
+        title = productName,
+        // Codex r2 #2: no dice «ya se mandó a cocina»: la TPV puede guardar en la cuenta algo que todavía no manda.
+        description = "Elige el motivo: «Anular producto» lo quita de la cuenta; «Dar de cortesía» lo deja sin cobrar.",
+        onDismiss = onDismiss,
+        actionButton = {
+            Column(verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
+                PrimaryButton(
+                    text = "Anular producto",
+                    onClick = { selected?.let(onAnular) },
+                    enabled = selected != null && sinAnular == null,
+                    fullWidth = true,
+                    destructive = true,
+                    modifier = Modifier.sinTeclasDeClic(enWindows),
+                )
+                if (sinAnular != null) {
+                    Text(sinAnular, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                androidx.compose.material3.OutlinedButton(
+                    onClick = { selected?.let(onCortesia) },
+                    enabled = selected != null,
+                    modifier = Modifier.fillMaxWidth().height(AvoqadoTheme.dimensions.buttonLarge).sinTeclasDeClic(enWindows),
+                    shape = RoundedCornerShape(50),
+                ) { Text("Dar de cortesía") }
+            }
+        },
+    ) {
+        Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+            Text("Motivo", fontWeight = FontWeight.SemiBold)
+            MOTIVOS_DE_RENGLON_ENVIADO.forEach { reason ->
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { selected = reason }
+                        .padding(vertical = AvoqadoTheme.spacing.xs),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    androidx.compose.material3.RadioButton(
+                        selected = selected == reason,
+                        onClick = { selected = reason },
+                    )
+                    Text(reason, style = MaterialTheme.typography.bodyMedium)
+                }
+            }
+        }
+    }
+}
+
 /**
  * Square's "Anular 1 cuenta" dialog: warning + mandatory reason (radio) —
  * confirm stays disabled until a reason is picked (`53_anular_dialog.png`).
@@ -1058,6 +1162,22 @@ private fun StatusLine(message: String, color: Color) {
 }
 
 internal fun textoCuentaEnPlano(check:com.avoqado.pos.tables.data.OpenCheckSummary):String = if(check.isProvisional) "Por sincronizar" else check.totalDisplay
+
+/** D25: el saldo confirmado de la cuenta de la hoja, leído al día con el total que el plano tenía entonces ([TablesViewModel.leerSaldoDeLaHoja]). */
+data class SaldoDeLaHoja(val orderId: String, val totalDelPlanoCents: Int, val pagadoCents: Int, val porPagarCents: Int)
+
+/**
+ * D25: el botón de la hoja dice lo mismo que la cuenta. Con su saldo leído al día: sin abonos, el total; con abonos («Ya pagado» > 0,
+ * el criterio de la cuenta), lo que FALTA. Sin saldo al día (sin red, leyendo, sin confirmar, o leído de otra cuenta o con otro total
+ * del plano), la cuenta diría «Saldo por confirmar»: el botón va sin importe. La mesa abierta sin red aquí sigue «Por sincronizar».
+ */
+internal fun textoCobrarCuenta(check: com.avoqado.pos.tables.data.OpenCheckSummary, saldo: SaldoDeLaHoja?): String {
+    if (check.isProvisional) return "Cobrar cuenta • ${textoCuentaEnPlano(check)}"
+    val alDia = saldo?.takeIf { it.orderId == check.id && it.totalDelPlanoCents == Math.round(check.total * 100).toInt() }
+        ?: return "Cobrar cuenta"
+    return if (alDia.pagadoCents > 0) "Cobrar lo que falta • $${String.format(Locale.US, "%.2f", alDia.porPagarCents / 100.0)}"
+    else "Cobrar cuenta • ${textoCuentaEnPlano(check)}"
+}
 
 /**
  * D48: lo que dice la hoja junto al número. Si el Hub contestó que otra caja la tiene, ya no es «Libre». Lo que dice el SERVIDOR

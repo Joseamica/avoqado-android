@@ -238,4 +238,24 @@ class KdsReglasTest {
     fun `una tarjeta vacia no truena`() {
         assertEquals(listOf(GrupoDeTiempo(null, emptyList())), gruposPorTiempo(emptyList()))
     }
+
+    // MARK: - D17: la comanda con tiempos sale cuando la cocina termina
+
+    private fun conTiempos(vararg counts: PreparationCounts) = comanda("t").copy(preparationVersion = 1,
+        items = counts.mapIndexed { i, c -> KDSOrderItem("i$i", "Plato $i", c.HELD + c.PENDING + c.PREPARING + c.READY + c.DELIVERED + c.CANCELLED,
+            emptyList(), null, preparation = c) })
+
+    @Test fun `D17 la cocina termino solo sin nada retenido, pendiente ni preparando`() {
+        assertTrue(terminadaEnCocina(conTiempos(PreparationCounts(READY = 1), PreparationCounts(DELIVERED = 1))))
+        assertFalse(terminadaEnCocina(conTiempos(PreparationCounts(READY = 1), PreparationCounts(HELD = 1))))
+        assertFalse(terminadaEnCocina(conTiempos(PreparationCounts(PREPARING = 1))))
+        assertFalse(terminadaEnCocina(comanda("vieja"))) // un solo Listo (v0): no cambia
+        assertFalse(terminadaEnCocina(conTiempos())) // sin productos no hay nada terminado
+    }
+
+    @Test fun `D17 el tablero la esconde solo si el servidor tambien la saca y la deja en Recientes`() {
+        val lista = listOf(conTiempos(PreparationCounts(READY = 1)), comanda("otra"))
+        assertEquals(listOf("t", "otra"), sinTerminadasEnCocina(lista, PreparationCapabilities(version = 1)).map { it.id })
+        assertEquals(listOf("otra"), sinTerminadasEnCocina(lista, PreparationCapabilities(version = 1, kitchenDoneVersion = 1)).map { it.id })
+    }
 }

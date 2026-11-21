@@ -1553,7 +1553,7 @@ class CartViewModel @Inject constructor(
         }
     }
 
-    /** Lo que la recarga de vendedores hace con la venta en pantalla. Al cerrar un cobro, la venta sigue (puede traer un abono). */
+    /** Lo que la recarga de vendedores hace con la venta en pantalla. Una venta a medias (con abono) nunca se vacía aquí. */
     private fun aplicarVendedores(staff: List<StaffMember>, alCerrarElCobro: Boolean = false) {
         val selectedId = _cartState.value.selectedStaffId
         val selected = staff.firstOrNull { it.id == selectedId }
@@ -1561,22 +1561,21 @@ class CartViewModel @Inject constructor(
             selectStaff(selected.id, selected.fullName)
         } else if (selectedId.isNotBlank() && selected == null) {
             secureStorage.clearSelectedStaffForCurrentVenue()
-            // Al cerrar un cobro la venta sigue (puede traer el «Saldo pendiente» de un abono): sólo deja de llevar al vendedor
-            // dado de baja. Fuera del cobro se vacía como siempre (CartSplitContinuidadTest; lo de un abono, en deuda: Codex r4 #1).
-            if (alCerrarElCobro) {
+            // 🔴 DINERO (D7, hz:248b195b:D7; Codex final r7 #6 de F1). Al cerrar un cobro, o si el carrito sigue una venta a
+            // medias («Saldo pendiente» de un abono, salida de vales o del 412), la venta sigue con su folio, su saldo y su
+            // cliente: sólo deja de llevar al vendedor dado de baja. Vaciarla borraba el vínculo y la cajera podía cobrar la
+            // compra completa en un folio nuevo: $40 en A + $100 en B por una compra de $100 (CartSplitContinuidadTest).
+            if (alCerrarElCobro || hayVentaAMedias()) {
                 val sinVendedor = defaultCartState()
                 _cartState.update { it.copy(selectedStaffId = sinVendedor.selectedStaffId, selectedStaffName = sinVendedor.selectedStaffName) }
                 return
             }
+            // Sin venta a medias (no hay vínculo que soltar) se vacía como siempre.
             _cartState.value = defaultCartState()
             // El aviso era del carrito que se acaba de vaciar (igual que en `clearCart()`; A3 m1).
             _avisoDelCarrito.value = null
-            // Segundo reemplazo directo de `_cartState` que no pasa por
-            // `clearCart()`: el vínculo con la venta a medio cobrar se
-            // limpia aquí por la misma razón que en `restoreSavedCart`.
-            _pendingSplitOrder.value = null
             // 🔴 Y el cliente también: este camino YA se comportaba como
-            // fin de venta (vacía el carrito y suelta el vínculo), sólo le
+            // fin de venta (vacía el carrito), sólo le
             // faltaba soltarlo. Pasa cuando dan de baja al mesero
             // seleccionado desde el dashboard: el carrito se vacía solo y
             // el cliente se quedaba en el encabezado, así que la venta

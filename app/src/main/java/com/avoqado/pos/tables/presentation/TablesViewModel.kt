@@ -939,6 +939,34 @@ class TablesViewModel @Inject constructor(
         if (table.openOrders.isNotEmpty()) table.openOrders.map { it.id }
         else listOfNotNull(table.primaryCheck?.id)
 
+    // MARK: - Saldo de la hoja (D25)
+
+    private val _saldoDeLaHoja = MutableStateFlow<SaldoDeLaHoja?>(null)
+    /** Lo que la hoja de la mesa sabe de lo ya pagado ([textoCobrarCuenta]). */
+    val saldoDeLaHoja: StateFlow<SaldoDeLaHoja?> = _saldoDeLaHoja.asStateFlow()
+    private var lecturaDeLaHoja: Job? = null
+
+    /**
+     * D25 (Flautas, 20-nov): con un abono de $10, la hoja decía «Cobrar cuenta • $60.00» y la cuenta «Por pagar $50.00». El plano no
+     * trae pagos, así que la hoja lee la cuenta del servidor y la convierte con [saldoDelCheque], lo mismo que la cuenta. Y con la
+     * MISMA condición: la cuenta de una mesa del servidor sólo da un número con una lectura al día (si no, «Saldo por confirmar» y
+     * «Pagar» sin importe), así que la hoja sólo lo da con SU lectura al día y confirmada. Sin red, leyendo o sin confirmar: sin
+     * importe (QA en la SAMSUNG, 21-nov: la hoja prometía $50 con lo guardado y la cuenta decía «Saldo por confirmar»). Sólo cambia
+     * el texto: el botón sigue abriendo la cuenta, cuyo «Pagar» cobra lo que falta.
+     */
+    fun leerSaldoDeLaHoja(table: DiningTable) {
+        lecturaDeLaHoja?.cancel()
+        _saldoDeLaHoja.value = null
+        val check = table.primaryCheck?.takeIf { !it.isProvisional } ?: return
+        val vId = venueId ?: return
+        val totalCents = round(check.total * 100).toInt()
+        lecturaDeLaHoja = viewModelScope.launch {
+            val saldo = repository.getOrderDetail(vId, check.id).getOrNull()?.takeIf { it.id == check.id }?.let(::saldoDelCheque)
+                ?.takeIf { it.confirmado } ?: return@launch
+            if (venueId == vId) _saldoDeLaHoja.value = SaldoDeLaHoja(check.id, totalCents, saldo.pagadoCents, saldo.porPagarCents)
+        }
+    }
+
     // MARK: - Pre-bill
 
     /** Prints the pre-cuenta (items + total, no payment info) on the RECEIPT printer. */
