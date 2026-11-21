@@ -878,11 +878,14 @@ private fun TableCheckSheet(
                 Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
 
                 if (check != null && check.total > 0) {
+                    // D25: con abonos dice lo que falta (el mismo saldo de la cuenta); se relee si cambia la cuenta del plano.
+                    val saldoDeLaHoja by viewModel.saldoDeLaHoja.collectAsState()
+                    LaunchedEffect(check.id, check.total, check.version) { viewModel.leerSaldoDeLaHoja(table) }
                     // Una sola puerta de cobro (auditoría): el register sembraba el
                     // TOTAL COMPLETO sin restar pagos parciales. Ahora este botón
                     // abre la pantalla de mesa, cuyo Pagar cobra solo lo restante.
                     PrimaryButton(
-                        text = "Cobrar cuenta • ${textoCuentaEnPlano(check)}",
+                        text = textoCobrarCuenta(check, saldoDeLaHoja),
                         onClick = { viewModel.startOrdering(table, onReady = onOpenTableOrder) },
                         fullWidth = true,
                     )
@@ -1159,6 +1162,24 @@ private fun StatusLine(message: String, color: Color) {
 }
 
 internal fun textoCuentaEnPlano(check:com.avoqado.pos.tables.data.OpenCheckSummary):String = if(check.isProvisional) "Por sincronizar" else check.totalDisplay
+
+/** D25: el saldo de la cuenta de la hoja, leído con el total que el plano tenía en ese momento ([TablesViewModel.leerSaldoDeLaHoja]). */
+data class SaldoDeLaHoja(val orderId: String, val totalDelPlanoCents: Int, val pagadoCents: Int, val porPagarCents: Int, val sinSubirAqui: Boolean = false)
+
+/**
+ * D25: el botón de la hoja. Sin abonos, como siempre; con abonos, lo que FALTA, del mismo `preBillBalance` que la cuenta pinta en «Por
+ * pagar» (mismo criterio: «Ya pagado» > 0). Lo leído de otra cuenta o con otro total del plano (otra caja agregó una ronda) no se usa
+ * hasta releer. Con algo de esta cuenta sin subir desde este aparato y sin lectura del servidor, sin importe: lo arma la cuenta.
+ */
+internal fun textoCobrarCuenta(check: com.avoqado.pos.tables.data.OpenCheckSummary, saldo: SaldoDeLaHoja?): String {
+    val vigente = saldo?.takeIf { !check.isProvisional && it.orderId == check.id && it.totalDelPlanoCents == Math.round(check.total * 100).toInt() }
+    return when {
+        vigente?.sinSubirAqui == true -> "Cobrar cuenta"
+        vigente != null && vigente.pagadoCents > 0 ->
+            "Cobrar lo que falta • $${String.format(Locale.US, "%.2f", vigente.porPagarCents / 100.0)}"
+        else -> "Cobrar cuenta • ${textoCuentaEnPlano(check)}"
+    }
+}
 
 /**
  * D48: lo que dice la hoja junto al número. Si el Hub contestó que otra caja la tiene, ya no es «Libre». Lo que dice el SERVIDOR

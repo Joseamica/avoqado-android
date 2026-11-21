@@ -939,6 +939,43 @@ class TablesViewModel @Inject constructor(
         if (table.openOrders.isNotEmpty()) table.openOrders.map { it.id }
         else listOfNotNull(table.primaryCheck?.id)
 
+    // MARK: - Saldo de la hoja (D25)
+
+    private val _saldoDeLaHoja = MutableStateFlow<SaldoDeLaHoja?>(null)
+    /** Lo que la hoja de la mesa sabe de lo ya pagado ([textoCobrarCuenta]). */
+    val saldoDeLaHoja: StateFlow<SaldoDeLaHoja?> = _saldoDeLaHoja.asStateFlow()
+    private var lecturaDeLaHoja: Job? = null
+
+    /**
+     * D25 (Flautas, 20-nov): con un abono de $10, la hoja decía «Cobrar cuenta • $60.00» y la cuenta «Por pagar $50.00». El plano no
+     * trae pagos, así que la hoja lee el MISMO saldo que pinta la cuenta (`preBillBalance` del detalle): primero la última lectura
+     * guardada en el aparato (la que la cuenta enseña sin red) y luego la del servidor, que manda (como en la cuenta). Sin la del
+     * servidor y con un cobro o cambio de esta cuenta sin subir desde este aparato, lo que falta lo arma la cuenta: la hoja no
+     * afirma un importe. Sólo cambia el texto: el botón sigue abriendo la cuenta, cuyo «Pagar» cobra lo que falta.
+     */
+    fun leerSaldoDeLaHoja(table: DiningTable) {
+        lecturaDeLaHoja?.cancel()
+        _saldoDeLaHoja.value = null
+        val check = table.primaryCheck?.takeIf { !it.isProvisional } ?: return
+        val vId = venueId ?: return
+        val totalCents = round(check.total * 100).toInt()
+        fun publicar(pagado: Int, falta: Int, sinSubir: Boolean) {
+            if (venueId == vId) _saldoDeLaHoja.value = SaldoDeLaHoja(check.id, totalCents, pagado, falta, sinSubir)
+        }
+        lecturaDeLaHoja = viewModelScope.launch {
+            val sinSubir = (try { syncOutbox.trabajoSinResolverDeLaOrden(vId, tableSession.idsParaPreCuenta(vId, check.id)).intents > 0 }
+                catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (_: Exception) { true }) ||
+                !todoPorLaColaDeMesas(vId, check.id)
+            val guardado = try {
+                kotlinx.coroutines.withContext(discoParaFusionar) { draftStore?.loadResolved(vId, check.id) }
+                    ?.takeIf { it.first == check.id }?.second?.cachedCheck?.takeIf { it.id == check.id }?.preBillBalance
+            } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (_: Exception) { null }
+            if (guardado != null || sinSubir) publicar(guardado?.totalPaidCents ?: 0, guardado?.remainingBalanceCents ?: 0, sinSubir)
+            repository.getOrderDetail(vId, check.id).getOrNull()?.takeIf { it.id == check.id }?.preBillBalance
+                ?.let { publicar(it.totalPaidCents, it.remainingBalanceCents, sinSubir = false) }
+        }
+    }
+
     // MARK: - Pre-bill
 
     /** Prints the pre-cuenta (items + total, no payment info) on the RECEIPT printer. */
