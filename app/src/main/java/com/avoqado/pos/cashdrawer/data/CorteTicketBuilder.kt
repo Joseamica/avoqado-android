@@ -13,31 +13,30 @@ import com.avoqado.pos.printing.data.model.PaperWidth
  * Sólo informa: NO frena el cierre. Sin red sale igual (la lista vive en el aparato).
  * 🔴 Codex r1 #1: sin el «No están en el total.» de B4: si la terminal sí registró el cobro y este aparato aún no se entera, ese
  * cobro YA viene en el desglose del servidor, y el corte lo negaría.
+ * 🔴 Codex r2 (rediseño): son las dudas vivas AL MOMENTO, todas, igual que la banda. Repartirlas por turno con horas mentía (cierre
+ * sin red que el servidor fecha al recibirlo, reloj del aparato adelantado, filas sin fecha ni sucursal); por eso un corte viejo del
+ * Historial no lleva la línea.
  *
  * @param completo `false` si a alguna fila le falta el importe o la propina: el total es un mínimo («al menos»).
  */
-data class PorConfirmarEnElCorte(val cuantos: Int, val cents: Int, val completo: Boolean) {
+data class PorConfirmarEnElCorte(val cuantos: Int, val cents: Long, val completo: Boolean) {
     val etiqueta: String get() = "Cobros con tarjeta por confirmar ($cuantos)"
     val importe: String get() = when {
-        completo -> com.avoqado.pos.core.util.formatMoneyFromCents(cents)
-        cents == 0 -> "importe por confirmar"
-        else -> "al menos " + com.avoqado.pos.core.util.formatMoneyFromCents(cents)
+        completo -> pesos
+        cents == 0L -> "importe por confirmar"
+        else -> "al menos $pesos"
     }
     val texto: String get() = "$etiqueta: $importe"
+    private val pesos: String get() = com.avoqado.pos.core.util.formatMoney(cents / 100.0)
 
     companion object {
-        /**
-         * Las dudas vivas que ya existían al terminar el turno ([finDelTurnoMillis] = `closedAt`; `null` = la caja sigue abierta).
-         * No se corta por la apertura: una duda de un turno anterior que nadie firmó sigue siendo dinero en duda y no se esconde.
-         * Una sin fecha (guardada antes del 25-sep) entra siempre. `null` = no hay nada que decir: no sale la línea.
-         */
-        fun de(cobros: List<com.avoqado.pos.payment.presentation.CobroPorConfirmar>, finDelTurnoMillis: Long?): PorConfirmarEnElCorte? {
-            val delTurno = cobros.filter { c -> finDelTurnoMillis == null || c.desdeMillis == null || c.desdeMillis <= finDelTurnoMillis }
-            if (delTurno.isEmpty()) return null
+        /** `null` = no hay dudas: no sale la línea. La suma va en `Long` (Codex r2 #4: 22 intentos del tope desbordaban `Int`). */
+        fun de(cobros: List<com.avoqado.pos.payment.presentation.CobroPorConfirmar>): PorConfirmarEnElCorte? {
+            if (cobros.isEmpty()) return null
             return PorConfirmarEnElCorte(
-                cuantos = delTurno.size,
-                cents = delTurno.sumOf { it.montoCents ?: 0 },
-                completo = delTurno.all { it.montoCents != null && !it.antesDePropina },
+                cuantos = cobros.size,
+                cents = cobros.sumOf { (it.montoCents ?: 0).toLong() },
+                completo = cobros.all { it.montoCents != null && !it.antesDePropina },
             )
         }
     }

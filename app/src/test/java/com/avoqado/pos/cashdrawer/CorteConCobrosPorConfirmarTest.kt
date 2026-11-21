@@ -14,21 +14,24 @@ import org.junit.Test
 /**
  * F1, fila 12 / P9 (full-testing del 21-nov en la D3): con «Cobros por confirmar: 1» en la banda, ni el corte parcial, ni «Cerrar
  * caja», ni el corte final decían que quedó dinero con tarjeta en duda. La línea sólo informa: no frena el cierre.
+ *
+ * Rediseño tras la ronda 2 de Codex: la línea dice las dudas vivas de este aparato AL MOMENTO (lo mismo que la banda), sin
+ * repartirlas por turno con horas (cierre reenviado sin red, reloj adelantado y filas sin fecha lo hacían mentir). Por eso sale en
+ * el corte parcial, en «Cerrar caja» y en el corte que se enseña al cerrar, y no en un corte viejo del Historial.
  */
 class CorteConCobrosPorConfirmarTest {
 
-    private fun cobro(id: String, monto: Int?, desde: Long? = 1_000L, antesDePropina: Boolean = false) =
-        CobroPorConfirmar(requestId = id, venueId = "v1", montoCents = monto, desdeMillis = desde, antesDePropina = antesDePropina)
+    private fun cobro(id: String, monto: Int?, desde: Long? = 1_000L, antesDePropina: Boolean = false, venue: String? = "v1") =
+        CobroPorConfirmar(requestId = id, venueId = venue, montoCents = monto, desdeMillis = desde, antesDePropina = antesDePropina)
 
     @Test
     fun `P9 sin dudas no sale la linea`() {
-        assertNull(PorConfirmarEnElCorte.de(emptyList(), finDelTurnoMillis = null))
-        assertNull(PorConfirmarEnElCorte.de(emptyList(), finDelTurnoMillis = 5_000L))
+        assertNull(PorConfirmarEnElCorte.de(emptyList()))
     }
 
     @Test
     fun `P9 una duda dice cuantas y su importe con propina`() {
-        val linea = PorConfirmarEnElCorte.de(listOf(cobro("a", 2_000)), finDelTurnoMillis = null)!!
+        val linea = PorConfirmarEnElCorte.de(listOf(cobro("a", 2_000)))!!
         assertEquals("Cobros con tarjeta por confirmar (1)", linea.etiqueta)
         assertEquals("$20.00", linea.importe)
         assertEquals("Cobros con tarjeta por confirmar (1): $20.00", linea.texto)
@@ -36,28 +39,33 @@ class CorteConCobrosPorConfirmarTest {
 
     @Test
     fun `P9 varias dudas suman su importe`() {
-        val linea = PorConfirmarEnElCorte.de(listOf(cobro("a", 20_000), cobro("b", 15_000)), finDelTurnoMillis = null)!!
+        val linea = PorConfirmarEnElCorte.de(listOf(cobro("a", 20_000), cobro("b", 15_000)))!!
         assertEquals(2, linea.cuantos)
         assertEquals("Cobros con tarjeta por confirmar (2): $350.00", linea.texto)
     }
 
     @Test
-    fun `P9 una fila sin importe o sin su propina no deja afirmar el total`() {
-        assertEquals("al menos $200.00", PorConfirmarEnElCorte.de(listOf(cobro("a", 20_000), cobro("b", null)), null)!!.importe)
-        assertEquals("al menos $200.00", PorConfirmarEnElCorte.de(listOf(cobro("a", 20_000, antesDePropina = true)), null)!!.importe)
-        assertEquals("importe por confirmar", PorConfirmarEnElCorte.de(listOf(cobro("a", null)), null)!!.importe)
+    fun `P9 cuenta todas las vivas, como la banda - sin importar su hora ni si les falta la sucursal`() {
+        // Codex r2 #1 y #2: repartirlas por hora (reloj adelantado, cierre reenviado) escondía dudas vivas. Ya no se corta por hora.
+        val linea = PorConfirmarEnElCorte.de(
+            listOf(cobro("ayer", 1_000, desde = 1L), cobro("sin-fecha", 2_000, desde = null), cobro("sin-sucursal", 3_000, venue = null)),
+        )!!
+        assertEquals(3, linea.cuantos)
+        assertEquals("$60.00", linea.importe)
     }
 
     @Test
-    fun `P9 una duda nacida despues del cierre no sale en ese corte, la de antes y la sin fecha si`() {
-        val cierre = 10_000L
-        val linea = PorConfirmarEnElCorte.de(
-            listOf(cobro("antes", 1_000, desde = 9_000L), cobro("sin-fecha", 2_000, desde = null), cobro("despues", 4_000, desde = 11_000L)),
-            finDelTurnoMillis = cierre,
-        )!!
-        assertEquals(2, linea.cuantos)
-        assertEquals("$30.00", linea.importe)
-        assertNull(PorConfirmarEnElCorte.de(listOf(cobro("despues", 4_000, desde = 11_000L)), finDelTurnoMillis = cierre))
+    fun `P9 una fila sin importe o sin su propina no deja afirmar el total`() {
+        assertEquals("al menos $200.00", PorConfirmarEnElCorte.de(listOf(cobro("a", 20_000), cobro("b", null)))!!.importe)
+        assertEquals("al menos $200.00", PorConfirmarEnElCorte.de(listOf(cobro("a", 20_000, antesDePropina = true)))!!.importe)
+        assertEquals("importe por confirmar", PorConfirmarEnElCorte.de(listOf(cobro("a", null)))!!.importe)
+    }
+
+    @Test
+    fun `P9 muchas dudas grandes no desbordan la suma`() {
+        // Codex r2 #4: 22 intentos de $1,000,000.00 (el tope por intento) daban −$20,949,672.96 sumando en Int.
+        val linea = PorConfirmarEnElCorte.de((1..22).map { cobro("c$it", 100_000_000) })!!
+        assertEquals("$22,000,000.00", linea.importe)
     }
 
     // MARK: - El papel
@@ -81,7 +89,7 @@ class CorteConCobrosPorConfirmarTest {
 
     @Test
     fun `P9 el papel lleva la linea, cabe en 58 mm y sin dudas no sale`() {
-        val linea = PorConfirmarEnElCorte.de(listOf(cobro("a", 20_000), cobro("b", 115_000)), null)!!
+        val linea = PorConfirmarEnElCorte.de(listOf(cobro("a", 20_000), cobro("b", 115_000)))!!
         listOf(PaperWidth.MM58, PaperWidth.MM80).forEach { ancho ->
             listOf(false, true).forEach { parcial ->
                 val t = papel(linea, ancho, parcial)
@@ -92,7 +100,7 @@ class CorteConCobrosPorConfirmarTest {
                 assertFalse(t.contains("No están en el total"))
             }
         }
-        assertTrue(papel(PorConfirmarEnElCorte.de(listOf(cobro("a", 2_000)), null)).contains(dosColumnas("1 cobro", "$20.00", PaperWidth.MM58)))
+        assertTrue(papel(PorConfirmarEnElCorte.de(listOf(cobro("a", 2_000)))).contains(dosColumnas("1 cobro", "$20.00", PaperWidth.MM58)))
         assertFalse(papel(null).contains("POR CONFIRMAR"))
     }
 
@@ -119,7 +127,7 @@ class CorteConCobrosPorConfirmarTest {
     }
 
     @Test
-    fun `P9 los tres cortes, la hoja y los tres papeles reciben la lista`() {
+    fun `P9 parcial, Cerrar caja y el corte del cierre reciben la lista - el Historial no`() {
         val pantalla = fuente("presentation/CashDrawerScreen.kt")
         // Tableta, teléfono y corte parcial: cada `DailyReportView(` lleva su línea; las dos hojas de cierre, también.
         listOf("DailyReportView(" to 3, "CloseDrawerSheet(" to 2).forEach { (llamada, veces) ->
@@ -127,9 +135,14 @@ class CorteConCobrosPorConfirmarTest {
             assertEquals(llamada, veces, tramos.size)
             tramos.forEach { assertTrue("$llamada sin porConfirmar", it.contains("porConfirmar = ")) }
         }
-        // El papel: los dos cortes cerrados y el parcial.
-        assertEquals(2, Regex("viewModel\\.printCorte\\([^)]*porConfirmar = ", RegexOption.DOT_MATCHES_ALL).findAll(pantalla).count())
-        assertTrue(pantalla.contains("viewModel.printPartialCorte(partialSession, events, porConfirmar)"))
+        // El corte de una sesión del Historial no la lleva; el que se enseña al cerrar, sí (tableta y teléfono).
+        assertEquals(2, Regex("reportDelCierre = false\\s+reportSession = session").findAll(pantalla).count())
+        assertEquals(2, Regex("reportDelCierre = true\\s+reportSession = corte\\.session").findAll(pantalla).count())
+        assertEquals(2, Regex("val lineaPorConfirmar = if \\(reportDelCierre\\) PorConfirmarEnElCorte\\.de\\(vivas\\) else null").findAll(pantalla).count())
+        // El papel se archiva: la lista se relee del disco al tocar «Imprimir» (Codex r2 #3), en los dos cortes del cierre y en el parcial.
+        assertEquals(2, Regex("viewModel\\.printCorte\\([^)]*porConfirmar = if \\(reportDelCierre\\) dudas\\.lineaAlImprimir\\(", RegexOption.DOT_MATCHES_ALL)
+            .findAll(pantalla).count())
+        assertTrue(pantalla.contains("viewModel.printPartialCorte(partialSession, events, dudas.lineaAlImprimir())"))
         val vm = fuente("presentation/CashDrawerViewModel.kt")
         assertEquals(2, Regex("porConfirmar = porConfirmar").findAll(vm).count()) // printCorte → builder y printPartialCorte → printCorte
     }
