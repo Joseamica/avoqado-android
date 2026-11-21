@@ -718,6 +718,8 @@ class CashDrawerViewModel @Inject constructor(
         isPartial: Boolean = false,
         /** El corte no se pudo confirmar con el servidor: el papel lo dice. */
         sinConfirmar: Boolean = false,
+        /** F1 P9: los cobros con tarjeta por confirmar de este aparato; el papel los dice igual que la pantalla. */
+        porConfirmar: com.avoqado.pos.cashdrawer.data.PorConfirmarEnElCorte? = null,
     ) {
         val printer = printerService.getDefaultPrinter(PrinterRole.RECEIPT)
         if (printer == null) {
@@ -744,6 +746,7 @@ class CashDrawerViewModel @Inject constructor(
                         printer.connectionTypeEnum == com.avoqado.pos.printing.data.model.PrinterConnectionType.INTERNAL,
                     tablaDeAcentos = com.avoqado.pos.printing.data.model.TablaDeAcentos.deGuardada(printer.tablaDeAcentos),
                     sinConfirmar = sinConfirmar,
+                    porConfirmar = porConfirmar,
                 )
                 printerService.sendPrintData(data, printer)
                 _printCorteResult.value = PrintCorteResult.Success(isPartial)
@@ -772,6 +775,7 @@ class CashDrawerViewModel @Inject constructor(
     fun printPartialCorte(
         session: CashDrawerSessionEntity,
         events: List<CashDrawerEventEntity>,
+        porConfirmar: com.avoqado.pos.cashdrawer.data.PorConfirmarEnElCorte? = null,
     ) {
         viewModelScope.launch {
             // 🔴 El papel se archiva: antes de imprimirlo se le pregunta al servidor, o sale sin el
@@ -792,6 +796,7 @@ class CashDrawerViewModel @Inject constructor(
                 venueName = venueName,
                 isPartial = true,
                 sinConfirmar = !confirmado,
+                porConfirmar = porConfirmar,
             )
         }
     }

@@ -57,6 +57,8 @@ fun CloseDrawerSheet(
      */
     retiros: List<RetiroDelDia> = emptyList(),
     efectivoCobradoCents: Int = 0,
+    /** F1 P9: los cobros con tarjeta por confirmar de este aparato. Sólo se dicen: no frenan el cierre. */
+    porConfirmar: com.avoqado.pos.cashdrawer.data.PorConfirmarEnElCorte? = null,
 ) {
     var amountText by remember { mutableStateOf("") }
     var noteText by remember { mutableStateOf("") }
@@ -111,6 +113,17 @@ fun CloseDrawerSheet(
             if (retiros.isNotEmpty()) {
                 Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
                 RetirosDelDia(retiros)
+            }
+
+            porConfirmar?.let {
+                Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
+                Text(
+                    text = it.texto,
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.fillMaxWidth(),
+                )
             }
 
             Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxl))

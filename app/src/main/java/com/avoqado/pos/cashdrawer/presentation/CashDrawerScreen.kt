@@ -65,6 +65,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import com.avoqado.pos.cashdrawer.data.PorConfirmarEnElCorte
 import com.avoqado.pos.cashdrawer.data.model.CashDrawerEventEntity
 import com.avoqado.pos.cashdrawer.data.model.CashDrawerEventType
 import com.avoqado.pos.cashdrawer.data.model.CashDrawerSessionEntity
@@ -100,6 +101,24 @@ fun CashDrawerScreen(
     }
 }
 
+/**
+ * F1 P9: los cobros con tarjeta por confirmar de este aparato, para el corte y «Cerrar caja». Es la MISMA lista de la banda «Cobros
+ * por confirmar» (sólo se lee; no pregunta nada a Avoqado, así que sin red sale igual).
+ * ponytail: se relee del disco cada 5 s mientras se ve la caja, como la banda (y cada llamada lleva su vuelta); un flujo de cambios
+ * de la lista si alguna vez pesa.
+ */
+@Composable
+private fun cobrosConTarjetaPorConfirmar(): List<com.avoqado.pos.payment.presentation.CobroPorConfirmar> {
+    val lista: com.avoqado.pos.payment.presentation.CancelacionesPendientesViewModel = hiltViewModel()
+    LaunchedEffect(lista) {
+        while (true) {
+            lista.refrescar()
+            kotlinx.coroutines.delay(5_000)
+        }
+    }
+    return lista.cobrosPorConfirmar.collectAsState().value
+}
+
 // MARK: - Tablet Layout
 
 @Composable
@@ -119,6 +138,7 @@ private fun TabletCashDrawerLayout(
     var reportEvents by remember { mutableStateOf<List<CashDrawerEventEntity>>(emptyList()) }
     // El corte que se enseña no se pudo confirmar con el servidor: la pantalla y el papel lo dicen.
     var reportSinConfirmar by remember { mutableStateOf(false) }
+    val dudas = cobrosConTarjetaPorConfirmar()
 
     // Show DailyReportView if active
     if (showDailyReport && reportSession != null) {
@@ -138,6 +158,7 @@ private fun TabletCashDrawerLayout(
             )
         }
         val isPrintingCorte by viewModel.isPrintingCorte.collectAsState()
+        val lineaPorConfirmar = PorConfirmarEnElCorte.de(dudas, reportSession!!.closedAt)
         DailyReportView(
             session = reportSession!!,
             events = reportEvents,
@@ -154,6 +175,7 @@ private fun TabletCashDrawerLayout(
                 )
             },
             sinConfirmar = reportSinConfirmar,
+            porConfirmar = lineaPorConfirmar,
             onPrint = {
                 viewModel.printCorte(
                     session = reportSession!!,
@@ -161,6 +183,7 @@ private fun TabletCashDrawerLayout(
                     tenders = tenderBreakdown,
                     venueName = viewModel.venueName,
                     sinConfirmar = reportSinConfirmar,
+                    porConfirmar = lineaPorConfirmar,
                 )
             },
             onDismiss = {
@@ -297,6 +320,7 @@ private fun TabletCashDrawerLayout(
             expectedAmountCents = expectedCents,
             retiros = ConteoSospechoso.retirosDelDia(eventsForReport),
             efectivoCobradoCents = ConteoSospechoso.efectivoCobradoCents(eventsForReport),
+            porConfirmar = PorConfirmarEnElCorte.de(dudas, finDelTurnoMillis = null),
             onConfirm = { actualCents, note ->
                 scope.launch {
                     // 🔴 El corte se arma con lo que quedó DESPUÉS de que el servidor contestó, no
@@ -432,6 +456,7 @@ private fun PhoneCashDrawerLayout(
     var reportEvents by remember { mutableStateOf<List<CashDrawerEventEntity>>(emptyList()) }
     // El corte que se enseña no se pudo confirmar con el servidor: la pantalla y el papel lo dicen.
     var reportSinConfirmar by remember { mutableStateOf(false) }
+    val dudas = cobrosConTarjetaPorConfirmar()
 
     // Show DailyReportView if active
     if (showDailyReport && reportSession != null) {
@@ -451,6 +476,7 @@ private fun PhoneCashDrawerLayout(
             )
         }
         val isPrintingCorte by viewModel.isPrintingCorte.collectAsState()
+        val lineaPorConfirmar = PorConfirmarEnElCorte.de(dudas, reportSession!!.closedAt)
         DailyReportView(
             session = reportSession!!,
             events = reportEvents,
@@ -467,6 +493,7 @@ private fun PhoneCashDrawerLayout(
                 )
             },
             sinConfirmar = reportSinConfirmar,
+            porConfirmar = lineaPorConfirmar,
             onPrint = {
                 viewModel.printCorte(
                     session = reportSession!!,
@@ -474,6 +501,7 @@ private fun PhoneCashDrawerLayout(
                     tenders = tenderBreakdown,
                     venueName = viewModel.venueName,
                     sinConfirmar = reportSinConfirmar,
+                    porConfirmar = lineaPorConfirmar,
                 )
             },
             onDismiss = {
@@ -627,6 +655,7 @@ private fun PhoneCashDrawerLayout(
             expectedAmountCents = expectedCents,
             retiros = ConteoSospechoso.retirosDelDia(eventsForReport),
             efectivoCobradoCents = ConteoSospechoso.efectivoCobradoCents(eventsForReport),
+            porConfirmar = PorConfirmarEnElCorte.de(dudas, finDelTurnoMillis = null),
             onConfirm = { actualCents, note ->
                 scope.launch {
                     // 🔴 El corte se arma con lo que quedó DESPUÉS de que el servidor contestó, no
@@ -745,6 +774,7 @@ private fun CurrentDrawerContent(
     // impresora configurada —o con ella caída— no había forma de ver cómo iba la
     // caja a media jornada, que es justo para lo que sirve.
     var showPartialReport by remember { mutableStateOf(false) }
+    val dudas = cobrosConTarjetaPorConfirmar()
 
     val partialSession = session
     if (showPartialReport && partialSession != null) {
@@ -761,6 +791,7 @@ private fun CurrentDrawerContent(
         LaunchedEffect(partialSession.id, enLineaDelParcial) {
             if (enLineaDelParcial) viewModel.recargarDesgloseSiFalta(partialSession.openedAt, System.currentTimeMillis())
         }
+        val porConfirmar = PorConfirmarEnElCorte.de(dudas, finDelTurnoMillis = null)
         DailyReportView(
             session = partialSession,
             events = events,
@@ -773,7 +804,8 @@ private fun CurrentDrawerContent(
                 viewModel.loadTenderBreakdown(partialSession.openedAt, System.currentTimeMillis())
             },
             sinConfirmar = !confirmado,
-            onPrint = { viewModel.printPartialCorte(partialSession, events) },
+            porConfirmar = porConfirmar,
+            onPrint = { viewModel.printPartialCorte(partialSession, events, porConfirmar) },
             onDismiss = { showPartialReport = false },
         )
         return

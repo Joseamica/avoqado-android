@@ -79,6 +79,8 @@ fun DailyReportView(
      * Testarudo, 28-sep-2026: un «Faltante $145» que no existía, sin ninguna pista de por qué.
      */
     sinConfirmar: Boolean = false,
+    /** F1 P9: los cobros con tarjeta por confirmar de este aparato. `null` = ninguno: no sale la línea. Sólo informa. */
+    porConfirmar: com.avoqado.pos.cashdrawer.data.PorConfirmarEnElCorte? = null,
     onDismiss: () -> Unit,
 ) {
     val context = LocalContext.current
@@ -288,6 +290,17 @@ fun DailyReportView(
                         fontWeight = FontWeight.SemiBold,
                     )
                 }
+            }
+
+            // F1 P9: la tarjeta en duda se ve en el corte; el desglose de arriba no la cuenta.
+            porConfirmar?.let { linea ->
+                Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
+                ReportRow(label = linea.etiqueta, value = linea.importe)
+                Text(
+                    text = com.avoqado.pos.cashdrawer.data.PorConfirmarEnElCorte.NO_ESTAN_EN_EL_TOTAL,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
 
             Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxl))

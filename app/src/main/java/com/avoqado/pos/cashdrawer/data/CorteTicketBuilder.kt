@@ -8,6 +8,43 @@ import com.avoqado.pos.printing.data.ESCPOSPrinter
 import com.avoqado.pos.printing.data.model.PaperWidth
 
 /**
+ * 🔴 F1, fila 12 / P9 (B4 de `docs/audit/2026-11-17-f1-pantallas/diseno.md`): los cobros con tarjeta por confirmar de ESTE aparato
+ * (la lista de la banda «Cobros por confirmar»), en el corte parcial, en «Cerrar caja» y en el corte final, en pantalla y en papel.
+ * Sólo informa: NO frena el cierre. Sin red sale igual (la lista vive en el aparato).
+ *
+ * @param completo `false` si a alguna fila le falta el importe o la propina: el total es un mínimo («al menos»).
+ */
+data class PorConfirmarEnElCorte(val cuantos: Int, val cents: Int, val completo: Boolean) {
+    val etiqueta: String get() = "Cobros con tarjeta por confirmar ($cuantos)"
+    val importe: String get() = when {
+        completo -> com.avoqado.pos.core.util.formatMoneyFromCents(cents)
+        cents == 0 -> "importe por confirmar"
+        else -> "al menos " + com.avoqado.pos.core.util.formatMoneyFromCents(cents)
+    }
+    val texto: String get() = "$etiqueta: $importe"
+
+    companion object {
+        /** La segunda mitad del texto B4: el desglose y las ventas netas no las cuentan. */
+        const val NO_ESTAN_EN_EL_TOTAL = "No están en el total."
+
+        /**
+         * Las dudas vivas que ya existían al terminar el turno ([finDelTurnoMillis] = `closedAt`; `null` = la caja sigue abierta).
+         * No se corta por la apertura: una duda de un turno anterior que nadie firmó sigue siendo dinero en duda y no se esconde.
+         * Una sin fecha (guardada antes del 25-sep) entra siempre. `null` = no hay nada que decir: no sale la línea.
+         */
+        fun de(cobros: List<com.avoqado.pos.payment.presentation.CobroPorConfirmar>, finDelTurnoMillis: Long?): PorConfirmarEnElCorte? {
+            val delTurno = cobros.filter { c -> finDelTurnoMillis == null || c.desdeMillis == null || c.desdeMillis <= finDelTurnoMillis }
+            if (delTurno.isEmpty()) return null
+            return PorConfirmarEnElCorte(
+                cuantos = delTurno.size,
+                cents = delTurno.sumOf { it.montoCents ?: 0 },
+                completo = delTurno.all { it.montoCents != null && !it.antesDePropina },
+            )
+        }
+    }
+}
+
+/**
  * Arma el ticket ESC/POS del corte de caja.
  *
  * Vive fuera del ViewModel porque hay DOS cosas que lo imprimen —el corte
@@ -140,6 +177,7 @@ object CorteTicketBuilder {
          * inventado queda como prueba (Testarudo, 28-sep-2026).
          */
         sinConfirmar: Boolean = false,
+        porConfirmar: PorConfirmarEnElCorte? = null,
     ): ByteArray {
         val fecha = java.time.format.DateTimeFormatter.ofPattern("dd MMM yyyy", java.util.Locale("es", "MX"))
         val hora = java.time.format.DateTimeFormatter.ofPattern("HH:mm", java.util.Locale("es", "MX"))
@@ -254,6 +292,16 @@ object CorteTicketBuilder {
         }
         if (ciego) p.printLine(OCULTO_CIEGO)
         p.printDivider()
+
+        // F1 P9: lo que quedó con tarjeta en duda en este aparato. El título cabe justo en 58 mm (32).
+        porConfirmar?.let {
+            p.setBold(true)
+            p.printLine("COBROS CON TARJETA POR CONFIRMAR")
+            p.setBold(false)
+            p.printTwoColumns(if (it.cuantos == 1) "1 cobro" else "${it.cuantos} cobros", it.importe)
+            p.printLine(PorConfirmarEnElCorte.NO_ESTAN_EN_EL_TOTAL)
+            p.printDivider()
+        }
 
         // PROPINAS — su propia sección, como en el Corte Z de SoftRestaurant.
         //
