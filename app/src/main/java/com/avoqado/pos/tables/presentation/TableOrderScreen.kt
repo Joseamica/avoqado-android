@@ -871,6 +871,7 @@ fun TableOrderScreen(
                     message = mensaje,
                     subtitle = actionHint,
                     onDismiss = { viewModel.consumeActionMessage() },
+                    durationMs = TableOrderViewModel.duracionDelAvisoDeError(actionHint),
                 )
             } else if (mensaje == mensajeSinRed) {
                 // D14: «Sin conexión… necesita internet» es un estado normal: gris con el wifi, y con tiempo para leerlo.

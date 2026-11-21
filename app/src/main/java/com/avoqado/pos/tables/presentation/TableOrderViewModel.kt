@@ -707,6 +707,14 @@ class TableOrderViewModel @Inject constructor(
 
         const val PISTA_COMANDA_REINTENTO = "Se vuelve a intentar sola cuando la impresora responda."
         const val PISTA_COMANDA_SIN_IMPRESORA = com.avoqado.pos.printing.data.ReintentoDeComanda.CAUSA_SIN_IMPRESORA
+
+        /**
+         * D16 (2.ª pasada con aparatos, B9): «No salió la comanda de: …» pide una acción (avisar a cocina); en los 2.2 s de un aviso
+         * cualquiera no da tiempo de leerlo. El de la comanda se queda 60 s (se cierra antes tocando fuera); los demás, como siempre.
+         */
+        fun duracionDelAvisoDeError(pista: String?): Long =
+            if (pista == PISTA_COMANDA_SIN_IMPRESORA || pista == PISTA_COMANDA_REINTENTO) AVISO_DE_COMANDA_MS else 2_200L
+        const val AVISO_DE_COMANDA_MS = 60_000L
     }
 
     // MARK: - Check (server truth)
