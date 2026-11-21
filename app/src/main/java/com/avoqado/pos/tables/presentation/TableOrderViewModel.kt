@@ -98,6 +98,18 @@ internal fun motivoParaNoImprimirPreCuenta(hayImpresora: Boolean, cheque: OrderD
     else -> null
 }
 
+/**
+ * El saldo de una cuenta leída del servidor: el `preBillBalance`; sin él, la suma a mano, que con abonos se equivoca (resta la
+ * propina, cuenta devoluciones) y por eso sale sin confirmar: la pantalla dice «Saldo por confirmar» (Codex r1). La cuenta
+ * ([TableOrderViewModel.saldoDeMesa]) y la hoja del plano (D25, `TablesViewModel.leerSaldoDeLaHoja`) lo leen de aquí. PURA.
+ */
+internal fun saldoDelCheque(check: OrderDetail): TableOrderViewModel.SaldoDeMesa =
+    check.preBillBalance?.let { TableOrderViewModel.SaldoDeMesa(it.orderTotalCents, it.totalPaidCents, it.remainingBalanceCents) } ?: run {
+        val paid = check.payments.filter { it.status == "COMPLETED" }.sumOf { it.amount + it.tipAmount }
+        TableOrderViewModel.SaldoDeMesa(round(check.total * 100).toInt(), round(paid * 100).toInt(), round((check.total - paid) * 100).toInt(),
+            confirmado = check.payments.none { it.status == "COMPLETED" })
+    }
+
 internal fun motivoParaNoCobrarLaMesa(provisional: Boolean, cheque: OrderDetail?, orderId: String,
     chequeAlDia: Boolean, enVuelo: Boolean, vioCambios: Boolean, trabajo: TrabajoSinResolver?): String? = when {
     trabajo == null -> "No se pudo revisar si esta mesa tiene cambios sin sincronizar. Intenta de nuevo."
@@ -2805,15 +2817,7 @@ class TableOrderViewModel @Inject constructor(
     val saldoDeMesa: SaldoDeMesa
         get() {
             val session = tableSession.current()
-            val fromCheck = _check.value?.takeIf { it.id == session?.orderId }?.let { check ->
-                check.preBillBalance?.let { SaldoDeMesa(it.orderTotalCents, it.totalPaidCents, it.remainingBalanceCents) } ?: run {
-                    val paid = check.payments.filter { it.status == "COMPLETED" }.sumOf { it.amount + it.tipAmount }
-                    // Sin el saldo del servidor, con abonos la cuenta a mano se equivoca (resta la propina, cuenta devoluciones):
-                    // la pantalla dice «Saldo por confirmar» en vez de un número (Codex r1). El cobro no cambia.
-                    SaldoDeMesa(round(check.total * 100).toInt(), round(paid * 100).toInt(), round((check.total - paid) * 100).toInt(),
-                        confirmado = check.payments.none { it.status == "COMPLETED" })
-                }
-            } ?: SaldoDeMesa.soloSaldo(0)
+            val fromCheck = _check.value?.takeIf { it.id == session?.orderId }?.let(::saldoDelCheque) ?: SaldoDeMesa.soloSaldo(0)
             // D5 · B2b (piloto): sin la cuenta al día, la mesa del servidor se ve con el saldo con el que se cobraría sin internet.
             session?.let { saldoSinRedVigente(it) }?.let { return SaldoDeMesa(it.rondasCents, it.cobradoCents, it.porPagarCents) }
             if (session?.isProvisional == true) {

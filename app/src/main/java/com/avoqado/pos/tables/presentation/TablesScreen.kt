@@ -878,11 +878,14 @@ private fun TableCheckSheet(
                 Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
 
                 if (check != null && check.total > 0) {
+                    // D25: con abonos dice lo que falta (el mismo saldo de la cuenta); se relee si cambia la cuenta del plano.
+                    val saldoDeLaHoja by viewModel.saldoDeLaHoja.collectAsState()
+                    LaunchedEffect(check.id, check.total, check.version) { viewModel.leerSaldoDeLaHoja(table) }
                     // Una sola puerta de cobro (auditoría): el register sembraba el
                     // TOTAL COMPLETO sin restar pagos parciales. Ahora este botón
                     // abre la pantalla de mesa, cuyo Pagar cobra solo lo restante.
                     PrimaryButton(
-                        text = "Cobrar cuenta • ${textoCuentaEnPlano(check)}",
+                        text = textoCobrarCuenta(check, saldoDeLaHoja),
                         onClick = { viewModel.startOrdering(table, onReady = onOpenTableOrder) },
                         fullWidth = true,
                     )
@@ -1159,6 +1162,22 @@ private fun StatusLine(message: String, color: Color) {
 }
 
 internal fun textoCuentaEnPlano(check:com.avoqado.pos.tables.data.OpenCheckSummary):String = if(check.isProvisional) "Por sincronizar" else check.totalDisplay
+
+/** D25: el saldo confirmado de la cuenta de la hoja, leído al día con el total que el plano tenía entonces ([TablesViewModel.leerSaldoDeLaHoja]). */
+data class SaldoDeLaHoja(val orderId: String, val totalDelPlanoCents: Int, val pagadoCents: Int, val porPagarCents: Int)
+
+/**
+ * D25: el botón de la hoja dice lo mismo que la cuenta. Con su saldo leído al día: sin abonos, el total; con abonos («Ya pagado» > 0,
+ * el criterio de la cuenta), lo que FALTA. Sin saldo al día (sin red, leyendo, sin confirmar, o leído de otra cuenta o con otro total
+ * del plano), la cuenta diría «Saldo por confirmar»: el botón va sin importe. La mesa abierta sin red aquí sigue «Por sincronizar».
+ */
+internal fun textoCobrarCuenta(check: com.avoqado.pos.tables.data.OpenCheckSummary, saldo: SaldoDeLaHoja?): String {
+    if (check.isProvisional) return "Cobrar cuenta • ${textoCuentaEnPlano(check)}"
+    val alDia = saldo?.takeIf { it.orderId == check.id && it.totalDelPlanoCents == Math.round(check.total * 100).toInt() }
+        ?: return "Cobrar cuenta"
+    return if (alDia.pagadoCents > 0) "Cobrar lo que falta • $${String.format(Locale.US, "%.2f", alDia.porPagarCents / 100.0)}"
+    else "Cobrar cuenta • ${textoCuentaEnPlano(check)}"
+}
 
 /**
  * D48: lo que dice la hoja junto al número. Si el Hub contestó que otra caja la tiene, ya no es «Libre». Lo que dice el SERVIDOR
