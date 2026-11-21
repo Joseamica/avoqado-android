@@ -47,7 +47,7 @@ fun textoDeIncidencia(motivo: String): String = "Registrado como incidencia: " +
  * no toca `pending_payments`, ni su replay, ni el cajón (la PC de la máquina no tiene).
  *
  * - **Cierres finales** (`PAGADO`, `CANCELADO`, `GUARDADO` sin acuse) → `POST …/cash-machine/sales`. `subido` sólo si el
- *   SERVIDOR repite el folio, el desenlace y los importes (200), si guardó el dinero como incidencia (202), o si lo rechazó
+ *   SERVIDOR repite el folio, el desenlace y los importes (200), si guardó el dinero como incidencia (202 con `incidentId`), o si lo rechazó
  *   DEJANDO su incidencia durable (409/422 con `incidentId`): las tres quedan en `respuestaServidor` y lo raro, visible en
  *   `conflicto`. Un 4xx sin incidencia o una respuesta con otros importes quedan visibles, sin acuse y sin reintento: esperan
  *   a un gerente (y siguen frenando cerrar sesión, R5#2). El 409 `CASH_MACHINE_CLOSE_RETRY` se reintenta.
@@ -200,6 +200,8 @@ class SubidaDeLaMaquina @Inject constructor(
     }
 
     private suspend fun aplicarCierre(fila: CobroEnMaquinaEntity, json: JSONObject, codigo: Int, cuerpo: String) {
+        // Un 202 sólo libera la fila con su incidencia DURABLE (`incidentId`, contrato del SERVIDOR); sin ella se repite el folio.
+        if (codigo == 202 && incidenciaDe(cuerpo) == null) return
         if (repite(fila, json, fila.estado, conLoQueEntro = true)) {
             dao.marcarSubido(fila.referenceCC, if (codigo == 202) textoDeIncidencia(json.optString("motivo")) else null, cuerpo)
         } else {

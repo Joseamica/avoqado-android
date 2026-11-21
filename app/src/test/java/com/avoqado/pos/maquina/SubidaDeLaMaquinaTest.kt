@@ -184,12 +184,17 @@ class SubidaDeLaMaquinaTest {
     }
 
     @Test
-    fun `202 se marca subido y deja visible que el dinero quedo como incidencia`() = runBlocking {
+    fun `202 con su incidencia se marca subido y deja visible que el dinero quedo como incidencia`() = runBlocking {
         insertar(pagado)
         val sinRegistro = JSONObject().put("success", true).put("referenceCC", REF_1).put("incident", "NO_SE_PUDO_REGISTRAR")
             .put("motivo", "VENTA_RECHAZADA").put("outcome", "PAGADO").put("resolvedBy", "MAQUINA").put("dueCents", 18_750)
             .put("saleCents", 18_000).put("tipCents", 750).put("creditCents", 20_000).put("changeDispensedCents", 1_250)
-        cuando("POST", ".*/cash-machine/sales", ok(sinRegistro, 202))
+            .put("incidentId", "cinc000000000000000000009")
+        cuando("POST", ".*/cash-machine/sales", ok(JSONObject(sinRegistro.toString()).put("incidentId", JSONObject.NULL), 202), ok(sinRegistro, 202))
+
+        assertTrue("un 202 sin su incidencia durable no libera la fila: se repite el folio", subida.subir())
+        assertFalse(dao.fila(REF_1)!!.subido)
+        assertNull(dao.fila(REF_1)!!.conflicto)
 
         assertFalse(subida.subir())
 
