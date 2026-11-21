@@ -11,7 +11,8 @@ import kotlinx.coroutines.flow.asStateFlow
  *
  * - ANDROID: siempre `true`. Nadie la publica: al frente = visible (Ruling 35).
  * - WINDOWS: `Main.kt` publica si la ventana activa del sistema es de este programa (la caja o uno de sus diálogos). Tapada por otro
- *   programa (un navegador maximizado), `false`.
+ *   programa (un navegador maximizado), `false`. Ruling 78: `Arranque.iniciar` la pone en `false` antes de registrar el vigilante (la
+ *   ventana todavía no existe) y la prende la ventana en cuanto es la activa; al volver, el vigilante lee ya ([VigilanteDePedidosEnLinea]).
  */
 object VentanaActiva {
     private val _activa = MutableStateFlow(true)

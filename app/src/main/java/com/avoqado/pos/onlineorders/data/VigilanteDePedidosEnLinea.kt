@@ -202,6 +202,9 @@ class VigilanteDePedidosEnLinea internal constructor(
     /** Una lectura de «Por pagar» a la vez: la del compás y la de [sondearFoliosYa] no se pisan. */
     private val turnoDeFolios = Mutex()
 
+    /** Ruling 78: la última lectura del compás salió anunciada (con la cabecera de la tarjeta). Si no, la espera vigila el regreso. */
+    @Volatile private var compasAnunciado = true
+
     /**
      * D661: relee «Por pagar» ya (la pantalla abrió un pedido pagado en línea): el sonido para en esta lectura y no en el siguiente compás
      * (hasta 30 s). Sin ciclo vivo (app en segundo plano) no consulta nada. No mueve el compás de los folios.
@@ -324,7 +327,7 @@ class VigilanteDePedidosEnLinea internal constructor(
         // Los folios van a su propio compás (`pollSeconds` del servidor: 30 s con la tienda híbrida encendida, 10 min si no).
         cicloFolios = scope.launch {
             if (consultarPorPagar == null) return@launch
-            while (isActive) delay(sondearFoliosEnTurno(delCompas = true))
+            while (isActive) esperarElCompasDeFolios(sondearFoliosEnTurno(delCompas = true))
         }
     }
 
@@ -420,6 +423,7 @@ class VigilanteDePedidosEnLinea internal constructor(
      * R2-1 (Ruling 35): sólo el compás ([delCompas]), con la ventana a la vista ([seVe]), le dice al SERVIDOR que esta caja avisa los pagados
      * en línea: es el que suena y obedece el `pollSeconds`. Minimizada (WINDOWS) sigue leyendo y sonando, pero no ofrece la tarjeta.
      * Ruling 48: en WINDOWS además una ventana de la caja tiene que ser la ACTIVA ([ventanaActiva]); tapada por otro programa, tampoco.
+     * Ruling 78: si la del compás sale sin anunciarse, su espera vigila el regreso de la caja ([esperarElCompasDeFolios]).
      */
     private suspend fun sondearFolios(delCompas: Boolean): Long {
         val consultar = consultarPorPagar ?: return INTERVALO_MS
@@ -438,8 +442,10 @@ class VigilanteDePedidosEnLinea internal constructor(
             olvidarTarjetas()
             actualizarAbiertos()
         }
+        val avisa = delCompas && seVe() && ventanaActiva()
+        if (delCompas) compasAnunciado = avisa
         val resultado = try {
-            consultar(puedeCobrar(), delCompas && seVe() && ventanaActiva())
+            consultar(puedeCobrar(), avisa)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -608,6 +614,24 @@ class VigilanteDePedidosEnLinea internal constructor(
         }
     }
 
+    /**
+     * D661 · Ruling 78: la espera del compás de los folios. Si la última lectura del compás salió sin anunciarse (la caja de WINDOWS minimizada,
+     * tapada por otro programa o recién abierta sin ventana), el SERVIDOR pudo contestar con la espera lenta (600 s): se mira en el aparato cada
+     * [VISTAZO_AL_VOLVER_MS], sin tocar la red, y en cuanto la caja vuelve a ser la ventana activa y a la vista se lee ya, con la cabecera.
+     * Una vez por regreso (esa lectura ya sale anunciada y vuelve a la espera normal) y nunca antes de [VISTAZO_AL_VOLVER_MS]. En ANDROID la
+     * lectura del compás siempre se anuncia: espera normal.
+     */
+    private suspend fun esperarElCompasDeFolios(espera: Long) {
+        if (compasAnunciado) return delay(espera)
+        var resto = espera
+        while (resto > 0) {
+            val paso = minOf(resto, VISTAZO_AL_VOLVER_MS)
+            delay(paso)
+            resto -= paso
+            if (seVe() && ventanaActiva()) return
+        }
+    }
+
     private fun proximoIntervalo(): Long {
         val ultimo = ultimosConteos
         if (!puedeLeer()) return INTERVALO_MS
@@ -625,6 +649,8 @@ class VigilanteDePedidosEnLinea internal constructor(
         const val REPETIR_SONIDO_MS = 4_000L
         /** R2-4: lo más que una vuelta espera el papel de UNA comanda antes de seguir con la siguiente (el trabajo sigue solo). */
         const val ESPERA_POR_COMANDA_MS = 20_000L
+        /** Ruling 78: cada cuánto mira (en el aparato) si la caja de WINDOWS volvió a ser la ventana activa tras una lectura sin anunciarse. */
+        const val VISTAZO_AL_VOLVER_MS = 3_000L
         /** D661: el id de un pagado en línea en el conjunto que suena (nunca choca con el de un pedido por aceptar). */
         private const val PREFIJO_TARJETA = "tarjeta:"
 

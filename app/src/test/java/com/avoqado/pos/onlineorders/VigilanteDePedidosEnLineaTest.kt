@@ -1169,4 +1169,62 @@ class VigilanteDePedidosEnLineaTest {
         assertEquals(listOf(true), folios.avisos)
         f.vigilante.onStop(owner)
     }
+
+    // MARK: - Ronda 5 · Familia 1 (Ruling 78): volver a la caja la despierta
+
+    /**
+     * La única caja de WINDOWS se anunciaba (compás de 30 s). Le abren el DASHBOARD encima: la siguiente lectura sale sin la cabecera y el
+     * SERVIDOR (con la tienda apagada en ese momento) contesta 600 s. Al regresar a la caja se lee YA, con la cabecera, sin esperar los 10
+     * minutos. Una vez por regreso: con la caja ya anunciada, ir y venir no agrega lecturas hasta su compás.
+     */
+    @Test
+    fun `R5 Family 1 regaining focus after a slow unannounced read reads right away with the header, once per regain`() = runTest {
+        val folios = Folios(Result.success(listaD661(listOf(tarjeta("t1")), poll = 30)))
+        val f = armarD661(folios)
+        f.vigilante.onStart(owner); runCurrent()
+        assertEquals(listOf(true), folios.avisos)
+        // El DASHBOARD encima: sin foco. La lectura sale sin cabecera y el SERVIDOR contesta 600 s.
+        f.activa = false
+        folios.respuesta = Result.success(listaD661(poll = 600))
+        advanceTimeBy(30_000); runCurrent()
+        assertEquals(listOf(true, false), folios.avisos)
+        // Diez segundos después regresa a la caja (la tienda ya está prendida otra vez).
+        folios.respuesta = Result.success(listaD661(listOf(tarjeta("t1")), poll = 30))
+        advanceTimeBy(10_000); runCurrent()
+        f.activa = true
+        advanceTimeBy(VigilanteDePedidosEnLinea.VISTAZO_AL_VOLVER_MS); runCurrent()
+        assertEquals("lee ya, con la cabecera: no espera los 600 s", listOf(true, false, true), folios.avisos)
+        // Una vez por regreso: ya anunciada, perder y recuperar el foco no agrega lecturas antes de su compás de 30 s.
+        f.activa = false; advanceTimeBy(5_000); runCurrent()
+        f.activa = true; advanceTimeBy(5_000); runCurrent()
+        assertEquals(listOf(true, false, true), folios.avisos)
+        advanceTimeBy(20_000); runCurrent()
+        assertEquals("el compás sigue con lo que contestó el SERVIDOR", listOf(true, false, true, true), folios.avisos)
+        f.vigilante.onStop(owner)
+    }
+
+    /**
+     * Ruling 78: en WINDOWS la señal de foco arranca en «no» (el arranque la publica antes de registrar el vigilante) hasta que la ventana
+     * dice que es la activa: la primera lectura no se anuncia por una ventana que todavía no existe; en cuanto la ventana toma el foco, se lee
+     * ya con la cabecera. Una ventana que se restaura de minimizada despierta igual.
+     */
+    @Test
+    fun `R5 Family 1 before the window reports focus the first read carries no header, and taking focus or restoring reads with it`() = runTest {
+        val folios = Folios(Result.success(listaD661(poll = 600)))
+        val f = armarD661(folios)
+        f.activa = false
+        f.vigilante.onStart(owner); runCurrent()
+        assertEquals("sin ventana activa todavía: sin cabecera", listOf(false), folios.avisos)
+        f.activa = true
+        advanceTimeBy(VigilanteDePedidosEnLinea.VISTAZO_AL_VOLVER_MS); runCurrent()
+        assertEquals(listOf(false, true), folios.avisos)
+        // Minimizada hasta su compás (600 s), y luego restaurada: también lee ya.
+        f.seVe = false
+        advanceTimeBy(600_000); runCurrent()
+        assertEquals(listOf(false, true, false), folios.avisos)
+        f.seVe = true
+        advanceTimeBy(VigilanteDePedidosEnLinea.VISTAZO_AL_VOLVER_MS); runCurrent()
+        assertEquals(listOf(false, true, false, true), folios.avisos)
+        f.vigilante.onStop(owner)
+    }
 }
