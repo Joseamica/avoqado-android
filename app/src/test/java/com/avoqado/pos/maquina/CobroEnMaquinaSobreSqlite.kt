@@ -23,6 +23,9 @@ internal open class CobroEnMaquinaSobreSqlite : CobroEnMaquinaDao, AutoCloseable
     /** Codex código r2 H11: corre justo después de guardar un intento (la PC se pausa antes del `paycash`). */
     var alInsertar: () -> Unit = {}
 
+    /** Codex código r3 #12: corre justo después de escribir un cierre (p. ej. la subida guarda su acuse antes del primer papel). */
+    var alCerrar: (String) -> Unit = {}
+
     override fun close() = db.close()
 
     private fun preparar(sql: String, vararg valores: Pair<String, Any?>): PreparedStatement {
@@ -60,7 +63,8 @@ internal open class CobroEnMaquinaSobreSqlite : CobroEnMaquinaDao, AutoCloseable
         respuestaServidor = rs.getString("respuestaServidor"), bindingId = rs.getString("bindingId"),
         renglonesJson = rs.getString("renglonesJson"), desenlaceDelServidor = rs.getString("desenlaceDelServidor"),
         cierreTardio = rs.getString("cierreTardio"), aDeberCents = rs.getInt("aDeberCents"),
-        versionDeLaDuda = rs.intONulo("versionDeLaDuda"),
+        versionDeLaDuda = rs.intONulo("versionDeLaDuda"), huellasDelDiario = rs.getString("huellasDelDiario"),
+        comandaJson = rs.getString("comandaJson"),
     )
 
     /** Lectura directa, sin suspender (para revisar el disco desde un `enviar` falso). */
@@ -80,6 +84,22 @@ internal open class CobroEnMaquinaSobreSqlite : CobroEnMaquinaDao, AutoCloseable
 
     override fun observarEnEspera(venueId: String) = cambios.map { filas(CobroEnMaquinaSql.EN_ESPERA, "venueId" to venueId) }
 
+    override suspend fun dudasDeEstaPc(venueId: String, soloSinSubir: Boolean, limite: Int) = filas(
+        CobroEnMaquinaSql.DUDAS_DE_ESTA_PC, "venueId" to venueId, "soloSinSubir" to if (soloSinSubir) 1 else 0, "limite" to limite,
+    )
+
+    override suspend fun contarDudas(venueId: String, soloSinSubir: Boolean): Int =
+        preparar(CobroEnMaquinaSql.CONTAR_DUDAS, "venueId" to venueId, "soloSinSubir" to if (soloSinSubir) 1 else 0).use { st ->
+            st.executeQuery().let { it.next(); it.getInt(1) }
+        }
+
+    override suspend fun marcarEvidenciaEntregada(referenceCC: String, crudos: String, creditCents: Int) = actualizar(
+        CobroEnMaquinaSql.MARCAR_EVIDENCIA_ENTREGADA, "referenceCC" to referenceCC, "crudos" to crudos, "creditCents" to creditCents,
+    )
+
+    override suspend fun reclamarComanda(referenceCC: String, comanda: String) =
+        actualizar(CobroEnMaquinaSql.RECLAMAR_COMANDA, "referenceCC" to referenceCC, "comanda" to comanda)
+
     override suspend fun marcarDudaEnConflicto(referenceCC: String, conflicto: String, respuesta: String, crudos: String, creditCents: Int) =
         actualizar(
             CobroEnMaquinaSql.MARCAR_DUDA_EN_CONFLICTO, "referenceCC" to referenceCC, "conflicto" to conflicto, "respuesta" to respuesta,
@@ -90,16 +110,13 @@ internal open class CobroEnMaquinaSobreSqlite : CobroEnMaquinaDao, AutoCloseable
         CobroEnMaquinaSql.MARCAR_DE_OTRA_PC, "referenceCC" to referenceCC, "conflicto" to conflicto, "respuesta" to respuesta,
     )
 
-    override suspend fun frenanLaMaquina(): Int =
-        preparar(CobroEnMaquinaSql.FRENAN_LA_MAQUINA).use { st -> st.executeQuery().let { it.next(); it.getInt(1) } }
+    /** `pendientes` es el de la interfaz (la regla en Kotlin), heredado sin tocar: corre sobre esta consulta. */
+    override suspend fun puedenFrenar() = filas(CobroEnMaquinaSql.PUEDEN_FRENAR)
 
     override suspend fun bloqueanLaVenta(llaveDeVenta: String): Int =
         preparar(CobroEnMaquinaSql.BLOQUEAN_LA_VENTA, "llaveDeVenta" to llaveDeVenta).use { st ->
             st.executeQuery().let { it.next(); it.getInt(1) }
         }
-
-    override suspend fun pendientes(venueId: String?): Int =
-        preparar(CobroEnMaquinaSql.PENDIENTES, "venueId" to venueId).use { st -> st.executeQuery().let { it.next(); it.getInt(1) } }
 
     override suspend fun insertar(fila: CobroEnMaquinaEntity) {
         val f = fila
@@ -113,7 +130,8 @@ internal open class CobroEnMaquinaSobreSqlite : CobroEnMaquinaDao, AutoCloseable
             "dudaSubida" to if (f.dudaSubida) 1 else 0, "conflicto" to f.conflicto, "ticketImpreso" to f.ticketImpreso,
             "mensajesCrudos" to f.mensajesCrudos, "respuestaServidor" to f.respuestaServidor, "bindingId" to f.bindingId,
             "renglonesJson" to f.renglonesJson, "desenlaceDelServidor" to f.desenlaceDelServidor, "cierreTardio" to f.cierreTardio,
-            "aDeberCents" to f.aDeberCents, "versionDeLaDuda" to f.versionDeLaDuda,
+            "aDeberCents" to f.aDeberCents, "versionDeLaDuda" to f.versionDeLaDuda, "huellasDelDiario" to f.huellasDelDiario,
+            "comandaJson" to f.comandaJson,
         )
         val sql = "INSERT INTO cobros_en_maquina (${columnas.joinToString { it.first }}) VALUES (${columnas.joinToString { ":" + it.first }})"
         actualizar(sql, *columnas.toTypedArray())
@@ -126,10 +144,11 @@ internal open class CobroEnMaquinaSobreSqlite : CobroEnMaquinaDao, AutoCloseable
     override suspend fun ganarPropiedad(referenceCC: String, generacion: Int) =
         actualizar(CobroEnMaquinaSql.GANAR_PROPIEDAD, "referenceCC" to referenceCC, "generacion" to generacion)
 
-    override suspend fun escribirDiario(referenceCC: String, anterior: String, nuevo: String, creditoAnterior: Int, credito: Int) = actualizar(
-        CobroEnMaquinaSql.ESCRIBIR_DIARIO, "referenceCC" to referenceCC, "anterior" to anterior, "nuevo" to nuevo,
-        "creditoAnterior" to creditoAnterior, "credito" to credito,
-    )
+    override suspend fun escribirDiario(referenceCC: String, anterior: String, nuevo: String, huellas: String, creditoAnterior: Int, credito: Int) =
+        actualizar(
+            CobroEnMaquinaSql.ESCRIBIR_DIARIO, "referenceCC" to referenceCC, "anterior" to anterior, "nuevo" to nuevo, "huellas" to huellas,
+            "creditoAnterior" to creditoAnterior, "credito" to credito,
+        )
 
     override suspend fun pedirCancel(referenceCC: String, cancelvalue: String, ahora: Long): Int =
         actualizar(CobroEnMaquinaSql.PEDIR_CANCEL, "referenceCC" to referenceCC, "cancelvalue" to cancelvalue, "ahora" to ahora)
@@ -147,7 +166,7 @@ internal open class CobroEnMaquinaSobreSqlite : CobroEnMaquinaDao, AutoCloseable
         CobroEnMaquinaSql.CERRAR, "referenceCC" to referenceCC, "estado" to estado, "creditCents" to creditCents,
         "changeDispensedCents" to changeDispensedCents, "cierreEn" to cierreEn, "conocido" to if (conocido) 1 else 0,
         "aDeber" to aDeber,
-    )
+    ).also { alCerrar(referenceCC) }
 
     override suspend fun aEsperando(referenceCC: String) = actualizar(CobroEnMaquinaSql.A_ESPERANDO, "referenceCC" to referenceCC)
 

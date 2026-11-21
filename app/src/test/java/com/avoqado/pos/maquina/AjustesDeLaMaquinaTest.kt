@@ -115,20 +115,19 @@ class AjustesDeLaMaquinaTest {
             dao.insertar(fila("AQ000000000004", EstadoDelIntento.RESUELTO))
             // Codex código r2 H8: el cierre cuyo folio es de OTRA PC tiene su incidencia en el SERVIDOR: no frena (ni la sesión ni la máquina).
             dao.insertar(fila("AQ000000000007", EstadoDelIntento.PAGADO).copy(conflicto = "otra PC", respuestaServidor = "{}"))
+            // Codex código r3 #3: tampoco la duda que el SERVIDOR atribuye a OTRA PC (409 OTRA_PC con su incidencia).
+            dao.insertar(fila("AQ000000000006", EstadoDelIntento.ESPERANDO, dudaSubida = true).copy(conflicto = "otra PC", respuestaServidor = OTRA_PC))
             assertEquals(0, dao.pendientes(null))
-            assertFalse(dao.hayPendientesDeLaMaquina())
-            // Codex código r1 #9: lo que el SERVIDOR ya guardó como incidencia (la duda subida, en conflicto o no) ya no frena la SESIÓN…
-            dao.insertar(fila("AQ000000000005", EstadoDelIntento.ESPERANDO, dudaSubida = true))
-            dao.insertar(fila("AQ000000000006", EstadoDelIntento.ESPERANDO, dudaSubida = true).copy(conflicto = "otra PC", respuestaServidor = "{}"))
-            assertEquals(0, dao.pendientes(null))
-            // …pero Codex código r2 H1: mientras el dinero de una venta siga en duda, la PC conserva su máquina (no se desempareja).
-            assertTrue(dao.hayPendientesDeLaMaquina())
-            assertEquals(2, dao.frenanLaMaquina())
+            assertEquals(0, dao.pendientes("venue-1"))
+            assertFalse("Codex código r3 #3: se puede desemparejar y cambiar la IP", dao.hayPendientesDeLaMaquina())
 
             val frenan = listOf(
                 fila("AQ00000000000A", EstadoDelIntento.EN_CURSO),
                 fila("AQ00000000000B", EstadoDelIntento.ESPERANDO).copy(conflicto = "400 sin incidencia"),   // el SERVIDOR no la tiene
                 fila("AQ00000000000C", EstadoDelIntento.ESPERANDO),
+                // Codex código r3 #2: una duda PROPIA que el SERVIDOR ya acusó sigue abierta: frena salir, igual que desemparejar.
+                fila("AQ000000000005", EstadoDelIntento.ESPERANDO, dudaSubida = true),
+                fila("AQ000000000008", EstadoDelIntento.ESPERANDO, dudaSubida = true).copy(conflicto = "otra evidencia", respuestaServidor = "{}"),
                 fila("AQ00000000000D", EstadoDelIntento.PAGADO),
                 fila("AQ00000000000E", EstadoDelIntento.CANCELADO),
                 fila("AQ00000000000F", EstadoDelIntento.GUARDADO, venue = "venue-2"),
@@ -138,7 +137,7 @@ class AjustesDeLaMaquinaTest {
                 assertEquals(f.estado, i + 1, dao.pendientes(null))
             }
             assertTrue(dao.hayPendientesDeLaMaquina())
-            assertEquals("por sucursal", 5, dao.pendientes("venue-1"))
+            assertEquals("por sucursal", 7, dao.pendientes("venue-1"))
             assertEquals(1, dao.pendientes("venue-2"))
             assertEquals(0, dao.pendientes("venue-3"))
         }
@@ -238,6 +237,9 @@ class AjustesDeLaMaquinaTest {
 
     companion object {
         const val SOCKETS = """{"comando":"sockets","cobrando":false,"Due":0,"Credit":0,"changeBar":"022210221000"}"""
+
+        /** El 409 `OTRA_PC` con su incidencia, como lo guarda la subida en `respuestaServidor`. */
+        const val OTRA_PC = """{"message":"Este folio es de otra PC","code":"CASH_MACHINE_DOUBT_CONFLICT","details":{"motivo":"OTRA_PC","deviceId":"la-otra-pc","incidentId":"cinc000000000000000000009"}}"""
 
         fun fila(
             ref: String,

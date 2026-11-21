@@ -46,17 +46,55 @@ class CobroEnMaquinaMigracionTest {
     }
 
     @Test
-    fun `la tabla de hoy es la que Room espera en la v22`() {
+    fun `la tabla de la v22 es la que Room esperaba en la v22`() {
         val (sql, indices) = createSql(22)
+        assertEquals(sql, CobroEnMaquinaSql.CREAR_TABLA_V22)
+        assertTrue(indices.isNullOrEmpty())
+    }
+
+    @Test
+    fun `la tabla de hoy es la que Room espera en la v23`() {
+        val (sql, indices) = createSql(23)
         assertEquals(sql, CobroEnMaquinaSql.CREAR_TABLA)
         assertTrue(indices.isNullOrEmpty())
     }
 
     @Test
-    fun `las migraciones 19 a 20, 20 a 21 y 21 a 22 existen y van en cadena`() {
+    fun `las migraciones 19 a 20, 20 a 21, 21 a 22 y 22 a 23 existen y van en cadena`() {
         assertEquals(19 to 20, AvoqadoDatabaseMigrations.MIGRATION_19_20.let { it.startVersion to it.endVersion })
         assertEquals(20 to 21, AvoqadoDatabaseMigrations.MIGRATION_20_21.let { it.startVersion to it.endVersion })
         assertEquals(21 to 22, AvoqadoDatabaseMigrations.MIGRATION_21_22.let { it.startVersion to it.endVersion })
+        assertEquals(22 to 23, AvoqadoDatabaseMigrations.MIGRATION_22_23.let { it.startVersion to it.endVersion })
+    }
+
+    @Test
+    fun `Codex r3 una base v22 llega a v23 con las huellas vacias, sin comanda y el cobro intacto, y su diario sigue sin repetir`() {
+        DriverManager.getConnection("jdbc:sqlite::memory:").use { v22 ->
+            v22.createStatement().use { it.executeUpdate(CobroEnMaquinaSql.CREAR_TABLA_V22) }
+            v22.createStatement().use {
+                it.executeUpdate(
+                    "INSERT INTO cobros_en_maquina (referenceCC, venueId, llaveDeVenta, pedidoJson, saleCents, tipCents, dueCents, " +
+                        "creadoEn, estado, creditCents, changeDispensedCents, cierreConocido, subido, dudaSubida, ticketImpreso, " +
+                        "mensajesCrudos, aDeberCents) VALUES ('AQ000000000001', 'venue-1', 'venta-1', '{}', 8000, 0, 8000, 1, " +
+                        "'ESPERANDO', 5000, 0, 0, 0, 1, 0, 'g1 {\"comando\":\"status\"}', 0)",
+                )
+            }
+
+            CobroEnMaquinaSql.MIGRAR_22_23.forEach { sql -> v22.createStatement().use { it.executeUpdate(sql) } }
+
+            val hoy = DriverManager.getConnection("jdbc:sqlite::memory:").use { nueva ->
+                nueva.createStatement().use { it.executeUpdate(CobroEnMaquinaSql.CREAR_TABLA) }
+                columnas(nueva)
+            }
+            assertEquals("las mismas columnas que crea Room hoy", hoy, columnas(v22))
+            v22.createStatement().use { st ->
+                val rs = st.executeQuery("SELECT estado, creditCents, huellasDelDiario, comandaJson FROM cobros_en_maquina")
+                assertTrue(rs.next())
+                assertEquals(listOf<Any?>("ESPERANDO", 5000, "", null), listOf(rs.getString(1), rs.getInt(2), rs.getString(3), rs.getString(4)))
+            }
+        }
+        // El diario de antes (sin huellas) se siembra con lo que su texto todavía guarda: su mensaje no vuelve a contar.
+        assertNull(DiarioDelFolio.agregar("g1 {\"comando\":\"status\"}", "", 2, "{\"comando\":\"status\"}"))
     }
 
     @Test
@@ -79,10 +117,10 @@ class CobroEnMaquinaMigracionTest {
             CobroEnMaquinaSql.MIGRAR_21_22.forEach { sql -> v21.createStatement().use { it.executeUpdate(sql) } }
 
             val hoy = DriverManager.getConnection("jdbc:sqlite::memory:").use { nueva ->
-                nueva.createStatement().use { it.executeUpdate(CobroEnMaquinaSql.CREAR_TABLA) }
+                nueva.createStatement().use { it.executeUpdate(CobroEnMaquinaSql.CREAR_TABLA_V22) }
                 columnas(nueva)
             }
-            assertEquals("las mismas columnas que crea Room hoy", hoy, columnas(v21))
+            assertEquals("las mismas columnas que creaba Room en la v22", hoy, columnas(v21))
             v21.createStatement().use { st ->
                 val rs = st.executeQuery(
                     "SELECT referenceCC, aDeberCents, bindingId, cierreTardio, respuestaServidor FROM cobros_en_maquina ORDER BY referenceCC",

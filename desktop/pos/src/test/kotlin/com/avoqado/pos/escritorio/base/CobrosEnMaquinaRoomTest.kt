@@ -70,6 +70,47 @@ class CobrosEnMaquinaRoomTest {
         } finally { carpeta.toFile().deleteRecursively() }
     }
 
+    @Test fun `Codex r3 una base v22 con una duda llega a v23 con las huellas vacias, sin comanda y la duda intacta`() {
+        val carpeta = Files.createTempDirectory("migraciones")
+        try {
+            val ayudante = ayudanteDeMigraciones(carpeta.resolve("base"))
+            ayudante.createDatabase(22).use { v22 ->
+                v22.execSQL(
+                    "INSERT INTO cobros_en_maquina (referenceCC, venueId, llaveDeVenta, pedidoJson, saleCents, tipCents, dueCents, " +
+                        "creadoEn, estado, creditCents, changeDispensedCents, cierreConocido, subido, dudaSubida, ticketImpreso, " +
+                        "mensajesCrudos, aDeberCents) VALUES ('AQ000000000001', 'venue-1', 'venta-1', '{}', 8000, 0, 8000, 1, " +
+                        "'ESPERANDO', 5000, 0, 0, 0, 1, 0, 'g1 crudo', 0)",
+                )
+            }
+            ayudante.runMigrationsAndValidate(23, migracionesDeAndroid().map { it.paraRoom() }).use { v23 ->
+                assertEquals(1L, v23.leerLargo("SELECT COUNT(*) FROM cobros_en_maquina WHERE huellasDelDiario = '' AND comandaJson IS NULL AND creditCents = 5000"))
+            }
+        } finally { carpeta.toFile().deleteRecursively() }
+    }
+
+    @Test fun `Codex r3 el DAO real - una duda propia frena salir, lo resuelto no, y la comanda se reclama una vez`() = runBlocking {
+        val carpeta = Files.createTempDirectory("cobros-en-maquina")
+        val base = DatabaseModule.provideDatabase(ContextoDeEscritorio(carpeta))
+        try {
+            val dao = base.cobrosEnMaquinaDao()
+            val duda = CobroEnMaquinaEntity(
+                "AQ000000000001", "venue-1", "venta-1", "{}", 18_000, 750, 18_750, null, null, creadoEn = 1, estado = EstadoDelIntento.ESPERANDO,
+                dudaSubida = true, comandaJson = "[]",
+            )
+            dao.insertar(duda)
+            assertEquals(1, dao.pendientes("venue-1"), "una duda propia ya subida sigue frenando salir (r3 #2)")
+            assertEquals(1, dao.reclamarComanda("AQ000000000001", "[]"))
+            assertEquals(0, dao.reclamarComanda("AQ000000000001", "[]"), "la comanda sale una vez por folio (r3 #6)")
+            assertEquals(1, dao.resolver("AQ000000000001", "GERENTE", 0, 0, null, """{"outcome":"CANCELADO"}""", "CANCELADO"))
+            assertEquals(0, dao.pendientes(null), "lo que el SERVIDOR resolvió no frena")
+            assertTrue(dao.anotarMensaje("AQ000000000001", 1, "tarde", 10_000, 18_750), "lo que llega después de resolver es evidencia (r3 #1)")
+            assertEquals(1, dao.bloqueanLaVenta("venta-1"), "y frena la venta hasta que el SERVIDOR la tenga")
+        } finally {
+            base.close()
+            carpeta.toFile().deleteRecursively()
+        }
+    }
+
     @Test fun `el DAO real deja un solo intento abierto por venta y el cierre se escribe una sola vez`() = runBlocking {
         val carpeta = Files.createTempDirectory("cobros-en-maquina")
         val base = DatabaseModule.provideDatabase(ContextoDeEscritorio(carpeta))

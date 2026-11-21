@@ -29,6 +29,13 @@ interface CobroEnMaquinaDao {
     @Query(CobroEnMaquinaSql.EN_ESPERA)
     fun observarEnEspera(venueId: String): kotlinx.coroutines.flow.Flow<List<CobroEnMaquinaEntity>>
 
+    /** Codex código r3 #8: las dudas de esta PC para la bandeja, por páginas ([contarDudas]). */
+    @Query(CobroEnMaquinaSql.DUDAS_DE_ESTA_PC)
+    suspend fun dudasDeEstaPc(venueId: String, soloSinSubir: Boolean, limite: Int): List<CobroEnMaquinaEntity>
+
+    @Query(CobroEnMaquinaSql.CONTAR_DUDAS)
+    suspend fun contarDudas(venueId: String, soloSinSubir: Boolean): Int
+
     @Insert
     suspend fun insertar(fila: CobroEnMaquinaEntity)
 
@@ -51,21 +58,24 @@ interface CobroEnMaquinaDao {
     suspend fun ganarPropiedad(referenceCC: String, generacion: Int): Int
 
     @Query(CobroEnMaquinaSql.ESCRIBIR_DIARIO)
-    suspend fun escribirDiario(referenceCC: String, anterior: String, nuevo: String, creditoAnterior: Int, credito: Int): Int
+    suspend fun escribirDiario(referenceCC: String, anterior: String, nuevo: String, huellas: String, creditoAnterior: Int, credito: Int): Int
 
     /**
      * Codex código r2, bloque A: un mensaje de la máquina al diario de SU folio ([referenceCC]), ANTES de decidir nada. Sólo una fila de
-     * esta PC abierta o en duda; un mensaje físico repetido no cambia nada (H13). [creditCents] cuenta sólo si el mensaje es del `Due`
-     * de la fila ([dueCents]): lo que entró de otra operación nunca se le atribuye. true = evidencia nueva en disco.
+     * esta PC abierta, en duda o resuelta por un gerente (Codex código r3 #1: lo que llega después de resolverla es evidencia, nunca se
+     * tira). Un mensaje físico que ya llegó alguna vez no cambia nada, ni el crédito ni la versión (H13 y r3 #13). [creditCents] cuenta
+     * sólo si el mensaje es del `Due` de la fila ([dueCents]): lo que entró de otra operación nunca se le atribuye. true = evidencia nueva
+     * en disco.
      */
     @Transaction
     suspend fun anotarMensaje(referenceCC: String, generacion: Int, crudo: String, creditCents: Int?, dueCents: Int?): Boolean {
         val fila = porReferencia(referenceCC) ?: return false
-        if (fila.estado != EstadoDelIntento.EN_CURSO && fila.estado != EstadoDelIntento.ESPERANDO) return false
-        val diario = DiarioDelFolio.agregar(fila.mensajesCrudos, generacion, crudo)
+        if (fila.estado != EstadoDelIntento.EN_CURSO && fila.estado != EstadoDelIntento.ESPERANDO && fila.estado != EstadoDelIntento.RESUELTO) {
+            return false
+        }
+        val anotado = DiarioDelFolio.agregar(fila.mensajesCrudos, fila.huellasDelDiario, generacion, crudo) ?: return false
         val credito = if (creditCents != null && dueCents == fila.dueCents) maxOf(fila.creditCents, creditCents) else fila.creditCents
-        if (diario == null && credito == fila.creditCents) return false
-        return escribirDiario(referenceCC, fila.mensajesCrudos, diario ?: fila.mensajesCrudos, fila.creditCents, credito) > 0
+        return escribirDiario(referenceCC, fila.mensajesCrudos, anotado.diario, anotado.huellas, fila.creditCents, credito) > 0
     }
 
     @Query(CobroEnMaquinaSql.PEDIR_CANCEL)
@@ -88,9 +98,15 @@ interface CobroEnMaquinaDao {
     @Query(CobroEnMaquinaSql.HUERFANOS_A_ESPERANDO)
     suspend fun huerfanosAEsperando(salvo: String): Int
 
-    /** R5#2: cuántos frenan ([CobroEnMaquinaSql.PENDIENTES]) en [venueId], o en todas con null. */
-    @Query(CobroEnMaquinaSql.PENDIENTES)
-    suspend fun pendientes(venueId: String?): Int
+    @Query(CobroEnMaquinaSql.PUEDEN_FRENAR)
+    suspend fun puedenFrenar(): List<CobroEnMaquinaEntity>
+
+    /**
+     * R5#2 y Codex código r3 #2, #3: cuántos impiden salir ([frenaLaSalida], UNA regla) en [venueId] —cerrar sesión, cambiar de
+     * sucursal—, o en todas con null —desemparejar, cambiar la IP—.
+     */
+    @Transaction
+    suspend fun pendientes(venueId: String?): Int = puedenFrenar().count { (venueId == null || it.venueId == venueId) && it.frenaLaSalida() }
 
     /** Lo que la subida (C4) tiene que mandar: cierres finales sin acuse y dudas sin subir. */
     @Query(CobroEnMaquinaSql.POR_SUBIR)
@@ -121,8 +137,8 @@ interface CobroEnMaquinaDao {
     @Query(CobroEnMaquinaSql.MARCAR_DE_OTRA_PC)
     suspend fun marcarDeOtraPc(referenceCC: String, conflicto: String, respuesta: String): Int
 
-    @Query(CobroEnMaquinaSql.FRENAN_LA_MAQUINA)
-    suspend fun frenanLaMaquina(): Int
+    @Query(CobroEnMaquinaSql.MARCAR_EVIDENCIA_ENTREGADA)
+    suspend fun marcarEvidenciaEntregada(referenceCC: String, crudos: String, creditCents: Int): Int
 
     @Query(CobroEnMaquinaSql.MARCAR_DUDA_SUBIDA)
     suspend fun marcarDudaSubida(referenceCC: String, subida: Boolean): Int
@@ -157,10 +173,14 @@ interface CobroEnMaquinaDao {
 
     @Query(CobroEnMaquinaSql.TERMINAR_TICKET)
     suspend fun terminarTicket(referenceCC: String, valor: Int): Int
+
+    /** Codex código r3 #6: 1 = esta llamada ganó la comanda de [referenceCC] ([comanda], la que leyó) y la despacha. */
+    @Query(CobroEnMaquinaSql.RECLAMAR_COMANDA)
+    suspend fun reclamarComanda(referenceCC: String, comanda: String): Int
 }
 
 /**
- * R5#2 y Codex código r2 H1: ¿hay cobros de la máquina sin subir, abiertos o en duda, de cualquier sucursal? Frena desemparejar y
- * cambiar la IP o la sucursal en Ajustes (C6): con el dinero de una venta en duda, la PC conserva su máquina.
+ * R5#2 y Codex código r3 #2, #3: ¿algo de cualquier sucursal impide desemparejar o cambiar la IP o la sucursal en Ajustes (C6)? La misma
+ * regla que cerrar sesión ([frenaLaSalida]).
  */
-suspend fun CobroEnMaquinaDao.hayPendientesDeLaMaquina(): Boolean = frenanLaMaquina() > 0
+suspend fun CobroEnMaquinaDao.hayPendientesDeLaMaquina(): Boolean = pendientes(null) > 0

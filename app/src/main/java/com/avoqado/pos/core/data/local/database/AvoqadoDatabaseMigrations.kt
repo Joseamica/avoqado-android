@@ -336,6 +336,17 @@ object AvoqadoDatabaseMigrations {
         }
     }
 
+    /**
+     * v23 — máquina de efectivo (Codex código r3 #13 y #6): dos columnas en `cobros_en_maquina`, las huellas de TODO lo que llegó de
+     * cada folio (el texto del diario se recorta; esto no) y la comanda de cocina congelada al empezar. El SQL sale de
+     * [CobroEnMaquinaSql.MIGRAR_22_23]; `CobroEnMaquinaMigracionTest` lo corre sobre SQLite.
+     */
+    val MIGRATION_22_23 = object : Migration(22, 23) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            CobroEnMaquinaSql.MIGRAR_22_23.forEach(db::execSQL)
+        }
+    }
+
     /** Identity-only legacy link, inside the migration transaction. Evidence and monetary fields stay NULL. */
     fun restaurarReferenciasQ15(db: SupportSQLiteDatabase) {
         fun tabla(nombre: String, venueCol: String, originalCol: String, payload: Boolean) {

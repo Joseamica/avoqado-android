@@ -44,7 +44,7 @@ import com.avoqado.pos.reservations.data.PendingReservationActionEntity
         // v20 — máquina de efectivo (fase 1a): los intentos de cobro en la QuickPay; la tabla ES su cola (R4-1)
         com.avoqado.pos.maquina.CobroEnMaquinaEntity::class,
     ],
-    version = 22,
+    version = 23,
     exportSchema = true,
 )
 abstract class AvoqadoDatabase : RoomDatabase() {
