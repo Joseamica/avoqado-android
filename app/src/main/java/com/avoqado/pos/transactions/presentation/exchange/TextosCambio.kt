@@ -61,6 +61,9 @@ object TextosCambio {
     const val NOT_PAID = "Esta venta no está cobrada."
     const val NOTHING_LEFT_TO_REFUND = "De esta venta ya no queda dinero por devolver para estos artículos."
     const val SERIALIZED_ITEM = "Los artículos con número de serie no se cambian."
+    // D661: un pedido «No, entran solos» pagado con tarjeta en línea; el mismo texto del SERVIDOR. iOS lo copia igual.
+    const val ONLINE_CARD =
+        "Este pedido se pagó con tarjeta en línea y no admite Cambio. Para regresarle su dinero a la clienta, usa la devolución del pedido."
     const val TITULO = "Cambio · Venta {folio} · {cuando}"
     const val REGRESA = "REGRESA"
     const val REGRESAR = "Regresar"

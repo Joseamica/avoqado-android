@@ -59,6 +59,12 @@ data class OnlineOrder(
     val beneficios: List<BeneficioDelFolio> = emptyList(),
     /** Parte 2 (S14): cuántos trae la cuenta en total; si pasa de [beneficios], la tarjeta dice «y N más». */
     val beneficiosTotal: Int = 0,
+    /** D661 · R2-2 (task-4-report, «Contract»): el cierre del día lo marcó «No lo recogió»; null = no, o SERVIDOR viejo. */
+    val notPickedUpAt: java.time.Instant? = null,
+    /** D661 · R2-2: «Devolviendo…» (la devolución está apartada; no se entrega). */
+    val refundRequestedAt: java.time.Instant? = null,
+    /** D661 · R2-2: «Devuelto». */
+    val refundedAt: java.time.Instant? = null,
 )
 
 /** Parte 2 (S14): la clienta de la cuenta, con su nombre corto del SERVIDOR («Ana L.»). */
@@ -174,7 +180,36 @@ data class ListaPorPagar(
      * nueva de las dos, que es la que usa «Cobrar».
      */
     val numero: Long = 0L,
+    /**
+     * D661: pedidos pagados con tarjeta en línea en «No, entran solos» que esperan que una caja los abra (abrir = cobrar). Lista propia
+     * del servidor (tope 50, del más viejo al más nuevo), independiente de la sección y del cursor. Un servidor viejo no la manda.
+     */
+    val tarjetasPorAbrir: List<TarjetaPorAbrir> = emptyList(),
+    /** D661: pedidos ya cobrados cuya comanda falta (últimas 24 h, tope 50); también los que el cierre del día ya cerró. */
+    val comandasPorImprimir: List<ComandaPorImprimir> = emptyList(),
 )
+
+/**
+ * D661: un pedido pagado con tarjeta en línea en «No, entran solos»: el dinero está APARTADO y se cobra cuando una caja lo abre. El total
+ * llega en PESOS y aquí va en centavos exactos. [cobrando] = otra caja lo está cobrando en este momento: no se abre otra vez.
+ */
+data class TarjetaPorAbrir(
+    val orderId: String,
+    val orderNumber: String,
+    val customerName: String?,
+    val totalCents: Long,
+    val createdAt: Instant,
+    val cobrando: Boolean,
+)
+
+/** D661: un pedido cobrado cuya comanda todavía no sale. Sus renglones salen de «Por entregar» o de leer ESE pedido. */
+data class ComandaPorImprimir(val orderId: String, val orderNumber: String)
+
+/**
+ * Lo que contestó el reclamo de la comanda. [reclamado] = este aparato la imprime. [posibleRepetida] (Ruling 9): el reclamo se concedió
+ * sobre otro que venció sin confirmarse, así que el papel pudo haber salido ya: la comanda dice arriba «POSIBLE REPETIDA».
+ */
+data class ReclamoDeImpresion(val reclamado: Boolean, val posibleRepetida: Boolean = false)
 
 /** R100/R101 (Codex r2 #3): cómo se veía un folio ANTES de una acción: su sección (`toPay`/`toDeliver`), su estado y lo que falta. */
 data class HuellaDeFolio(val seccion: String, val status: OnlineOrderStatus, val remainingCents: Long)

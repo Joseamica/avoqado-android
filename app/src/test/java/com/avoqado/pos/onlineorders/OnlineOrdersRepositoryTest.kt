@@ -8,6 +8,7 @@ import com.avoqado.pos.core.domain.PlanTier
 import com.avoqado.pos.onlineorders.data.OnlineOrdersRepository
 import com.avoqado.pos.onlineorders.domain.AccionResultado
 import com.avoqado.pos.onlineorders.domain.OnlineOrderStatus
+import com.avoqado.pos.onlineorders.domain.ReclamoDeImpresion
 import io.mockk.coEvery
 import io.mockk.every
 import io.mockk.mockk
@@ -243,7 +244,7 @@ class OnlineOrdersRepositoryTest {
     fun `print routes send x-device-id`() = runTest {
         server.enqueue(MockResponse().setBody("""{"success":true,"data":{"claimed":true}}"""))
         server.enqueue(MockResponse().setBody("""{"success":true,"data":{"ok":false}}"""))
-        assertTrue(repo.claimPrint("o1", "dev-9"))
+        assertTrue(repo.reclamarComanda("o1", "dev-9").reclamado)
         assertFalse(repo.confirmPrint("o1", "dev-9"))
         val c = server.takeRequest(1, TimeUnit.SECONDS)!!
         assertEquals("/api/v1/mobile/venues/v1/online-orders/o1/print/claim", c.requestUrl!!.encodedPath)
@@ -254,9 +255,63 @@ class OnlineOrdersRepositoryTest {
     }
 
     @Test
+    fun `opening sends abrirPagadoEnLinea true`() = runTest {
+        server.enqueue(MockResponse().setBody("""{"success":true,"data":{}}"""))
+        assertEquals(AccionResultado.Hecho, repo.abrirPagadoEnLinea("o1"))
+        val r = server.takeRequest(1, TimeUnit.SECONDS)!!
+        assertEquals("POST", r.method)
+        assertEquals("/api/v1/mobile/venues/v1/online-orders/o1/accept", r.requestUrl!!.encodedPath)
+        // El cuerpo es EXACTAMENTE la apertura explícita del contrato (task-3b-report, «Contract»): nada de minutos.
+        assertEquals("""{"abrirPagadoEnLinea":true}""", r.body.readUtf8())
+        // La caja explica su propio error (nunca el PIN del gerente por un 403).
+        assertEquals("1", r.getHeader(ForbiddenInterceptor.LOCAL_ERROR_HEADER))
+
+        // Otra caja ya lo abrió (STALE con el pedido ACCEPTED): para esta caja es hecho, sin error.
+        server.enqueue(conflicto("ACCEPTED"))
+        assertEquals(AccionResultado.Hecho, repo.abrirPagadoEnLinea("o1"))
+        // El banco lo está cobrando por otra caja: no es error, es «confirmando».
+        server.enqueue(MockResponse().setResponseCode(409).setBody("""{"success":false,"code":"ONLINE_ORDER_CONFIRMING_PAYMENT","error":"Se está confirmando el pago"}"""))
+        assertTrue(repo.abrirPagadoEnLinea("o1") is AccionResultado.ConfirmandoPago)
+        // Nadie lo abrió a tiempo y se liberó: ya no está disponible.
+        server.enqueue(conflicto("EXPIRED"))
+        assertEquals(AccionResultado.YaNoDisponible(OnlineOrderStatus.EXPIRED), repo.abrirPagadoEnLinea("o1"))
+        // Sin red a media llamada: no se encola (es un cobro con tarjeta). DISCONNECT_AFTER_REQUEST y no AT_START: esta petición reusa la
+        // conexión de las anteriores y MockWebServer sólo mira AT_START al aceptar una conexión nueva.
+        server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AFTER_REQUEST))
+        assertEquals(AccionResultado.SinConexion, repo.abrirPagadoEnLinea("o1"))
+    }
+
+    @Test
+    fun `Ruling 14 one order is read through the mobile route with its items`() = runTest {
+        server.enqueue(MockResponse().setBody("""{"success":true,"data":${pedido(status = "COMPLETED", remaining = "0")}}"""))
+        val o = repo.pedidoEnLinea("o1").getOrThrow()
+        assertEquals("o1", o.orderId)
+        assertEquals(OnlineOrderStatus.COMPLETED, o.status)
+        assertEquals("Taco", o.items.single().name)
+        assertTrue(o.needsPrint)
+        val r = server.takeRequest(1, TimeUnit.SECONDS)!!
+        assertEquals("GET", r.method)
+        assertEquals("/api/v1/mobile/venues/v1/online-orders/o1", r.requestUrl!!.encodedPath)
+        // 404 «no es un pedido en línea»: falla, nunca un pedido inventado.
+        server.enqueue(MockResponse().setResponseCode(404).setBody("""{"success":false,"error":"Esta cuenta no es un pedido en línea."}"""))
+        assertTrue(repo.pedidoEnLinea("o9").isFailure)
+    }
+
+    @Test
+    fun `Ruling 9 the print claim reads posibleRepetida`() = runTest {
+        server.enqueue(MockResponse().setBody("""{"success":true,"data":{"claimed":true,"posibleRepetida":true}}"""))
+        server.enqueue(MockResponse().setBody("""{"success":true,"data":{"claimed":true}}"""))
+        server.enqueue(MockResponse().setBody("""{"success":true,"data":{"claimed":false}}"""))
+        assertEquals(ReclamoDeImpresion(true, posibleRepetida = true), repo.reclamarComanda("o1", "dev-9"))
+        assertEquals(ReclamoDeImpresion(true, posibleRepetida = false), repo.reclamarComanda("o1", "dev-9"))
+        assertEquals(ReclamoDeImpresion(false), repo.reclamarComanda("o1", "dev-9"))
+        assertEquals("dev-9", server.takeRequest(1, TimeUnit.SECONDS)!!.getHeader("x-device-id"))
+    }
+
+    @Test
     fun `print failure is false never a throw`() = runTest {
         server.enqueue(MockResponse().setResponseCode(500).setBody("{}"))
-        assertFalse(repo.claimPrint("o1", "dev-9"))
+        assertFalse(repo.reclamarComanda("o1", "dev-9").reclamado)
     }
 
     @Test
@@ -412,5 +467,89 @@ class OnlineOrdersRepositoryTest {
         val leido = repo.saldoDelPedido("o1").getOrThrow()
         assertEquals(7900L, leido.saldoCents)
         assertNull(leido.precios)
+    }
+
+    // MARK: - Ronda 2 (Codex r1)
+
+    /** R2-3 (Ruling 37): el reclamo dice que esta caja imprime «POSIBLE REPETIDA»; con un SERVIDOR viejo la cabecera se ignora. */
+    @Test
+    fun `R2-3 the print claim says this register prints the POSIBLE REPETIDA mark`() = runTest {
+        server.enqueue(MockResponse().setBody("""{"success":true,"data":{"claimed":true}}"""))
+        repo.reclamarComanda("o1", "dev-9")
+        val r = server.takeRequest(1, TimeUnit.SECONDS)!!
+        assertEquals("/api/v1/mobile/venues/v1/online-orders/o1/print/claim", r.requestUrl!!.encodedPath)
+        assertEquals("1", r.getHeader("x-online-orders-card-alert"))
+        assertEquals("dev-9", r.getHeader("x-device-id"))
+    }
+
+    /** R2-2 (Ruling 36): las tres marcas del pedido (task-4-report, «Contract»); un SERVIDOR viejo no las manda. */
+    @Test
+    fun `R2-2 reads the refund and not picked up marks of an order`() = runTest {
+        val conMarcas = pedido(status = "COMPLETED", remaining = "0").trimEnd().dropLast(1) +
+            ""","notPickedUpAt":"2026-11-21T10:00:05.000Z","refundRequestedAt":null,"refundedAt":"2026-11-21T11:00:00.000Z"}"""
+        server.enqueue(MockResponse().setBody("""{"success":true,"data":$conMarcas}"""))
+        val o = repo.pedidoEnLinea("o1").getOrThrow()
+        assertEquals(java.time.Instant.parse("2026-11-21T10:00:05Z"), o.notPickedUpAt)
+        assertNull(o.refundRequestedAt)
+        assertEquals(java.time.Instant.parse("2026-11-21T11:00:00Z"), o.refundedAt)
+        server.enqueue(MockResponse().setBody("""{"success":true,"data":${pedido()}}"""))
+        val viejo = repo.pedidoEnLinea("o1").getOrThrow()
+        assertNull(viejo.notPickedUpAt); assertNull(viejo.refundRequestedAt); assertNull(viejo.refundedAt)
+    }
+
+    /** R2-2: «Entregado» contestado con una marca NO es «hecho»: se dice lo del SERVIDOR (y la pantalla relee). */
+    @Test
+    fun `R2-2 a deliver refused because the order was refunded or not picked up is never Hecho`() = runTest {
+        fun marcado(status: String, marca: String, texto: String) = MockResponse().setResponseCode(409).setBody(
+            """{"success":false,"code":"ORDER_STATE_CHANGED","status":"$status","$marca":"2026-11-21T10:00:05.000Z","error":"$texto"}""")
+        val devuelto = "Este pedido ya se devolvió («Devuelto»): no se marca entregado. No se aplicó nada."
+        val noRecogido = "Este pedido se cerró como «No lo recogió» al terminar el día: no se marca entregado. No se aplicó nada."
+        val devolviendo = "Este pedido se está devolviendo: no se marca entregado. No se aplicó nada."
+        server.enqueue(marcado("COMPLETED", "refundedAt", devuelto))
+        assertEquals(AccionResultado.Error(devuelto), repo.delivered("o1"))
+        server.enqueue(marcado("COMPLETED", "notPickedUpAt", noRecogido))
+        assertEquals(AccionResultado.Error(noRecogido), repo.delivered("o1"))
+        server.enqueue(marcado("READY", "refundRequestedAt", devolviendo))
+        assertEquals(AccionResultado.Error(devolviendo), repo.delivered("o1"))
+        // Un COMPLETED sin marcas sigue siendo «ya estaba entregado» (el segundo toque): hecho, como siempre.
+        server.enqueue(conflicto("COMPLETED"))
+        assertEquals(AccionResultado.Hecho, repo.delivered("o1"))
+        server.enqueue(MockResponse().setResponseCode(409).setBody(
+            """{"success":false,"code":"ORDER_STATE_CHANGED","status":"COMPLETED","refundedAt":null,"notPickedUpAt":null,"error":"cambió"}"""))
+        assertEquals(AccionResultado.Hecho, repo.delivered("o1"))
+    }
+
+    /**
+     * Ruling 71: el SERVIDOR contesta una acción sobre un pedido cerrado sin entregar (devuelto, devolviéndose o «No lo recogió») con su
+     * propio código `ORDER_CLOSED_NOT_DELIVERED` —mismo cuerpo: el estado y las tres marcas— para que las apps viejas no digan «Hecho».
+     * Esta app lo trata igual que un 409 marcado: nunca «Hecho» ni «ya no disponible», se dice su texto.
+     */
+    @Test
+    fun `R71 ORDER_CLOSED_NOT_DELIVERED is a marked refusal, never Hecho`() = runTest {
+        fun cerrado(status: String, marca: String, texto: String) = MockResponse().setResponseCode(409).setBody(
+            """{"success":false,"code":"ORDER_CLOSED_NOT_DELIVERED","status":"$status","$marca":"2026-11-21T10:00:05.000Z","error":"$texto"}""")
+        val devuelto = "Este pedido ya se devolvió («Devuelto»): no se marca entregado. No se aplicó nada."
+        val noRecogido = "Este pedido se cerró como «No lo recogió» al terminar el día: no se marca entregado. No se aplicó nada."
+        val devolviendo = "Este pedido se está devolviendo: no se marca entregado. No se aplicó nada."
+        server.enqueue(cerrado("COMPLETED", "refundedAt", devuelto))
+        assertEquals(AccionResultado.Error(devuelto), repo.delivered("o1"))
+        server.enqueue(cerrado("COMPLETED", "notPickedUpAt", noRecogido))
+        assertEquals(AccionResultado.Error(noRecogido), repo.delivered("o1"))
+        server.enqueue(cerrado("COMPLETED", "refundRequestedAt", devolviendo))
+        assertEquals(AccionResultado.Error(devolviendo), repo.delivered("o1"))
+        // «Listo» sobre el mismo pedido: tampoco es «ya no disponible» (que escondería la tarjeta), es su texto.
+        server.enqueue(cerrado("COMPLETED", "refundedAt", devuelto))
+        assertEquals(AccionResultado.Error(devuelto), repo.ready("o1"))
+    }
+
+    /** Ronda 3 (menor de la re-revisión): una marca presente pero ilegible cuenta como presente (no vuelve «Entregado»). */
+    @Test
+    fun `R3 a present but unreadable mark counts as present`() = runTest {
+        val rota = pedido(status = "READY", remaining = "0").trimEnd().dropLast(1) + ""","refundRequestedAt":"no-es-fecha"}"""
+        server.enqueue(MockResponse().setBody("""{"success":true,"data":$rota}"""))
+        val o = repo.pedidoEnLinea("o1").getOrThrow()
+        assertTrue(o.refundRequestedAt != null)
+        assertEquals("Devolviendo…", com.avoqado.pos.onlineorders.presentation.marcaDelPedido(o))
+        assertFalse(com.avoqado.pos.onlineorders.presentation.sePuedeEntregar(o))
     }
 }

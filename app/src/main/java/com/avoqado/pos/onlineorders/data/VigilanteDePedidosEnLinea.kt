@@ -12,10 +12,13 @@ import com.avoqado.pos.onlineorders.domain.Inbox
 import com.avoqado.pos.onlineorders.domain.ListaPorPagar
 import com.avoqado.pos.onlineorders.domain.OnlineOrder
 import com.avoqado.pos.onlineorders.domain.OnlineOrderStatus
+import com.avoqado.pos.onlineorders.domain.TarjetaPorAbrir
 import com.avoqado.pos.onlineorders.presentation.conLoCobradoEnElAparato
 import com.avoqado.pos.onlineorders.presentation.numeroDeSeccion
 import com.avoqado.pos.onlineorders.presentation.cobradosConTarjetaEnLaLista
 import com.avoqado.pos.payment.data.CashPaymentRepository
+import com.avoqado.pos.core.data.sync.SyncOutbox
+import javax.inject.Provider
 import java.io.IOException
 import java.util.concurrent.atomic.AtomicBoolean
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -37,8 +40,16 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withTimeoutOrNull
 
 private const val TAG = "🛎 PedidosEnLinea-Vigilante"
+
+/**
+ * D661: los pagados en línea que AVISAN: los que suenan y los que dice la banda propia (Ruling 19). Sólo los de una lectura EN VIVO de
+ * esta vuelta al frente ([enVivo]) y sin los que otra caja está cobrando. Una sola regla para el sonido y la banda. PURA.
+ */
+fun tarjetasQueAvisan(tarjetas: List<TarjetaPorAbrir>, enVivo: Boolean): List<TarjetaPorAbrir> =
+    if (enVivo) tarjetas.filter { !it.cobrando } else emptyList()
 
 /**
  * Vigilante GLOBAL de «Pedidos en línea»: mientras la app esté en primer plano consulta los pedidos por aceptar, mantiene la
@@ -56,6 +67,14 @@ private const val TAG = "🛎 PedidosEnLinea-Vigilante"
  * - Sin red es un estado normal: [sinConexion] se enciende, la última lista se conserva (y sigue sonando) y se reintenta.
  * - En segundo plano ([onStop]) se detiene todo: no hay promesa de avisar con la app dormida.
  * - El sonido usa sólo `RingtoneManager...play()`, lo único que el adaptador de WINDOWS tiene.
+ * - D661 (Task 11): también suena mientras el SERVIDOR diga que hay pedidos pagados con tarjeta en línea por abrir
+ *   ([tarjetasPorAbrir], de la lectura de «Por pagar», que obedece su `pollSeconds`). Sólo una lectura EN VIVO de esta vuelta al
+ *   frente hace sonar: la copia guardada, una respuesta más vieja que la copia o lo último leído antes de quedarse sin red se ven,
+ *   pero no suenan (ese pedido pudo abrirse hace rato). Un pedido que otra caja está cobrando (`cobrando`) no suena. Lo que suena lo
+ *   dice la banda propia `BannerDePagadosEnLinea` (Ruling 19), con la misma regla ([tarjetasQueAvisan]).
+ * - D661: la comanda de lo cobrado sale de aquí, no de la pantalla: cada lectura en vivo trae `comandasPorImprimir`; sus renglones
+ *   salen de «Por entregar» o de leer ESE pedido (Ruling 14), y el reclamo del SERVIDOR decide quién la imprime. Un pedido sólo se lee
+ *   si este aparato podría sacar su comanda, y de uno en uno.
  */
 @Singleton
 class VigilanteDePedidosEnLinea internal constructor(
@@ -66,8 +85,11 @@ class VigilanteDePedidosEnLinea internal constructor(
     private val scope: CoroutineScope,
     /** La sucursal de ahora: un sondeo que vuelve tras un cambio de sucursal se descarta. */
     private val venueActual: () -> String? = { null },
-    /** Tienda híbrida: lee «Por pagar»; `conLatido` avisa al servidor que este aparato cobra folios. null = sin folios. */
-    private val consultarPorPagar: (suspend (conLatido: Boolean) -> Result<ListaPorPagar>)? = null,
+    /**
+     * Tienda híbrida: lee «Por pagar»; `conLatido` avisa al servidor que este aparato cobra folios. null = sin folios. Ruling 93:
+     * `avisaTarjetas` se pregunta al ARMAR la petición (el repositorio la arma ya con el candado de la página 1), no antes de esperarlo.
+     */
+    private val consultarPorPagar: (suspend (conLatido: Boolean, avisaTarjetas: () -> Boolean) -> Result<ListaPorPagar>)? = null,
     /** `payments:create`: sólo quien cobra late (un aparato que no cobra no cuenta como «hay quien cobre folios»). */
     private val puedeCobrar: () -> Boolean = { false },
     /** La última lista que este aparato guardó: el número del menú de un arranque en frío sin red sale de ahí. */
@@ -82,6 +104,22 @@ class VigilanteDePedidosEnLinea internal constructor(
     private val positivosConTarjeta: (venueId: String?) -> Map<String, Long> = { emptyMap() },
     /** D662: ¿la ventana se ve? ANDROID siempre (el ciclo ya para en segundo plano); WINDOWS minimizada = no. */
     private val seVe: () -> Boolean = { VentanaALaVista.aLaVista.value },
+    /** D661 (Ruling 14): lee UN pedido por su propio camino, para la comanda de uno que no está en la página de «Por entregar». */
+    private val leerPedido: suspend (orderId: String) -> Result<OnlineOrder> = { Result.failure(IllegalStateException("sin lector")) },
+    /** D661: saca la comanda (reclamo + papel + confirmación, `ImpresionDePedidoEnLinea`). */
+    private val imprimirComanda: suspend (OnlineOrder) -> Unit = {},
+    /**
+     * D661 (revisión del PR #308, Important #2): ¿este aparato podría sacar la comanda de ESE pedido? Se pregunta ANTES de leerlo del
+     * servidor y sin red (`ImpresionDePedidoEnLinea.puedeIntentar`): un aparato sin impresora de cocina no lee ningún pedido.
+     */
+    private val puedeImprimirComanda: suspend (orderId: String) -> Boolean = { true },
+    /** R2-6: no se pudo leer ese pedido: el mismo descanso que una comanda que no salió (`ImpresionDePedidoEnLinea.descansar`). */
+    private val descansarComanda: (orderId: String) -> Unit = {},
+    /**
+     * D661 · Ruling 48: ¿una ventana de la caja es la ACTIVA del sistema? WINDOWS lo publica desde `Main.kt`; ANDROID nunca lo cambia (true).
+     * Sólo decide el encabezado que ofrece la tarjeta: el sondeo, el timbre y la banda no cambian.
+     */
+    private val ventanaActiva: () -> Boolean = { VentanaActiva.activa.value },
 ) : DefaultLifecycleObserver {
 
     @Inject
@@ -94,6 +132,8 @@ class VigilanteDePedidosEnLinea internal constructor(
         cashPaymentRepository: CashPaymentRepository,
         foliosCobradosConTarjeta: FoliosCobradosConTarjeta,
         terminalPaymentService: com.avoqado.pos.payment.data.TerminalPaymentService,
+        impresion: ImpresionDePedidoEnLinea,
+        syncOutbox: Provider<SyncOutbox>,
     ) : this(
         consultar = { status, comoBandeja -> repositorio.inbox(status, comoBandeja) },
         puedeLeer = {
@@ -104,7 +144,7 @@ class VigilanteDePedidosEnLinea internal constructor(
         sonar = { sonarAviso(contexto) },
         scope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
         venueActual = { secureStorage.venueId },
-        consultarPorPagar = { conLatido -> repositorio.porPagar(conLatido) },
+        consultarPorPagar = { conLatido, avisa -> repositorio.porPagar(conLatido, avisaTarjetas = avisa) },
         puedeCobrar = { roleManager.hasVenuePermission("payments:create", setOf("WAITER", "CASHIER", "MANAGER", "ADMIN", "OWNER", "SUPERADMIN")) },
         foliosGuardados = { repositorio.porPagarGuardado() },
         efectivoEnCola = cashPaymentRepository::efectivoEnColaPorPedido,
@@ -113,12 +153,74 @@ class VigilanteDePedidosEnLinea internal constructor(
             terminalPaymentService.cobrosConTarjetaDelNegocio(venue).filter { it.cobrado && it.orderId != null }
                 .associate { it.orderId!! to (it.amountCents ?: 0).toLong() }
         },
+        leerPedido = { orderId -> repositorio.pedidoEnLinea(orderId) },
+        // El deviceId del outbox, NO uno nuevo (regla de offline-first): sin él no se reclama nada.
+        imprimirComanda = { pedido ->
+            val deviceId = try { syncOutbox.get().deviceId } catch (e: CancellationException) { throw e } catch (e: Exception) { null }
+            if (deviceId != null) impresion.imprimirSiToca(pedido, deviceId)
+        },
+        puedeImprimirComanda = impresion::puedeIntentar,
+        descansarComanda = impresion::descansar,
     )
 
     private val _pendientes = MutableStateFlow<List<OnlineOrder>>(emptyList())
 
     /** Los pedidos por aceptar del último sondeo bueno (se conserva si falla la red). */
     val pendientes: StateFlow<List<OnlineOrder>> = _pendientes.asStateFlow()
+
+    private val _tarjetasPorAbrir = MutableStateFlow<List<TarjetaPorAbrir>>(emptyList())
+
+    /**
+     * D661: los pagados con tarjeta en línea que esperan que una caja los abra: la última lista leída (en vivo o, en un arranque sin red,
+     * la guardada). Es el número del menú; sólo suena con [tarjetasVigentes].
+     */
+    val tarjetasPorAbrir: StateFlow<List<TarjetaPorAbrir>> = _tarjetasPorAbrir.asStateFlow()
+
+    /**
+     * D661: [tarjetasPorAbrir] viene de una lectura EN VIVO de esta vuelta al frente. Falso al arrancar ([onStart]), con la copia guardada
+     * y en cuanto una lectura falla: una lista vieja nunca suena.
+     */
+    private val tarjetasVigentes = MutableStateFlow(false)
+
+    /** D661 (Ruling 19): la misma bandera del sonido, para la banda propia de los pagados en línea (se lee con [tarjetasQueAvisan]). */
+    val tarjetasEnVivo: StateFlow<Boolean> = tarjetasVigentes.asStateFlow()
+
+    /** D661: la sucursal de la que vienen [tarjetasPorAbrir]; null = de ninguna. */
+    @Volatile private var venueDeLasTarjetas: String? = null
+
+    private fun olvidarTarjetas() {
+        _tarjetasPorAbrir.value = emptyList()
+        tarjetasVigentes.value = false
+        venueDeLasTarjetas = null
+    }
+
+    /**
+     * D661: hay una vuelta de comandas corriendo (lectura de cada pedido, de uno en uno). Una sola a la vez; R2-4: la lista que llega mientras
+     * corre se guarda en [listaQueEspera] (la más nueva gana) y se recorre en cuanto la vuelta termina. Los dos, bajo [candadoDeComandas].
+     */
+    private var vueltaViva = false
+    private var listaQueEspera: Pair<ListaPorPagar, String?>? = null
+    private val candadoDeComandas = Any()
+
+    /** Una lectura de «Por pagar» a la vez: la del compás y la de [sondearFoliosYa] no se pisan. */
+    private val turnoDeFolios = Mutex()
+
+    /**
+     * Rulings 78 y 93: la última petición del compás se ARMÓ anunciada (con la cabecera de la tarjeta). Si no, la espera vigila el regreso.
+     */
+    @Volatile private var compasAnunciado = true
+
+    /**
+     * D661: relee «Por pagar» ya (la pantalla abrió un pedido pagado en línea): el sonido para en esta lectura y no en el siguiente compás
+     * (hasta 30 s). Sin ciclo vivo (app en segundo plano) no consulta nada. No mueve el compás de los folios.
+     */
+    fun sondearFoliosYa() {
+        if (cicloFolios == null || consultarPorPagar == null) return
+        // R2-1: nunca se anuncia como caja que avisa (no mueve el compás y puede salir después de `onStop`).
+        scope.launch { sondearFoliosEnTurno(delCompas = false) }
+    }
+
+    private suspend fun sondearFoliosEnTurno(delCompas: Boolean): Long = turnoDeFolios.withLock { sondearFolios(delCompas) }
 
     private val _sinConexion = MutableStateFlow(false)
 
@@ -186,6 +288,7 @@ class VigilanteDePedidosEnLinea internal constructor(
         huboLecturaDeFolios = false
         ultimaListaDeFolios = null
         _foliosPorPagar.value = 0
+        olvidarTarjetas()
         actualizarAbiertos()
         _sinConexion.value = false
     }
@@ -199,9 +302,14 @@ class VigilanteDePedidosEnLinea internal constructor(
         cicloFolios?.cancel()
         sonido?.cancel()
         sonidoListo.value = false
+        // D661: lo leído antes de irse a segundo plano no suena: espera a una lectura en vivo de esta vuelta.
+        tarjetasVigentes.value = false
         sonido = scope.launch {
-            combine(_pendientes, silenciados, sonidoListo) { lista, callados, listo ->
-                if (listo) lista.map { it.orderId }.filter { it !in callados }.toSet() else emptySet()
+            combine(_pendientes, silenciados, sonidoListo, _tarjetasPorAbrir, tarjetasVigentes) { lista, callados, listo, tarjetas, vigentes ->
+                val porAceptar = if (listo) lista.map { it.orderId }.filter { it !in callados } else emptyList()
+                // D661: «Silenciar» es del banner de «Mi equipo»; un pagado en línea suena hasta que una caja lo abre.
+                val porAbrir = tarjetasQueAvisan(tarjetas, vigentes).map { "$PREFIJO_TARJETA${it.orderId}" }
+                (porAceptar + porAbrir).toSet()
             }
                 // Sólo el CONJUNTO de pedidos que suenan reinicia el ciclo: un campo que cambia no da un timbre extra.
                 .distinctUntilChanged()
@@ -224,7 +332,7 @@ class VigilanteDePedidosEnLinea internal constructor(
         // Los folios van a su propio compás (`pollSeconds` del servidor: 30 s con la tienda híbrida encendida, 10 min si no).
         cicloFolios = scope.launch {
             if (consultarPorPagar == null) return@launch
-            while (isActive) delay(sondearFolios())
+            while (isActive) esperarElCompasDeFolios(sondearFoliosEnTurno(delCompas = true))
         }
     }
 
@@ -315,20 +423,35 @@ class VigilanteDePedidosEnLinea internal constructor(
     /** Hubo una lectura (buena o la guardada) de folios en esta sucursal: la guardada no vuelve a pisar un «no disponible». */
     @Volatile private var huboLecturaDeFolios = false
 
-    /** Un sondeo de «Por pagar» (con latido sólo si la persona cobra). Devuelve cuánto esperar al siguiente. Nunca suena. */
-    private suspend fun sondearFolios(): Long {
+    /**
+     * Un sondeo de «Por pagar» (con latido sólo si la persona cobra). Devuelve cuánto esperar al siguiente. Nunca suena.
+     * R2-1 (Ruling 35): sólo el compás ([delCompas]), con la ventana a la vista ([seVe]), le dice al SERVIDOR que esta caja avisa los pagados
+     * en línea: es el que suena y obedece el `pollSeconds`. Minimizada (WINDOWS) sigue leyendo y sonando, pero no ofrece la tarjeta.
+     * Ruling 48: en WINDOWS además una ventana de la caja tiene que ser la ACTIVA ([ventanaActiva]); tapada por otro programa, tampoco.
+     * Ruling 78: si la del compás sale sin anunciarse, su espera vigila el regreso de la caja ([esperarElCompasDeFolios]).
+     */
+    private suspend fun sondearFolios(delCompas: Boolean): Long {
         val consultar = consultarPorPagar ?: return INTERVALO_MS
         if (!puedeLeer()) {
             huboLecturaDeFolios = false
             ultimaListaDeFolios = null
             _foliosPorPagar.value = 0
             hayFolios = false
+            olvidarTarjetas()
             actualizarAbiertos()
             return INTERVALO_MS
         }
         val venue = venueActual()
+        // D661: lo de otra sucursal no se queda ni un instante (ni en el menú ni sonando), aunque esta lectura falle.
+        if (venueDeLasTarjetas != null && venueDeLasTarjetas != venue) {
+            olvidarTarjetas()
+            actualizarAbiertos()
+        }
+        // Ruling 93: el anuncio se decide al ARMAR la petición (ya con el candado de la página 1), con el foco de ese instante: una caja que se
+        // volvió a tapar mientras esperaba la lectura de la bandeja ya no se anuncia. La marca del compás guarda lo que de verdad se mandó.
+        val avisa = { (delCompas && seVe() && ventanaActiva()).also { if (delCompas) compasAnunciado = it } }
         val resultado = try {
-            consultar(puedeCobrar())
+            consultar(puedeCobrar(), avisa)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -336,34 +459,126 @@ class VigilanteDePedidosEnLinea internal constructor(
         }
         if (venueActual() != venue) {
             huboLecturaDeFolios = false
-            return INTERVALO_MS // el olvido de lo de la sucursal anterior lo hace el sondeo principal
+            // D661: lo leído es de la sucursal de antes: ni se queda ni suena.
+            olvidarTarjetas()
+            actualizarAbiertos()
+            return INTERVALO_MS // el olvido de lo demás de la sucursal anterior lo hace el sondeo principal
         }
         val lista = resultado.getOrNull()
         if (lista != null) {
             // R102: una respuesta más vieja que la copia guardada (la bandeja ya guardó una más nueva) no mueve el número.
             if (!lista.masViejaQueLaCopia) {
                 huboLecturaDeFolios = true
-                aplicarFolios(lista)
+                aplicarFolios(lista, venue)
+                // D661: sólo una lectura EN VIVO hace sonar y saca comandas.
+                tarjetasVigentes.value = true
+                imprimirComandasPendientes(lista, venue)
             }
             return (lista.pollSeconds.coerceIn(10, 600) * 1000L)
         }
+        // D661: sin respuesta, lo último leído se sigue viendo pero ya no suena (pudo abrirse en otra caja mientras tanto).
+        tarjetasVigentes.value = false
         Log.d(TAG, "Folios sin respuesta: ${resultado.exceptionOrNull()?.message}")
         if (!huboLecturaDeFolios) {
             // Arranque en frío sin red: el número del menú sale de lo que este aparato guardó (igual que la pantalla).
             val guardada = try { foliosGuardados() } catch (e: CancellationException) { throw e } catch (e: Exception) { null }
             if (guardada != null && venueActual() == venue) {
                 huboLecturaDeFolios = true
-                aplicarFolios(guardada)
+                aplicarFolios(guardada, venue)
             }
         } else {
             // Sin red, la última lista se vuelve a contar: lo cobrado aquí desde entonces ya está en la cola y no se cobra otra vez.
-            ultimaListaDeFolios?.let { aplicarFolios(it) }
+            ultimaListaDeFolios?.let { aplicarFolios(it, venue) }
         }
         return INTERVALO_MS
     }
 
-    private suspend fun aplicarFolios(lista: ListaPorPagar) {
+    /**
+     * D661 (r4 #3, r5 #2): la comanda de lo cobrado sale de una lectura FRESCA de `comandasPorImprimir`, aquí en el vigilante global y no en
+     * la pantalla: aunque la respuesta de abrir se haya perdido, la cajera haya salido de la pantalla, la app se haya reiniciado, la lista
+     * esté paginada o el día ya se haya cerrado. Corre aparte del compás (la lectura del pedido y el papel no lo atrasan); el reclamo del
+     * SERVIDOR decide quién la imprime y su confirmación la saca de la lista.
+     *
+     * Revisión del PR #308 (Important #2): antes de leer un pedido, el aparato pregunta en su memoria si podría sacarla
+     * ([puedeImprimirComanda]: impresora de cocina, sin descanso, sin otra impresión en curso). Así una caja sin impresora de cocina —un café,
+     * una tienda— no lee hasta 50 pedidos cada 30 s todo el día. Y la lista se recorre en UNA corrutina, de una en una, no una por comanda.
+     */
+    private fun imprimirComandasPendientes(lista: ListaPorPagar, venue: String?) {
+        val hayComandas = lista.disponible && lista.comandasPorImprimir.isNotEmpty()
+        synchronized(candadoDeComandas) {
+            // R2-4: con una vuelta viva, esta lista (la más nueva) espera a que termine; si ya no trae comandas, no queda nada que esperar.
+            if (vueltaViva) {
+                listaQueEspera = if (hayComandas) lista to venue else null
+                return
+            }
+            if (!hayComandas) return
+            vueltaViva = true
+        }
+        scope.launch {
+            var siguiente: Pair<ListaPorPagar, String?>? = lista to venue
+            try {
+                while (siguiente != null) {
+                    recorrerComandas(siguiente.first, siguiente.second)
+                    siguiente = synchronized(candadoDeComandas) {
+                        listaQueEspera.also {
+                            listaQueEspera = null
+                            if (it == null) vueltaViva = false
+                        }
+                    }
+                }
+            } catch (e: Throwable) {
+                // Cancelada (o un error que no debió escapar): se suelta la vuelta para que la siguiente lectura pueda abrir otra.
+                synchronized(candadoDeComandas) { vueltaViva = false }
+                throw e
+            }
+        }
+    }
+
+    /**
+     * Una vuelta: de uno en uno (nunca hasta 50 GET a la vez). Antes de leer un pedido, el aparato pregunta en su memoria si podría sacar su
+     * comanda ([puedeImprimirComanda]). R2-4: el papel corre en su PROPIO trabajo y la vuelta lo espera a lo más [ESPERA_POR_COMANDA_MS]: una
+     * impresora que no contesta (un permiso USB que nadie acepta) no frena a las demás. Ese trabajo no se cancela: su marca de «en curso»
+     * hace que las siguientes vueltas salten ese pedido sin leerlo.
+     */
+    private suspend fun recorrerComandas(lista: ListaPorPagar, venue: String?) {
+        for (comanda in lista.comandasPorImprimir) {
+            if (venueActual() != venue) return
+            try {
+                if (!puedeImprimirComanda(comanda.orderId)) continue
+                // Sus renglones: la fila de «Por entregar» de esta MISMA lectura o, si no está ahí, ESE pedido por su camino (Ruling 14).
+                val pedido = lista.porEntregar.firstOrNull { it.orderId == comanda.orderId }
+                    ?: leerPedido(comanda.orderId).onFailure {
+                        Log.d(TAG, "Comanda ${comanda.orderNumber}: no se pudo leer el pedido (${it.message}); descansa y va en otra vuelta")
+                        // R2-6: sin esto se volvía a leer en cada sondeo (cada 30 s) mientras la lectura siguiera fallando.
+                        descansarComanda(comanda.orderId)
+                    }.getOrNull()
+                // Ya no la pide (la imprimió otra caja o se está devolviendo) o cambió la sucursal: nada.
+                if (pedido == null || !pedido.needsPrint || venueActual() != venue) continue
+                val papel = scope.launch {
+                    try {
+                        imprimirComanda(pedido)
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        Log.w(TAG, "No se pudo intentar la comanda de ${comanda.orderNumber}: ${e.message}")
+                    }
+                }
+                if (withTimeoutOrNull(ESPERA_POR_COMANDA_MS) { papel.join() } == null) {
+                    Log.w(TAG, "La comanda de ${comanda.orderNumber} sigue esperando su impresora; sigo con las demás")
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "No se pudo intentar la comanda de ${comanda.orderNumber}: ${e.message}")
+            }
+        }
+    }
+
+    private suspend fun aplicarFolios(lista: ListaPorPagar, venue: String?) {
         ultimaListaDeFolios = lista
+        // D661: la lista de pagados por abrir va con su sucursal; un «no disponible» la vacía.
+        _tarjetasPorAbrir.value = if (lista.disponible) lista.tarjetasPorAbrir else emptyList()
+        venueDeLasTarjetas = venue
         if (!lista.disponible) {
             _foliosPorPagar.value = 0
             hayFolios = false
@@ -371,7 +586,6 @@ class VigilanteDePedidosEnLinea internal constructor(
             // A3 (m2): el mismo número que la pantalla: lo cobrado en efectivo en este aparato que aún no sube ya no está «por pagar».
             val enCola = try { efectivoEnCola().keys } catch (e: CancellationException) { throw e } catch (e: Exception) { emptySet() }
             // R100: lo cobrado aquí con tarjeta que esta lista todavía no cuenta, igual que en la pantalla.
-            val venue = venueActual()
             val conTarjeta = try {
                 cobradosConTarjetaEnLaLista(foliosConTarjeta(venue), positivosConTarjeta(venue), lista).keys
             } catch (e: Exception) {
@@ -379,7 +593,9 @@ class VigilanteDePedidosEnLinea internal constructor(
             }
             val vista = conLoCobradoEnElAparato(lista, enCola + conTarjeta)
             _foliosPorPagar.value = numeroDeSeccion(vista.counts.toPay, vista.porPagar.size, vista.nextCursors.toPay != null)
-            hayFolios = lista.counts.toPay + lista.counts.toDeliver > 0 || lista.porPagar.isNotEmpty() || lista.porEntregar.isNotEmpty()
+            hayFolios = lista.counts.toPay + lista.counts.toDeliver > 0 || lista.porPagar.isNotEmpty() || lista.porEntregar.isNotEmpty() ||
+                // D661: un pagado en línea por abrir también abre el menú, aunque el plan haya vencido.
+                lista.tarjetasPorAbrir.isNotEmpty()
         }
         actualizarAbiertos()
     }
@@ -404,6 +620,24 @@ class VigilanteDePedidosEnLinea internal constructor(
         }
     }
 
+    /**
+     * D661 · Ruling 78: la espera del compás de los folios. Si la última lectura del compás salió sin anunciarse (la caja de WINDOWS minimizada,
+     * tapada por otro programa o recién abierta sin ventana), el SERVIDOR pudo contestar con la espera lenta (600 s): se mira en el aparato cada
+     * [VISTAZO_AL_VOLVER_MS], sin tocar la red, y en cuanto la caja vuelve a ser la ventana activa y a la vista se lee ya, con la cabecera.
+     * Una vez por regreso (esa lectura ya sale anunciada y vuelve a la espera normal) y nunca antes de [VISTAZO_AL_VOLVER_MS]. En ANDROID la
+     * lectura del compás siempre se anuncia: espera normal.
+     */
+    private suspend fun esperarElCompasDeFolios(espera: Long) {
+        if (compasAnunciado) return delay(espera)
+        var resto = espera
+        while (resto > 0) {
+            val paso = minOf(resto, VISTAZO_AL_VOLVER_MS)
+            delay(paso)
+            resto -= paso
+            if (seVe() && ventanaActiva()) return
+        }
+    }
+
     private fun proximoIntervalo(): Long {
         val ultimo = ultimosConteos
         if (!puedeLeer()) return INTERVALO_MS
@@ -419,6 +653,12 @@ class VigilanteDePedidosEnLinea internal constructor(
         const val INTERVALO_TIENDA_APAGADA_MS = 60_000L
         const val INTERVALO_SIN_PLAN_MS = 5 * 60_000L
         const val REPETIR_SONIDO_MS = 4_000L
+        /** R2-4: lo más que una vuelta espera el papel de UNA comanda antes de seguir con la siguiente (el trabajo sigue solo). */
+        const val ESPERA_POR_COMANDA_MS = 20_000L
+        /** Ruling 78: cada cuánto mira (en el aparato) si la caja de WINDOWS volvió a ser la ventana activa tras una lectura sin anunciarse. */
+        const val VISTAZO_AL_VOLVER_MS = 3_000L
+        /** D661: el id de un pagado en línea en el conjunto que suena (nunca choca con el de un pedido por aceptar). */
+        private const val PREFIJO_TARJETA = "tarjeta:"
 
         private fun sonarAviso(contexto: Context) {
             val uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)

@@ -7,6 +7,13 @@ import com.avoqado.pos.onlineorders.domain.AccionResultado
 import com.avoqado.pos.onlineorders.domain.Inbox
 import com.avoqado.pos.onlineorders.domain.OnlineOrder
 import com.avoqado.pos.onlineorders.domain.OnlineOrderStatus
+import com.avoqado.pos.onlineorders.domain.TarjetaPorAbrir
+import com.avoqado.pos.onlineorders.domain.ListaPorPagar
+import com.avoqado.pos.onlineorders.domain.ConteosPorPagar
+import com.avoqado.pos.onlineorders.domain.CursoresPorPagar
+import com.avoqado.pos.onlineorders.presentation.textoDeAbrir
+import com.avoqado.pos.onlineorders.presentation.conCobrandoEnOtraCaja
+import com.avoqado.pos.onlineorders.presentation.sePuedeAbrir
 import com.avoqado.pos.onlineorders.presentation.EntradaPedidosEnLinea
 import com.avoqado.pos.onlineorders.presentation.OnlineOrdersViewModel
 import com.avoqado.pos.onlineorders.presentation.TextosPedidosEnLinea
@@ -682,5 +689,172 @@ class OnlineOrdersViewModelTest {
         vm.aceptar("p1", 15)
         runCurrent()
         coVerify(exactly = 1) { repo.accept("p1", 15) }
+    }
+
+    // MARK: - D661 (Task 11): «Pagados en línea · ábrelo para cobrar»
+
+    private fun tarjeta(id: String, cobrando: Boolean = false) = TarjetaPorAbrir(
+        orderId = id, orderNumber = "T-$id", customerName = "Ana N.", totalCents = 25050,
+        createdAt = Instant.parse("2026-11-20T18:00:00Z"), cobrando = cobrando,
+    )
+
+    private fun listaD661(
+        tarjetas: List<TarjetaPorAbrir> = emptyList(),
+        porEntregar: List<OnlineOrder> = emptyList(),
+        cursorPorEntregar: String? = null,
+    ) = ListaPorPagar(
+        true, true, 30, ConteosPorPagar(0, porEntregar.size), emptyList(), porEntregar, CursoresPorPagar(null, cursorPorEntregar),
+        tarjetasPorAbrir = tarjetas,
+    )
+
+    private var foliosDelServidor: ListaPorPagar = listaD661()
+    /** R2-6: cuando no es null, la lectura de «Por pagar» falla con esto (p. ej. un 5xx del SERVIDOR). */
+    private var falloDeFolios: Exception? = null
+    private val lecturasDeFolios = mutableListOf<Pair<String?, String?>>()
+    private var sondeosDeFolios = 0
+
+    private fun armarD661(permisos: Permisos = Permisos()) = OnlineOrdersViewModel(
+        repositorio = repo,
+        permisoActualizar = { permisos.actualizar },
+        permisoCancelar = { permisos.cancelar },
+        tienePlan = { true },
+        hayPedidosAbiertos = { false },
+        ventanaALaVista = MutableStateFlow(true),
+        sondearVigilante = { sondeosYa++ },
+        sondearFoliosDelVigilante = { sondeosDeFolios++ },
+        leerPorPagar = { _, seccion, cursor ->
+            lecturasDeFolios += seccion to cursor
+            falloDeFolios?.let { Result.failure(it) } ?: Result.success(foliosDelServidor)
+        },
+    )
+
+    @Test
+    fun `only tapping open on that order calls accept - entering the screen or paginating never does`() = runTest(dispatcher) {
+        coEvery { repo.inbox("all", any(), any()) } returns Result.success(bandeja())
+        coEvery { repo.abrirPagadoEnLinea("t1") } returns AccionResultado.Hecho
+        foliosDelServidor = listaD661(listOf(tarjeta("t1"), tarjeta("t2")), porEntregar = listOf(pedido("e1", OnlineOrderStatus.ACCEPTED)), cursorPorEntregar = "c2")
+        val vm = armarD661()
+        // Entrar a la pantalla, releer y «Cargar más»: nada de eso abre (= cobra) un pedido.
+        vm.descubrirPorPagar()
+        vm.refrescar()
+        vm.cargarMasFolios(OnlineOrdersViewModel.SECCION_POR_ENTREGAR); runCurrent()
+        assertTrue("sí se pidió la página extra", lecturasDeFolios.any { it.second == "c2" })
+        assertEquals(listOf("t1", "t2"), vm.porPagar.value!!.tarjetasPorAbrir.map { it.orderId })
+        coVerify(exactly = 0) { repo.abrirPagadoEnLinea(any()) }
+        coVerify(exactly = 0) { repo.accept(any(), any()) }
+        // Sólo el toque en «Abrir y cobrar» de ESE pedido.
+        vm.abrirYCobrar("t1"); runCurrent()
+        coVerify(exactly = 1) { repo.abrirPagadoEnLinea("t1") }
+        coVerify(exactly = 0) { repo.abrirPagadoEnLinea("t2") }
+        coVerify(exactly = 0) { repo.accept(any(), any()) }
+        assertEquals("el vigilante relee ya: el sonido para sin esperar su compás", 1, sondeosDeFolios)
+        // Un pedido que no está en la lista, o sin orders:update, no se abre.
+        vm.abrirYCobrar("nadie"); runCurrent()
+        val sinPermiso = armarD661(Permisos(actualizar = false))
+        sinPermiso.refrescar()
+        sinPermiso.abrirYCobrar("t2"); runCurrent()
+        coVerify(exactly = 0) { repo.abrirPagadoEnLinea("t2") }
+        coVerify(exactly = 0) { repo.abrirPagadoEnLinea("nadie") }
+    }
+
+    @Test
+    fun `two devices open at once - the second shows the order already in por entregar`() = runTest(dispatcher) {
+        coEvery { repo.inbox("all", any(), any()) } returns Result.success(bandeja())
+        foliosDelServidor = listaD661(listOf(tarjeta("t1"), tarjeta("t2")))
+        val vm = armarD661()
+        vm.refrescar()
+
+        // La otra caja está cobrando t2 en este momento: 409 «confirmando el pago». No es un error: se relee y se ve «cobrando».
+        coEvery { repo.abrirPagadoEnLinea("t2") } returns AccionResultado.ConfirmandoPago("Se está confirmando el pago")
+        foliosDelServidor = listaD661(listOf(tarjeta("t1"), tarjeta("t2", cobrando = true)))
+        vm.abrirYCobrar("t2"); runCurrent()
+        assertEquals("Se está confirmando el pago", vm.aviso.value)
+        assertTrue(vm.porPagar.value!!.tarjetasPorAbrir.first { it.orderId == "t2" }.cobrando)
+        // Cobrándose en otra caja no se vuelve a abrir.
+        vm.abrirYCobrar("t2"); runCurrent()
+        coVerify(exactly = 1) { repo.abrirPagadoEnLinea("t2") }
+
+        // La otra caja ya abrió t1: el servidor contesta 409 con el pedido ACCEPTED, que el repositorio da por hecho.
+        coEvery { repo.abrirPagadoEnLinea("t1") } returns AccionResultado.Hecho
+        val pagado = pedido("t1", OnlineOrderStatus.ACCEPTED, restante = 0, pago = "PAID", modo = "CARD_ONLINE").copy(requiresAcceptance = false)
+        foliosDelServidor = listaD661(porEntregar = listOf(pagado))
+        vm.abrirYCobrar("t1"); runCurrent()
+        val lista = vm.porPagar.value!!
+        assertTrue("ya no está por abrir", lista.tarjetasPorAbrir.isEmpty())
+        assertEquals("está donde quedó: «Por entregar»", listOf("t1"), lista.porEntregar.map { it.orderId })
+        assertEquals(TextosPedidosEnLinea.abiertoEnPorEntregar("T-t1"), vm.aviso.value)
+        assertTrue(vm.ocupados.value.isEmpty())
+    }
+
+    /** Revisión del PR #308 (menor 1): el 409 STALE de la segunda caja dice dónde quedó el pedido, no «ya no está disponible». */
+    @Test
+    fun `opening an order another register already moved on says where it ended up`() = runTest(dispatcher) {
+        coEvery { repo.inbox("all", any(), any()) } returns Result.success(bandeja())
+        foliosDelServidor = listaD661(listOf(tarjeta("t1"), tarjeta("t2"), tarjeta("t3")))
+        val vm = armarD661()
+        vm.refrescar()
+        // Otra caja lo abrió y ya lo marcó «Listo»: sigue en «Por entregar».
+        coEvery { repo.abrirPagadoEnLinea("t1") } returns AccionResultado.YaNoDisponible(OnlineOrderStatus.READY)
+        vm.abrirYCobrar("t1"); runCurrent()
+        assertEquals("El pedido T-t1 ya está en «Por entregar».", vm.aviso.value)
+        // Ya se entregó o el cierre del día lo cerró: ya no hay nada que abrir.
+        coEvery { repo.abrirPagadoEnLinea("t2") } returns AccionResultado.YaNoDisponible(OnlineOrderStatus.COMPLETED)
+        vm.abrirYCobrar("t2"); runCurrent()
+        assertEquals("El pedido T-t2 ya está cerrado: no hay nada que abrir.", vm.aviso.value)
+        // Nadie lo abrió a tiempo y se liberó: ése sí ya no está disponible (como antes).
+        coEvery { repo.abrirPagadoEnLinea("t3") } returns AccionResultado.YaNoDisponible(OnlineOrderStatus.EXPIRED)
+        vm.abrirYCobrar("t3"); runCurrent()
+        assertEquals(TextosPedidosEnLinea.YA_NO_DISPONIBLE, vm.aviso.value)
+        // Las demás acciones no cambian: un «Listo» de un pedido que ya se entregó sigue diciendo «ya no está disponible».
+        foliosDelServidor = listaD661(porEntregar = listOf(pedido("e1", OnlineOrderStatus.ACCEPTED)))
+        vm.refrescar()
+        coEvery { repo.ready("e1") } returns AccionResultado.YaNoDisponible(OnlineOrderStatus.COMPLETED)
+        vm.marcarListo("e1"); runCurrent()
+        assertEquals(TextosPedidosEnLinea.YA_NO_DISPONIBLE, vm.aviso.value)
+    }
+
+    /** R2-6 (Codex «Resto del recorrido»): tras un 409 «Confirmando» y una relectura con 5xx, el botón viejo no vuelve. */
+    @Test
+    fun `R2-6 after Confirmando and a failed re-read the order keeps waiting until a good read says where it is`() = runTest(dispatcher) {
+        coEvery { repo.inbox("all", any(), any()) } returns Result.success(bandeja())
+        foliosDelServidor = listaD661(listOf(tarjeta("t1")))
+        val vm = armarD661()
+        vm.refrescar()
+        // Otra caja lo está cobrando (409 «Confirmando»), y la relectura falla con un 5xx: la lista vieja lo trae sin `cobrando`.
+        coEvery { repo.abrirPagadoEnLinea("t1") } returns AccionResultado.ConfirmandoPago("Se está confirmando el pago")
+        falloDeFolios = RuntimeException("Error del servidor (503)")
+        vm.abrirYCobrar("t1"); runCurrent()
+        assertFalse("la lista de la pantalla es la vieja", vm.porPagar.value!!.tarjetasPorAbrir.single().cobrando)
+        assertEquals("pero el pedido sigue esperando", setOf("t1"), vm.cobrandoEnOtraCaja.value)
+        assertEquals(TextosPedidosEnLinea.COBRANDO_EN_OTRA_CAJA,
+            textoDeAbrir(conCobrandoEnOtraCaja(vm.porPagar.value!!.tarjetasPorAbrir.single(), vm.cobrandoEnOtraCaja.value), sinConexion = false, ocupado = false))
+        vm.abrirYCobrar("t1"); runCurrent()
+        coVerify(exactly = 1) { repo.abrirPagadoEnLinea("t1") }
+        // Una lectura buena posterior dice dónde quedó (ya no está por abrir): se suelta la marca.
+        falloDeFolios = null
+        foliosDelServidor = listaD661()
+        vm.refrescar(); runCurrent()
+        assertTrue(vm.cobrandoEnOtraCaja.value.isEmpty())
+    }
+
+    @Test
+    fun `opening without network says it needs a connection and is never queued`() = runTest(dispatcher) {
+        coEvery { repo.inbox("all", any(), any()) } returns Result.success(bandeja())
+        foliosDelServidor = listaD661(listOf(tarjeta("t1")))
+        val vm = armarD661()
+        vm.refrescar()
+        coEvery { repo.abrirPagadoEnLinea("t1") } returns AccionResultado.SinConexion
+        vm.abrirYCobrar("t1"); runCurrent()
+        assertEquals(TextosPedidosEnLinea.ABRIR_SIN_CONEXION, vm.aviso.value)
+        advanceTimeBy(60_000); runCurrent()
+        coVerify(exactly = 1) { repo.abrirPagadoEnLinea("t1") }
+        // El botón lo dice antes de tocarlo.
+        assertEquals(TextosPedidosEnLinea.ABRIR_NECESITA_CONEXION, textoDeAbrir(tarjeta("t1"), sinConexion = true, ocupado = false))
+        assertEquals(TextosPedidosEnLinea.COBRANDO_EN_OTRA_CAJA, textoDeAbrir(tarjeta("t1", cobrando = true), sinConexion = false, ocupado = false))
+        assertEquals(TextosPedidosEnLinea.ABRIR_Y_COBRAR, textoDeAbrir(tarjeta("t1"), sinConexion = false, ocupado = false))
+        assertTrue(sePuedeAbrir(tarjeta("t1"), sinConexion = false, ocupado = false))
+        assertFalse(sePuedeAbrir(tarjeta("t1"), sinConexion = true, ocupado = false))
+        assertFalse(sePuedeAbrir(tarjeta("t1", cobrando = true), sinConexion = false, ocupado = false))
+        assertFalse(sePuedeAbrir(tarjeta("t1"), sinConexion = false, ocupado = true))
     }
 }

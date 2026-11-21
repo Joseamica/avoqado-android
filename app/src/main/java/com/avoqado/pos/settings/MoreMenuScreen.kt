@@ -229,6 +229,7 @@ fun MoreMenuScreen(
     val bandejaSolicitada by viewModel.bandejaSolicitada.collectAsState()
     val pedidosEnLineaPendientes by viewModel.pedidosEnLineaPendientes.collectAsState()
     val foliosPorPagar by viewModel.foliosPorPagar.collectAsState()
+    val tarjetasPorAbrir by viewModel.tarjetasPorAbrir.collectAsState()
     val hayPedidosEnLineaAbiertos by viewModel.hayPedidosEnLineaAbiertos.collectAsState()
     val hayRepartoPorCobrarGuardado by viewModel.hayRepartoPorCobrarGuardado.collectAsState()
     LaunchedEffect(bandejaSolicitada) {
@@ -606,7 +607,7 @@ fun MoreMenuScreen(
                     MenuEntry(
                         icon = Icons.Outlined.ShoppingBag,
                         label = com.avoqado.pos.onlineorders.presentation.TextosPedidosEnLinea.MENU,
-                        badgeCount = com.avoqado.pos.onlineorders.presentation.numeroDelMenu(pedidosEnLineaPendientes.size, foliosPorPagar),
+                        badgeCount = com.avoqado.pos.onlineorders.presentation.numeroDelMenu(pedidosEnLineaPendientes.size, foliosPorPagar, tarjetasPorAbrir.size),
                         onClick = { showOnlineOrders = true },
                     ),
                 )
