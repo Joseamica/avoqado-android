@@ -628,6 +628,11 @@ class PaymentFlowViewModelTest {
         viewModel.retry()
         advanceUntilIdle()
 
+        // F1 fila 11: primero se lee el porqué; su «Reintentar» lleva al selector.
+        assertEquals("El cobro fue rechazado. No se cobró la tarjeta.", (viewModel.state.value as PaymentFlowState.Error).message)
+        viewModel.retry()
+        advanceUntilIdle()
+
         // Rechazo confirmado ⇒ consta que no hubo cargo ⇒ es seguro volver a cobrar.
         assertTrue(viewModel.state.value is PaymentFlowState.SelectingTerminal)
         coVerify(exactly = 1) {
@@ -4612,7 +4617,45 @@ class PaymentFlowViewModelTest {
         viewModel.recheckCardCharge(automatica = true)
         advanceUntilIdle()
 
+        // F1 fila 11: el motivo se lee primero (antes saltaba callado al selector); «Reintentar» lleva al selector.
+        val estado = viewModel.state.value
+        assertTrue("el motivo a la vista: $estado", estado is PaymentFlowState.Error)
+        assertEquals("El cobro fue rechazado. No se cobró la tarjeta.", (estado as PaymentFlowState.Error).message)
+        assertEquals(PaymentErrorSource.TERMINAL, estado.source)
+        viewModel.retry()
+        advanceUntilIdle()
         assertTrue(viewModel.state.value is PaymentFlowState.SelectingTerminal)
+        coVerify(exactly = 1) { terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any()) }
+    }
+
+    /**
+     * 🔴 F1 fila 11 (segunda pasada en la D3, 21-nov): el gerente firmó «no se cobró» en la PAX con la D3 en la duda. La consulta
+     * automática lo supo y la pantalla saltaba en el mismo segundo al selector: el cajero nunca leía la frase. Ahora la frase se queda
+     * hasta que él sigue; [Reintentar] lleva al MISMO selector de antes, sin cobrar nada solo.
+     */
+    @Test
+    fun `F1 fila 11 tras la firma del gerente el cajero lee la frase antes del selector`() = runTest {
+        enCobroSinConfirmar()
+        coEvery { terminalPaymentService.resolveOutcome("req-1", any()) } returns TerminalPaymentResult.Error(
+            CardChargeDecision.SE_MARCO_COMO_NO_COBRADO, requestId = "req-1", sinCobroNiRechazo = true,
+        )
+
+        viewModel.recheckCardCharge(automatica = true)
+        advanceUntilIdle()
+
+        val estado = viewModel.state.value
+        assertTrue("la frase, no el selector: $estado", estado is PaymentFlowState.Error)
+        assertEquals("Se revisó y se marcó como no cobrado. Ya puedes cobrar esta cuenta.", (estado as PaymentFlowState.Error).message)
+        assertEquals("«No se cobró» en gris, no «Error en el pago»", PaymentErrorSource.NO_SE_COBRO, estado.source)
+        assertNull("sin «Revisar ese cobro»", estado.revisarCobroId)
+        coVerify(exactly = 1) { terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any()) }
+
+        viewModel.retry()
+        advanceUntilIdle()
+
+        // El mismo destino de antes, un toque después, y ni una consulta ni un envío de más.
+        assertTrue(viewModel.state.value is PaymentFlowState.SelectingTerminal)
+        coVerify(exactly = 1) { terminalPaymentService.resolveOutcome("req-1", any()) }
         coVerify(exactly = 1) { terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any()) }
     }
 
@@ -5057,6 +5100,9 @@ class PaymentFlowViewModelTest {
         assertTrue(viewModel.state.value is PaymentFlowState.Undetermined)
         assertNull("montaje: todavía sin aviso", viewModel.avisoDeOtroCobro.value)
         viewModel.recheckCardCharge() // consta que NO se cobró: ahora sí se ofrece cobrar
+        advanceUntilIdle()
+        assertTrue("F1 fila 11: el porqué antes del selector", viewModel.state.value is PaymentFlowState.Error)
+        viewModel.retry()
         advanceUntilIdle()
 
         coVerify(exactly = 1) { terminalPaymentService.resolveOutcome("r-de-esta") }

@@ -5277,7 +5277,13 @@ class PaymentFlowViewModel @Inject constructor(
                         // selector reintentaba con el importe viejo y sin el texto; se sale igual que con el 412 directo.
                         salirPorCuentaCambiada(outcome.message, apartadoDelCobro)
                     } else {
-                        ofrecerTerminales(total)
+                        // F1 fila 11 (D3, 21-nov): la consulta (casi siempre la automática de 5 s) trajo el porqué —la firma del
+                        // gerente, un rechazo, una cancelación—. Saltar callado al selector lo tiraba; se dice con la misma pantalla
+                        // del envío directo, y su «Reintentar» lleva al selector (`undeterminedRequestId` ya va nulo arriba).
+                        _state.value = PaymentFlowState.Error(
+                            message = outcome.message,
+                            source = if (outcome.sinCobroNiRechazo) PaymentErrorSource.NO_SE_COBRO else PaymentErrorSource.TERMINAL,
+                        )
                     }
                 }
                 is TerminalPaymentResult.Undetermined -> {
