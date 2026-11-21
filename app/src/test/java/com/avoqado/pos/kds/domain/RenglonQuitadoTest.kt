@@ -16,6 +16,15 @@ class RenglonQuitadoTest {
     @Test fun `retirado por la plataforma usa su etiqueta`() =
         assertEquals(RenglonQuitado("RETIRADO", "Tacos"), item("RETIRADO · Tacos", "2026-11-20T18:00:00.000Z").quitado())
 
+    @Test fun `un avance guardado sin red no repinta pendiente lo que el servidor ya anulo`() {
+        val anulada = PreparationLine(id = "l", productName = "ANULADO · Agua", quantity = 1,
+            preparation = PreparationCounts(CANCELLED = 1), preparationRevision = 1, removedAt = "2026-11-20T18:00:00.000Z")
+        val reabrir = PreparationEffect("i", expectedRevision = 1, action = PreparationAction.REOPEN, quantity = 1, reason = "x")
+        assertEquals(anulada, PreparationLocalLine(anulada, listOf(reabrir)).projected())
+        val viva = anulada.copy(productName = "Agua", removedAt = null)
+        assertEquals(PreparationCounts(PENDING = 1), PreparationLocalLine(viva, listOf(reabrir)).projected().preparation)
+    }
+
     @Test fun `sin etiqueta conocida se dice ANULADO y el nombre queda entero`() =
         assertEquals(RenglonQuitado("ANULADO", "Agua"), item("Agua", "2026-11-20T18:00:00.000Z").quitado())
 }

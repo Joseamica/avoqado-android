@@ -181,6 +181,9 @@ fun selectUrgentProducts(rows: List<PreparationLine>, keys: Set<String>): List<P
 )
 @Serializable data class PreparationLocalLine(val base: PreparationLine, val effects: List<PreparationEffect> = emptyList()) {
     fun projected(rejected: Set<String> = emptySet()): PreparationLine {
+        // D15 (Codex r2 #2): lo anulado en la caja manda el SERVIDOR; un avance guardado aquí (p. ej. «Reabrir» sin red) no lo
+        // vuelve a pintar pendiente mientras llega su rechazo.
+        if (base.removedAt != null) return base
         var line = base
         for (effect in effects) {
             if (effect.intentId in rejected || effect.expectedRevision < line.preparationRevision) continue

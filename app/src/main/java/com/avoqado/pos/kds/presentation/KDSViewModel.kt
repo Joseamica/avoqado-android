@@ -459,6 +459,7 @@ class KDSViewModel @Inject constructor(
             stationId = order.printStationId, orderNumber = order.orderNumber, productName = item.productName,
             quantity = item.quantity, serviceCourse = item.serviceCourse, orderPromotionId = item.orderPromotionId,
             preparation = counts, preparationRevision = item.preparationRevision, stationCount = item.stationCount ?: 1,
+            removedAt = item.removedAt,
         ) }
 
     val preparationCapabilities = preparationRepository?.capabilities
