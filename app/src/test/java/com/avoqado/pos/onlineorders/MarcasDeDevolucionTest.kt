@@ -3,7 +3,9 @@ package com.avoqado.pos.onlineorders
 import com.avoqado.pos.onlineorders.domain.OnlineOrder
 import com.avoqado.pos.onlineorders.domain.OnlineOrderStatus
 import com.avoqado.pos.onlineorders.presentation.TextosPedidosEnLinea
+import com.avoqado.pos.onlineorders.presentation.SeccionDePedido
 import com.avoqado.pos.onlineorders.presentation.marcaDelPedido
+import com.avoqado.pos.onlineorders.presentation.muestraListo
 import com.avoqado.pos.onlineorders.presentation.sePuedeEntregar
 import com.avoqado.pos.onlineorders.presentation.textoDeDinero
 import java.time.Instant
@@ -61,5 +63,14 @@ class MarcasDeDevolucionTest {
         assertNull(marcaDelPedido(pagado))
         assertTrue(sePuedeEntregar(pagado))
         assertEquals(TextosPedidosEnLinea.PAGADO_CON_TARJETA, textoDeDinero(pagado))
+    }
+
+    /** Ronda 3 (menor de la re-revisión): la tarjeta de la bandeja no ofrece «Listo» en un pedido con marca (como la del folio). */
+    @Test
+    fun `R3 the inbox card offers Listo only without a mark`() {
+        assertTrue(muestraListo(pagado, SeccionDePedido.EN_PREPARACION))
+        assertFalse(muestraListo(pagado.copy(refundRequestedAt = t), SeccionDePedido.EN_PREPARACION))
+        assertFalse(muestraListo(pagado.copy(status = OnlineOrderStatus.COMPLETED, refundedAt = t), SeccionDePedido.EN_PREPARACION))
+        assertFalse("en «Listos» nunca sale «Listo»", muestraListo(pagado, SeccionDePedido.LISTOS))
     }
 }

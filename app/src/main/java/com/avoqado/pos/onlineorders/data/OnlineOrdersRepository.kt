@@ -252,14 +252,16 @@ class OnlineOrdersRepository @Inject constructor(
                 }
             }.orEmpty(),
             beneficiosTotal = o.optInt("beneficiosTotal", 0),
-            // D661 · R2-2, opcionales: una fecha rota se lee como ausente (como con un SERVIDOR viejo).
+            // D661 · R2-2, opcionales: ausentes con un SERVIDOR viejo. Ronda 3: una fecha PRESENTE pero ilegible cuenta como presente (la
+            // marca existe; leerla como ausente devolvía «Entregado» a un pedido devuelto).
             notPickedUpAt = instanteONulo(o, "notPickedUpAt"),
             refundRequestedAt = instanteONulo(o, "refundRequestedAt"),
             refundedAt = instanteONulo(o, "refundedAt"),
         )
     }
 
-    private fun instanteONulo(o: JSONObject, k: String): Instant? = o.textoONulo(k)?.let { runCatching { Instant.parse(it) }.getOrNull() }
+    private fun instanteONulo(o: JSONObject, k: String): Instant? =
+        o.textoONulo(k)?.let { runCatching { Instant.parse(it) }.getOrElse { Instant.EPOCH } }
 
     private fun parseItem(i: JSONObject): OnlineOrderItem {
         val mods = i.optJSONArray("modifiers")

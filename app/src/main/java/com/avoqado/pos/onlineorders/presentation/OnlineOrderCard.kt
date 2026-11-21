@@ -45,6 +45,10 @@ internal fun esTarjetaEnLinea(pedido: OnlineOrder): Boolean = pedido.paymentMode
 /** «Cobrar» nunca se ofrece en un pedido de tarjeta en línea (la tarjeta se cobra sola al aceptar); en los demás, sólo con saldo. */
 internal fun sePuedeCobrar(pedido: OnlineOrder, permiso: Boolean): Boolean = permiso && !esTarjetaEnLinea(pedido) && !estaPagado(pedido)
 
+/** «Listo» sólo en preparación y sin marca de «Devolviendo…»/«Devuelto»/«No recogido» (como la tarjeta del folio): ese pedido no se entrega. */
+internal fun muestraListo(pedido: OnlineOrder, seccion: SeccionDePedido): Boolean =
+    seccion == SeccionDePedido.EN_PREPARACION && sePuedeEntregar(pedido)
+
 /** «Aceptar» se apaga mientras el banco confirma el pago de una tarjeta. */
 internal fun sePuedeAceptar(pedido: OnlineOrder): Boolean = pedido.cardStatus != "CONFIRMING"
 
@@ -168,7 +172,7 @@ fun OnlineOrderCard(
                             }
                         }
                         SeccionDePedido.EN_PREPARACION, SeccionDePedido.LISTOS -> {
-                            if (seccion == SeccionDePedido.EN_PREPARACION) {
+                            if (muestraListo(pedido, seccion)) {
                                 Button(onClick = onListo, enabled = enLinea, modifier = Modifier.testTag("listo-${pedido.orderId}")) {
                                     Text(TextosPedidosEnLinea.LISTO)
                                 }
@@ -181,6 +185,15 @@ fun OnlineOrderCard(
                             // La comanda sale en la impresora de ESTE aparato: no necesita red (el servidor no interviene).
                             OutlinedButton(onClick = onReimprimir, enabled = !ocupado, modifier = Modifier.testTag("reimprimir-${pedido.orderId}")) {
                                 Text(TextosPedidosEnLinea.REIMPRIMIR)
+                            }
+                            // Ronda 3: la comanda de un pedido marcado se puede reimprimir (lo pide una persona), pero junto al botón se dice qué es.
+                            marcaDelPedido(pedido)?.let { marca ->
+                                Text(
+                                    marca,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.error,
+                                    modifier = Modifier.align(Alignment.CenterVertically).testTag("marca-${pedido.orderId}"),
+                                )
                             }
                             // R2-2: un pedido devuelto, devolviéndose o no recogido no se entrega.
                             if (sePuedeEntregar(pedido)) {

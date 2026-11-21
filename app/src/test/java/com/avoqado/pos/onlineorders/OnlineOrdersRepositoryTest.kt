@@ -518,4 +518,15 @@ class OnlineOrdersRepositoryTest {
             """{"success":false,"code":"ORDER_STATE_CHANGED","status":"COMPLETED","refundedAt":null,"notPickedUpAt":null,"error":"cambió"}"""))
         assertEquals(AccionResultado.Hecho, repo.delivered("o1"))
     }
+
+    /** Ronda 3 (menor de la re-revisión): una marca presente pero ilegible cuenta como presente (no vuelve «Entregado»). */
+    @Test
+    fun `R3 a present but unreadable mark counts as present`() = runTest {
+        val rota = pedido(status = "READY", remaining = "0").trimEnd().dropLast(1) + ""","refundRequestedAt":"no-es-fecha"}"""
+        server.enqueue(MockResponse().setBody("""{"success":true,"data":$rota}"""))
+        val o = repo.pedidoEnLinea("o1").getOrThrow()
+        assertTrue(o.refundRequestedAt != null)
+        assertEquals("Devolviendo…", com.avoqado.pos.onlineorders.presentation.marcaDelPedido(o))
+        assertFalse(com.avoqado.pos.onlineorders.presentation.sePuedeEntregar(o))
+    }
 }
