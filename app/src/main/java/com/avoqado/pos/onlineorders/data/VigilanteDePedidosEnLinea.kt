@@ -85,8 +85,11 @@ class VigilanteDePedidosEnLinea internal constructor(
     private val scope: CoroutineScope,
     /** La sucursal de ahora: un sondeo que vuelve tras un cambio de sucursal se descarta. */
     private val venueActual: () -> String? = { null },
-    /** Tienda híbrida: lee «Por pagar»; `conLatido` avisa al servidor que este aparato cobra folios. null = sin folios. */
-    private val consultarPorPagar: (suspend (conLatido: Boolean, avisaTarjetas: Boolean) -> Result<ListaPorPagar>)? = null,
+    /**
+     * Tienda híbrida: lee «Por pagar»; `conLatido` avisa al servidor que este aparato cobra folios. null = sin folios. Ruling 93:
+     * `avisaTarjetas` se pregunta al ARMAR la petición (el repositorio la arma ya con el candado de la página 1), no antes de esperarlo.
+     */
+    private val consultarPorPagar: (suspend (conLatido: Boolean, avisaTarjetas: () -> Boolean) -> Result<ListaPorPagar>)? = null,
     /** `payments:create`: sólo quien cobra late (un aparato que no cobra no cuenta como «hay quien cobre folios»). */
     private val puedeCobrar: () -> Boolean = { false },
     /** La última lista que este aparato guardó: el número del menú de un arranque en frío sin red sale de ahí. */
@@ -202,7 +205,9 @@ class VigilanteDePedidosEnLinea internal constructor(
     /** Una lectura de «Por pagar» a la vez: la del compás y la de [sondearFoliosYa] no se pisan. */
     private val turnoDeFolios = Mutex()
 
-    /** Ruling 78: la última lectura del compás salió anunciada (con la cabecera de la tarjeta). Si no, la espera vigila el regreso. */
+    /**
+     * Rulings 78 y 93: la última petición del compás se ARMÓ anunciada (con la cabecera de la tarjeta). Si no, la espera vigila el regreso.
+     */
     @Volatile private var compasAnunciado = true
 
     /**
@@ -442,8 +447,9 @@ class VigilanteDePedidosEnLinea internal constructor(
             olvidarTarjetas()
             actualizarAbiertos()
         }
-        val avisa = delCompas && seVe() && ventanaActiva()
-        if (delCompas) compasAnunciado = avisa
+        // Ruling 93: el anuncio se decide al ARMAR la petición (ya con el candado de la página 1), con el foco de ese instante: una caja que se
+        // volvió a tapar mientras esperaba la lectura de la bandeja ya no se anuncia. La marca del compás guarda lo que de verdad se mandó.
+        val avisa = { (delCompas && seVe() && ventanaActiva()).also { if (delCompas) compasAnunciado = it } }
         val resultado = try {
             consultar(puedeCobrar(), avisa)
         } catch (e: CancellationException) {

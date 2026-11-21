@@ -516,7 +516,7 @@ class VigilanteDePedidosEnLineaTest {
         /** R2-1: si cada lectura se anunció como caja que avisa (`x-online-orders-card-alert`). */
         val avisos = mutableListOf<Boolean>()
         var guardada: ListaPorPagar? = null
-        suspend fun leer(conLatido: Boolean, avisa: Boolean): Result<ListaPorPagar> { latidos += conLatido; avisos += avisa; return respuesta }
+        suspend fun leer(conLatido: Boolean, avisa: () -> Boolean): Result<ListaPorPagar> { latidos += conLatido; avisos += avisa(); return respuesta }
     }
 
     private fun TestScope.armarConFolios(

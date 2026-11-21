@@ -143,7 +143,7 @@ class PorPagarTest {
             "comandasPorImprimir":[{"orderId":"c1","orderNumber":"T-0040"},{"orderNumber":"sin id"}]"""
         server.enqueue(MockResponse().setBody(cuerpo().replace("\"pollSeconds\":30", "\"pollSeconds\":30$d661")))
         server.enqueue(MockResponse().setBody(cuerpo()))
-        val lista = repo.porPagar(conLatido = false, avisaTarjetas = true).getOrThrow()
+        val lista = repo.porPagar(conLatido = false, avisaTarjetas = { true }).getOrThrow()
         // R2-1: el compás del vigilante a la vista se anuncia como caja que avisa (el SERVIDOR revisa orders:update).
         assertEquals("1", server.takeRequest(1, TimeUnit.SECONDS)!!.getHeader("x-online-orders-card-alert"))
         // Ruling 13: el total llega en PESOS y aquí va en centavos exactos; un renglón dañado se salta.
@@ -171,7 +171,7 @@ class PorPagarTest {
         repo.porPagar(conLatido = true).getOrThrow() // la bandeja visible de quien cobra
         repo.porPagar(conLatido = false).getOrThrow() // la bandeja de quien no cobra
         repo.porPagar(conLatido = false, seccion = "toPay", cursor = "c1").getOrThrow() // «Cargar más»
-        repo.porPagar(conLatido = true, avisaTarjetas = true).getOrThrow() // el compás del vigilante, a la vista
+        repo.porPagar(conLatido = true, avisaTarjetas = { true }).getOrThrow() // el compás del vigilante, a la vista
         val pedidas = List(4) { server.takeRequest(1, TimeUnit.SECONDS)!! }
         assertEquals(listOf(null, null, null, "1"), pedidas.map { it.getHeader("x-online-orders-card-alert") })
         // El latido de folios sigue igual que antes.
