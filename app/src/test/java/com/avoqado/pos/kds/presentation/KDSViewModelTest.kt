@@ -1073,9 +1073,12 @@ class KDSViewModelTest {
         job.cancelAndJoin()
     }
 
-    /** Como #6 con `ON_STOP`: minimizar con la lectura colgada apaga el receptor YA, y restaurar no espera esa lectura. */
+    /**
+     * Como #6 con `ON_STOP`/`ON_START`: minimizar con la lectura colgada apaga el receptor YA, y restaurar NO abre hasta que
+     * la apertura vieja termina de desenrollarse (lo mismo que hace ANDROID al volver del fondo).
+     */
     @Test
-    fun `P2 D14 minimizar con la lectura colgada apaga en el acto y restaurar no la espera`() = runTest {
+    fun `P2 D14 minimizar con la lectura colgada apaga en el acto y restaurar abre hasta que la vieja termina`() = runTest {
         val pantalla = PantallaDePrueba()
         pantalla.registro.currentState = Lifecycle.State.RESUMED
         val ventana = MutableStateFlow(true)
@@ -1094,50 +1097,17 @@ class KDSViewModelTest {
 
         ventana.value = true // restaurada antes de que termine la lectura vieja
         runCurrent()
+        verify(exactly = 0) { receptor.activar(any(), any()) } // todavía no abre: espera a la vieja
+        coVerify(exactly = 2) { repo.fetchOrders(any()) } // armar y la colgada; ningún GET nuevo
+
+        advanceTimeBy(31_000) // termina la lectura vieja: ahora sí abre la nueva
+        runCurrent()
         verifyOrder {
             receptor.desactivar()
             receptor.activar("v1", "st-barra")
         }
-        coVerify(exactly = 3) { repo.fetchOrders(any()) } // armar, la colgada y la de restaurar: el GET sale ya, sin esperarla
-        advanceTimeBy(31_000) // termina la lectura vieja: su final no apaga la apertura nueva
-        runCurrent()
-        verify(exactly = 1) { receptor.desactivar() }
-        job.cancelAndJoin()
-    }
-
-    /**
-     * Codex r1 #4 de D14: la lectura colgada de la apertura vieja que termina en FALLO (un `IOException` se cuela aunque la
-     * corrutina ya esté cancelada) no puede pintarse sobre la apertura nueva: encendía «Sin conexión» con el tablero ya leído
-     * (o, antes de la primera lectura nueva, ponía la línea base y sonaba lo que llegó con la ventana minimizada).
-     */
-    @Test
-    fun `P2 D14 el fallo tardio de la lectura vieja no pinta Sin conexion sobre la apertura nueva`() = runTest {
-        val pantalla = PantallaDePrueba()
-        pantalla.registro.currentState = Lifecycle.State.RESUMED
-        val ventana = MutableStateFlow(true)
-        val vm = armar()
-        var lecturas = 0
-        coEvery { repo.fetchOrders(any()) } coAnswers {
-            if (lecturas++ == 0) {
-                withContext(NonCancellable) { delay(30_000) }
-                Result.failure(IOException("timeout"))
-            } else {
-                Result.success(listOf(comanda("k1", 1_000)))
-            }
-        }
-        val job = launch { vm.mientrasEsteALaVista(pantalla, ventana) }
-        runCurrent() // la lectura de esta apertura se cuelga
-
-        ventana.value = false
-        runCurrent()
-        advanceTimeBy(25_000)
-        ventana.value = true // la apertura nueva lee bien en el acto
-        runCurrent()
-        assertFalse(vm.sinConexion.value)
-
-        advanceTimeBy(6_000) // a los 30 s la vieja termina en fallo (antes de la siguiente vuelta de la nueva)
-        runCurrent()
-        assertFalse("el fallo de una apertura cancelada no se pinta", vm.sinConexion.value)
+        coVerify(exactly = 3) { repo.fetchOrders(any()) }
+        verify(exactly = 1) { receptor.desactivar() } // el final de la vieja no apaga la nueva
         job.cancelAndJoin()
     }
 
@@ -1167,39 +1137,5 @@ class KDSViewModelTest {
         puerta.complete(Unit)
         runCurrent()
         assertEquals(listOf("k2"), vm.comandas.value.map { it.id })
-    }
-
-    /**
-     * Codex r2 #2: la descarga de configuración de la apertura cancelada termina tarde (el repositorio se traga la
-     * cancelación) con la pantalla apagada; esa apertura ya no puede cambiar la vista ni apagar el receptor de la nueva.
-     */
-    @Test
-    fun `P2 D14 la configuracion que termina tarde en una apertura cancelada no apaga la apertura nueva`() = runTest {
-        val pantalla = PantallaDePrueba()
-        pantalla.registro.currentState = Lifecycle.State.RESUMED
-        val ventana = MutableStateFlow(true)
-        val vm = armar()
-        var descargas = 0
-        coEvery { printConfig.refresh(any()) } coAnswers {
-            if (descargas++ == 0) {
-                withContext(NonCancellable) { delay(30_000) }
-                config = PrintConfig(stations = listOf(barra.copy(hasKitchenDisplay = false)), version = "v0")
-            }
-        }
-        val job = launch { vm.mientrasEsteALaVista(pantalla, ventana) }
-        runCurrent() // la descarga de esta apertura se cuelga
-        ventana.value = false
-        runCurrent()
-        advanceTimeBy(5_000)
-        ventana.value = true // la apertura nueva arranca con la configuración vigente
-        runCurrent()
-        assertTrue(vm.vista.value is VistaDeCocina.Tablero)
-        clearMocks(receptor, answers = false)
-
-        advanceTimeBy(26_000) // a los 30 s termina la descarga vieja (antes de la vuelta de config de la nueva)
-        runCurrent()
-        assertTrue("la apertura cancelada no cambia la vista", vm.vista.value is VistaDeCocina.Tablero)
-        verify(exactly = 0) { receptor.desactivar() }
-        job.cancelAndJoin()
     }
 }

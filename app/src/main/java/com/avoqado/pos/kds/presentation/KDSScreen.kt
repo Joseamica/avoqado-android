@@ -66,9 +66,9 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.repeatOnLifecycle
 // D14: aquí y no en orden alfabético, para no chocar con los imports de la rama de D17.
 import com.avoqado.pos.onlineorders.data.VentanaALaVista
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.onEach
 import com.avoqado.pos.designsystem.components.AvoqadoDialog
 import com.avoqado.pos.designsystem.components.AvoqadoSuccessToast
 import com.avoqado.pos.designsystem.components.CircleBackButton
@@ -109,13 +109,10 @@ internal suspend fun KDSViewModel.mientrasEsteALaVista(owner: LifecycleOwner, ve
     owner.lifecycle.addObserver(alParar)
     try {
         owner.repeatOnLifecycle(Lifecycle.State.STARTED) {
-            // Minimizar apaga en el acto y cancela la apertura SIN esperarla, como `repeatOnLifecycle` (con `collectLatest`,
-            // restaurar esperaría una lectura colgada hasta 30 s). Restaurar = apertura nueva: lee en el acto.
-            var apertura: Job? = null
-            ventana.collect { seVe ->
-                if (!seVe) { alOcultarse(); apertura?.cancel(); apertura = null }
-                else if (apertura == null) apertura = launch { mientrasSeVe() }
-            }
+            // El mismo orden que ANDROID: minimizar apaga en el acto (como `alParar` con `ON_STOP`) y restaurar abre otra vez
+            // sólo cuando la apertura anterior terminó de desenrollarse (como `ON_START`, que espera al bloque anterior). Con
+            // una lectura colgada, restaurar espera a que termine (hasta ~30 s), igual que volver del fondo en ANDROID.
+            ventana.onEach { visible -> if (!visible) alOcultarse() }.collectLatest { visible -> if (visible) mientrasSeVe() }
         }
     } finally {
         owner.lifecycle.removeObserver(alParar)
