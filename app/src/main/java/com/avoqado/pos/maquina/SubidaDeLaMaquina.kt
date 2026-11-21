@@ -51,7 +51,7 @@ fun textoDeIncidencia(motivo: String): String = "Registrado como incidencia: " +
  *   `conflicto`. Un 4xx sin incidencia o una respuesta con otros importes quedan visibles, sin acuse y sin reintento: esperan
  *   a un gerente (y siguen frenando cerrar sesión, R5#2). El 409 `CASH_MACHINE_CLOSE_RETRY` se reintenta.
  * - **Dudas** (`ESPERANDO`) → `POST …/doubts` con el carrito congelado; después se consultan cada 60 s hasta que el
- *   gerente decide, y la fila pasa a `RESUELTO` con lo que tecleó (R4-4).
+ *   gerente decide EN EL PANEL (recorte R2), y la fila pasa a `RESUELTO` con lo que tecleó (R4-4).
  * - **Sin red, 401, 5xx o sin emparejar** no se marca nada: se reintenta. Sin emparejar (o 403) se dice en [aviso].
  * - **Cuándo:** al arrancar, al volver la red (el mismo disparador que `PaymentSyncService`), con [disparar] (tras cada
  *   cierre) y cada 60 s mientras quede trabajo. Sin trabajo no hay reloj.
@@ -192,7 +192,7 @@ class SubidaDeLaMaquina @Inject constructor(
                 _aviso.value = acuse.texto
                 return false
             }
-            Acuse.Reintentar, Acuse.NoExiste, is Acuse.OtraVersion -> Unit
+            Acuse.Reintentar, Acuse.NoExiste -> Unit
             // Sin incidencia (un 400) el dinero sólo está aquí: visible y sin acuse.
             is Acuse.Rechazo -> dao.anotarConflicto(fila.referenceCC, acuse.texto)
             // Con su incidencia DURABLE en el SERVIDOR (409/422) ya no es de la PC: queda visible y deja de frenar cerrar sesión.
@@ -325,7 +325,7 @@ private val DESENLACES = setOf("PAGADO", "CANCELADO", "GUARDADO")
 private fun JSONObject.centavos(campo: String): Int? = (opt(campo) as? Number)?.toInt()
 
 /**
- * Lo que contestó el SERVIDOR a un mensaje de un folio (cierre, duda o resolución del gerente), leído en UN solo lugar ([leerAcuse]).
+ * Lo que contestó el SERVIDOR a un mensaje de un folio (cierre o duda), leído en UN solo lugar ([leerAcuse]).
  * Rediseño del SERVIDOR (r6-1): todo acuse trae `ack` (`RECIBIDO` | `TERMINADO`) y el `deviceId` dueño del folio.
  */
 sealed interface Acuse {
@@ -345,8 +345,6 @@ sealed interface Acuse {
         val motivo: String? = null,
         val duenoDelFolio: String? = null,
     ) : Acuse
-    /** r6-4: el gerente vio otra versión de la evidencia (409 `CASH_MACHINE_DOUBT_CHANGED`). */
-    data class OtraVersion(val version: Int?) : Acuse
     /** Un rechazo sin incidencia (un 400): sólo está en esta PC. */
     data class Rechazo(val texto: String) : Acuse
     data class SinEmparejar(val texto: String) : Acuse
@@ -356,7 +354,7 @@ sealed interface Acuse {
     data object Reintentar : Acuse
 }
 
-/** El ÚNICO lugar que interpreta lo que contesta el SERVIDOR a la máquina (subida, consulta y resolución del gerente). */
+/** El ÚNICO lugar que interpreta lo que contesta el SERVIDOR a la máquina (la subida y la consulta de una duda). */
 fun leerAcuse(r: RespuestaDelServidor): Acuse {
     val json = runCatching { JSONObject(r.cuerpo) }.getOrNull()
     val codigo = json?.optString("code")
@@ -369,8 +367,6 @@ fun leerAcuse(r: RespuestaDelServidor): Acuse {
         r.codigo >= 500 || r.codigo == 408 || r.codigo == 429 -> Acuse.Reintentar
         // «Otro registro de este folio estaba en curso»: el SERVIDOR no escribió nada y pide repetir el MISMO folio.
         r.codigo == 409 && codigo == "CASH_MACHINE_CLOSE_RETRY" -> Acuse.Reintentar
-        r.codigo == 409 && codigo == "CASH_MACHINE_DOUBT_CHANGED" ->
-            Acuse.OtraVersion(json?.optJSONObject("details")?.let { d -> (d.opt("version") as? Number)?.toInt() })
         r.codigo in 400..499 -> {
             val texto = ServerErrorText.fromResponseBody(r.cuerpo, "El servidor rechazó este cobro (${r.codigo})")
             val detalles = json?.optJSONObject("details")
@@ -415,8 +411,8 @@ fun incidenciaDelEco(json: JSONObject): String? =
     json.optString("incident").takeIf { it.isNotBlank() && it != "null" }?.let { textoDeIncidencia(json.optString("motivo")) }
 
 /**
- * La evidencia TERMINADA de una duda (la decisión del gerente, o su incidencia) en la fila: UN solo lugar que la lee, para la subida y
- * para la respuesta que recibe el propio gerente al resolver (Codex código r1 #11). false = no es de este folio o no cuadra.
+ * La evidencia TERMINADA de una duda (la decisión del gerente en el panel, o su incidencia) en la fila: UN solo lugar que la lee
+ * (Codex código r1 #11). false = no es de este folio o no cuadra.
  */
 internal suspend fun CobroEnMaquinaDao.resolverConElEco(fila: CobroEnMaquinaEntity, json: JSONObject, cuerpo: String): Boolean {
     val outcome = json.optString("outcome")

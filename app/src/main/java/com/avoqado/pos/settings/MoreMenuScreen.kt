@@ -1158,7 +1158,6 @@ fun MoreMenuScreen(
                 showCustomizeMenu = true
             },
             puedeConfigurarMaquina = viewModel.puedeConfigurarMaquina,
-            puedeResolverMaquina = viewModel.puedeResolverMaquina,
             onOpenCashMachine = {
                 showSettingsHub = false
                 showCashMachine = true
@@ -1905,8 +1904,6 @@ private fun SettingsHubSheet(
     onOpenCustomizeMenu: () -> Unit,
     puedeConfigurarMaquina: Boolean,
     onOpenCashMachine: () -> Unit,
-    /** Codex código r3 #7: el gerente que sólo resuelve también entra, a la bandeja de cobros en duda. */
-    puedeResolverMaquina: Boolean = false,
     enlacesDe: (GrupoDelPanel) -> List<MenuEntry>,
     onDismiss: () -> Unit,
 ) {
@@ -2020,18 +2017,13 @@ private fun SettingsHubSheet(
                         onClick = onOpenScreenPinning,
                     ),
                 ) + listOfNotNull(
-                    // C6: la QuickPay sólo se conecta a la PC (WINDOWS). Sin `cash-machine:configure` ni `cash-machine:resolve` en la sesión
-                    // se ve en gris y dice cómo entrar; no se ofrece el PIN de gerente aquí (R5#10). Codex código r3 #7: con resolver basta
-                    // para entrar a la bandeja; la IP y emparejar siguen pidiendo configurar.
+                    // C6: la QuickPay sólo se conecta a la PC (WINDOWS). Sin `cash-machine:configure` en la sesión se ve en gris y dice
+                    // cómo entrar; no se ofrece el PIN de gerente aquí (R5#10). Las dudas se resuelven en el panel (recorte R2).
                     MenuEntry(
                         icon = Icons.Outlined.LocalAtm,
                         label = "Máquina de efectivo",
-                        subtitle = when {
-                            puedeConfigurarMaquina -> "QuickPay Mini: IP y emparejar esta PC"
-                            puedeResolverMaquina -> com.avoqado.pos.maquina.TEXTO_COBROS_EN_ESPERA
-                            else -> com.avoqado.pos.maquina.TEXTO_SIN_PERMISO
-                        },
-                        enabled = puedeConfigurarMaquina || puedeResolverMaquina,
+                        subtitle = if (puedeConfigurarMaquina) "QuickPay Mini: IP y emparejar esta PC" else com.avoqado.pos.maquina.TEXTO_SIN_PERMISO,
+                        enabled = puedeConfigurarMaquina,
                         onClick = onOpenCashMachine,
                     ).takeIf { esEscritorio },
                 ),

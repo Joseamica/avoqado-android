@@ -11,7 +11,7 @@ interface CobroEnMaquinaDao {
     @Query(CobroEnMaquinaSql.POR_REFERENCIA)
     suspend fun porReferencia(referenceCC: String): CobroEnMaquinaEntity?
 
-    /** C5: la fila en vivo (Room la vuelve a emitir cuando cambia la tabla): la pantalla de resultado, sin sondear. */
+    /** C5: la fila en vivo (Room la vuelve a emitir cuando cambia la tabla): la pantalla de resultado y la de la duda, sin sondear. */
     @Query(CobroEnMaquinaSql.POR_REFERENCIA)
     fun observar(referenceCC: String): kotlinx.coroutines.flow.Flow<CobroEnMaquinaEntity?>
 
@@ -21,20 +21,6 @@ interface CobroEnMaquinaDao {
 
     @Query(CobroEnMaquinaSql.INTENTO_DE_LA_VENTA)
     suspend fun intentoDeLaVenta(llaveDeVenta: String): CobroEnMaquinaEntity?
-
-    @Query(CobroEnMaquinaSql.EN_ESPERA)
-    suspend fun enEspera(venueId: String): List<CobroEnMaquinaEntity>
-
-    /** Codex código r1 #7: las dudas de la sucursal en vivo (la franja de Cobrar). */
-    @Query(CobroEnMaquinaSql.EN_ESPERA)
-    fun observarEnEspera(venueId: String): kotlinx.coroutines.flow.Flow<List<CobroEnMaquinaEntity>>
-
-    /** Codex código r3 #8: las dudas de esta PC para la bandeja, por páginas ([contarDudas]). */
-    @Query(CobroEnMaquinaSql.DUDAS_DE_ESTA_PC)
-    suspend fun dudasDeEstaPc(venueId: String, soloSinSubir: Boolean, limite: Int): List<CobroEnMaquinaEntity>
-
-    @Query(CobroEnMaquinaSql.CONTAR_DUDAS)
-    suspend fun contarDudas(venueId: String, soloSinSubir: Boolean): Int
 
     @Insert
     suspend fun insertar(fila: CobroEnMaquinaEntity)
@@ -173,10 +159,6 @@ interface CobroEnMaquinaDao {
 
     @Query(CobroEnMaquinaSql.TERMINAR_TICKET)
     suspend fun terminarTicket(referenceCC: String, valor: Int): Int
-
-    /** Codex código r3 #6: 1 = esta llamada ganó la comanda de [referenceCC] ([comanda], la que leyó) y la despacha. */
-    @Query(CobroEnMaquinaSql.RECLAMAR_COMANDA)
-    suspend fun reclamarComanda(referenceCC: String, comanda: String): Int
 }
 
 /**

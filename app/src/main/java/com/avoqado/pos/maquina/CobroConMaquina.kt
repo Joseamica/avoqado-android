@@ -35,8 +35,6 @@ data class VentaParaLaMaquina(
     val vigenteHasta: Long? = null,
     /** Rediseño del SERVIDOR (r6-6): el emparejamiento vigente al empezar; queda congelado en el intento. */
     val bindingId: String? = null,
-    /** Codex código r3 #6: la comanda de cocina congelada; sale de la fila con el PAGADO. */
-    val comandaJson: String? = null,
 )
 
 sealed interface ResultadoDeInicio {
@@ -212,7 +210,7 @@ class CobroConMaquina(
     private val zona: () -> ZoneId = { ZoneId.systemDefault() },
     /** Codex código r2 H3 y H11: el reloj monótono (ms) de los plazos; la hora de Windows puede moverse. */
     private val monotonico: () -> Long = { System.nanoTime() / 1_000_000 },
-    /** Codex código r3 #6, #11: la máquina cerró en vivo y ya está en disco (la comanda y el papel salen de la fila). */
+    /** Codex código r3 #11: la máquina cerró en vivo y ya está en disco (el papel sale de la fila). */
     private val alCerrar: (String, Desenlace) -> Unit = { _, _ -> },
 ) {
     private val _estado = MutableStateFlow<EstadoDelCobro>(EstadoDelCobro.Libre)
@@ -265,7 +263,7 @@ class CobroConMaquina(
             referenceCC = ref, venueId = venta.venueId, llaveDeVenta = venta.llaveDeVenta, pedidoJson = venta.pedidoJson,
             saleCents = venta.saleCents, tipCents = venta.tipCents, dueCents = due, saleShiftId = venta.saleShiftId,
             quoteId = venta.quoteId, creadoEn = ahora, estado = EstadoDelIntento.EN_CURSO, renglonesJson = venta.renglonesJson,
-            bindingId = venta.bindingId, comandaJson = venta.comandaJson,
+            bindingId = venta.bindingId,
         )
         if (!dao.abrirIntento(fila)) return@withLock ResultadoDeInicio.VentaConIntento
         // Codex código r2 H11: la vigencia se vuelve a ver DESPUÉS de escribir en disco, justo antes del `paycash`.

@@ -31,9 +31,9 @@ import java.time.Instant
 import java.util.Random
 
 /**
- * C5: «Cobrar» con la máquina en la PC (R4-2, R4-4, R5#4, R5#8). La máquina contra un canal falso, la API de cotizar y de
- * resolver falsa (mockk) y el DAO sobre SQLite de verdad ([CobroEnMaquinaSobreSqlite]). Sin red real: el reloj es el de
- * `runTest`.
+ * C5: «Cobrar» con la máquina en la PC (R4-2, R5#4). La máquina contra un canal falso, la API de cotizar falsa (mockk) y el DAO sobre
+ * SQLite de verdad ([CobroEnMaquinaSobreSqlite]). Sin red real: el reloj es el de `runTest`. Las dudas se resuelven en el panel (recorte
+ * R2): aquí no hay «resolver».
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class MaquinaDeEfectivoTest {
@@ -96,7 +96,7 @@ class MaquinaDeEfectivoTest {
     private val sesion = mockk<SecureStorage>(relaxed = true) {
         every { venueId } returns "venue-1"
         every { venueName } returns "La Galeterie"
-        every { venuePermissions } returns listOf("payments:create", "cash-machine:resolve")
+        every { venuePermissions } returns listOf("payments:create")
     }
     private val impresora = mockk<PrinterService>(relaxed = true)
 
@@ -148,7 +148,7 @@ class MaquinaDeEfectivoTest {
     }
 
     @Test
-    fun `Codex r1 #7 las dudas de esta PC en la sucursal, para resolverlas desde Cobrar y Ajustes`() = runTest {
+    fun `Codex r1 #7 el intento abierto o en duda de una venta, para que su pantalla lo recupere`() = runTest {
         val base = CobroEnMaquinaEntity("AQ000000000001", "venue-1", "venta-1", "{}", 1_000, 0, 1_000, null, null, 1, EstadoDelIntento.ESPERANDO)
         dao.insertar(base)
         dao.insertar(base.copy(referenceCC = "AQ000000000002", llaveDeVenta = "venta-2", creadoEn = 2))
@@ -156,8 +156,6 @@ class MaquinaDeEfectivoTest {
         dao.insertar(base.copy(referenceCC = "AQ000000000004", llaveDeVenta = "venta-4", estado = EstadoDelIntento.PAGADO))
         val m = maquina()
 
-        assertEquals(listOf("AQ000000000002", "AQ000000000001"), m.dudasDeEstaPc(soloSinSubir = false, limite = 100).first.map { it.referenceCC })
-        assertEquals(listOf("AQ000000000002", "AQ000000000001"), m.enEspera().first().map { it.referenceCC })
         assertEquals("AQ000000000001", m.intentoDeLaVenta("venta-1")?.referenceCC)
         assertNull(m.intentoDeLaVenta("venta-4"))
     }
@@ -476,184 +474,6 @@ class MaquinaDeEfectivoTest {
         coVerify(exactly = 1) { impresora.manualPrintReceipt(match { it.orderNumber == "AQ000000000003" && it.reprintedAt != null }) }
     }
 
-    // MARK: - El gerente resuelve (R4-4, R5#8)
-
-    @Test
-    fun `R5#8 y Codex r1 #15 la hora del comprobante es del dia en que empezo el cobro, o con su fecha, y sin hora es null`() {
-        // El cobro empezó el viernes 20 a las 18:00; el gerente lo revisa el lunes: la hora sola es del viernes, no del lunes.
-        val inicio = java.time.ZonedDateTime.parse("2026-11-20T18:00:00-06:00[America/Mexico_City]")
-        assertEquals(Instant.parse("2026-11-21T00:05:00Z"), com.avoqado.pos.maquina.ui.horaDelComprobante("18:05", inicio))
-        assertEquals("antes de que empezara: del día siguiente", Instant.parse("2026-11-21T15:07:00Z"),
-            com.avoqado.pos.maquina.ui.horaDelComprobante("9:07", inicio))
-        assertEquals("con su fecha, como la imprime la máquina", Instant.parse("2026-11-18T21:48:20Z"),
-            com.avoqado.pos.maquina.ui.horaDelComprobante("2026-11-18 15:48:20", inicio))
-        assertEquals(Instant.parse("2026-11-18T21:48:00Z"), com.avoqado.pos.maquina.ui.horaDelComprobante("2026-11-18 15:48", inicio))
-        assertNull(com.avoqado.pos.maquina.ui.horaDelComprobante("", inicio))
-        assertNull(com.avoqado.pos.maquina.ui.horaDelComprobante("las seis", inicio))
-    }
-
-    @Test
-    fun `lo que teclea el gerente en pesos son centavos exactos`() {
-        assertEquals(20_000, com.avoqado.pos.maquina.ui.centavosDeTexto("200"))
-        assertEquals(18_750, com.avoqado.pos.maquina.ui.centavosDeTexto("$187.50"))
-        assertEquals(150_000, com.avoqado.pos.maquina.ui.centavosDeTexto("1,500.00"))
-        assertNull(com.avoqado.pos.maquina.ui.centavosDeTexto("12.345"))
-        assertNull(com.avoqado.pos.maquina.ui.centavosDeTexto("-5"))
-    }
-
-    private suspend fun TestScope.dudaDe(m: MaquinaDeEfectivo): String {
-        coEvery { api.cotizar(any(), any()) } returns cotizacion(18_000, 750)
-        val ref = (m.cobrar(venta()) as InicioEnLaMaquina.Iniciado).referenceCC
-        advanceTimeBy(3_001)
-        runCurrent()
-        return ref
-    }
-
-    @Test
-    fun `sin cash-machine resolve en la sesion no se manda nada y se dice como entrar`() = runTest {
-        every { sesion.venuePermissions } returns listOf("payments:create")
-        val m = maquina()
-        val ref = dudaDe(m)
-
-        val r = m.resolver(ref, ResolucionDelGerente(Desenlace.PAGADO, 20_000, 1_250, null, null, "Ticket 0042"))
-
-        assertEquals(ResultadoDeResolver.NoSe(TEXTO_SIN_PERMISO_RESOLVER), r)
-        coVerify(exactly = 0) { api.resolverDuda(any(), any(), any()) }
-    }
-
-    @Test
-    fun `cancelado sin saber si devolvio o guardo sigue esperando`() = runTest {
-        val m = maquina()
-        val ref = dudaDe(m)
-
-        val r = m.resolver(ref, ResolucionDelGerente(Desenlace.CANCELADO, 5_000, 0, null, cancelMode = null, evidencia = "pantalla"))
-
-        assertEquals(ResultadoDeResolver.NoSe(TEXTO_NO_SE_SABE_EL_MODO), r)
-        coVerify(exactly = 0) { api.resolverDuda(any(), any(), any()) }
-        assertEquals(EstadoDelIntento.ESPERANDO, dao.fila(ref)!!.estado)
-    }
-
-    @Test
-    fun `sin red la duda sigue esperando`() = runTest {
-        val m = maquina()
-        val ref = dudaDe(m)
-        coEvery { api.resolverDuda(any(), any(), any()) } throws IOException("sin red")
-
-        val r = m.resolver(ref, ResolucionDelGerente(Desenlace.PAGADO, 20_000, 1_250, null, null, "Ticket 0042"))
-
-        assertEquals(ResultadoDeResolver.NoSe(TEXTO_SIN_RED_RESOLVER), r)
-        assertEquals(EstadoDelIntento.ESPERANDO, dao.fila(ref)!!.estado)
-    }
-
-    @Test
-    fun `P1 el gerente teclea lo que dice la maquina con la hora del comprobante y la subida se dispara`() = runTest {
-        val m = maquina()
-        val ref = dudaDe(m)
-        val cuerpo = slot<JSONObject>()
-        coEvery { api.resolverDuda("venue-1", ref, capture(cuerpo)) } returns RespuestaDelServidor(200, ecoDelGerente(ref, "PAGADO", 20_000, 1_250))
-        val hora = Instant.parse("2026-11-20T18:05:00Z")
-
-        val r = m.resolver(ref, ResolucionDelGerente(Desenlace.PAGADO, 20_000, 1_250, hora, null, " Ticket 0042 "))
-
-        assertEquals(ResultadoDeResolver.Resuelto(Desenlace.PAGADO, 20_000, 1_250), r)
-        val b = cuerpo.captured
-        assertEquals("PAGADO", b.getString("outcome"))
-        assertEquals(20_000 to 1_250, b.getInt("creditCents") to b.getInt("changeDispensedCents"))
-        assertEquals("2026-11-20T18:05:00Z", b.getString("occurredAt"))
-        assertEquals("Ticket 0042", b.getString("evidence"))
-        assertTrue(b.isNull("cancelMode"))
-        verify { subida.disparar() }
-        val fila = dao.fila(ref)!!
-        assertEquals("lo que contestó ya quedó en la fila (la misma lectura que la subida)", EstadoDelIntento.RESUELTO, fila.estado)
-        assertEquals("PAGADO", fila.desenlaceDelServidor)
-    }
-
-    private fun ecoDelGerente(ref: String, outcome: String, credit: Int, change: Int, extra: JSONObject.() -> Unit = {}) =
-        JSONObject().put("success", true).put("ack", "TERMINADO").put("deviceId", ESTA_PC).put("referenceCC", ref).put("outcome", outcome)
-            .put("resolvedBy", "GERENTE").put("dueCents", 18_750).put("saleCents", 18_000).put("tipCents", 750)
-            .put("creditCents", credit).put("changeDispensedCents", change).put("owedCents", 0).apply(extra).toString()
-
-    @Test
-    fun `P1 Codex r2 H7 resolver manda la version que VIO el gerente, no la de disco, y un 409 trae la evidencia al dia del servidor`() = runTest {
-        val m = maquina()
-        val ref = dudaDe(m)
-        dao.marcarDudaAbierta(ref, 2, "", 0)
-        // Mientras el gerente teclea, llega evidencia nueva a disco y la subida la deja en la versión 3.
-        dao.marcarDudaAbierta(ref, 3, "", 0)
-        val cuerpos = mutableListOf<JSONObject>()
-        coEvery { api.resolverDuda("venue-1", ref, capture(cuerpos)) } returns
-            RespuestaDelServidor(
-                409,
-                JSONObject().put("message", "Llegó evidencia nueva").put("code", "CASH_MACHINE_DOUBT_CHANGED")
-                    .put("details", JSONObject().put("version", 4)).toString(),
-            ) andThen RespuestaDelServidor(200, ecoDelGerente(ref, "PAGADO", 20_000, 1_250))
-        coEvery { api.listarDudas("venue-1", null, ref) } returns RespuestaDelServidor(
-            200,
-            JSONObject().put("total", 1).put("nextCursor", JSONObject.NULL).put(
-                "data",
-                org.json.JSONArray().put(
-                    JSONObject().put("referenceCC", ref).put("kind", "ESPERANDO").put("dueCents", 18_750).put("version", 4)
-                        .put("lastSeen", "Entró \$200.00\ng2 {\"comando\":\"status\"}").put("startedAt", "2026-11-18T21:48:20Z"),
-                ),
-            ).toString(),
-        )
-        val vio = ResolucionDelGerente(Desenlace.PAGADO, 20_000, 1_250, null, null, "Ticket 0042", version = 2)
-
-        val primera = m.resolver(ref, vio)
-
-        assertEquals("la que estaba en pantalla, no la de disco", 2, cuerpos[0].getInt("version"))
-        assertTrue(primera is ResultadoDeResolver.EvidenciaNueva)
-        val nueva = (primera as ResultadoDeResolver.EvidenciaNueva).duda
-        assertEquals(4, nueva.version)
-        assertTrue("la evidencia AL DÍA del servidor, no la de disco", nueva.evidencia!!.startsWith("Entró \$200.00"))
-        assertEquals("no se escribió nada", EstadoDelIntento.ESPERANDO, dao.fila(ref)!!.estado)
-
-        assertEquals(ResultadoDeResolver.Resuelto(Desenlace.PAGADO, 20_000, 1_250), m.resolver(ref, vio.copy(version = nueva.version)))
-        assertEquals("confirmó otra vez, con la versión que vio", 4, cuerpos[1].getInt("version"))
-    }
-
-    @Test
-    fun `P1 Codex r2 H6 el gerente resuelve por folio una duda de OTRA PC, sin fila en la suya, y la lista viene del servidor por paginas`() = runTest {
-        val m = maquina()
-        coEvery { api.listarDudas("venue-1", null, null) } returns RespuestaDelServidor(
-            200,
-            JSONObject().put("total", 103).put("nextCursor", "c-2").put(
-                "data",
-                org.json.JSONArray().put(
-                    JSONObject().put("referenceCC", "AQ00000000KIOS").put("kind", "ESPERANDO").put("dueCents", 9_000).put("version", 2)
-                        .put("lastSeen", "Entró \$100.00").put("startedAt", "2026-11-18T21:48:20Z").put("deviceId", "otra-pc"),
-                ),
-            ).toString(),
-        )
-        val pagina = m.dudasDelNegocio()!!
-        assertEquals(103, pagina.total)
-        assertEquals("c-2", pagina.siguiente)
-        assertEquals(listOf(CobroEnEspera("AQ00000000KIOS", 9_000, 1_795_038_500_000, 2, "Entró \$100.00")), pagina.dudas)
-
-        val cuerpo = slot<JSONObject>()
-        coEvery { api.resolverDuda("venue-1", "AQ00000000KIOS", capture(cuerpo)) } returns
-            RespuestaDelServidor(200, ecoDelGerente("AQ00000000KIOS", "CANCELADO", 10_000, 10_000))
-
-        val r = m.resolver("AQ00000000KIOS", ResolucionDelGerente(Desenlace.CANCELADO, 10_000, 10_000, null, "1", "devolvió", version = 2))
-
-        assertEquals(ResultadoDeResolver.Resuelto(Desenlace.CANCELADO, 10_000, 10_000), r)
-        assertEquals(2, cuerpo.captured.getInt("version"))
-        assertNull("la fila es de la otra PC: aquí no se inventa nada", dao.fila("AQ00000000KIOS"))
-    }
-
-    @Test
-    fun `r6-1 una resolucion que el servidor RECIBIO sin terminar se dice y la subida la reanuda`() = runTest {
-        val m = maquina()
-        val ref = dudaDe(m)
-        coEvery { api.resolverDuda(any(), any(), any()) } returns RespuestaDelServidor(
-            202, JSONObject().put("success", true).put("ack", "RECIBIDO").put("referenceCC", ref).put("outcome", "PAGADO").toString(),
-        )
-
-        assertEquals(ResultadoDeResolver.NoSe(TEXTO_RESOLUCION_RECIBIDA), m.resolver(ref, ResolucionDelGerente(Desenlace.PAGADO, 20_000, 0, null, null, "x")))
-        assertEquals(EstadoDelIntento.ESPERANDO, dao.fila(ref)!!.estado)
-        verify { subida.disparar() }
-    }
-
     @Test
     fun `r6-6 cada cobro congela el emparejamiento vigente al empezar`() = runTest {
         prefs.guardar("192.168.1.50", activa = true, venueId = "venue-1", bindingId = "cbind0000000000000000000a")
@@ -664,31 +484,6 @@ class MaquinaDeEfectivoTest {
         prefs.guardar("192.168.1.50", activa = true, venueId = "venue-1", bindingId = "cbind0000000000000000000b")
 
         assertEquals("cbind0000000000000000000a", dao.fila(ref)!!.bindingId)
-    }
-
-    @Test
-    fun `P1 Codex r1 #11 un PAGADO del gerente que el servidor guardo como incidencia no es venta y lo dice`() = runTest {
-        val m = maquina()
-        val ref = dudaDe(m)
-        coEvery { api.resolverDuda(any(), any(), any()) } returns RespuestaDelServidor(
-            202,
-            ecoDelGerente(ref, "PAGADO", 20_000, 0) {
-                put("incident", "NO_SE_PUDO_REGISTRAR").put("incidentId", "cinc000000000000000000005").put("motivo", "VENTA_RECHAZADA")
-                    .put("owedKind", "CAMBIO").put("owedCents", 1_250)
-            },
-        )
-
-        val r = m.resolver(ref, ResolucionDelGerente(Desenlace.PAGADO, 20_000, 0, null, null, "Ticket 0042"))
-
-        assertEquals(ResultadoDeResolver.Incidencia("Registrado como incidencia: la venta ya no se pudo armar", 1_250), r)
-        val fila = dao.fila(ref)!!
-        assertEquals(EstadoDelIntento.RESUELTO, fila.estado)
-        assertEquals("Registrado como incidencia: la venta ya no se pudo armar", fila.conflicto)
-        assertEquals("su comprobante con folio", 1_250, fila.aDeberCents)
-        val papel = papelDeLaFila(dao.ticketsSinImprimir("venue-1").single(), "La Galeterie")!!
-        assertEquals("no es una venta: su papel pendiente es el comprobante del dinero",
-            com.avoqado.pos.printing.receiptlayout.KIND_COMPROBANTE_DE_LA_MAQUINA, papel.kind)
-        assertEquals(1_250L, papel.cashMachine!!.owedCents)
     }
 
     @Test
@@ -822,50 +617,7 @@ class MaquinaDeEfectivoTest {
         assertEquals("y un solo paycash, el de la cotización vigente", 1, canal.enviados.count { JSONObject(it).getString("comando") == "paycash" })
     }
 
-    @Test
-    fun `R5#8 sin la hora del comprobante va null y un GUARDADO lleva el modo 2`() = runTest {
-        val m = maquina()
-        val ref = dudaDe(m)
-        val cuerpo = slot<JSONObject>()
-        coEvery { api.resolverDuda(any(), any(), capture(cuerpo)) } returns RespuestaDelServidor(200, """{"success":true}""")
-
-        m.resolver(ref, ResolucionDelGerente(Desenlace.GUARDADO, 5_000, 0, null, cancelMode = "2", evidencia = "se quedó con $50"))
-
-        assertTrue("sin hora: hora y turno por conciliar, nunca la de inicio", cuerpo.captured.isNull("occurredAt"))
-        assertEquals("2", cuerpo.captured.getString("cancelMode"))
-        assertEquals("GUARDADO", cuerpo.captured.getString("outcome"))
-    }
-
-    @Test
-    fun `un 422 del servidor se dice y la duda sigue`() = runTest {
-        val m = maquina()
-        val ref = dudaDe(m)
-        coEvery { api.resolverDuda(any(), any(), any()) } returns RespuestaDelServidor(
-            422, """{"message":"Los importes de este cierre de la máquina no son posibles.","code":"CASH_MACHINE_CLOSE_IMPOSSIBLE"}""",
-        )
-
-        val r = m.resolver(ref, ResolucionDelGerente(Desenlace.PAGADO, 100, 0, null, null, "x"))
-
-        assertEquals(ResultadoDeResolver.NoSe("Los importes de este cierre de la máquina no son posibles."), r)
-        assertEquals(EstadoDelIntento.ESPERANDO, dao.fila(ref)!!.estado)
-    }
-
     // MARK: - Codex código r3
-
-    @Test
-    fun `P1 Codex r3 #10 resolver un folio que el servidor dice de OTRA PC no libera la venta de esta`() = runTest {
-        val m = maquina()
-        val ref = dudaDe(m)
-        coEvery { api.resolverDuda("venue-1", ref, any()) } returns
-            RespuestaDelServidor(200, ecoDelGerente(ref, "CANCELADO", 0, 0) { put("deviceId", "cterm000000000000la-otra1") })
-
-        val r = m.resolver(ref, ResolucionDelGerente(Desenlace.CANCELADO, 0, 0, null, "1", "devolvió todo", version = 1))
-
-        assertEquals(ResultadoDeResolver.Resuelto(Desenlace.CANCELADO, 0, 0), r)
-        val fila = dao.fila(ref)!!
-        assertEquals("la fila de esta PC sigue esperando", EstadoDelIntento.ESPERANDO, fila.estado)
-        assertTrue("y su venta sigue frenada", m.ventaBloqueada(fila.llaveDeVenta))
-    }
 
     @Test
     fun `P1 Codex r3 #12 con el 202 definitivo ya en la fila, el primer papel es el comprobante del dinero aunque la caja traiga un ticket`() = runTest {
@@ -883,51 +635,5 @@ class MaquinaDeEfectivoTest {
         m.imprimirPapelDelFolio("AQ000000000001", ticketDeLaCaja)
 
         assertEquals(com.avoqado.pos.printing.receiptlayout.KIND_COMPROBANTE_DE_LA_MAQUINA, impresos.single().kind)
-    }
-
-    @Test
-    fun `P1 Codex r3 #8 un folio POR_TERMINAR se lista aparte y se termina SOLO con su version`() = runTest {
-        val m = maquina()
-        coEvery { api.listarDudas("venue-1", null, null, "POR_TERMINAR") } returns RespuestaDelServidor(
-            200,
-            JSONObject().put("total", 1).put("nextCursor", JSONObject.NULL).put(
-                "data",
-                org.json.JSONArray().put(
-                    JSONObject().put("referenceCC", "AQ00000000RELE").put("kind", "POR_TERMINAR").put("dueCents", 18_000).put("version", 3)
-                        .put("outcome", "PAGADO").put("creditCents", 20_000).put("changeDispensedCents", 2_000)
-                        .put("createdAt", "2026-11-18T21:48:20Z"),
-                ),
-            ).toString(),
-        )
-        val duda = m.dudasDelNegocio(kind = MaquinaDeEfectivo.KIND_POR_TERMINAR)!!.dudas.single()
-        assertTrue(duda.porTerminar)
-        assertEquals(Triple("PAGADO", 20_000, 2_000), Triple(duda.outcome, duda.creditCents, duda.changeDispensedCents))
-        val cuerpo = slot<JSONObject>()
-        coEvery { api.resolverDuda("venue-1", "AQ00000000RELE", capture(cuerpo)) } returns
-            RespuestaDelServidor(200, ecoDelGerente("AQ00000000RELE", "PAGADO", 20_000, 2_000) { put("deviceId", "cterm000000000000la-otra1") })
-
-        val r = m.resolver(
-            "AQ00000000RELE",
-            ResolucionDelGerente(Desenlace.PAGADO, 20_000, 2_000, null, null, "", version = duda.version, porTerminar = true),
-        )
-
-        assertEquals(ResultadoDeResolver.Resuelto(Desenlace.PAGADO, 20_000, 2_000), r)
-        assertEquals("sólo la versión: los importes ya están congelados", listOf("version"), cuerpo.captured.keys().asSequence().toList())
-        assertEquals(3, cuerpo.captured.getInt("version"))
-    }
-
-    @Test
-    fun `P1 Codex r3 #8 las dudas de esta PC se cuentan todas y por paginas, y las que el servidor ya acuso no se repiten`() = runTest {
-        val base = CobroEnMaquinaEntity("AQ000000000001", "venue-1", "venta-1", "{}", 1_000, 0, 1_000, null, null, 1, EstadoDelIntento.ESPERANDO)
-        (1..103).forEach { dao.insertar(base.copy(referenceCC = "AQ%012d".format(it), llaveDeVenta = "venta-$it", creadoEn = it.toLong())) }
-        dao.marcarDudaAbierta("AQ000000000103", 2, "", 0)   // el SERVIDOR ya la tiene (sale en su lista)
-        val m = maquina()
-
-        val (pagina, total) = m.dudasDeEstaPc(soloSinSubir = false, limite = 50)
-        assertEquals(50 to 103, pagina.size to total)
-        assertEquals("AQ000000000103", pagina.first().referenceCC)
-        val (sinSubir, totalSinSubir) = m.dudasDeEstaPc(soloSinSubir = true, limite = 200)
-        assertEquals(102, totalSinSubir)
-        assertTrue(sinSubir.none { it.referenceCC == "AQ000000000103" })
     }
 }

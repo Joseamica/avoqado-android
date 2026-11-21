@@ -35,7 +35,7 @@ internal open class CobroEnMaquinaSobreSqlite : CobroEnMaquinaDao, AutoCloseable
         return db.prepareStatement(expandido).apply { args.forEachIndexed { i, v -> setObject(i + 1, v) } }
     }
 
-    /** Sube con cada escritura: las consultas en vivo (`observarEnEspera`) vuelven a leer, como las de Room. */
+    /** Sube con cada escritura: las consultas en vivo (`observar`, los tickets sin imprimir) vuelven a leer, como las de Room. */
     private val cambios = kotlinx.coroutines.flow.MutableStateFlow(0)
 
     private fun actualizar(sql: String, vararg valores: Pair<String, Any?>): Int =
@@ -74,31 +74,15 @@ internal open class CobroEnMaquinaSobreSqlite : CobroEnMaquinaDao, AutoCloseable
 
     override suspend fun porReferencia(referenceCC: String) = fila(referenceCC)
 
-    /** Una sola lectura: sin un reloj que sondee (con `runTest` un sondeo infinito no termina nunca). */
-    override fun observar(referenceCC: String) = kotlinx.coroutines.flow.flowOf(fila(referenceCC))
+    /** En vivo como Room: vuelve a leer con cada escritura (sin reloj que sondee: con `runTest` un sondeo infinito no termina nunca). */
+    override fun observar(referenceCC: String) = cambios.map { fila(referenceCC) }
 
     override suspend fun intentoDeLaVenta(llaveDeVenta: String) =
         filas(CobroEnMaquinaSql.INTENTO_DE_LA_VENTA, "llaveDeVenta" to llaveDeVenta).singleOrNull()
 
-    override suspend fun enEspera(venueId: String) = filas(CobroEnMaquinaSql.EN_ESPERA, "venueId" to venueId)
-
-    override fun observarEnEspera(venueId: String) = cambios.map { filas(CobroEnMaquinaSql.EN_ESPERA, "venueId" to venueId) }
-
-    override suspend fun dudasDeEstaPc(venueId: String, soloSinSubir: Boolean, limite: Int) = filas(
-        CobroEnMaquinaSql.DUDAS_DE_ESTA_PC, "venueId" to venueId, "soloSinSubir" to if (soloSinSubir) 1 else 0, "limite" to limite,
-    )
-
-    override suspend fun contarDudas(venueId: String, soloSinSubir: Boolean): Int =
-        preparar(CobroEnMaquinaSql.CONTAR_DUDAS, "venueId" to venueId, "soloSinSubir" to if (soloSinSubir) 1 else 0).use { st ->
-            st.executeQuery().let { it.next(); it.getInt(1) }
-        }
-
     override suspend fun marcarEvidenciaEntregada(referenceCC: String, crudos: String, creditCents: Int) = actualizar(
         CobroEnMaquinaSql.MARCAR_EVIDENCIA_ENTREGADA, "referenceCC" to referenceCC, "crudos" to crudos, "creditCents" to creditCents,
     )
-
-    override suspend fun reclamarComanda(referenceCC: String, comanda: String) =
-        actualizar(CobroEnMaquinaSql.RECLAMAR_COMANDA, "referenceCC" to referenceCC, "comanda" to comanda)
 
     override suspend fun marcarDudaEnConflicto(referenceCC: String, conflicto: String, respuesta: String, crudos: String, creditCents: Int) =
         actualizar(

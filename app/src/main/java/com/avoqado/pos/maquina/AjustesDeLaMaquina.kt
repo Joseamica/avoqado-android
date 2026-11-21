@@ -30,6 +30,8 @@ const val TEXTO_PENDIENTES_DE_LA_MAQUINA = "Hay cobros de la máquina sin subir 
 const val TEXTO_SIN_PERMISO = "Pide a un gerente que entre con su PIN (cambio de usuario) para configurar la máquina"
 const val TEXTO_SIN_RED_EMPAREJAR = "Se necesita internet para emparejar"
 const val TEXTO_SIN_RED_DESEMPAREJAR = "Se necesita internet para desemparejar"
+/** Recorte R1 (21-nov): el SERVIDOR no empareja otra PC mientras el negocio tenga cobros de la máquina a medias (409). */
+const val TEXTO_FOLIOS_SIN_TERMINAR = "Hay cobros de la máquina sin terminar: termínalos en el panel antes de emparejar otra PC"
 
 /**
  * La IP de la máquina como la acepta el SERVIDOR (`z.ip({ version: 'v4' })`): cuatro números de 0 a 255 con dígitos ASCII.
@@ -194,6 +196,7 @@ class EmparejamientoDeLaMaquina @Inject constructor(
                 when {
                     r.isSuccessful -> runCatching { leer(cuerpo) }
                     r.code == 403 -> Result.failure(IllegalStateException(TEXTO_SIN_PERMISO))
+                    r.code == 409 && codigoDe(cuerpo) == CODIGO_FOLIOS_PENDIENTES -> Result.failure(IllegalStateException(TEXTO_FOLIOS_SIN_TERMINAR))
                     else -> Result.failure(IllegalStateException(ServerErrorText.fromResponseBody(cuerpo, "No se pudo. Inténtalo de nuevo.")))
                 }
             }
@@ -202,7 +205,10 @@ class EmparejamientoDeLaMaquina @Inject constructor(
         }
     }
 
+    private fun codigoDe(cuerpo: String): String? = runCatching { JSONObject(cuerpo).optString("code") }.getOrNull()
+
     private companion object {
         val JSON = "application/json; charset=utf-8".toMediaType()
+        const val CODIGO_FOLIOS_PENDIENTES = "CASH_MACHINE_FOLIOS_PENDING"
     }
 }

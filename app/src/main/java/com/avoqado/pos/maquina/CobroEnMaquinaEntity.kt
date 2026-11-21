@@ -100,10 +100,7 @@ data class CobroEnMaquinaEntity(
      * del diario se recorta a 8 KB; esto no: un mensaje que APS repite nunca vuelve a contar como evidencia nueva.
      */
     val huellasDelDiario: String = "",
-    /**
-     * v23 (Codex código r3 #6): los renglones del carrito congelados al empezar, para la comanda de cocina. La comanda sale de AQUÍ,
-     * no de la pantalla, y se vacía al despacharla: una sola vez por folio ([CobroEnMaquinaSql.RECLAMAR_COMANDA]).
-     */
+    /** v23, ya no se escribe ni se lee (recorte R3 de la 1a, 21-nov: sin comanda a cocina). La columna se queda por las bases v23. */
     val comandaJson: String? = null,
 )
 
@@ -209,24 +206,6 @@ internal object CobroEnMaquinaSql {
     const val INTENTO_DE_LA_VENTA: String =
         "SELECT * FROM cobros_en_maquina WHERE llaveDeVenta = :llaveDeVenta AND estado IN ('EN_CURSO', 'ESPERANDO') " +
             "ORDER BY creadoEn DESC, referenceCC DESC LIMIT 1"
-
-    /** Codex código r1 #7: las dudas de ESTA PC en la sucursal, para «Resolver con gerente» desde Cobrar. Acotada. */
-    const val EN_ESPERA: String =
-        "SELECT * FROM cobros_en_maquina WHERE venueId = :venueId AND estado = 'ESPERANDO' " +
-            "ORDER BY creadoEn DESC, referenceCC DESC LIMIT 100"
-
-    /**
-     * Codex código r3 #8: las dudas de ESTA PC para la bandeja del gerente, por páginas ([CONTAR_DUDAS] da el total). Con
-     * `:soloSinSubir`, sólo las que el SERVIDOR nunca acusó (ni versión ni respuesta): las demás ya salen en su lista.
-     */
-    const val DUDAS_DE_ESTA_PC: String =
-        "SELECT * FROM cobros_en_maquina WHERE venueId = :venueId AND estado = 'ESPERANDO' " +
-            "AND (:soloSinSubir = 0 OR (versionDeLaDuda IS NULL AND respuestaServidor IS NULL)) " +
-            "ORDER BY creadoEn DESC, referenceCC DESC LIMIT :limite"
-
-    const val CONTAR_DUDAS: String =
-        "SELECT COUNT(*) FROM cobros_en_maquina WHERE venueId = :venueId AND estado = 'ESPERANDO' " +
-            "AND (:soloSinSubir = 0 OR (versionDeLaDuda IS NULL AND respuestaServidor IS NULL))"
 
     /** Sólo si el `paycash` no salió (`enviar` = false): nada llegó a la máquina, no hay evidencia que guardar. */
     const val BORRAR_SIN_ENVIAR: String =
@@ -402,10 +381,6 @@ internal object CobroEnMaquinaSql {
     /** El resultado REAL de la impresora para un papel reclamado: 1 salió, 0 no salió (otra vez pendiente), 2 se queda como copia por dar. */
     const val TERMINAR_TICKET: String =
         "UPDATE cobros_en_maquina SET ticketImpreso = :valor WHERE referenceCC = :referenceCC AND ticketImpreso = 2"
-
-    /** Codex código r3 #6: quien despacha la comanda de un folio la reclama vaciándola; sólo uno gana (1 = ganó). */
-    const val RECLAMAR_COMANDA: String =
-        "UPDATE cobros_en_maquina SET comandaJson = NULL WHERE referenceCC = :referenceCC AND comandaJson = :comanda"
 }
 
 /**

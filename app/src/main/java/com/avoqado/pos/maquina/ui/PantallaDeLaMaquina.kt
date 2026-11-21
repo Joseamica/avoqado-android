@@ -18,11 +18,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
@@ -37,10 +32,9 @@ import com.avoqado.pos.maquina.EstadoDelCobro
 import com.avoqado.pos.maquina.FilaDeLaMaquina
 import com.avoqado.pos.maquina.TEXTO_AYUDA
 import com.avoqado.pos.maquina.TEXTO_ESPERANDO
+import com.avoqado.pos.maquina.TEXTO_ESPERANDO_AL_PANEL
 import com.avoqado.pos.maquina.TEXTO_SIGUES_AHI
-import com.avoqado.pos.maquina.TEXTO_SIN_PERMISO_RESOLVER
 import com.avoqado.pos.maquina.VistaDeLaMaquina
-import kotlinx.coroutines.launch
 
 /**
  * La fila «Efectivo en la máquina» de la selección de método (C5, sólo WINDOWS con la máquina activa). En gris con su razón si
@@ -79,66 +73,6 @@ internal fun FilaEfectivoEnLaMaquina(fila: FilaDeLaMaquina, aviso: String?, avis
     }
 }
 
-/**
- * Codex código r1 #7: las OTRAS dudas de esta PC, con «Resolver con gerente», en la selección de método de Cobrar. Resolverlas nunca
- * cobra la venta en pantalla (la decisión la escribe el SERVIDOR; la PC se entera en su siguiente subida).
- */
-@Composable
-internal fun CobrosEnEsperaDeLaMaquina(
-    enEspera: List<com.avoqado.pos.maquina.CobroEnEspera>,
-    puedeResolver: Boolean,
-    onResolver: suspend (String, com.avoqado.pos.maquina.ResolucionDelGerente) -> com.avoqado.pos.maquina.ResultadoDeResolver,
-) {
-    if (enEspera.isEmpty()) return
-    val scope = rememberCoroutineScope()
-    var abierta by remember { mutableStateOf<String?>(null) }
-    var resolviendo by remember { mutableStateOf(false) }
-    var aviso by remember { mutableStateOf<String?>(null) }
-    // Codex código r2 H7: lo que el gerente tiene en pantalla se congela al abrir; sólo un 409 de versión lo cambia (por la del SERVIDOR).
-    var enPantalla by remember { mutableStateOf<com.avoqado.pos.maquina.CobroEnEspera?>(null) }
-    Column(Modifier.fillMaxWidth().padding(vertical = AvoqadoTheme.spacing.sm)) {
-        Text(
-            "${com.avoqado.pos.maquina.TEXTO_COBROS_EN_ESPERA} (${enEspera.size})",
-            style = MaterialTheme.typography.titleSmall,
-            fontWeight = FontWeight.SemiBold,
-            color = MaterialTheme.colorScheme.error,
-        )
-        enEspera.forEach { c ->
-            Row(Modifier.fillMaxWidth().padding(top = AvoqadoTheme.spacing.xs), verticalAlignment = Alignment.CenterVertically) {
-                Text("Folio ${c.referenceCC} · ${formatMoneyFromCents(c.dueCents)}", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
-                OutlinedButton(onClick = { abierta = c.referenceCC; enPantalla = c; aviso = null }) { Text("Resolver con gerente") }
-            }
-        }
-    }
-    abierta?.let { ref ->
-        ResolverAMano(
-            puedeResolver = puedeResolver,
-            resolviendo = resolviendo,
-            aviso = aviso,
-            inicio = enEspera.firstOrNull { it.referenceCC == ref }?.creadoEn,
-            duda = enPantalla,
-            onResolver = { r ->
-                scope.launch {
-                    resolviendo = true
-                    val resultado = onResolver(ref, r)
-                    resolviendo = false
-                    when (resultado) {
-                        is com.avoqado.pos.maquina.ResultadoDeResolver.NoSe -> aviso = resultado.texto
-                        is com.avoqado.pos.maquina.ResultadoDeResolver.EvidenciaNueva -> {
-                            aviso = resultado.texto
-                            enPantalla = resultado.duda
-                        }
-                        // Codex código r1 #11: sin venta; se dice el motivo y el diálogo se queda para leerlo.
-                        is com.avoqado.pos.maquina.ResultadoDeResolver.Incidencia -> aviso = resultado.texto
-                        is com.avoqado.pos.maquina.ResultadoDeResolver.Resuelto -> abierta = null
-                    }
-                }
-            },
-            onCerrar = { abierta = null },
-        )
-    }
-}
-
 /** Codex código r1 #12: «Hay N tickets sin imprimir» con su botón (nunca se imprimen solos). */
 @Composable
 internal fun TicketsSinImprimirDeLaMaquina(cuantos: Int, onImprimir: () -> Unit) {
@@ -156,13 +90,11 @@ internal fun TicketsSinImprimirDeLaMaquina(cuantos: Int, onImprimir: () -> Unit)
 
 /**
  * La pantalla del cobro en la máquina (C5): lo que hay que pagar, lo que entró y el cambio; «Cancelar y devolverme mi dinero»
- * sólo con el cobro propio; «¿Sigues ahí?» del abandono; «Esperando a la máquina» con «Resolver con gerente». El dinero lo dice
- * la máquina, nunca esta pantalla: aquí sólo se enseña.
+ * sólo con el cobro propio; «¿Sigues ahí?» del abandono; «Esperando a la máquina», que un gerente resuelve en el panel (recorte R2).
+ * El dinero lo dice la máquina, nunca esta pantalla: aquí sólo se enseña.
  */
 @Composable
 fun PantallaDeLaMaquina(vista: VistaDeLaMaquina, caja: CajaConMaquina, onSalir: () -> Unit) {
-    val scope = rememberCoroutineScope()
-    var resolviendo by remember { mutableStateOf(false) }
     Column(
         modifier = Modifier.fillMaxSize().padding(AvoqadoTheme.spacing.xl),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -218,18 +150,12 @@ fun PantallaDeLaMaquina(vista: VistaDeLaMaquina, caja: CajaConMaquina, onSalir: 
                     PrimaryButton(text = "Listo", onClick = caja::listo, fullWidth = true)
                 }
                 is EstadoDelCobro.Esperando -> {
+                    // Recorte R2: la caja no resuelve; consulta el folio y, cuando el panel lo resuelve, enseña cómo terminó.
                     Titulo(TEXTO_ESPERANDO)
-                    Nota("La máquina no confirmó cómo terminó este cobro. No lo cobres otra vez: pide a un gerente que lo revise en la máquina.")
+                    Nota(TEXTO_ESPERANDO_AL_PANEL)
+                    Nota("La máquina no confirmó cómo terminó este cobro. No lo cobres otra vez.")
                     Monto("Por pagar", c.dueCents)
                     Spacer(Modifier.height(AvoqadoTheme.spacing.xl))
-                    PrimaryButton(
-                        text = "Resolver con gerente",
-                        onClick = { scope.launch { caja.abrirResolucion(); resolviendo = true } },
-                        fullWidth = true,
-                        enabled = vista.puedeResolver,
-                    )
-                    if (!vista.puedeResolver) Nota(TEXTO_SIN_PERMISO_RESOLVER)
-                    Spacer(Modifier.height(AvoqadoTheme.spacing.md))
                     OutlinedButton(onClick = onSalir) { Text("Salir") }
                 }
                 EstadoDelCobro.Libre, null -> if (vista.incidencia != null) {
@@ -239,19 +165,12 @@ fun PantallaDeLaMaquina(vista: VistaDeLaMaquina, caja: CajaConMaquina, onSalir: 
                     Spacer(Modifier.height(AvoqadoTheme.spacing.xl))
                     PrimaryButton(text = "Listo", onClick = caja::listo, fullWidth = true)
                 } else vista.resuelto?.let { d ->
-                    Titulo(if (d == Desenlace.CANCELADO) "El gerente lo resolvió: la máquina devolvió el dinero" else "El gerente lo resolvió: la máquina guardó el dinero")
+                    Titulo(if (d == Desenlace.CANCELADO) "El gerente lo resolvió en el panel: la máquina devolvió el dinero" else "El gerente lo resolvió en el panel: la máquina guardó el dinero")
                     Spacer(Modifier.height(AvoqadoTheme.spacing.xl))
                     PrimaryButton(text = "Listo", onClick = caja::listo, fullWidth = true)
                 }
             }
         }
-    }
-    if (resolviendo && vista.cobro is EstadoDelCobro.Esperando) {
-        ResolverAMano(
-            vista = vista,
-            onResolver = { r -> scope.launch { caja.resolver(r) } },
-            onCerrar = { resolviendo = false },
-        )
     }
 }
 

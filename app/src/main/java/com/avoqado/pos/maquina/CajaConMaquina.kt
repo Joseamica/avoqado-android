@@ -6,6 +6,9 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
@@ -36,60 +39,6 @@ data class CierreEnPantalla(
     val aDeberCents: Int get() = (creditCents - dueCents - changeDispensedCents).coerceAtLeast(0)
 }
 
-/**
- * Codex código r1 #7: un cobro «Esperando a la máquina», para resolverlo con gerente desde Cobrar o Ajustes. Codex código r2 H7: con la
- * evidencia que se enseña ([evidencia]) y SU [version]: el gerente firma esa versión, nunca la que haya en disco al tocar.
- */
-data class CobroEnEspera(
-    val referenceCC: String,
-    val dueCents: Int,
-    val creadoEn: Long,
-    val version: Int = 1,
-    val evidencia: String? = null,
-    /** Codex código r3 #9: lo más que entró (el campo del SERVIDOR, o lo de esta PC), en número: no depende de la cola del texto. */
-    val creditCents: Int? = null,
-    /**
-     * Codex código r3 #8: un folio POR_TERMINAR: la máquina ya lo cerró ([outcome], lo que entró y el cambio) y relevaron su PC antes de
-     * terminar la venta. El gerente lo TERMINA con su versión, sin teclear nada.
-     */
-    val porTerminar: Boolean = false,
-    val outcome: String? = null,
-    val changeDispensedCents: Int? = null,
-)
-
-/** La duda de esta PC tal como la tiene en disco (lo que subió, lo que entró y la versión que le contestó el SERVIDOR). */
-fun CobroEnMaquinaEntity.comoDuda() =
-    CobroEnEspera(referenceCC, dueCents, creadoEn, versionDeLaDuda ?: 1, textoDeLoQueVio(this), creditCents = creditCents)
-
-/** Codex código r2 H6: una página de la bandeja del gerente: los cobros, cuántos hay en total y la marca de la siguiente. */
-data class PaginaDeDudas(val dudas: List<CobroEnEspera>, val total: Int, val siguiente: String?)
-
-/** Lee `{ data, total, nextCursor }` de `GET …/cash-machine/doubts` (ESPERANDO o POR_TERMINAR); null si no es una página. */
-fun leerPaginaDeDudas(r: RespuestaDelServidor): PaginaDeDudas? {
-    if (r.codigo != 200) return null
-    val j = runCatching { org.json.JSONObject(r.cuerpo) }.getOrNull() ?: return null
-    val data = j.optJSONArray("data") ?: return null
-    fun org.json.JSONObject.centavos(campo: String) = (opt(campo) as? Number)?.toInt()
-    fun org.json.JSONObject.instante(campo: String) = runCatching { java.time.Instant.parse(optString(campo)).toEpochMilli() }.getOrNull()
-    val dudas = (0 until data.length()).mapNotNull { i ->
-        val d = data.optJSONObject(i) ?: return@mapNotNull null
-        val ref = d.optString("referenceCC").takeIf { it.isNotBlank() } ?: return@mapNotNull null
-        CobroEnEspera(
-            referenceCC = ref,
-            dueCents = d.centavos("dueCents") ?: 0,
-            creadoEn = d.instante("startedAt") ?: d.instante("createdAt") ?: 0L,
-            version = d.centavos("version") ?: 1,
-            evidencia = d.opt("lastSeen")?.takeIf { it != org.json.JSONObject.NULL }?.toString(),
-            creditCents = d.centavos("creditCents"),
-            porTerminar = d.optString("kind") == MaquinaDeEfectivo.KIND_POR_TERMINAR,
-            outcome = d.optString("outcome").takeIf { !d.isNull("outcome") && it.isNotBlank() },
-            changeDispensedCents = d.centavos("changeDispensedCents"),
-        )
-    }
-    val siguiente = j.optString("nextCursor").takeIf { !j.isNull("nextCursor") && it.isNotBlank() }
-    return PaginaDeDudas(dudas, j.optInt("total", dudas.size), siguiente)
-}
-
 /** Lo que pinta «Cobrar» de la máquina. null en la caja = no hay máquina en esta PC: todo como hoy. */
 data class VistaDeLaMaquina(
     val fila: FilaDeLaMaquina,
@@ -100,27 +49,19 @@ data class VistaDeLaMaquina(
     /** Por qué no se mandó a la máquina (centavos, descuento, premio…). */
     val aviso: String?,
     val avisoDeSubida: String?,
-    val puedeResolver: Boolean,
-    val resolviendo: Boolean,
-    val avisoDeResolver: String?,
-    /** El gerente decidió CANCELADO o GUARDADO: la pantalla lo dice y deja salir. */
+    /** Recorte R2: un gerente lo resolvió en el panel como CANCELADO o GUARDADO; la pantalla lo dice y deja salir. */
     val resuelto: Desenlace?,
-    /** Codex código r1 #7: las OTRAS dudas de esta PC en la sucursal (la de esta venta ya se ve en su pantalla). */
-    val enEspera: List<CobroEnEspera> = emptyList(),
-    /** Codex código r2 H7: la duda de ESTA venta como se la enseña al gerente (su evidencia y su versión), al abrir «Resolver». */
-    val duda: CobroEnEspera? = null,
     /** Codex código r1 #11: el gerente declaró PAGADO y el SERVIDOR lo guardó como incidencia: no hay venta. */
     val incidencia: String? = null,
     /** Codex código r1 #12: ventas pagadas de la sucursal cuyo ticket no salió. */
     val ticketsSinImprimir: Int = 0,
-    /** Cuándo empezó el cobro de esta venta (Codex código r1 #15: la hora del comprobante se lee desde ese día). */
-    val inicioDelCobro: Long? = null,
 )
 
 /**
  * La máquina vista desde UN cobro de la caja (C5): la fila de la selección, la pantalla del cobro de ESTA venta y lo que un
  * `PAGADO` le pide a la caja ([alPagar], una sola vez por folio). Vive con el ViewModel del cobro; la máquina es de la app.
  */
+@OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
 class CajaConMaquina(
     val maquina: MaquinaDeEfectivo,
     private val scope: CoroutineScope,
@@ -129,8 +70,8 @@ class CajaConMaquina(
     private data class Local(
         /**
          * Codex código r2 H5: cada «Cobrar» que se abre es una apertura nueva. Lo que llega tarde (la cotización, el `paycash`, la
-         * resolución del gerente) sólo se aplica si la pantalla sigue en SU apertura; si no, se queda en su fila (y en las listas de
-         * dudas y de tickets), nunca en la venta que se ve ahora.
+         * resolución del panel) sólo se aplica si la pantalla sigue en SU apertura; si no, se queda en su fila (y en la lista de tickets),
+         * nunca en la venta que se ve ahora.
          */
         val apertura: Long = 0,
         val venta: VentaEnPantalla? = null,
@@ -139,22 +80,16 @@ class CajaConMaquina(
         /** Codex código r2 H1: sin la máquina activa, esta venta tiene en disco un intento abierto, en duda o pagado. */
         val bloqueadaSinMaquina: Boolean = false,
         val miFolio: String? = null,
-        val miCotizada: Boolean = false,
         val ventaEnDuda: Boolean = false,
         /** Codex código r1 #1: tocó «Efectivo en la máquina» y todavía cotiza: la venta ya no sale con tarjeta. */
         val apartada: Boolean = false,
         val aviso: String? = null,
-        val resolviendo: Boolean = false,
-        val avisoDeResolver: String? = null,
         val resuelto: Desenlace? = null,
         /** Codex código r1 #7: la duda de esta venta leída del disco (tras reiniciar no hay cobro vivo que la muestre). */
         val guardada: EstadoDelCobro.Esperando? = null,
         val incidencia: String? = null,
-        val inicio: Long? = null,
         /** Codex código r1 #1: el toque de «Efectivo en la máquina» de ESTA apertura sigue en camino (cotizando o mandando). */
         val enVuelo: Boolean = false,
-        /** Codex código r2 H7: lo que el gerente tiene en pantalla al resolver la duda de esta venta. */
-        val duda: CobroEnEspera? = null,
         /** Codex código r3 #5: la ficha con que ESTA apertura apartó su venta en la máquina; con ella se suelta al salir. */
         val ficha: Any? = null,
     )
@@ -173,7 +108,7 @@ class CajaConMaquina(
 
     /**
      * Pasa a una apertura nueva (bajo [candado]): lo de la anterior ya no se aplica a la pantalla, su apartado se suelta y su folio deja
-     * de estar a la vista (su ticket y su comanda salen de la fila).
+     * de estar a la vista (su papel sale de la fila).
      */
     private fun nuevaApertura(siguiente: (Long) -> Local) = synchronized(candado) {
         val antes = local.value
@@ -187,8 +122,8 @@ class CajaConMaquina(
 
     /** ¿La máquina cobra en ESTE cobro? Síncrono (la [vista] puede ir un cuadro atrás): lo usan las guardas del punto común. */
     val activa: Boolean get() = local.value.venta != null
-    private val pagados = mutableSetOf<String>()
-    private val comprobantes = mutableSetOf<String>()
+    private val pagados = java.util.Collections.synchronizedSet(mutableSetOf<String>())
+    private val comprobantes = java.util.Collections.synchronizedSet(mutableSetOf<String>())
 
     /** Aplica [cambio] sólo si la pantalla sigue en la apertura [mia] (Codex código r2 H5). */
     private fun siSigue(mia: Long, cambio: (Local) -> Local) {
@@ -198,8 +133,8 @@ class CajaConMaquina(
     val vista: StateFlow<VistaDeLaMaquina?> =
         combine(
             local, maquina.ahora, maquina.cobro.estado, maquina.avisoDeSubida,
-            combine(maquina.enEspera(), maquina.ticketsSinImprimir()) { d, t -> d to t },
-        ) { l, ahora, estado, avisoDeSubida, (dudas, sinImprimir) ->
+            maquina.ticketsSinImprimir(),
+        ) { l, ahora, estado, avisoDeSubida, sinImprimir ->
             val v = l.venta ?: return@combine null
             // El cobro vivo de esta venta; si no lo hay (se reinició la app), su duda guardada (Codex código r1 #7).
             val mio = estado.takeIf { folioDe(it) != null && folioDe(it) == l.miFolio }
@@ -211,45 +146,71 @@ class CajaConMaquina(
                 ventaEnDuda = l.ventaEnDuda || l.apartada || mio != null,
                 aviso = l.aviso,
                 avisoDeSubida = avisoDeSubida,
-                puedeResolver = maquina.puedeResolver(),
-                resolviendo = l.resolviendo,
-                avisoDeResolver = l.avisoDeResolver,
                 resuelto = l.resuelto,
-                enEspera = dudas.filter { it.referenceCC != l.miFolio }.map { it.comoDuda() },
-                duda = l.duda?.takeIf { it.referenceCC == l.miFolio },
                 incidencia = l.incidencia,
                 ticketsSinImprimir = sinImprimir,
-                inicioDelCobro = l.inicio,
             )
         }.stateIn(scope, SharingStarted.Eagerly, null)
 
     init {
         scope.launch(start = CoroutineStart.UNDISPATCHED) {
-            maquina.cobro.estado.collect { estado ->
-                val l = local.value
-                if (estado !is EstadoDelCobro.Cerrado || estado.referenceCC != l.miFolio) return@collect
-                // C7 (R3#11): «Te debemos» de un CANCELADO que no devolvió todo, en papel con su folio (por el mismo camino del papel,
-                // Codex código r3 #11). GUARDADO: nada.
-                if (estado.desenlace == Desenlace.CANCELADO && estado.creditCents > estado.changeDispensedCents &&
-                    comprobantes.add(estado.referenceCC)
-                ) {
-                    scope.launch { maquina.imprimirPapelDelFolio(estado.referenceCC) }
-                }
-                if (estado.desenlace == Desenlace.PAGADO && estado.referenceCC !in pagados) {
-                    val renglones = renglonesDelTicket(maquina.fila(estado.referenceCC)?.renglonesJson)
-                    // Codex código r2 H5: leer la fila suspende; si mientras tanto la pantalla cambió de venta, el PAGADO se queda en su fila
-                    // y su papel sale de ella (Codex código r3 #11: por el mismo reclamo, nunca dos originales).
-                    if (local.value.apertura != l.apertura || local.value.miFolio != estado.referenceCC) {
-                        scope.launch { maquina.imprimirPapelDelFolio(estado.referenceCC) }
-                        return@collect
-                    }
-                    if (!pagados.add(estado.referenceCC)) return@collect
-                    alPagar(
-                        CierreEnPantalla(estado.referenceCC, estado.dueCents, estado.creditCents, estado.changeDispensedCents,
-                            precioPorConfirmar = !l.miCotizada, renglones = renglones),
-                    )
-                }
+            maquina.cobro.estado.collect { estado -> (estado as? EstadoDelCobro.Cerrado)?.let { alCerrarEnPantalla(it) } }
+        }
+        // Recorte R2 (21-nov): la duda de la venta en pantalla la resuelve un gerente EN EL PANEL; la subida consulta el folio y deja en
+        // su fila cómo terminó. La pantalla la sigue en vivo y enseña ese desenlace.
+        scope.launch(start = CoroutineStart.UNDISPATCHED) {
+            local.map { it.apertura to it.miFolio }.distinctUntilChanged()
+                .flatMapLatest { (apertura, folio) -> folio?.let { f -> maquina.filaEnVivo(f).map { apertura to it } } ?: flowOf(apertura to null) }
+                .collect { (apertura, fila) -> if (fila?.estado == EstadoDelIntento.RESUELTO) alResolverEnElPanel(apertura, fila) }
+        }
+    }
+
+    /**
+     * El cierre de la máquina del folio de ESTA pantalla. C7 (R3#11): «Te debemos» de un CANCELADO que no devolvió todo, en papel con su
+     * folio (por el mismo camino del papel, Codex código r3 #11); GUARDADO: nada. Un PAGADO cobra la venta en la caja ([alPagar]), una vez.
+     */
+    private suspend fun alCerrarEnPantalla(estado: EstadoDelCobro.Cerrado) {
+        val l = local.value
+        if (estado.referenceCC != l.miFolio) return
+        if (estado.desenlace == Desenlace.CANCELADO && estado.creditCents > estado.changeDispensedCents && comprobantes.add(estado.referenceCC)) {
+            scope.launch { maquina.imprimirPapelDelFolio(estado.referenceCC) }
+        }
+        if (estado.desenlace != Desenlace.PAGADO || estado.referenceCC in pagados) return
+        val fila = maquina.fila(estado.referenceCC)
+        // Codex código r2 H5: leer la fila suspende; si mientras tanto la pantalla cambió de venta, el PAGADO se queda en su fila y su papel
+        // sale de ella (Codex código r3 #11: por el mismo reclamo, nunca dos originales).
+        if (local.value.apertura != l.apertura || local.value.miFolio != estado.referenceCC) {
+            scope.launch { maquina.imprimirPapelDelFolio(estado.referenceCC) }
+            return
+        }
+        if (!pagados.add(estado.referenceCC)) return
+        alPagar(
+            CierreEnPantalla(estado.referenceCC, estado.dueCents, estado.creditCents, estado.changeDispensedCents,
+                precioPorConfirmar = fila?.quoteId == null, renglones = renglonesDelTicket(fila?.renglonesJson)),
+        )
+    }
+
+    /**
+     * Recorte R2: un gerente resolvió en el panel la duda de la venta en pantalla. PAGADO cobra la venta en la caja, como el de la máquina
+     * (su ticket sale por el mismo camino del papel). PAGADO que el SERVIDOR guardó como incidencia (Codex código r1 #11): no hay venta;
+     * sólo el comprobante con folio si se le debe al cliente. CANCELADO o GUARDADO: se dice, y «Listo» vuelve a leer si la venta sigue frenada.
+     */
+    private fun alResolverEnElPanel(apertura: Long, fila: CobroEnMaquinaEntity) {
+        val l = local.value
+        if (l.apertura != apertura || l.miFolio != fila.referenceCC || l.resuelto != null || l.incidencia != null) return
+        val desenlace = fila.desenlace ?: return
+        when {
+            desenlace == Desenlace.PAGADO && fila.conflicto != null -> {
+                siSigue(apertura) { it.copy(incidencia = fila.conflicto) }
+                if (fila.aDeberCents > 0 && comprobantes.add(fila.referenceCC)) scope.launch { maquina.imprimirPapelDelFolio(fila.referenceCC) }
             }
+            desenlace == Desenlace.PAGADO -> if (pagados.add(fila.referenceCC)) {
+                alPagar(
+                    CierreEnPantalla(fila.referenceCC, fila.dueCents, fila.creditCents, fila.changeDispensedCents,
+                        precioPorConfirmar = fila.quoteId == null, renglones = renglonesDelTicket(fila.renglonesJson)),
+                )
+            }
+            else -> siSigue(apertura) { it.copy(resuelto = desenlace) }
         }
     }
 
@@ -276,8 +237,8 @@ class CajaConMaquina(
             val intento = maquina.intentoDeLaVenta(venta.llaveDeVenta)
             siSigue(mia) { l ->
                 if (intento == null || l.miFolio != null) l.copy(ventaEnDuda = enDuda)
-                else l.copy(ventaEnDuda = true, miFolio = intento.referenceCC, miCotizada = intento.quoteId != null,
-                    guardada = EstadoDelCobro.Esperando(intento.referenceCC, intento.dueCents), inicio = intento.creadoEn)
+                else l.copy(ventaEnDuda = true, miFolio = intento.referenceCC,
+                    guardada = EstadoDelCobro.Esperando(intento.referenceCC, intento.dueCents))
             }
             if (local.value.apertura == mia) local.value.miFolio?.let { maquina.aLaVista(it, true) }
         }
@@ -331,14 +292,16 @@ class CajaConMaquina(
         try {
             return when (val r = maquina.cobrar(v, puertaDe(mia), apartado = l.ficha)) {
                 is InicioEnLaMaquina.Iniciado -> {
-                    // A la vista ANTES de leer la fila: su PAGADO puede llegar mientras tanto (Codex código r3 #11).
+                    // A la vista y como SU folio en el mismo paso, sin suspender (Codex código POS r4 #12): un PAGADO rápido ya encuentra su
+                    // pantalla. Si aun así llegó antes, se atiende aquí (una vez por folio).
                     maquina.aLaVista(r.referenceCC, true)
-                    val fila = maquina.fila(r.referenceCC)
-                    siSigue(mia) {
-                        it.copy(miFolio = r.referenceCC, miCotizada = fila?.quoteId != null, ventaEnDuda = true, inicio = fila?.creadoEn)
+                    siSigue(mia) { it.copy(miFolio = r.referenceCC, ventaEnDuda = true) }
+                    if (local.value.apertura != mia) {
+                        maquina.aLaVista(r.referenceCC, false)
+                        return false
                     }
-                    if (local.value.apertura != mia) maquina.aLaVista(r.referenceCC, false)
-                    local.value.apertura == mia
+                    (maquina.cobro.estado.value as? EstadoDelCobro.Cerrado)?.let { alCerrarEnPantalla(it) }
+                    true
                 }
                 is InicioEnLaMaquina.NoSeCobra -> {
                     siSigue(mia) { it.copy(aviso = r.texto, ventaEnDuda = it.ventaEnDuda || r.texto == TEXTO_VENTA_CON_INTENTO) }
@@ -365,7 +328,7 @@ class CajaConMaquina(
      */
     fun listo() {
         val l = local.value
-        local.value = l.copy(miFolio = null, resuelto = null, avisoDeResolver = null, guardada = null, incidencia = null, inicio = null)
+        local.value = l.copy(miFolio = null, resuelto = null, guardada = null, incidencia = null)
         l.miFolio?.let { maquina.aLaVista(it, false) }
         val v = l.venta ?: return
         scope.launch {
@@ -373,57 +336,6 @@ class CajaConMaquina(
             siSigue(l.apertura) { it.copy(ventaEnDuda = enDuda) }
         }
     }
-
-    /**
-     * Codex código r2 H7: al tocar «Resolver con gerente» se lee del disco la evidencia de la duda de esta venta y su versión; eso es
-     * lo que se enseña y lo que se firma (sólo un 409 de versión la cambia, con la del SERVIDOR).
-     */
-    suspend fun abrirResolucion() {
-        val l = local.value
-        val folio = l.miFolio ?: return
-        val duda = maquina.fila(folio)?.comoDuda() ?: return
-        siSigue(l.apertura) { if (it.miFolio == folio) it.copy(duda = duda, avisoDeResolver = null) else it }
-    }
-
-    /** El gerente resuelve la duda de ESTA venta (R4-4). Un `PAGADO` cobra la venta en la caja, como el de la máquina. */
-    suspend fun resolver(r: ResolucionDelGerente) {
-        val l = local.value
-        val folio = l.miFolio ?: return
-        if (l.resolviendo) return
-        local.value = l.copy(resolviendo = true, avisoDeResolver = null)
-        val resultado = maquina.resolver(folio, r)
-        // Codex código r2 H5: si la pantalla ya es otra, lo decidido se queda en su fila (su ticket, en «tickets sin imprimir»).
-        if (local.value.apertura != l.apertura || local.value.miFolio != folio) return
-        local.value = local.value.copy(resolviendo = false)
-        when (resultado) {
-            is ResultadoDeResolver.NoSe -> local.value = local.value.copy(avisoDeResolver = resultado.texto)
-            // Codex código r2 H7: se enseña la evidencia nueva y su versión; el gerente vuelve a confirmar.
-            is ResultadoDeResolver.EvidenciaNueva -> local.value = local.value.copy(avisoDeResolver = resultado.texto, duda = resultado.duda)
-            is ResultadoDeResolver.Resuelto -> if (resultado.desenlace == Desenlace.PAGADO) {
-                val fila = maquina.fila(folio)
-                if (local.value.apertura == l.apertura && local.value.miFolio == folio && pagados.add(folio)) {
-                    alPagar(
-                        CierreEnPantalla(folio, fila?.dueCents ?: 0, resultado.creditCents, resultado.changeDispensedCents,
-                            precioPorConfirmar = fila?.quoteId == null, renglones = renglonesDelTicket(fila?.renglonesJson)),
-                    )
-                }
-            } else {
-                local.value = local.value.copy(resuelto = resultado.desenlace)
-            }
-            // Codex código r1 #11: sin venta no hay ticket ni comanda; sólo el comprobante con folio si se le debe al cliente.
-            is ResultadoDeResolver.Incidencia -> {
-                local.value = local.value.copy(incidencia = resultado.texto)
-                if (resultado.debeCents > 0 && comprobantes.add(folio)) scope.launch { maquina.imprimirPapelDelFolio(folio) }
-            }
-        }
-    }
-
-    /**
-     * Codex código r1 #7: el gerente resuelve OTRA duda de esta PC desde Cobrar (no la de esta venta). Nunca cobra la venta en pantalla:
-     * si fue un `PAGADO`, su ticket sale por «Tickets sin imprimir».
-     */
-    suspend fun resolverOtra(referenceCC: String, r: ResolucionDelGerente): ResultadoDeResolver =
-        if (referenceCC == local.value.miFolio) ResultadoDeResolver.NoSe(TEXTO_ES_LA_DE_ESTA_VENTA) else maquina.resolver(referenceCC, r)
 
     private fun folioDe(e: EstadoDelCobro): String? = when (e) {
         EstadoDelCobro.Libre -> null

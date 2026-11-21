@@ -88,19 +88,17 @@ class CobrosEnMaquinaRoomTest {
         } finally { carpeta.toFile().deleteRecursively() }
     }
 
-    @Test fun `Codex r3 el DAO real - una duda propia frena salir, lo resuelto no, y la comanda se reclama una vez`() = runBlocking {
+    @Test fun `Codex r3 el DAO real - una duda propia frena salir y lo resuelto no`() = runBlocking {
         val carpeta = Files.createTempDirectory("cobros-en-maquina")
         val base = DatabaseModule.provideDatabase(ContextoDeEscritorio(carpeta))
         try {
             val dao = base.cobrosEnMaquinaDao()
             val duda = CobroEnMaquinaEntity(
                 "AQ000000000001", "venue-1", "venta-1", "{}", 18_000, 750, 18_750, null, null, creadoEn = 1, estado = EstadoDelIntento.ESPERANDO,
-                dudaSubida = true, comandaJson = "[]",
+                dudaSubida = true,
             )
             dao.insertar(duda)
             assertEquals(1, dao.pendientes("venue-1"), "una duda propia ya subida sigue frenando salir (r3 #2)")
-            assertEquals(1, dao.reclamarComanda("AQ000000000001", "[]"))
-            assertEquals(0, dao.reclamarComanda("AQ000000000001", "[]"), "la comanda sale una vez por folio (r3 #6)")
             assertEquals(1, dao.resolver("AQ000000000001", "GERENTE", 0, 0, null, """{"outcome":"CANCELADO"}""", "CANCELADO"))
             assertEquals(0, dao.pendientes(null), "lo que el SERVIDOR resolvió no frena")
             assertTrue(dao.anotarMensaje("AQ000000000001", 1, "tarde", 10_000, 18_750), "lo que llega después de resolver es evidencia (r3 #1)")

@@ -349,10 +349,6 @@ fun PaymentFlowScreen(
                         maquina = vistaDeLaMaquina,
                         onCobrarConMaquina = viewModel::cobrarConMaquina,
                         onImprimirTicketsDeLaMaquina = { viewModel.maquina?.imprimirTicketsPendientes() },
-                        onResolverOtraDeLaMaquina = { ref, r ->
-                            viewModel.maquina?.resolverOtra(ref, r)
-                                ?: com.avoqado.pos.maquina.ResultadoDeResolver.NoSe(com.avoqado.pos.maquina.TEXTO_SIN_PERMISO_RESOLVER)
-                        },
                     )
                     TipSelectionSheet(
                         amountCents = currentState.amount,
@@ -369,7 +365,7 @@ fun PaymentFlowScreen(
                 if (caja != null && vistaDeLaMaquina != null &&
                     (vistaDeLaMaquina.cobro != null || vistaDeLaMaquina.resuelto != null || vistaDeLaMaquina.incidencia != null)
                 ) {
-                    // C5: el cobro de ESTA venta en la máquina (o lo que decidió el gerente).
+                    // C5: el cobro de ESTA venta en la máquina (o lo que decidió el gerente en el panel).
                     com.avoqado.pos.maquina.ui.PantallaDeLaMaquina(vista = vistaDeLaMaquina, caja = caja, onSalir = cancelarElCobro)
                 } else PaymentMethodSelectionScreen(
                     metodosHabilitados = metodosHabilitados && !enDudaSinMaquina,
@@ -397,10 +393,6 @@ fun PaymentFlowScreen(
                     maquina = vistaDeLaMaquina,
                     onCobrarConMaquina = viewModel::cobrarConMaquina,
                     onImprimirTicketsDeLaMaquina = { viewModel.maquina?.imprimirTicketsPendientes() },
-                    onResolverOtraDeLaMaquina = { ref, r ->
-                        viewModel.maquina?.resolverOtra(ref, r)
-                            ?: com.avoqado.pos.maquina.ResultadoDeResolver.NoSe(com.avoqado.pos.maquina.TEXTO_SIN_PERMISO_RESOLVER)
-                    },
                 )
             }
             is PaymentFlowState.CollectingCashAmount -> {

@@ -3050,8 +3050,6 @@ class PaymentFlowViewModel @Inject constructor(
         val renglones = com.avoqado.pos.maquina.renglonesParaCongelar(papelDelCobro(currentBaseAmount(), cobrado = currentBaseAmount()).renglones)
         val venta = com.avoqado.pos.maquina.VentaPorCobrar(
             venueId, cart.llaveParaLaMaquina, pedido, currentBaseAmount(), currentTipCents, renglonesLocales = renglones,
-            // Codex código r3 #6: la comanda se congela con el intento; sale de la fila con el PAGADO, esté o no esta venta en pantalla.
-            comandaJson = com.avoqado.pos.maquina.comandaParaCongelar(cart.items),
         )
         // Codex código r1 #1: la venta queda apartada en ESTE toque, antes de pedir el turno o cotizar: la tarjeta (F4) ya no sale.
         if (!caja.apartar()) return
@@ -6322,7 +6320,7 @@ class PaymentFlowViewModel @Inject constructor(
             if (maquinaDelTicket != null) {
                 // C7: el ticket de la máquina es la prueba del cliente (con deuda, su único papel): sale aunque la impresora no tenga
                 // la impresión automática. Codex código r3 #11, #12: por EL camino del papel del folio (un original, decidido por lo que
-                // la fila dice al imprimir). Su comanda la despacha la máquina, de la fila (Codex código r3 #6): aquí no.
+                // la fila dice al imprimir). Sin comanda a cocina ni cajón: la venta de la máquina no lleva comanda en la 1a (recorte R3).
                 maquinaDeEfectivo?.imprimirPapelDelFolio(maquinaDelTicket.referenceCC, recibo)
                 return@launch
             } else {

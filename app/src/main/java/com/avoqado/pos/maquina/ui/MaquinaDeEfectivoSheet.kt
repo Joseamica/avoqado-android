@@ -18,9 +18,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -64,11 +61,8 @@ fun MaquinaDeEfectivoSheet(onDismiss: () -> Unit, viewModel: MaquinaDeEfectivoVi
                 onDesemparejar = viewModel::desemparejar,
                 onCerrar = cerrar,
                 onImprimirComprobante = viewModel::imprimirComprobante,
-                onResolver = viewModel::resolver,
-                onResolverCerrado = viewModel::avisoDeResolverVisto,
                 onVerMasComprobantes = viewModel::verMasComprobantes,
                 onImprimirTickets = viewModel::imprimirTicketsPendientes,
-                onVerMasDudas = viewModel::verMasDudas,
             )
             estado.listo?.let { AvoqadoSuccessToast(message = it, onDismiss = viewModel::toastVisto) }
         }
@@ -85,15 +79,9 @@ internal fun ContenidoDeLaMaquina(
     onDesemparejar: () -> Unit,
     onCerrar: () -> Unit,
     onImprimirComprobante: (String) -> Unit = {},
-    onResolver: (String, com.avoqado.pos.maquina.ResolucionDelGerente) -> Unit = { _, _ -> },
-    onResolverCerrado: () -> Unit = {},
     onVerMasComprobantes: () -> Unit = {},
     onImprimirTickets: () -> Unit = {},
-    onVerMasDudas: () -> Unit = {},
 ) {
-    var resolviendoFolio by remember { mutableStateOf<String?>(null) }
-    // Al resolverse, la duda sale de la lista: el diálogo se cierra solo.
-    val folioAbierto = resolviendoFolio?.takeIf { folio -> estado.enEspera.any { it.referenceCC == folio } }
     Column(Modifier.fillMaxSize()) {
         AvoqadoFullscreenHeader(
             title = "Máquina de efectivo",
@@ -128,7 +116,7 @@ internal fun ContenidoDeLaMaquina(
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.SemiBold,
             )
-            // Codex código r3 #7: sin `cash-machine:configure` se entra a la bandeja, pero la IP y emparejar se ven en gris y se dice por qué.
+            // Sin `cash-machine:configure` la IP y emparejar se ven en gris y se dice por qué.
             if (estado.cargado && !estado.puedeConfigurar) Nota(com.avoqado.pos.maquina.TEXTO_SIN_PERMISO)
             AvoqadoPillTextField(
                 value = estado.ip,
@@ -173,39 +161,6 @@ internal fun ContenidoDeLaMaquina(
             // Codex código r2 #12: los papeles que no salieron, también con la máquina apagada (Cobrar sólo los enseña con ella activa).
             TicketsSinImprimirDeLaMaquina(estado.ticketsSinImprimir, onImprimirTickets)
 
-            // Codex código r1 #7 y r2 H6: los cobros del negocio «Esperando a la máquina», con «Resolver con gerente».
-            if (estado.enEspera.isNotEmpty()) {
-                Text(
-                    "${com.avoqado.pos.maquina.TEXTO_COBROS_EN_ESPERA} (${maxOf(estado.enEsperaTotal, estado.enEspera.size)})",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.SemiBold,
-                )
-                estado.enEspera.forEach { c ->
-                    androidx.compose.foundation.layout.Row(
-                        Modifier.fillMaxWidth(),
-                        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
-                    ) {
-                        Text(
-                            "Folio ${c.referenceCC} · ${com.avoqado.pos.core.util.formatMoneyFromCents(c.dueCents)}" +
-                                // Codex código r3 #9 y #8: lo que entró, en número; y si sólo falta terminarlo.
-                                (c.creditCents?.let { " · entró ${com.avoqado.pos.core.util.formatMoneyFromCents(it)}" } ?: "") +
-                                (if (c.porTerminar) " · $TEXTO_POR_TERMINAR" else ""),
-                            style = MaterialTheme.typography.bodyMedium,
-                            modifier = Modifier.weight(1f),
-                        )
-                        OutlinedButton(onClick = { resolviendoFolio = c.referenceCC }) {
-                            Text(if (c.porTerminar) "Terminar" else "Resolver con gerente")
-                        }
-                    }
-                }
-                // Codex código r2 H6 y r3 #8: ninguna duda se queda fuera por el tope de la página (del SERVIDOR o de esta PC).
-                if (estado.hayMasDudas) {
-                    OutlinedButton(onClick = onVerMasDudas, modifier = Modifier.fillMaxWidth()) {
-                        Text("Ver más (${(estado.enEsperaTotal - estado.enEspera.size).coerceAtLeast(1)})")
-                    }
-                }
-            }
-
             // C7 (R5#9, R3#11): lo que la máquina les debe a clientes, con su comprobante (mismo folio) para reimprimir.
             if (estado.comprobantes.isNotEmpty()) {
                 Text("Lo que la máquina les debe a clientes", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
@@ -232,23 +187,7 @@ internal fun ContenidoDeLaMaquina(
             }
         }
     }
-    folioAbierto?.let { folio ->
-        DialogoDeResolver(estado, folio, onResolver, onCerrar = { resolviendoFolio = null; onResolverCerrado() })
-    }
 }
-
-@Composable
-private fun DialogoDeResolver(
-    estado: EstadoDeLaMaquina,
-    folio: String,
-    onResolver: (String, com.avoqado.pos.maquina.ResolucionDelGerente) -> Unit,
-    onCerrar: () -> Unit,
-) = ResolverAMano(
-    estado.puedeResolver, estado.resolviendo, estado.avisoDeResolver, estado.enEspera.firstOrNull { it.referenceCC == folio }?.creadoEn,
-    onResolver = { onResolver(folio, it) }, onCerrar = onCerrar,
-    // Codex código r2 H7: la evidencia y la versión de la lista; un 409 la reemplaza por la del SERVIDOR.
-    duda = estado.enEspera.firstOrNull { it.referenceCC == folio },
-)
 
 @Composable
 private fun Nota(texto: String, error: Boolean = false) {

@@ -13,7 +13,6 @@ import com.avoqado.pos.maquina.CierresDeLaMaquinaApi
 import com.avoqado.pos.maquina.CobroEnMaquinaSobreSqlite
 import com.avoqado.pos.maquina.Desenlace
 import com.avoqado.pos.maquina.EstadoDelCobro
-import com.avoqado.pos.maquina.ResolucionDelGerente
 import com.avoqado.pos.maquina.EstadoDelIntento
 import com.avoqado.pos.maquina.MaquinaDeEfectivo
 import com.avoqado.pos.maquina.MaquinaDeEfectivoPrefs
@@ -24,6 +23,7 @@ import com.avoqado.pos.maquina.TicketDelCobro
 import com.avoqado.pos.maquina.TEXTO_CON_PREMIO
 import com.avoqado.pos.maquina.TEXTO_SOLO_VENTA_COMPLETA
 import com.avoqado.pos.maquina.TurnoDelNegocio
+import com.avoqado.pos.maquina.resolverConElEco
 import com.avoqado.pos.payment.data.CashPaymentRepository
 import com.avoqado.pos.payment.data.OrderRepository
 import com.avoqado.pos.payment.data.PaymentSyncService
@@ -95,7 +95,7 @@ class PaymentFlowViewModelMaquinaTest {
     private val areaTicketRepository = mockk<AreaTicketRepository>(relaxed = true)
 
     private val canal = MaquinaDeEfectivoTest.CanalFalso()
-    /** Codex r1 #17: la comanda real, espiada para ver con qué folio sale. */
+    /** La comanda real, espiada: la venta de la máquina NO la manda en la 1a (recorte R3). */
     private val comandas by lazy {
         io.mockk.spyk(
             ComandaDispatcher(
@@ -144,7 +144,6 @@ class PaymentFlowViewModelMaquinaTest {
         val maquina = MaquinaDeEfectivo(
             prefs, boveda, dao, api, mockk<SubidaDeLaMaquina>(relaxed = true) { every { aviso } returns kotlinx.coroutines.flow.MutableStateFlow(null) }, turno, RoleManager(secureStorage), printerService,
             secureStorage, canal, backgroundScope, { testScheduler.currentTime }, Random(7), monotonico = { testScheduler.currentTime },
-            comandaDispatcher = comandas,
         )
         return PaymentFlowViewModel(
             orderRepository = orderRepository,
@@ -180,6 +179,20 @@ class PaymentFlowViewModelMaquinaTest {
         JSONObject().put("success", true).put("ack", "TERMINADO").put("deviceId", estaPc).put("referenceCC", ref).put("outcome", outcome)
             .put("resolvedBy", "GERENTE").put("dueCents", due).put("saleCents", due).put("tipCents", 0)
             .put("creditCents", credit).put("changeDispensedCents", change).put("owedCents", 0).apply(extra).toString()
+
+    /**
+     * Recorte R2: lo que hace la subida. La duda llega al SERVIDOR (RECIBIDO, con la evidencia de la fila), el gerente la resuelve en el
+     * panel y la consulta trae cómo terminó.
+     */
+    private suspend fun elPanelResuelve(ref: String, eco: String): Boolean {
+        val duda = dao.fila(ref)!!
+        dao.marcarDudaAbierta(ref, 1, duda.mensajesCrudos, duda.creditCents)
+        return dao.resolverConElEco(dao.fila(ref)!!, JSONObject(eco), eco)
+    }
+
+    private fun ningunaComanda() = io.mockk.coVerify(exactly = 0) {
+        comandas.dispatch(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any())
+    }
 
     /** Abre el cobro y lo manda a la máquina; devuelve el folio. */
     private fun TestScope.mandarALaMaquina(vm: PaymentFlowViewModel, cart: CartState = CartState(items = listOf(cafe))): String {
@@ -362,7 +375,7 @@ class PaymentFlowViewModelMaquinaTest {
     }
 
     @Test
-    fun `P1 Codex r2 H5 y r3 #6 el PAGADO de A que llega con B en pantalla no cobra B, y A saca su comanda y su papel de su fila`() = runTest {
+    fun `P1 Codex r2 H5 el PAGADO de A que llega con B en pantalla no cobra B, y el papel de A sale de su fila sin comanda`() = runTest {
         coEvery { printerService.imprimirOriginal(any()) } returns PrinterService.PrintOutcome.Printed(1)
         val vm = vm()
         val refA = mandarALaMaquina(vm)
@@ -376,18 +389,12 @@ class PaymentFlowViewModelMaquinaTest {
         assertEquals(EstadoDelIntento.PAGADO, dao.fila(refA)!!.estado)
         val b = vm.maquina!!.vista.value!!
         assertNull(b.cobro)
-        // Codex código r3 #6: la comanda de A sale de SU fila (sus partidas, no las de B), una vez; y su papel, de la fila, por el reclamo.
-        coVerify(exactly = 1) {
-            comandas.dispatch(
-                "venue-1", match { l -> l.map { it.productName } == listOf("Café") }, refA.takeLast(4), any(), any(), any(), any(), null, false,
-                "sale:maquina-$refA", any(), any(), any(), any(), any(), any(), any(), any(), any(),
-            )
-        }
+        // Su papel sale de SU fila, por el reclamo, una vez. Sin comanda a cocina en la 1a (recorte R3).
         coVerify(exactly = 1) { printerService.imprimirOriginal(match { it.orderNumber == refA }) }
         assertEquals(TicketDelCobro.IMPRESO, dao.fila(refA)!!.ticketImpreso)
-        assertNull("la comanda ya no se puede volver a despachar", dao.fila(refA)!!.comandaJson)
         canal.llega(status(refA, 18_000, credit = 20_000, change = 2_000, cobrando = false, estado = "Pago Completado")); runCurrent()
-        coVerify(exactly = 1) { comandas.dispatch(any(), any(), any(), any(), any(), any(), any(), any(), any(), "sale:maquina-$refA", any(), any(), any(), any(), any(), any(), any(), any(), any()) }
+        coVerify(exactly = 1) { printerService.imprimirOriginal(any()) }
+        ningunaComanda()
     }
 
     @Test
@@ -410,10 +417,9 @@ class PaymentFlowViewModelMaquinaTest {
     }
 
     @Test
-    fun `P1 Codex r1 #7 tras reiniciar, la pantalla de la maquina recupera la duda de esta venta y el gerente la resuelve`() = runTest {
+    fun `P1 recorte R2 tras reiniciar, la pantalla recupera la duda de esta venta y cuando el panel dice PAGADO la venta queda cobrada`() = runTest {
+        coEvery { printerService.imprimirOriginal(any()) } returns PrinterService.PrintOutcome.Printed(1)
         val vm = vm()
-        every { secureStorage.venuePermissions } returns listOf("payments:create", "cash-machine:resolve")
-        coEvery { api.resolverDuda("venue-1", "AQ000000000007", any()) } returns RespuestaDelServidor(200, ecoDelGerente("AQ000000000007"))
         val cart = CartState(items = listOf(cafe))
         // Lo que dejó el proceso anterior: la venta quedó «Esperando a la máquina» y la app se cerró.
         dao.insertar(
@@ -426,51 +432,46 @@ class PaymentFlowViewModelMaquinaTest {
         runCurrent()
 
         assertEquals(EstadoDelCobro.Esperando("AQ000000000007", 18_000), vm.maquina!!.vista.value!!.cobro)
-        vm.maquina!!.resolver(ResolucionDelGerente(Desenlace.PAGADO, 20_000, 2_000, null, null, "Ticket 0042"))
+
+        elPanelResuelve("AQ000000000007", ecoDelGerente("AQ000000000007"))
         runCurrent()
+
         assertEquals(18_000 to 2_000, (vm.state.value as PaymentFlowState.Success).let { it.totalAmount to it.changeAmount })
+        coVerify(exactly = 1) { printerService.imprimirOriginal(match { it.orderNumber == "AQ000000000007" }) }
+        ningunaComanda()
     }
 
     @Test
-    fun `Codex r1 #7 las otras dudas de esta PC se ven en Cobrar y resolverlas no cobra la venta en pantalla`() = runTest {
+    fun `R4-4 y recorte R2 la caja dice que el panel lo resuelve, y cuando el panel dice PAGADO la venta queda cobrada`() = runTest {
         val vm = vm()
-        every { secureStorage.venuePermissions } returns listOf("payments:create", "cash-machine:resolve")
-        coEvery { api.resolverDuda("venue-1", "AQ000000000008", any()) } returns
-            RespuestaDelServidor(200, ecoDelGerente("AQ000000000008", credit = 5_000, change = 0, due = 5_000))
-        dao.insertar(
-            com.avoqado.pos.maquina.CobroEnMaquinaEntity(
-                "AQ000000000008", "venue-1", "otra-venta", "{}", 5_000, 0, 5_000, null, null, 1, EstadoDelIntento.ESPERANDO,
-            ),
-        )
-        vm.startPaymentFlow(CartState(items = listOf(cafe)))
-        runCurrent()
-
-        assertEquals(listOf("AQ000000000008"), vm.maquina!!.vista.value!!.enEspera.map { it.referenceCC })
-        assertTrue(vm.maquina!!.resolverOtra("AQ000000000008", ResolucionDelGerente(Desenlace.PAGADO, 5_000, 0, null, null, "x"))
-            is com.avoqado.pos.maquina.ResultadoDeResolver.Resuelto)
-        runCurrent()
-        assertTrue("la venta en pantalla sigue sin cobrar", vm.state.value is PaymentFlowState.SelectingPaymentMethod)
-    }
-
-    @Test
-    fun `R4-4 el gerente resuelve con su sesion que la maquina cobro y la venta queda cobrada`() = runTest {
-        val vm = vm()
-        every { secureStorage.venuePermissions } returns listOf("payments:create", "cash-machine:resolve")
         val ref = mandarALaMaquina(vm)
-        coEvery { api.resolverDuda("venue-1", ref, any()) } returns RespuestaDelServidor(200, ecoDelGerente(ref))
         advanceTimeBy(3_001)
         runCurrent()
         assertTrue(vm.maquina!!.vista.value!!.cobro is EstadoDelCobro.Esperando)
 
-        vm.maquina!!.resolver(ResolucionDelGerente(Desenlace.PAGADO, 20_000, 2_000, null, null, "Ticket 0042"))
+        elPanelResuelve(ref, ecoDelGerente(ref))
         runCurrent()
 
         val exito = vm.state.value as PaymentFlowState.Success
         assertEquals(18_000 to 2_000, exito.totalAmount to exito.changeAmount)
-        // Codex código r3 #6: un gerente en ESTA PC confirmó que la máquina cobró: la comanda sale de la fila, una vez.
-        coVerify(exactly = 1) {
-            comandas.dispatch(any(), any(), any(), any(), any(), any(), any(), any(), false, "sale:maquina-$ref", any(), any(), any(), any(), any(), any(), any(), any(), any())
-        }
+    }
+
+    @Test
+    fun `recorte R2 cuando el panel dice CANCELADO la pantalla lo dice y con Listo la tarjeta vuelve`() = runTest {
+        val vm = vm()
+        val ref = mandarALaMaquina(vm)
+        advanceTimeBy(3_001)
+        runCurrent()
+
+        elPanelResuelve(ref, ecoDelGerente(ref, outcome = "CANCELADO", credit = 0, change = 0))
+        runCurrent()
+
+        assertEquals(Desenlace.CANCELADO, vm.maquina!!.vista.value!!.resuelto)
+        assertNull("se ve lo que decidió el panel, no la duda", vm.maquina!!.vista.value!!.cobro)
+        assertTrue("CANCELADO no cobra la venta", vm.state.value is PaymentFlowState.SelectingPaymentMethod)
+        vm.maquina!!.listo(); runCurrent()
+        vm.selectPaymentMethod(PaymentMethod.CARD); runCurrent()
+        assertTrue(vm.state.value is PaymentFlowState.SelectingTerminal)
     }
 
     @Test
@@ -722,23 +723,21 @@ class PaymentFlowViewModelMaquinaTest {
     }
 
     @Test
-    fun `P1 Codex r1 #11 un PAGADO del gerente que quedo como incidencia no cobra la venta ni imprime su ticket`() = runTest {
+    fun `P1 Codex r1 #11 un PAGADO del panel que quedo como incidencia no cobra la venta ni imprime su ticket`() = runTest {
         val impresos = mutableListOf<ReceiptData>()
         coEvery { printerService.imprimirOriginal(capture(impresos)) } returns PrinterService.PrintOutcome.Printed(1)
         val vm = vm()
-        every { secureStorage.venuePermissions } returns listOf("payments:create", "cash-machine:resolve")
         val ref = mandarALaMaquina(vm)
-        coEvery { api.resolverDuda("venue-1", ref, any()) } returns RespuestaDelServidor(
-            202,
+        advanceTimeBy(3_001)
+        runCurrent()
+
+        elPanelResuelve(
+            ref,
             ecoDelGerente(ref, change = 0) {
                 put("incident", "NO_SE_PUDO_REGISTRAR").put("incidentId", "cinc000000000000000000006").put("motivo", "VENTA_RECHAZADA")
                     .put("owedCents", 2_000)
             },
         )
-        advanceTimeBy(3_001)
-        runCurrent()
-
-        vm.maquina!!.resolver(ResolucionDelGerente(Desenlace.PAGADO, 20_000, 0, null, null, "Ticket 0042"))
         runCurrent()
 
         assertTrue("no hay venta", vm.state.value is PaymentFlowState.SelectingPaymentMethod)
@@ -768,19 +767,15 @@ class PaymentFlowViewModelMaquinaTest {
     }
 
     @Test
-    fun `P1 Codex r1 #17 la comanda de la venta de la maquina lleva el folio de su orden para la pantalla de cocina`() = runTest {
+    fun `P1 recorte R3 la venta de la maquina no manda comanda a cocina`() = runTest {
         coEvery { printerService.imprimirOriginal(any()) } returns PrinterService.PrintOutcome.Printed(1)
         val vm = vm()
 
-        val ref = pagar(vm)
+        pagar(vm)
         runCurrent()
 
-        coVerify {
-            comandas.dispatch(
-                any(), any(), any(), any(), any(), any(), any(), any(), false, "sale:maquina-$ref",
-                any(), any(), any(), any(), any(), any(), any(), any(), any(),
-            )
-        }
+        assertTrue(vm.state.value is PaymentFlowState.Success)
+        ningunaComanda()
     }
 
     @Test

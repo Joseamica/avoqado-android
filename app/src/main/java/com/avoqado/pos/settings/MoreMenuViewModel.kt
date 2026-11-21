@@ -186,10 +186,6 @@ class MoreMenuViewModel @Inject constructor(
     val puedeConfigurarMaquina: Boolean
         get() = roleManager.canConfigureCashMachine
 
-    /** Codex código r3 #7: con `cash-machine:resolve` también se entra (a la bandeja); configurar sigue pidiendo su permiso dentro. */
-    val puedeResolverMaquina: Boolean
-        get() = roleManager.canResolveCashMachine
-
     /**
      * Effective reservations availability: local toggle AND plan gate, so a
      * stale local toggle can't surface reservation entries (waitlist, mode
