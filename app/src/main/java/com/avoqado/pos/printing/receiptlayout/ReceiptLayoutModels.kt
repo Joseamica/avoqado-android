@@ -123,6 +123,8 @@ data class ReceiptCashMachine(
     val owedCents: Long? = null,
     val priceToConfirm: Boolean = false,
     val title: String? = null,
+    /** Decisión C (Codex código POS r6): lo que dijo la máquina no cuadra (con el gerente o consigo misma): ni deuda ni cambio en papel. */
+    val revisarEnElPanel: Boolean = false,
 )
 
 @Serializable
@@ -229,6 +231,7 @@ object ReceiptLabels {
     const val PRECIO_POR_CONFIRMAR = "Precio por confirmar"
     const val FOLIO = "Folio:"
     const val COMPROBANTE_DE_LA_MAQUINA = "COMPROBANTE DE LA MÁQUINA"
+    const val REVISAR_EN_EL_PANEL = "Revisar en el panel"
     const val ENTREGA_POR_AREA = "ENTREGA POR ÁREA"
     const val PRESENTA_COMPROBANTE = "Presenta este comprobante en el área"
     const val FISCAL_NOTICE = "Este comprobante no es un CFDI"

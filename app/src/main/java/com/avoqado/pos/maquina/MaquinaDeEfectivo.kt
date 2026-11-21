@@ -35,10 +35,6 @@ const val TEXTO_CON_DESCUENTO = "Este carrito tiene descuento: cóbralo con tarj
 const val TEXTO_CON_PREMIO = "Este carrito tiene un premio de lealtad: cóbralo con tarjeta o en caja"
 const val TEXTO_PRODUCTO_NO_DISPONIBLE = "Un producto de este carrito ya no está disponible: quítalo o cóbralo con tarjeta"
 const val TEXTO_NO_COBRABLE = "Este carrito no se puede cobrar en la máquina: cóbralo con tarjeta"
-/** Codex servidor r7 #1: la reserva de este carrito ya se cobró (o tiene un abono) en otra caja. */
-const val TEXTO_YA_PAGADA = "Esta venta ya se cobró en otra caja: no la cobres otra vez"
-/** Codex servidor r7 #1: la reserva ya tiene su cuenta abierta (recepción registró la llegada). */
-const val TEXTO_RESERVA_CON_CUENTA = "Esta reserva ya tiene su cuenta abierta: cóbrala desde esa cuenta"
 /** Codex servidor r7 #2: el carrito pasa del tope que la máquina puede subir. */
 const val TEXTO_CARRITO_MUY_GRANDE = "Este carrito es demasiado grande para la máquina: divídelo o cóbralo con tarjeta"
 const val TEXTO_POCO_CAMBIO = "La máquina tiene poco cambio: paga con el monto exacto o con tarjeta"
@@ -55,8 +51,15 @@ const val TEXTO_AYUDA = "¿Necesitas ayuda? Pídela al personal"
 const val TEXTO_COTIZACION_VENCIDA = "No se pudo confirmar el precio a tiempo: inténtalo otra vez"
 const val TEXTO_COBRO_ABANDONADO = "Se salió de este cobro antes de mandarlo a la máquina: no se cobró nada"
 /** Codex código POS r5 #3: lo que dijo la máquina contradice la resolución del gerente: la deuda la decide el panel. */
-const val TEXTO_REVISAR_EN_EL_PANEL = "Revisar en el panel"
-/** Codex código POS r5 #2: la tarjeta de ESTA venta (por su llave, la que sobrevive a «Restaurar») sigue sin confirmar. */
+const val TEXTO_REVISAR_EN_EL_PANEL = com.avoqado.pos.printing.receiptlayout.ReceiptLabels.REVISAR_EN_EL_PANEL
+/** Decisión A (Codex código POS r5 #2 y r6): un carrito traído con «Restaurar» nunca va a la máquina. */
+const val TEXTO_VENTA_RESTAURADA = "Esta venta se restauró: cóbrala con tarjeta o empieza un carrito nuevo"
+/**
+ * Decisión B (Codex código POS r6 y el coordinador, 21-nov): un carrito ligado a una reserva o a una clase NUNCA se cobra en la máquina, con o
+ * sin internet: recepción puede abrir y cobrar la misma reserva mientras la máquina recibe el dinero.
+ */
+const val TEXTO_RESERVA_EN_CAJA = "Las reservas se cobran en caja o con tarjeta"
+/** Codex código POS r5 #2: la tarjeta de ESTA venta (por su llave) sigue sin confirmar. */
 const val TEXTO_TARJETA_SIN_CONFIRMAR = "Hay un cobro con tarjeta sin confirmar para esta venta"
 
 /** Codex código r1 #12: «Hay N tickets sin imprimir». */
@@ -92,12 +95,18 @@ fun filaDeLaMaquina(
     ventaNueva: Boolean,
     ventaEnDuda: Boolean,
     cobroVivo: Boolean,
-    /** Codex código POS r5 #2: un cobro con tarjeta de ESTA venta sin confirmar (por su llave, también tras «Restaurar»). */
+    /** Codex código POS r5 #2: un cobro con tarjeta de ESTA venta (su llave en memoria) sin confirmar. */
     tarjetaSinConfirmar: Boolean = false,
+    /** Decisión A (Codex código POS r5 #2 y r6): la trajo «Restaurar» (o volvió ligada a su copia guardada). */
+    restaurada: Boolean = false,
+    /** Decisión B (Codex código POS r6): va ligada a una reserva o a una clase. */
+    conReserva: Boolean = false,
 ): FilaDeLaMaquina {
     val motivo = when {
         ventaEnDuda -> TEXTO_VENTA_EN_DUDA
+        restaurada -> TEXTO_VENTA_RESTAURADA
         tarjetaSinConfirmar -> TEXTO_TARJETA_SIN_CONFIRMAR
+        conReserva -> TEXTO_RESERVA_EN_CAJA
         !ventaNueva -> TEXTO_SOLO_VENTA_COMPLETA
         ahora.conexion != Conexion.CONECTADA -> TEXTO_NO_RESPONDE
         ahora.ocupada || cobroVivo -> TEXTO_OCUPADA
@@ -118,6 +127,8 @@ fun filaDeLaMaquina(
  */
 fun motivoSinMaquinaDelPedido(pedido: JSONObject): String? {
     fun texto(o: JSONObject, llave: String) = !o.isNull(llave) && o.optString(llave).isNotBlank()
+    // Decisión B (Codex código POS r6): una reserva o una clase se cobra en caja o con tarjeta, con o sin red. Antes de cotizar.
+    if (texto(pedido, "reservationId")) return TEXTO_RESERVA_EN_CAJA
     if (texto(pedido, "stampRewardId")) return TEXTO_CON_PREMIO
     val items = pedido.optJSONArray("items")
     val renglonConDescuento = (0 until (items?.length() ?: 0)).any { i ->
@@ -137,8 +148,8 @@ fun textoDelMotivo(motivo: String?): String = when (motivo) {
     "DESCUENTO" -> TEXTO_CON_DESCUENTO
     "PREMIO_PENDIENTE" -> TEXTO_CON_PREMIO
     "PRODUCTO_NO_DISPONIBLE" -> TEXTO_PRODUCTO_NO_DISPONIBLE
-    "YA_PAGADA" -> TEXTO_YA_PAGADA
-    "RESERVA_CON_CUENTA" -> TEXTO_RESERVA_CON_CUENTA
+    // Decisión B (SERVIDOR 49703c93c, Codex servidor r8): reemplaza a YA_PAGADA y RESERVA_CON_CUENTA. La PC ya no cotiza reservas.
+    "RESERVA" -> TEXTO_RESERVA_EN_CAJA
     "CARRITO_MUY_GRANDE" -> TEXTO_CARRITO_MUY_GRANDE
     else -> TEXTO_NO_COBRABLE
 }
@@ -249,7 +260,9 @@ private fun comprobante(fila: CobroEnMaquinaEntity, negocio: String, titulo: Str
         venueName = negocio,
         date = Date(fila.cierreEn ?: fila.creadoEn),
         kind = com.avoqado.pos.printing.receiptlayout.KIND_COMPROBANTE_DE_LA_MAQUINA,
-        cashMachine = com.avoqado.pos.printing.receiptlayout.ReceiptCashMachine(fila.referenceCC, debe?.toLong(), title = titulo),
+        cashMachine = com.avoqado.pos.printing.receiptlayout.ReceiptCashMachine(
+            fila.referenceCC, debe?.toLong(), title = titulo, revisarEnElPanel = fila.porRevisarEnElPanel(),
+        ),
     )
 
 /**
@@ -263,12 +276,29 @@ fun papelDeLaFila(
     negocio: String,
     ticketDeVenta: com.avoqado.pos.printing.data.model.ReceiptData? = null,
 ): com.avoqado.pos.printing.data.model.ReceiptData? = when {
-    // Codex código POS r5 #3: la deuda se vuelve a decidir con la fila AL IMPRIMIR; el ticket de la pantalla no la impone.
-    fila.desenlace == Desenlace.PAGADO && fila.conflicto == null -> (ticketDeVenta ?: ticketDeLaFila(fila, negocio)).let { t ->
-        if (fila.porRevisarEnElPanel()) t.copy(cashMachine = t.cashMachine?.copy(owedCents = null)) else t
-    }
+    // Codex código POS r5 #3 y r6: la deuda, lo recibido y el cambio se vuelven a decidir con la fila AL IMPRIMIR; la pantalla no los impone.
+    fila.desenlace == Desenlace.PAGADO && fila.conflicto == null -> conLoFisico(fila, ticketDeVenta ?: ticketDeLaFila(fila, negocio))
     fila.desenlace == Desenlace.PAGADO -> comprobanteDeLaMaquina(fila, negocio) ?: comprobante(fila, negocio, "COMPROBANTE DE LA MÁQUINA", null)
     else -> comprobanteDeLaMaquina(fila, negocio)
+}
+
+/**
+ * Decisión C (Codex código POS r6): el ticket de venta de [fila], con «Recibido» y «Cambio» del cierre FÍSICO ([recibidoYCambioEnPapel]),
+ * nunca de lo que tecleó un gerente; sin ellos (cierres que no cuadran) no salen esos renglones. Si lo de la máquina contradice la
+ * resolución, ni «Te debemos»: «Revisar en el panel».
+ */
+private fun conLoFisico(
+    fila: CobroEnMaquinaEntity,
+    t: com.avoqado.pos.printing.data.model.ReceiptData,
+): com.avoqado.pos.printing.data.model.ReceiptData {
+    val enPapel = fila.recibidoYCambioEnPapel()
+    val maquina = t.cashMachine ?: com.avoqado.pos.printing.receiptlayout.ReceiptCashMachine(fila.referenceCC, priceToConfirm = fila.quoteId == null)
+    val revisar = fila.porRevisarEnElPanel()
+    return t.copy(
+        cashTendered = enPapel?.first,
+        changeAmount = enPapel?.second,
+        cashMachine = if (revisar) maquina.copy(owedCents = null, revisarEnElPanel = true) else maquina,
+    )
 }
 
 /** La venta que la caja manda a la máquina. Los importes son los LOCALES: sin red se cobran ésos (R4-2). */

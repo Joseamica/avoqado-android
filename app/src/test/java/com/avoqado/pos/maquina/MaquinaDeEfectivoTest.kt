@@ -265,12 +265,14 @@ class MaquinaDeEfectivoTest {
         assertTrue(canal.enviados.isEmpty())
     }
 
-    /** Codex servidor r7 #1 y #2: la reserva ya cobrada (o con su cuenta) en otra caja y el carrito demasiado grande se dicen y no se cobran. */
+    /** Codex servidor r7 #2 y r8: la reserva (cualquiera, RESERVA) y el carrito demasiado grande se dicen y no se cobran. */
     @Test
     fun `los motivos nuevos de la cotizacion se explican y no se cobra nada`() = runTest {
         val m = maquina()
         for ((motivo, texto) in listOf(
-            "YA_PAGADA" to TEXTO_YA_PAGADA, "RESERVA_CON_CUENTA" to TEXTO_RESERVA_CON_CUENTA, "CARRITO_MUY_GRANDE" to TEXTO_CARRITO_MUY_GRANDE,
+            "RESERVA" to TEXTO_RESERVA_EN_CAJA, "CARRITO_MUY_GRANDE" to TEXTO_CARRITO_MUY_GRANDE,
+            // Los de la r7 que el SERVIDOR ya no manda (49703c93c): si llegaran, no se cobra igual.
+            "YA_PAGADA" to TEXTO_NO_COBRABLE, "RESERVA_CON_CUENTA" to TEXTO_NO_COBRABLE,
         )) {
             coEvery { api.cotizar(any(), any()) } returns cotizacion(18_000, 0, quoteId = null, cobrable = false, motivo = motivo)
             assertEquals(InicioEnLaMaquina.NoSeCobra(texto), m.cobrar(venta()))
@@ -335,6 +337,27 @@ class MaquinaDeEfectivoTest {
 
         assertTrue(maquina().cobrar(venta()) is InicioEnLaMaquina.Iniciado)
         assertNull(dao.todas().single().quoteId)
+    }
+
+    /**
+     * Codex código POS r6 (nuevo, b) y la ronda siguiente: el carrito ligado a una reserva de $187.50. Sin internet el POS mandaba los $187.50 a
+     * la máquina aunque la reserva ya se hubiera cobrado en otra caja ($375 por la misma reserva); con internet, recepción puede abrir y cobrar
+     * la misma clase MIENTRAS la máquina recibe el dinero. Decisión B: una reserva nunca se cobra en la máquina, con o sin red: ni se cotiza,
+     * ni se guarda, ni se manda nada. Un carrito de catálogo sigue cobrándose sin red (prueba de arriba).
+     */
+    @Test
+    fun `P1 Codex POS r6 una reserva de 187_50 no se cobra en la maquina, con o sin internet`() = runTest {
+        val laReserva = venta(JSONObject(pedido.toString()).put("reservationId", "res-1").put("tip", 0), sale = 18_750, tip = 0)
+        val m = maquina()
+
+        coEvery { api.cotizar(any(), any()) } throws IOException("sin red")
+        assertEquals(InicioEnLaMaquina.NoSeCobra(TEXTO_RESERVA_EN_CAJA), m.cobrar(laReserva))
+        coEvery { api.cotizar(any(), any()) } returns cotizacion(18_750, 0)
+        assertEquals("con internet y una cotización que dice que sí, tampoco", InicioEnLaMaquina.NoSeCobra(TEXTO_RESERVA_EN_CAJA), m.cobrar(laReserva))
+
+        coVerify(exactly = 0) { api.cotizar(any(), any()) }
+        assertTrue("no quedó nada en disco ni en la máquina", dao.todas().isEmpty() && canal.enviados.isEmpty())
+        assertFalse("se soltó el apartado", m.apartada("venta-1"))
     }
 
     @Test
@@ -421,6 +444,18 @@ class MaquinaDeEfectivoTest {
             assertTrue("$barra deja seguir", fila.habilitada)
         }
         assertFalse(filaDeLaMaquina(bien.copy(ocupada = true), true, true, false, false).habilitada)
+    }
+
+    /** Decisiones A y B (Codex código POS r6): el carrito restaurado y el ligado a una reserva, en gris con su razón. */
+    @Test
+    fun `la fila de la maquina - restaurado y con reserva`() {
+        val bien = LaMaquinaAhora(Conexion.CONECTADA, ocupada = false, cambio = NivelDeCambio.SUFICIENTE, changeBar = "222222222000")
+        val restaurada = filaDeLaMaquina(bien, true, true, false, false, restaurada = true)
+        assertEquals(false to TEXTO_VENTA_RESTAURADA, restaurada.habilitada to restaurada.motivo)
+        val conReserva = filaDeLaMaquina(bien, true, true, false, false, conReserva = true)
+        assertEquals(false to TEXTO_RESERVA_EN_CAJA, conReserva.habilitada to conReserva.motivo)
+        assertEquals("la duda de la máquina se dice primero", TEXTO_VENTA_EN_DUDA,
+            filaDeLaMaquina(bien, true, true, ventaEnDuda = true, cobroVivo = false, restaurada = true).motivo)
     }
 
     @Test
@@ -537,8 +572,8 @@ class MaquinaDeEfectivoTest {
         assertEquals(2_000L, copias.first().cashMachine!!.owedCents)
     }
 
-    /** Una duda de $80 con $100 dentro que el panel resolvió PAGADO con $0 devueltos (le debe $20). */
-    private suspend fun resueltaConCambioEnCero(ref: String) {
+    /** Una duda de $80 con $100 dentro que el panel resolvió PAGADO con [cambio] devuelto según el gerente (le debe $20 − [cambio]). */
+    private suspend fun resueltaPorElGerente(ref: String, cambio: Int = 0) {
         dao.insertar(
             CobroEnMaquinaEntity(
                 ref, "venue-1", "venta-$ref", "{}", 8_000, 0, 8_000, null, null, 1, EstadoDelIntento.ESPERANDO,
@@ -547,8 +582,85 @@ class MaquinaDeEfectivoTest {
         )
         val eco = JSONObject().put("ack", "TERMINADO").put("deviceId", ESTA_PC).put("referenceCC", ref).put("outcome", "PAGADO")
             .put("resolvedBy", "GERENTE").put("dueCents", 8_000).put("saleCents", 8_000).put("tipCents", 0)
-            .put("creditCents", 10_000).put("changeDispensedCents", 0).put("owedCents", 2_000).put("excedenteCents", 0)
+            .put("creditCents", 10_000).put("changeDispensedCents", cambio).put("owedCents", 2_000 - cambio).put("excedenteCents", 0)
         assertTrue(dao.resolverConElEco(dao.fila(ref)!!, eco, eco.toString()))
+    }
+
+    /** El texto del papel por el MISMO intérprete que imprime (`ReceiptData` → mapper → intérprete), a 32 columnas. */
+    private fun textoDelPapel(r: com.avoqado.pos.printing.data.model.ReceiptData): String =
+        com.avoqado.pos.printing.receiptlayout.ReceiptLayoutInterpreter.interpret(
+            com.avoqado.pos.printing.receiptlayout.CanonicalLayout.BLOCKS,
+            com.avoqado.pos.printing.receiptlayout.ReceiptInputMapper.map(r, null, false, "America/Mexico_City", null),
+            32,
+        ).filterIsInstance<com.avoqado.pos.printing.receiptlayout.LogicalLine.Text>().joinToString("\n") { it.text }
+
+    /**
+     * Codex código POS r6 (r5 #3 sigue abierto, c): venta de $80 con $100 dentro; el panel la resolvió PAGADO con $0 devueltos (debe $20). La
+     * máquina manda el cierre que SÍ dio $20 de cambio y DESPUÉS otro cierre del mismo folio con total de $100 y $0 de cambio. La PC tomaba el
+     * último (coincide con la resolución) y volvía a autorizar un original por $20 que el cliente ya recibió. Decisión C: dos cierres físicos
+     * que no coinciden = ni comprobante, ni «Te debemos», ni renglón de cambio: «Revisar en el panel».
+     */
+    @Test
+    fun `P1 Codex POS r6 dos cierres fisicos del folio que no coinciden - ni comprobante ni cambio en papel, Revisar en el panel`() = runTest {
+        val ref = "AQ000000000080"
+        resueltaPorElGerente(ref)
+        assertTrue(dao.anotarMensaje(ref, 1, status(ref, 8_000, 10_000, 2_000, cobrando = false, estado = "Pago Completado"), 10_000, 8_000))
+        assertTrue(dao.anotarMensaje(ref, 1, status(ref, 10_000, 10_000, 0, cobrando = false, estado = "Pago Completado"), 10_000, 10_000))
+        val tickets = mutableListOf<com.avoqado.pos.printing.data.model.ReceiptData>()
+        coEvery { impresora.imprimirOriginal(capture(tickets)) } returns PrinterService.PrintOutcome.Printed(1)
+        val m = maquina()
+
+        assertEquals(listOf(ref to null), m.comprobantes().map { it.first.referenceCC to it.second })
+        assertNull("sin comprobante de $20", m.imprimirComprobante(ref))
+        assertEquals(1, m.imprimirTicketsPendientes())
+
+        val t = tickets.single()
+        assertNull("el ticket no dice «te debemos $20»", t.cashMachine!!.owedCents)
+        assertTrue(t.cashMachine!!.revisarEnElPanel)
+        assertNull("ni «Cambio»", t.changeAmount)
+        assertNull("ni «Recibido»: los cierres no coinciden en cuánto", t.cashTendered)
+        val papel = textoDelPapel(t)
+        assertFalse(papel, "Cambio:" in papel || "Te debemos" in papel)
+        assertTrue(papel, TEXTO_REVISAR_EN_EL_PANEL in papel)
+        coVerify(exactly = 0) { impresora.manualPrintReceipt(any()) }
+    }
+
+    /**
+     * Codex código POS r6 (nuevo, c): venta de $80 con $100 dentro; el gerente anotó $10 de cambio y el cierre físico del folio confirmó $20.
+     * El POS ya quitaba la deuda, pero el ticket decía «Recibido: $100.00» y «Cambio: $10.00» (lo del gerente), también recuperándolo de la
+     * fila. Decisión C: «Recibido» y «Cambio» salen del cierre FÍSICO —$100 y $20— por los dos caminos (el ticket que armó la caja con lo
+     * del gerente y el que se arma de la fila), y el papel dice «Revisar en el panel».
+     */
+    @Test
+    fun `P1 Codex POS r6 el ticket dice el cambio que dio la maquina, no el que tecleo el gerente`() = runTest {
+        val deLaFila = "AQ000000000090"
+        val deLaCaja = "AQ000000000091"
+        listOf(deLaFila, deLaCaja).forEach { ref ->
+            resueltaPorElGerente(ref, cambio = 1_000)
+            assertTrue(dao.anotarMensaje(ref, 1, status(ref, 8_000, 10_000, 2_000, cobrando = false, estado = "Pago Completado"), 10_000, 8_000))
+        }
+        val tickets = mutableListOf<com.avoqado.pos.printing.data.model.ReceiptData>()
+        coEvery { impresora.imprimirOriginal(capture(tickets)) } returns PrinterService.PrintOutcome.Printed(1)
+        val m = maquina()
+        // Lo que arma la caja al cobrar la resolución del panel: los importes del gerente.
+        val ticketDeLaCaja = ticketDeLaFila(dao.fila(deLaCaja)!!, "La Galeterie").copy(
+            cashTendered = 10_000, changeAmount = 1_000,
+            cashMachine = com.avoqado.pos.printing.receiptlayout.ReceiptCashMachine(deLaCaja, owedCents = 1_000),
+        )
+
+        m.imprimirPapelDelFolio(deLaCaja, ticketDeLaCaja)
+        m.imprimirPapelDelFolio(deLaFila)
+
+        assertEquals(listOf(deLaCaja, deLaFila), tickets.map { it.orderNumber })
+        tickets.forEach { t ->
+            assertEquals(t.orderNumber, 10_000 to 2_000, t.cashTendered to t.changeAmount)
+            assertNull(t.orderNumber, t.cashMachine!!.owedCents)
+            val papel = textoDelPapel(t)
+            assertTrue(papel, Regex("Recibido:\\s+\\$100\\.00").containsMatchIn(papel))
+            assertTrue(papel, Regex("Cambio:\\s+\\$20\\.00").containsMatchIn(papel))
+            assertFalse(papel, "\$10.00" in papel)
+            assertTrue(papel, TEXTO_REVISAR_EN_EL_PANEL in papel)
+        }
     }
 
     /**
@@ -558,8 +670,8 @@ class MaquinaDeEfectivoTest {
      */
     @Test
     fun `P1 Codex POS r5 #3 el cierre fisico que dio el cambio gana sobre la resolucion en cero - no hay deuda en papel, Revisar en el panel`() = runTest {
-        resueltaConCambioEnCero("AQ000000000080")
-        resueltaConCambioEnCero("AQ000000000081")   // la de control: no llegó nada más de la máquina
+        resueltaPorElGerente("AQ000000000080")
+        resueltaPorElGerente("AQ000000000081")   // la de control: no llegó nada más de la máquina
         assertTrue(dao.anotarMensaje("AQ000000000080", 1, status("AQ000000000080", 8_000, 10_000, 2_000, cobrando = false, estado = "Pago Completado"), 10_000, 8_000))
         val f = dao.fila("AQ000000000080")!!
         assertEquals(1, dao.marcarEvidenciaEntregada(f.referenceCC, f.mensajesCrudos, f.creditCents))

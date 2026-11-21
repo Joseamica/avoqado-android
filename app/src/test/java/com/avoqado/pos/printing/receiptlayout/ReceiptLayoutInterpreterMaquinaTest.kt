@@ -96,6 +96,24 @@ class ReceiptLayoutInterpreterMaquinaTest {
         assertFalse("el original no dice reimpresión", "Reimpresión" in t)
     }
 
+    /** Decisión C (Codex código POS r6): lo que dijo la máquina no cuadra: el papel lo dice, sin deuda ni cambio. */
+    @Test
+    fun `P1 Codex POS r6 Revisar en el panel sale en el ticket y en el comprobante, sin deuda ni cambio`() {
+        val revisar = ReceiptCashMachine(referenceCC = folio, revisarEnElPanel = true)
+        val t = texto(ticket(revisar).copy(cashTendered = null, changeAmount = null))
+        assertTrue(t, "Revisar en el panel" in t)
+        assertFalse(t, "Cambio:" in t || "Recibido:" in t || "Te debemos" in t)
+
+        val comprobante = ReceiptData(
+            orderNumber = folio, orderType = "", items = emptyList(), subtotal = 0, taxAmount = 0, total = 0, venueName = "La Galeterie",
+            date = Date(0), kind = KIND_COMPROBANTE_DE_LA_MAQUINA, cashMachine = revisar,
+        )
+        val c = texto(comprobante)
+        assertTrue(c, "Revisar en el panel" in c)
+        assertFalse(c, "Te debemos" in c)
+        assertFalse("sin la marca no sale", "Revisar en el panel" in texto(ticket(ReceiptCashMachine(referenceCC = folio))))
+    }
+
     @Test
     fun `P1 Codex r4 #10 el comprobante reimpreso dice REIMPRESION, como cualquier ticket`() {
         val copia = ReceiptData(

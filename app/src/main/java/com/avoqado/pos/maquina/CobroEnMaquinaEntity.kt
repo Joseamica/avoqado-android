@@ -410,23 +410,45 @@ fun CobroEnMaquinaEntity.bloqueaLaVenta(): Boolean = when (estado) {
 private fun CobroEnMaquinaEntity.creditoDeLaResolucion(): Int =
     respuestaServidor?.let { runCatching { (JSONObject(it).opt("creditCents") as? Number)?.toInt() }.getOrNull() } ?: 0
 
-/** Codex código POS r5 #3: el último cierre FÍSICO de este folio que quedó en su diario (un `status` con su folio que cierra), o null. */
-internal fun CobroEnMaquinaEntity.cierreFisico(): MensajeDeLaMaquina.Status? =
+/**
+ * Codex código POS r5 #3 y r6 (decisión C): los cierres FÍSICOS de este folio en su diario (un `status` con su folio que cierra), distintos por
+ * desenlace, total, crédito y cambio: el mismo `status` repetido con otra barra de cambio cuenta una vez.
+ */
+internal fun CobroEnMaquinaEntity.cierresFisicos(): List<MensajeDeLaMaquina.Status> =
     mensajesCrudos.lineSequence().mapNotNull { leerMensaje(it.substringAfter(' ')) as? MensajeDeLaMaquina.Status }
-        .lastOrNull { it.referenceCC == referenceCC && it.cierre() != null }
+        .filter { it.referenceCC == referenceCC && it.cierre() != null }
+        .distinctBy { listOf(it.cierre(), it.dueCents, it.creditCents, it.changeDispensedCents) }
+        .toList()
 
 /**
- * Codex código POS r5 #3: lo que la máquina dijo de este folio CONTRADICE la resolución del gerente —más dinero que el resuelto, o un
- * cierre físico del mismo folio con otro desenlace, otro crédito u otro cambio (el cliente pudo recibir ya su cambio)—. La deuda no se
- * adivina: ni comprobante ni «te debemos» en papel hasta que lo revise el panel («Revisar en el panel»).
+ * Codex código POS r5 #3 y r6: lo que la máquina dijo de este folio no cuadra —dos cierres físicos distintos del mismo folio (ninguno manda),
+ * o, en una resolución del gerente, más dinero que el resuelto o un cierre con otro desenlace, otro crédito u otro cambio (el cliente pudo
+ * recibir ya su cambio)—. La deuda no se adivina: ni comprobante ni «te debemos» en papel hasta que lo revise el panel.
  */
 fun CobroEnMaquinaEntity.porRevisarEnElPanel(): Boolean {
+    val cierres = cierresFisicos()
+    if (cierres.size > 1) return true
     if (estado != EstadoDelIntento.RESUELTO) return false
     val credito = creditoDeLaResolucion()
     if (creditCents > credito) return true
-    val c = cierreFisico() ?: return false
+    val c = cierres.singleOrNull() ?: return false
     val mismoDesenlace = if (c.cierre() == Cierre.PAGADO) desenlace == Desenlace.PAGADO else desenlace != Desenlace.PAGADO
     return !mismoDesenlace || c.creditCents != credito || c.changeDispensedCents != changeDispensedCents
+}
+
+/**
+ * Decisión C (Codex código POS r6): «Recibido» y «Cambio» del papel de un PAGADO. Con UN cierre físico de pago, lo que dijo la máquina (nunca
+ * lo que tecleó un gerente). Sin cierre físico y sin nada que contradiga la fila, lo de la fila. Si no (cierres que no cuadran, o un cierre
+ * que no es de pago), null: esos renglones no salen.
+ */
+internal fun CobroEnMaquinaEntity.recibidoYCambioEnPapel(): Pair<Int, Int>? {
+    val cierres = cierresFisicos()
+    val c = cierres.singleOrNull()
+    return when {
+        c != null && c.cierre() == Cierre.PAGADO -> c.creditCents to c.changeDispensedCents
+        cierres.isEmpty() && !porRevisarEnElPanel() -> creditCents to changeDispensedCents
+        else -> null
+    }
 }
 
 /**

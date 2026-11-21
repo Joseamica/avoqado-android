@@ -205,22 +205,26 @@ class PaymentFlowViewModelMaquinaTest {
     }
 
     /**
-     * Codex código POS r5 #2: la cajera manda $80 a la TPV desde un carrito guardado; Windows se cierra antes del resultado. Al volver,
-     * acepta «Restaurar de todos modos». La copia trae la MISMA llave de la máquina pero ya no la orden de la tarjeta: la tarjeta sin
-     * confirmar se busca por esa llave y la máquina no admite los $80 (no $160 por una compra de $80).
+     * Codex código POS r5 #2 (sigue abierto) y r6 (nuevo, b) — decisión A: un carrito traído con «Restaurar» nunca va a la máquina. Los dos
+     * casos de Codex, de $80: (1) la tarjeta la mandó la versión ANTERIOR (su pendiente no trae la llave de la venta) y tras actualizar se
+     * acepta «Restaurar de todos modos»; (2) la tarjeta se APROBÓ con la versión nueva, la PC se cerró antes de retirar la copia y se restaura
+     * 11 minutos después (el aviso de aprobación ya venció; la marca permanente sólo dice la orden). En los dos la lista de tarjetas no dice
+     * nada de esta copia (eso devuelve el servicio real) y la máquina habría cobrado otros $80. Ahora no: la regla es «restaurado».
      */
     @Test
-    fun `P1 Codex POS r5 #2 tarjeta sin confirmar y carrito restaurado - la maquina no cobra los 80 pesos`() = runTest {
+    fun `P1 Codex POS r5 #2 y r6 un carrito restaurado no se cobra en la maquina, diga lo que diga la lista de tarjetas`() = runTest {
         val pan = CartItem(id = "pan", type = CartItemType.ProductItem("prod-pan"), name = "Pan", unitPrice = 8_000)
         val restaurado = CartState(items = listOf(pan), carritoGuardadoId = "guardado-80", vinoDeCarritoGuardado = true, llaveDeLaMaquina = "carrito:guardado-80")
-        every { terminalPaymentService.pendienteDeLaLlave("carrito:guardado-80") } returns "req-80"
+        every { terminalPaymentService.pendienteDeLaLlave(any()) } returns null
+        every { terminalPaymentService.pendienteDeLaVenta(any()) } returns null
         val vm = vm()
 
         vm.startPaymentFlow(restaurado)
+        assertFalse("se lee al tocar, aunque la vista vaya un cuadro atrás", vm.maquina!!.apartar())
         runCurrent()
         val fila = vm.maquina!!.vista.value!!.fila
         assertFalse(fila.habilitada)
-        assertEquals(com.avoqado.pos.maquina.TEXTO_TARJETA_SIN_CONFIRMAR, fila.motivo)
+        assertEquals(com.avoqado.pos.maquina.TEXTO_VENTA_RESTAURADA, fila.motivo)
         vm.cobrarConMaquina()
         runCurrent()
 
@@ -228,11 +232,33 @@ class PaymentFlowViewModelMaquinaTest {
         assertTrue("nada quedó en disco", dao.todas().isEmpty())
         coVerify(exactly = 0) { api.cotizar(any(), any()) }
 
-        // El cajero declara «no se cobró» (la tarjeta sale de la lista): la siguiente apertura ya puede cobrar en la máquina.
-        every { terminalPaymentService.pendienteDeLaLlave("carrito:guardado-80") } returns null
-        vm.startPaymentFlow(restaurado)
+        // Un carrito NUEVO con lo mismo sí se cobra en la máquina: la regla es «restaurado», no el producto.
+        vm.startPaymentFlow(CartState(items = listOf(pan)))
         runCurrent()
         assertTrue(vm.maquina!!.vista.value!!.fila.habilitada)
+    }
+
+    /**
+     * Codex código POS r6 (nuevo, b) — decisión B: el carrito ligado a una reserva (o a una clase) deja la fila de la máquina en gris con su
+     * razón, con internet y sin él; tocarla no cotiza ni manda nada. Uno de catálogo sigue como hoy.
+     */
+    @Test
+    fun `P1 Codex POS r6 la reserva deja la fila de la maquina en gris con su razon`() = runTest {
+        val vm = vm()
+
+        vm.startPaymentFlow(CartState(items = listOf(cafe), reservationId = "res-1"))
+        runCurrent()
+        val fila = vm.maquina!!.vista.value!!.fila
+        assertFalse(fila.habilitada)
+        assertEquals(com.avoqado.pos.maquina.TEXTO_RESERVA_EN_CAJA, fila.motivo)
+        vm.cobrarConMaquina()
+        runCurrent()
+        assertNull(canal.paycash())
+        coVerify(exactly = 0) { api.cotizar(any(), any()) }
+
+        vm.startPaymentFlow(CartState(items = listOf(cafe)))
+        runCurrent()
+        assertTrue("el carrito de catálogo sí", vm.maquina!!.vista.value!!.fila.habilitada)
     }
 
     @Test

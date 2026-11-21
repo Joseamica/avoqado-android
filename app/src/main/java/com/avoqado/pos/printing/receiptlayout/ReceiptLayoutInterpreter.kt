@@ -37,6 +37,7 @@ object ReceiptLayoutInterpreter {
             (input.sale.reprint?.let { row(L.REIMPRESION, ReceiptFormat.dateTime(it.printedAt, input.sale.timezone)) } ?: emptyList()) +
             (m.owedCents?.takeIf { it > 0L }?.let { T.wrap("Te debemos ${ReceiptFormat.money(it)}: pasa a caja a cobrarlo", width).map { l -> text(l, bold = true) } }
                 ?: emptyList()) +
+            revisarEnElPanel(m, width) +
             T.wrap("${L.COBRADO_EN_LA_MAQUINA} ${T.force(m.referenceCC)}", width).map { text(it) }
     }
 
@@ -47,7 +48,12 @@ object ReceiptLayoutInterpreter {
             (m.owedCents?.takeIf { it > 0L }?.let { debe ->
                 T.wrap("Te debemos ${ReceiptFormat.money(debe)} de cambio: pasa a caja a cobrarlo · Folio ${T.force(m.referenceCC)}", width)
                     .map { text(it, bold = true) }
-            } ?: emptyList())
+            } ?: emptyList()) +
+            revisarEnElPanel(m, width)
+
+    /** Decisión C (Codex código POS r6): lo que dijo la máquina no cuadra; ni deuda ni cambio en papel hasta que lo decida el panel. */
+    private fun revisarEnElPanel(m: ReceiptCashMachine, width: Int): List<LogicalLine> =
+        if (m.revisarEnElPanel) T.wrap(L.REVISAR_EN_EL_PANEL, width).map { text(it, bold = true) } else emptyList()
 
     private fun exchangeLines(input: ReceiptInput, width: Int): List<LogicalLine> {
         val e = requireNotNull(input.sale.exchange)

@@ -3023,12 +3023,18 @@ class PaymentFlowViewModel @Inject constructor(
             ventaNueva = createdOrderId == null && mesaDelCobro == null && esPagoCompleto() && sesionDelCobro == null &&
                 origenDelCobro == com.avoqado.pos.payment.domain.OrigenDelCobro.NORMAL && !cuentaDeTarjetas.value,
             tarjetaSinConfirmar = tarjetaSinConfirmar(cart),
+            // Decisión A (Codex código POS r5 #2 y r6): un carrito traído con «Restaurar» (o que volvió ligado a su copia) nunca va a la
+            // máquina: su tarjeta pudo salir con otra versión o aprobarse hace más de su ventana, y la lista ya no lo sabría.
+            restaurada = cart.vinoDeCarritoGuardado,
+            // Decisión B (Codex código POS r6): una reserva o una clase se cobra en caja o con tarjeta, con o sin red.
+            conReserva = !cart.reservationId.isNullOrBlank(),
         )
     }
 
     /**
-     * Codex código POS r5 #2: ¿esta venta tiene un cobro con tarjeta sin confirmar? Se busca por la llave que sobrevive a «Restaurar» la
-     * copia guardada (la misma con que la máquina la registra), no sólo por la orden, que no viaja con la copia. Se lee la lista VIVA.
+     * Codex código POS r5 #2: ¿esta venta tiene un cobro con tarjeta sin confirmar? Se busca por su llave (la misma con que la máquina la
+     * registra), no sólo por la orden: la caja puede volver a la venta en memoria sin su orden. Se lee la lista VIVA. Un carrito restaurado
+     * ya no llega a la máquina (decisión A).
      */
     private fun tarjetaSinConfirmar(cart: CartState): Boolean =
         // Una llave en blanco no es un pendiente (como en la rama de TARJETA): no hay a quién preguntarle por ella.

@@ -123,7 +123,7 @@ class TerminalPaymentService @Inject constructor(
         const val BANDEJA_FOLIO = "bandejaEsFolio"
         /** D14: el cobro con tarjeta salió de otra pantalla que cobra una cuenta que ya existía; igual deja su marca. */
         const val BANDEJA_FUERA = "bandejaFuera"
-        /** Codex código POS r5 #2 (máquina de efectivo): la identidad de la venta que sobrevive a «Restaurar» (`llaveParaLaMaquina`). */
+        /** Codex código POS r5 #2 (máquina de efectivo): la identidad de la venta (`llaveParaLaMaquina`). */
         const val LLAVE_DE_VENTA = "llaveDeVenta"
     }
 
@@ -440,8 +440,8 @@ class TerminalPaymentService @Inject constructor(
 
     /**
      * Codex código POS r5 #2 (máquina de efectivo): el cobro con tarjeta sin resolver (o que SÍ pasó, en su ventana) de la venta con
-     * [llaveDeVenta] —la identidad que sobrevive a «Restaurar» la copia guardada—, aunque la orden de ese cobro ya no esté en pantalla.
-     * Mientras exista, esa venta no se cobra en la máquina: serían dos cobros de la misma compra.
+     * [llaveDeVenta], aunque la orden de ese cobro ya no esté en pantalla (la caja volvió a la venta en memoria sin su orden). Mientras
+     * exista, esa venta no se cobra en la máquina: serían dos cobros de la misma compra. Un carrito restaurado ya no llega a la máquina.
      */
     fun pendienteDeLaLlave(llaveDeVenta: String?): String? {
         val llave = llaveDeVenta?.takeIf { it.isNotBlank() } ?: return null
