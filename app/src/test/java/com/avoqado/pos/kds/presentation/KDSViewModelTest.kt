@@ -52,7 +52,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runCurrent
-import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -1142,107 +1141,11 @@ class KDSViewModelTest {
         job.cancelAndJoin()
     }
 
-    // MARK: - D14 (Codex r2 y r3): lo que quedó en vuelo de la vez anterior no pinta en la nueva (piso)
+    // MARK: - D14: dentro de una apertura las lecturas no se arbitran (como `origin/develop`)
 
     /**
-     * Dos páginas de verdad: el doble respeta el offset (Codex r3, debilidad de las pruebas de página). La 1 trae k1 (y k3 si
-     * ya llegó); la 2, k2. La lectura de la página 1 que pide «Anterior» espera [puerta] y contesta lo de ANTES (sin k3).
-     */
-    private inner class DosPaginas {
-        val puerta = CompletableDeferred<Unit>()
-        var anteriorEnVuelo = false
-        var llegoK3 = false
-        init {
-            coEvery { repo.fetchBoardPage("st-barra", 100) } returns
-                Result.success(KDSRepository.BoardPage(listOf(comanda("k2", 2_000)), total = 102, nextOffset = null))
-            coEvery { repo.fetchBoardPage("st-barra", 0) } coAnswers {
-                val antes = listOf(comanda("k1", 1_000))
-                if (anteriorEnVuelo) {
-                    anteriorEnVuelo = false
-                    puerta.await()
-                    Result.success(KDSRepository.BoardPage(antes, total = 102, nextOffset = 100))
-                } else {
-                    Result.success(KDSRepository.BoardPage(if (llegoK3) antes + comanda("k3", 3_000) else antes, total = 102, nextOffset = 100))
-                }
-            }
-        }
-
-        /** Abre, salta a la página 2, toca «Anterior» (se queda en vuelo) y minimiza; k3 llega con la ventana minimizada. */
-        fun TestScope.anteriorEnVueloYMinimizar(vm: KDSViewModel, ventana: MutableStateFlow<Boolean>) {
-            vm.nextBoardPage()
-            runCurrent()
-            assertEquals(listOf("k2"), vm.comandas.value.map { it.id })
-            anteriorEnVuelo = true
-            vm.previousBoardPage()
-            runCurrent()
-            ventana.value = false
-            runCurrent()
-            llegoK3 = true
-        }
-    }
-
-    /**
-     * Codex r3 #1: «Anterior» contesta ANTES de la primera lectura de la apertura nueva (que espera la configuración). No
-     * puede pintar, ni dar por hecha la primera carga: si lo hiciera, k3 (llegó minimizada) sonaría como nueva al restaurar.
-     */
-    @Test
-    fun `P1 D14 Anterior que contesta antes de la primera lectura al restaurar no pone la base ni hace sonar`() = runTest {
-        val pantalla = PantallaDePrueba()
-        pantalla.registro.currentState = Lifecycle.State.RESUMED
-        val ventana = MutableStateFlow(true)
-        val vm = armar()
-        val paginas = DosPaginas()
-        val job = launch { vm.mientrasEsteALaVista(pantalla, ventana) }
-        runCurrent()
-        with(paginas) { anteriorEnVueloYMinimizar(vm, ventana) }
-        // Se cuentan los sonidos desde aquí: saltar a la página 2 ya sonó por k2 (así es hoy).
-        mockkStatic(RingtoneManager::class)
-        every { RingtoneManager.getDefaultUri(any()) } returns null
-        every { RingtoneManager.getRingtone(any(), any()) } returns null
-        try {
-            val configuracion = CompletableDeferred<Unit>()
-            coEvery { printConfig.refresh(any()) } coAnswers { configuracion.await() }
-            ventana.value = true // restaurar: la apertura nueva espera la configuración
-            runCurrent()
-            paginas.puerta.complete(Unit) // «Anterior» contesta antes de la primera lectura nueva
-            runCurrent()
-            assertEquals("la respuesta de «Anterior» no se pinta", listOf("k2"), vm.comandas.value.map { it.id })
-
-            configuracion.complete(Unit) // la primera lectura de la apertura nueva: es la línea base
-            runCurrent()
-            assertEquals(listOf("k1", "k3"), vm.comandas.value.map { it.id })
-            verify(exactly = 0) { RingtoneManager.getDefaultUri(any()) }
-            job.cancelAndJoin()
-        } finally {
-            unmockkStatic(RingtoneManager::class)
-        }
-    }
-
-    /** Codex r2 #1: «Anterior» contesta DESPUÉS de la lectura de la restauración: no le quita k3 a la pantalla. */
-    @Test
-    fun `P1 D14 Anterior que contesta despues de restaurar no pisa la lectura nueva`() = runTest {
-        val pantalla = PantallaDePrueba()
-        pantalla.registro.currentState = Lifecycle.State.RESUMED
-        val ventana = MutableStateFlow(true)
-        val vm = armar()
-        val paginas = DosPaginas()
-        val job = launch { vm.mientrasEsteALaVista(pantalla, ventana) }
-        runCurrent()
-        with(paginas) { anteriorEnVueloYMinimizar(vm, ventana) }
-
-        ventana.value = true // restaurar: lee la página 1 vigente
-        runCurrent()
-        assertEquals(listOf("k1", "k3"), vm.comandas.value.map { it.id })
-
-        paginas.puerta.complete(Unit) // contesta «Anterior», con lo de antes
-        runCurrent()
-        assertEquals(listOf("k1", "k3"), vm.comandas.value.map { it.id })
-        job.cancelAndJoin()
-    }
-
-    /**
-     * Codex r3 #5: dentro de una misma apertura NO se arbitra (igual que antes de D14). La relectura buena de una acción
-     * (rechazar un pedido) publica aunque un sondeo que arrancó después falle primero.
+     * Codex r3 #5: el tablero no arbitra entre lecturas (igual que `origin/develop`): la relectura buena de una acción (rechazar
+     * un pedido) publica aunque un sondeo que arrancó después falle primero. Guarda ese comportamiento.
      */
     @Test
     fun `P2 D14 la relectura buena de una accion publica aunque un sondeo posterior falle antes`() = runTest {

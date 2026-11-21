@@ -161,15 +161,6 @@ class KDSViewModel @Inject constructor(
     /** Lo que ya se veía, por FOLIO (o id si no tiene): la copia `lan:` que el servidor reemplaza es la MISMA comanda — no suena dos veces. */
     private var previousOrderIds: Set<String> = emptySet()
     private var hasLoadedFromAPI = false
-    /**
-     * D14 (Codex r2 y r3): cada lectura del tablero toma un número al arrancar. Sólo publica si arrancó DESPUÉS del último
-     * [alOcultarse] o de la última apertura ([pisoDeLecturas]): una lectura de la vez anterior que se vio el tablero (una
-     * página o una acción que quedó en vuelo al minimizar o al mandar la app al fondo) ya no pinta, ni pone la línea base, ni
-     * guarda la foto de la vez nueva. Dentro de una misma apertura no se arbitra entre lecturas, igual que antes de D14.
-     * Todo corre en el hilo principal: no hace falta atómico.
-     */
-    private var lecturasDelTablero = 0L
-    private var pisoDeLecturas = 0L
 
     /** M4: ids marcados LISTO hace poco → cuándo. Ver `bumpsVigentes()`. */
     private val bumpsRecientes = mutableMapOf<String, Long>()
@@ -210,7 +201,6 @@ class KDSViewModel @Inject constructor(
         // M3: este ViewModel sigue vivo con la pantalla cerrada, así que sin esto lo que llegó mientras tanto sonaba
         // como «comanda nueva». El primer tablero de ESTA apertura es la línea base — nunca suena.
         hasLoadedFromAPI = false
-        pisoDeLecturas = lecturasDelTablero // D14: lo que quedó en vuelo de la vez anterior no pinta en ésta
         aperturas++
         val mia = aperturas
         pantallaVisible = true
@@ -249,7 +239,6 @@ class KDSViewModel @Inject constructor(
      */
     fun alOcultarse() {
         aperturas++
-        pisoDeLecturas = lecturasDelTablero // D14: ninguna lectura en vuelo pinta ya sobre el tablero oculto ni sobre la próxima apertura
         pantallaVisible = false
         preparationDelivery?.setDisplayedKeys(null, emptySet())
         sincronizarReceptor()
@@ -301,15 +290,13 @@ class KDSViewModel @Inject constructor(
         if (estacionDelServidor != tablero.estacion.id) { boardOffset = 0; _boardPaging.value = BoardPaging() }
         val requestedOffset = boardOffset
         _boardPaging.value = _boardPaging.value.copy(loading = true)
-        val mia = ++lecturasDelTablero
         val lectura = kdsRepository.fetchBoardPage(tablero.estacion.id, requestedOffset)
         // D14 (Codex r1 #4): una lectura colgada no se cancela a medias y su FALLO se cuela aunque esta apertura ya se haya
         // cancelado (minimizar, `ON_STOP`). Lo de una apertura cancelada no se pinta sobre la nueva.
         currentCoroutineContext().ensureActive()
         // Codex 3.6 (#7): si mientras tanto eligieron OTRA estación (o cambió la sucursal), esta respuesta es de la anterior:
         // no se pinta bajo el encabezado nuevo, ni se guarda como su foto, ni retira copias locales. La nueva trae la suya.
-        // D14 (Codex r2 #1, r3 #1): y sólo si arrancó después de la última vez que el tablero se ocultó o se abrió.
-        val sigue = mia > pisoDeLecturas && (_vista.value as? VistaDeCocina.Tablero)?.estacion?.id == tablero.estacion.id &&
+        val sigue = (_vista.value as? VistaDeCocina.Tablero)?.estacion?.id == tablero.estacion.id &&
             kdsRepository.venueIdActual() == venueId && boardOffset == requestedOffset
         if (!sigue) return
         lectura.fold(
