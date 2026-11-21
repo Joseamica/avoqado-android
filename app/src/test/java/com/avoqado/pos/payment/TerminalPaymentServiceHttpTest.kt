@@ -1214,6 +1214,30 @@ class TerminalPaymentServiceHttpTest {
         assertEquals("y sigue protegiendo SU venta", rid, tras.pendienteDeLaVenta("orden-8"))
     }
 
+    /**
+     * Codex código POS r5 #2 (máquina de efectivo): el cobro guarda la identidad de la venta que sobrevive a «Restaurar» la copia guardada.
+     * Tras reiniciar, el carrito restaurado ya no trae la orden de la tarjeta, pero su llave sí: la máquina lo ve y no cobra.
+     */
+    @Test
+    fun `P1 Codex POS r5 #2 la tarjeta se encuentra por la llave de la venta tras reiniciar, sin la orden`() = runBlocking {
+        enqueue(200, """{"success":true,"status":"success","paymentId":"pay-80"}""")
+        service.llaveDelProximoEnvio = "carrito:guardado-80"
+        val rid = (service.sendPaymentToTerminal(terminalId = "t1", amountCents = 8_000, orderId = "orden-80") as TerminalPaymentResult.Success)
+            .requestId!!
+        assertNull("se usa una sola vez", service.llaveDelProximoEnvio)
+        pendientes = PendientesDeTarjeta.agregar(pendientes, "r-duda", "orden-81", """{"requestId":"r-duda","llaveDeVenta":"carrito:guardado-81"}""")
+
+        val tras = TerminalPaymentService(secureStorage, OkHttpClient()) // reiniciar la app: servicio nuevo, mismo disco
+        assertEquals(rid, tras.pendienteDeLaLlave("carrito:guardado-80"))
+        assertEquals("una duda sin resolver también", "r-duda", tras.pendienteDeLaLlave("carrito:guardado-81"))
+        assertNull("el carrito restaurado no trae orden: por orden no se ve", tras.pendienteDeLaVenta(null))
+        assertNull(tras.pendienteDeLaLlave("carrito:otra"))
+        assertNull(tras.pendienteDeLaLlave(null))
+
+        tras.aplicarDesenlaceTardio("r-duda", CardChargeOutcome.NotCharged("no se cobró"))
+        assertNull("declarada sin cobro, ya no frena la máquina", tras.pendienteDeLaLlave("carrito:guardado-81"))
+    }
+
     @Test
     fun `H6 la revision de fondo rota - los consultados hace mas tiempo primero`() {
         // El más nuevo primero, como los entrega `pendientesDeOtrasVentas`.

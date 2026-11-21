@@ -1371,6 +1371,11 @@ class PrinterService @Inject constructor(
     /**
      * Codex código r3 #11 (máquina de efectivo): el papel ORIGINAL sale en UNA sola impresora de recibos —la primera que lo imprime—;
      * las demás lo reciben como COPIA («REIMPRESIÓN»). Dos originales del mismo folio serían dos comprobantes de un mismo dinero.
+     *
+     * Codex código POS r5 #1: un intento que falla DESPUÉS de empezar (Windows acepta los bytes y falla al cerrar el trabajo) pudo sacar
+     * papel: ya gastó el original. Las impresoras que siguen reciben COPIA, y el resultado es [PrintOutcome.Failed] aunque otra se haya
+     * quedado sin papel: quien imprime el original ya no lo vuelve a ofrecer como original. Sólo «sin papel» (se pregunta ANTES de escribir,
+     * [sendDataWiFi]) y «sin impresora» dicen que no salió nada.
      */
     suspend fun imprimirOriginal(receipt: ReceiptData): PrintOutcome = imprimirEnLasDeRecibos(receipt, unSoloOriginal = true)
 
@@ -1388,7 +1393,12 @@ class PrinterService @Inject constructor(
         var lastError: String? = null
         eligible.forEach { printer ->
             try {
-                val papel = if (unSoloOriginal && successCount > 0) receipt.copy(reprintedAt = receipt.reprintedAt ?: java.util.Date()) else receipt
+                // Tras un original que salió o PUDO salir (lastError), las demás impresoras reciben copia.
+                val papel = if (unSoloOriginal && (successCount > 0 || lastError != null)) {
+                    receipt.copy(reprintedAt = receipt.reprintedAt ?: java.util.Date())
+                } else {
+                    receipt
+                }
                 printReceipt(papel, printer)
                 successCount++
                 Log.d(TAG, "Manual reprint succeeded on ${printer.name}")
@@ -1396,12 +1406,13 @@ class PrinterService @Inject constructor(
                 outOfPaper = true
                 Log.e(TAG, "Manual reprint: ${printer.name} sin papel")
             } catch (e: Exception) {
-                lastError = e.message
+                lastError = e.message ?: "Error al imprimir"
                 Log.e(TAG, "Manual reprint failed on ${printer.name}: ${e.message}")
             }
         }
         return when {
             successCount > 0 -> PrintOutcome.Printed(successCount)
+            unSoloOriginal && lastError != null -> PrintOutcome.Failed(lastError!!)
             // Sin papel gana sobre un error genérico: es el motivo accionable.
             outOfPaper -> PrintOutcome.OutOfPaper
             lastError != null -> PrintOutcome.Failed(lastError!!)

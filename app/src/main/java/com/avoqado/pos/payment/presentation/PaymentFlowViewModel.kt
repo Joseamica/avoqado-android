@@ -3022,8 +3022,18 @@ class PaymentFlowViewModel @Inject constructor(
             conProductos = hasProductItems(cart),
             ventaNueva = createdOrderId == null && mesaDelCobro == null && esPagoCompleto() && sesionDelCobro == null &&
                 origenDelCobro == com.avoqado.pos.payment.domain.OrigenDelCobro.NORMAL && !cuentaDeTarjetas.value,
+            tarjetaSinConfirmar = tarjetaSinConfirmar(cart),
         )
     }
+
+    /**
+     * Codex código POS r5 #2: ¿esta venta tiene un cobro con tarjeta sin confirmar? Se busca por la llave que sobrevive a «Restaurar» la
+     * copia guardada (la misma con que la máquina la registra), no sólo por la orden, que no viaja con la copia. Se lee la lista VIVA.
+     */
+    private fun tarjetaSinConfirmar(cart: CartState): Boolean =
+        // Una llave en blanco no es un pendiente (como en la rama de TARJETA): no hay a quién preguntarle por ella.
+        !terminalPaymentService.pendienteDeLaLlave(cart.llaveParaLaMaquina).isNullOrBlank() ||
+            !terminalPaymentService.pendienteDeLaVenta(ordenEnCurso()).isNullOrBlank()
 
     /**
      * «Efectivo en la máquina» (C5). Arma el MISMO cuerpo de `POST /orders` que la cola y se lo da a la máquina: ella lo cotiza y,
@@ -3035,6 +3045,9 @@ class PaymentFlowViewModel @Inject constructor(
         val vista = caja.vista.value ?: return
         val cart = cartState ?: return
         if (_state.value !is PaymentFlowState.SelectingPaymentMethod || isProcessingPayment || !vista.fila.habilitada) return
+        // Codex código POS r5 #2: la lista viva, al tocar (la fila pudo pintarse antes de que saliera la tarjeta de esta venta). Se vuelve
+        // a abrir la vista de la máquina para que la fila diga por qué.
+        if (tarjetaSinConfirmar(cart)) return caja.abrir(ventaParaLaMaquina(cart))
         val venueId = secureStorage.venueId?.takeIf { it.isNotBlank() } ?: return
         val pedido = buildOrderRequest(cart).let { r ->
             OrderRepository.buildCreateOrderPayload(
@@ -3889,6 +3902,9 @@ class PaymentFlowViewModel @Inject constructor(
                 // este mismo cobro lo vuelve a usar (r3 #1).
                 val apartadoDelEnvio = sesionDelCobro?.let { id -> areaTicketRepository.session.current()?.takeIf { it.id == id } }
                 apartadoDelUltimoEnvio = apartadoDelEnvio
+                // Codex código POS r5 #2: la identidad de la venta (la que sobrevive a «Restaurar»), para que la máquina no la cobre mientras
+                // esta tarjeta no conste. Sin suspender de por medio, como el D4 de arriba.
+                terminalPaymentService.llaveDelProximoEnvio = cartState?.llaveParaLaMaquina
                 val terminalResult = terminalPaymentService.sendPaymentToTerminal(
                     terminalId = terminalId,
                     amountCents = currentBaseAmount(),

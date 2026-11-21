@@ -123,6 +123,8 @@ class TerminalPaymentService @Inject constructor(
         const val BANDEJA_FOLIO = "bandejaEsFolio"
         /** D14: el cobro con tarjeta salió de otra pantalla que cobra una cuenta que ya existía; igual deja su marca. */
         const val BANDEJA_FUERA = "bandejaFuera"
+        /** Codex código POS r5 #2 (máquina de efectivo): la identidad de la venta que sobrevive a «Restaurar» (`llaveParaLaMaquina`). */
+        const val LLAVE_DE_VENTA = "llaveDeVenta"
     }
 
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true; explicitNulls = false }
@@ -437,6 +439,18 @@ class TerminalPaymentService @Inject constructor(
     }
 
     /**
+     * Codex código POS r5 #2 (máquina de efectivo): el cobro con tarjeta sin resolver (o que SÍ pasó, en su ventana) de la venta con
+     * [llaveDeVenta] —la identidad que sobrevive a «Restaurar» la copia guardada—, aunque la orden de ese cobro ya no esté en pantalla.
+     * Mientras exista, esa venta no se cobra en la máquina: serían dos cobros de la misma compra.
+     */
+    fun pendienteDeLaLlave(llaveDeVenta: String?): String? {
+        val llave = llaveDeVenta?.takeIf { it.isNotBlank() } ?: return null
+        return vigentes().lastOrNull { e ->
+            runCatching { JSONObject(e.contexto).optString(LLAVE_DE_VENTA) }.getOrNull() == llave
+        }?.requestId
+    }
+
+    /**
      * Los pendientes de las DEMÁS ventas, el más nuevo primero, para avisar sin frenar. Una entrada cuyo contexto no se
      * pudo leer sale igual, con lo que se sabe: nada se descarta en silencio. Los que ya constan como cobrados salen
      * marcados: toda venta nueva los sigue recibiendo durante su ventana de 10 min (o hasta su «Entendido»).
@@ -659,6 +673,14 @@ class TerminalPaymentService @Inject constructor(
     @Volatile
     var antesDelProximoEnvio: ((String) -> Boolean)? = null
 
+    /**
+     * Codex código POS r5 #2 (máquina de efectivo): la identidad de la venta del próximo envío ([pendienteDeLaLlave]), como
+     * [antesDelProximoEnvio]: se usa UNA vez y quien la pone llama a [sendPaymentToTerminal] sin suspender de por medio. null = un cobro
+     * sin carrito.
+     */
+    @Volatile
+    var llaveDelProximoEnvio: String? = null
+
     suspend fun sendPaymentToTerminal(
         terminalId: String,
         amountCents: Int,
@@ -688,6 +710,8 @@ class TerminalPaymentService @Inject constructor(
     ): TerminalPaymentResult {
         val antesDeEnviar = antesDelProximoEnvio
         antesDelProximoEnvio = null
+        val llaveDeVenta = llaveDelProximoEnvio
+        llaveDelProximoEnvio = null
         // 🔴 Founder, 25-sep: sólo espera la MISMA venta. El pendiente de OTRA venta ya no frena este cobro
         // (la pantalla lo avisa); al de esta venta, sí: consultar y declarar, como siempre.
         pendienteDeLaVenta(orderId)?.let { return TerminalPaymentResult.Undetermined(CardChargeDecision.UNDETERMINED_MESSAGE, it, inherited = true) }
@@ -702,6 +726,7 @@ class TerminalPaymentService @Inject constructor(
             .put("amountCents", amountCents).put("tipCents", tipCents)
             .put("creadoEn", System.currentTimeMillis())
             .apply {
+                llaveDeVenta?.takeIf { it.isNotBlank() }?.let { put(LLAVE_DE_VENTA, it) }
                 deLaBandeja?.let {
                     put(BANDEJA_SALDO, it.saldoAntesCents).put(BANDEJA_FOLIO, it.esFolio)
                     if (it.fueraDeLaBandeja) put(BANDEJA_FUERA, true)

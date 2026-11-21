@@ -204,6 +204,53 @@ class PaymentFlowViewModelMaquinaTest {
         return requireNotNull(canal.paycash()) { "no salió el paycash" }.getString("referenceCC")
     }
 
+    /**
+     * Codex código POS r5 #2: la cajera manda $80 a la TPV desde un carrito guardado; Windows se cierra antes del resultado. Al volver,
+     * acepta «Restaurar de todos modos». La copia trae la MISMA llave de la máquina pero ya no la orden de la tarjeta: la tarjeta sin
+     * confirmar se busca por esa llave y la máquina no admite los $80 (no $160 por una compra de $80).
+     */
+    @Test
+    fun `P1 Codex POS r5 #2 tarjeta sin confirmar y carrito restaurado - la maquina no cobra los 80 pesos`() = runTest {
+        val pan = CartItem(id = "pan", type = CartItemType.ProductItem("prod-pan"), name = "Pan", unitPrice = 8_000)
+        val restaurado = CartState(items = listOf(pan), carritoGuardadoId = "guardado-80", vinoDeCarritoGuardado = true, llaveDeLaMaquina = "carrito:guardado-80")
+        every { terminalPaymentService.pendienteDeLaLlave("carrito:guardado-80") } returns "req-80"
+        val vm = vm()
+
+        vm.startPaymentFlow(restaurado)
+        runCurrent()
+        val fila = vm.maquina!!.vista.value!!.fila
+        assertFalse(fila.habilitada)
+        assertEquals(com.avoqado.pos.maquina.TEXTO_TARJETA_SIN_CONFIRMAR, fila.motivo)
+        vm.cobrarConMaquina()
+        runCurrent()
+
+        assertNull("no salió el paycash", canal.paycash())
+        assertTrue("nada quedó en disco", dao.todas().isEmpty())
+        coVerify(exactly = 0) { api.cotizar(any(), any()) }
+
+        // El cajero declara «no se cobró» (la tarjeta sale de la lista): la siguiente apertura ya puede cobrar en la máquina.
+        every { terminalPaymentService.pendienteDeLaLlave("carrito:guardado-80") } returns null
+        vm.startPaymentFlow(restaurado)
+        runCurrent()
+        assertTrue(vm.maquina!!.vista.value!!.fila.habilitada)
+    }
+
+    @Test
+    fun `P1 Codex POS r5 #2 si la tarjeta de la venta queda sin confirmar despues de pintar la fila, el toque se lee vivo y no cobra`() = runTest {
+        val cart = CartState(items = listOf(cafe))
+        val vm = vm()
+        vm.startPaymentFlow(cart)
+        runCurrent()
+        assertTrue(vm.maquina!!.vista.value!!.fila.habilitada)
+        every { terminalPaymentService.pendienteDeLaLlave(cart.llaveParaLaMaquina) } returns "req-1"
+
+        vm.cobrarConMaquina()
+        runCurrent()
+
+        assertNull(canal.paycash())
+        assertEquals(com.avoqado.pos.maquina.TEXTO_TARJETA_SIN_CONFIRMAR, vm.maquina!!.vista.value!!.fila.motivo)
+    }
+
     @Test
     fun `sin la maquina activa todo queda como hoy`() = runTest {
         val vm = vm(activa = false)

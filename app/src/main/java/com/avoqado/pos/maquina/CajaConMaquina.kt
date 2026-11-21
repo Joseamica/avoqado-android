@@ -22,6 +22,11 @@ data class VentaEnPantalla(
     val conProductos: Boolean,
     /** Sin orden en el SERVIDOR, sin mesa, sin dividir, del cobro de siempre: la máquina sólo cobra carritos nuevos (R4-1). */
     val ventaNueva: Boolean,
+    /**
+     * Codex código POS r5 #2: esta venta (por [llaveDeVenta], la que sobrevive a «Restaurar») tiene un cobro con tarjeta sin confirmar:
+     * la máquina no la cobra (serían dos cobros de la misma compra).
+     */
+    val tarjetaSinConfirmar: Boolean = false,
 )
 
 /** Un `PAGADO` de la máquina (o el que confirmó un gerente) que la caja convierte en venta cobrada. */
@@ -140,7 +145,10 @@ class CajaConMaquina(
             val mio = estado.takeIf { folioDe(it) != null && folioDe(it) == l.miFolio }
                 ?: l.guardada?.takeIf { it.referenceCC == l.miFolio }
             VistaDeLaMaquina(
-                fila = filaDeLaMaquina(ahora, v.conProductos, v.ventaNueva, l.ventaEnDuda, cobroVivo = vivo(estado) || l.apartada),
+                fila = filaDeLaMaquina(
+                    ahora, v.conProductos, v.ventaNueva, l.ventaEnDuda, cobroVivo = vivo(estado) || l.apartada,
+                    tarjetaSinConfirmar = v.tarjetaSinConfirmar,
+                ),
                 // Lo que decidió el gerente (o su incidencia) se ve en lugar de la duda.
                 cobro = mio.takeIf { l.resuelto == null && l.incidencia == null },
                 ventaEnDuda = l.ventaEnDuda || l.apartada || mio != null,
@@ -274,7 +282,8 @@ class CajaConMaquina(
         synchronized(candado) {
             val l = local.value
             val v = l.venta ?: return false
-            if (l.enVuelo || l.miFolio != null) return false
+            // Codex código POS r5 #2: la tarjeta de esta venta sigue sin confirmar: la máquina no la aparta.
+            if (l.enVuelo || l.miFolio != null || v.tarjetaSinConfirmar) return false
             val ficha = maquina.apartar(v.llaveDeVenta) ?: return false
             local.value = l.copy(aviso = null, apartada = true, enVuelo = true, ficha = ficha)
             return true

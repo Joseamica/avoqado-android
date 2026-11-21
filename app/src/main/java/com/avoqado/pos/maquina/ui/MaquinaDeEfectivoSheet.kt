@@ -32,6 +32,7 @@ import com.avoqado.pos.designsystem.components.PrimaryButton
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.maquina.TEXTO_IP_INVALIDA
 import com.avoqado.pos.maquina.TEXTO_PENDIENTES_DE_LA_MAQUINA
+import com.avoqado.pos.maquina.TEXTO_REVISAR_EN_EL_PANEL
 import com.avoqado.pos.maquina.esIpv4
 
 /**
@@ -171,11 +172,14 @@ internal fun ContenidoDeLaMaquina(
                         verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
                     ) {
                         Text(
-                            "Folio ${c.referenceCC} · ${com.avoqado.pos.core.util.formatMoneyFromCents(c.debeCents)}",
+                            "Folio ${c.referenceCC} · " + (c.debeCents?.let { com.avoqado.pos.core.util.formatMoneyFromCents(it) } ?: TEXTO_REVISAR_EN_EL_PANEL),
                             style = MaterialTheme.typography.bodyMedium,
                             modifier = Modifier.weight(1f),
                         )
-                        OutlinedButton(onClick = { onImprimirComprobante(c.referenceCC) }) { Text("Imprimir comprobante") }
+                        // Codex código POS r5 #3: lo que contradice la resolución no tiene comprobante hasta que lo revise el panel.
+                        if (c.debeCents != null) {
+                            OutlinedButton(onClick = { onImprimirComprobante(c.referenceCC) }) { Text("Imprimir comprobante") }
+                        }
                     }
                 }
                 // Codex código r1 #13: ninguna deuda se queda fuera por el tope de la página.

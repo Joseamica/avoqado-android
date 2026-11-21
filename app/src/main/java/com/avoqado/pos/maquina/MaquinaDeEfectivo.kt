@@ -35,6 +35,12 @@ const val TEXTO_CON_DESCUENTO = "Este carrito tiene descuento: cóbralo con tarj
 const val TEXTO_CON_PREMIO = "Este carrito tiene un premio de lealtad: cóbralo con tarjeta o en caja"
 const val TEXTO_PRODUCTO_NO_DISPONIBLE = "Un producto de este carrito ya no está disponible: quítalo o cóbralo con tarjeta"
 const val TEXTO_NO_COBRABLE = "Este carrito no se puede cobrar en la máquina: cóbralo con tarjeta"
+/** Codex servidor r7 #1: la reserva de este carrito ya se cobró (o tiene un abono) en otra caja. */
+const val TEXTO_YA_PAGADA = "Esta venta ya se cobró en otra caja: no la cobres otra vez"
+/** Codex servidor r7 #1: la reserva ya tiene su cuenta abierta (recepción registró la llegada). */
+const val TEXTO_RESERVA_CON_CUENTA = "Esta reserva ya tiene su cuenta abierta: cóbrala desde esa cuenta"
+/** Codex servidor r7 #2: el carrito pasa del tope que la máquina puede subir. */
+const val TEXTO_CARRITO_MUY_GRANDE = "Este carrito es demasiado grande para la máquina: divídelo o cóbralo con tarjeta"
 const val TEXTO_POCO_CAMBIO = "La máquina tiene poco cambio: paga con el monto exacto o con tarjeta"
 const val TEXTO_NO_RESPONDE = "La máquina no responde"
 const val TEXTO_OCUPADA = "La máquina está ocupada"
@@ -48,6 +54,10 @@ const val TEXTO_SIGUES_AHI = "¿Sigues ahí? Toca para continuar"
 const val TEXTO_AYUDA = "¿Necesitas ayuda? Pídela al personal"
 const val TEXTO_COTIZACION_VENCIDA = "No se pudo confirmar el precio a tiempo: inténtalo otra vez"
 const val TEXTO_COBRO_ABANDONADO = "Se salió de este cobro antes de mandarlo a la máquina: no se cobró nada"
+/** Codex código POS r5 #3: lo que dijo la máquina contradice la resolución del gerente: la deuda la decide el panel. */
+const val TEXTO_REVISAR_EN_EL_PANEL = "Revisar en el panel"
+/** Codex código POS r5 #2: la tarjeta de ESTA venta (por su llave, la que sobrevive a «Restaurar») sigue sin confirmar. */
+const val TEXTO_TARJETA_SIN_CONFIRMAR = "Hay un cobro con tarjeta sin confirmar para esta venta"
 
 /** Codex código r1 #12: «Hay N tickets sin imprimir». */
 fun textoDeTicketsSinImprimir(n: Int): String = if (n == 1) "Hay 1 ticket sin imprimir" else "Hay $n tickets sin imprimir"
@@ -82,9 +92,12 @@ fun filaDeLaMaquina(
     ventaNueva: Boolean,
     ventaEnDuda: Boolean,
     cobroVivo: Boolean,
+    /** Codex código POS r5 #2: un cobro con tarjeta de ESTA venta sin confirmar (por su llave, también tras «Restaurar»). */
+    tarjetaSinConfirmar: Boolean = false,
 ): FilaDeLaMaquina {
     val motivo = when {
         ventaEnDuda -> TEXTO_VENTA_EN_DUDA
+        tarjetaSinConfirmar -> TEXTO_TARJETA_SIN_CONFIRMAR
         !ventaNueva -> TEXTO_SOLO_VENTA_COMPLETA
         ahora.conexion != Conexion.CONECTADA -> TEXTO_NO_RESPONDE
         ahora.ocupada || cobroVivo -> TEXTO_OCUPADA
@@ -124,6 +137,9 @@ fun textoDelMotivo(motivo: String?): String = when (motivo) {
     "DESCUENTO" -> TEXTO_CON_DESCUENTO
     "PREMIO_PENDIENTE" -> TEXTO_CON_PREMIO
     "PRODUCTO_NO_DISPONIBLE" -> TEXTO_PRODUCTO_NO_DISPONIBLE
+    "YA_PAGADA" -> TEXTO_YA_PAGADA
+    "RESERVA_CON_CUENTA" -> TEXTO_RESERVA_CON_CUENTA
+    "CARRITO_MUY_GRANDE" -> TEXTO_CARRITO_MUY_GRANDE
     else -> TEXTO_NO_COBRABLE
 }
 
@@ -134,7 +150,8 @@ fun textoDelMotivo(motivo: String?): String = when (motivo) {
  */
 fun deudaDelComprobante(fila: CobroEnMaquinaEntity): Pair<String, Int>? {
     val desenlace = fila.desenlace?.takeIf { it != Desenlace.GUARDADO } ?: return null
-    if (fila.aDeberCents <= 0) return null
+    // Codex código POS r5 #3: si lo físico contradice la resolución, ninguna deuda en papel hasta que lo revise el panel.
+    if (fila.aDeberCents <= 0 || fila.porRevisarEnElPanel()) return null
     val excedente = fila.respuestaServidor?.let { runCatching { JSONObject(it).optInt("excedenteCents", 0) }.getOrNull() } ?: 0
     return (if (desenlace == Desenlace.PAGADO && excedente > 0) "COMPROBANTE DE DIFERENCIA" else "COMPROBANTE DE LA MÁQUINA") to fila.aDeberCents
 }
@@ -182,7 +199,8 @@ fun renglonesParaCongelar(items: List<com.avoqado.pos.printing.data.model.Receip
  */
 fun ticketDeLaFila(fila: CobroEnMaquinaEntity, negocio: String): com.avoqado.pos.printing.data.model.ReceiptData {
     val renglones = renglonesDelTicket(fila.renglonesJson).orEmpty()
-    val debe = deudaFisica(Desenlace.PAGADO, fila.dueCents, fila.creditCents, fila.changeDispensedCents)
+    // Codex código POS r5 #3: lo físico que contradice la resolución no se imprime como «te debemos».
+    val debe = if (fila.porRevisarEnElPanel()) 0 else deudaFisica(Desenlace.PAGADO, fila.dueCents, fila.creditCents, fila.changeDispensedCents)
     val papel = papelCongelado(fila.renglonesJson)
     val totales = com.avoqado.pos.printing.data.model.TotalesDelTicket.desdeLoCobrado(
         cobrado = fila.saleCents,
@@ -245,7 +263,10 @@ fun papelDeLaFila(
     negocio: String,
     ticketDeVenta: com.avoqado.pos.printing.data.model.ReceiptData? = null,
 ): com.avoqado.pos.printing.data.model.ReceiptData? = when {
-    fila.desenlace == Desenlace.PAGADO && fila.conflicto == null -> ticketDeVenta ?: ticketDeLaFila(fila, negocio)
+    // Codex código POS r5 #3: la deuda se vuelve a decidir con la fila AL IMPRIMIR; el ticket de la pantalla no la impone.
+    fila.desenlace == Desenlace.PAGADO && fila.conflicto == null -> (ticketDeVenta ?: ticketDeLaFila(fila, negocio)).let { t ->
+        if (fila.porRevisarEnElPanel()) t.copy(cashMachine = t.cashMachine?.copy(owedCents = null)) else t
+    }
     fila.desenlace == Desenlace.PAGADO -> comprobanteDeLaMaquina(fila, negocio) ?: comprobante(fila, negocio, "COMPROBANTE DE LA MÁQUINA", null)
     else -> comprobanteDeLaMaquina(fila, negocio)
 }
@@ -573,13 +594,16 @@ class MaquinaDeEfectivo internal constructor(
             }
             val r = if (copia) printerService.manualPrintReceipt(papel.copy(reprintedAt = Date(reloj())))
             else printerService.imprimirOriginal(papel)
-            // Sólo cambia un reclamado (2): el original que salió (1), el que no (0, otra vez pendiente) o la copia de una PC muerta.
+            // Sólo cambia un reclamado (2): el original que salió (1), el que no salió (0, otra vez pendiente) o el que pudo salir (2).
             dao.terminarTicket(
                 referenceCC,
                 when {
                     r is PrinterService.PrintOutcome.Printed -> TicketDelCobro.IMPRESO
                     copia -> TicketDelCobro.IMPRIMIENDO   // pudo haber salido antes: se sigue ofreciendo como copia
-                    else -> TicketDelCobro.PENDIENTE
+                    // Codex código POS r5 #1: sólo «sin papel» y «sin impresora» dicen que no salió nada. Cualquier otra falla (Windows
+                    // aceptó los bytes y falló al cerrar el trabajo) pudo sacar el original: lo que sigue de este folio es «REIMPRESIÓN».
+                    r is PrinterService.PrintOutcome.NoPrinter || r is PrinterService.PrintOutcome.OutOfPaper -> TicketDelCobro.PENDIENTE
+                    else -> TicketDelCobro.IMPRIMIENDO
                 },
             )
             return r
@@ -607,10 +631,13 @@ class MaquinaDeEfectivo internal constructor(
     /**
      * Lo que la máquina les debe a clientes en la sucursal de la sesión, con su comprobante reimprimible, los más nuevos primero. Codex
      * código r1 #13: la consulta ya sólo trae los que deben; [limite] crece con «Ver más» ([cuantosComprobantes] dice cuántos hay).
+     * Codex código POS r5 #3: null = lo físico contradice la resolución: «Revisar en el panel», sin comprobante.
      */
-    suspend fun comprobantes(limite: Int = COMPROBANTES_POR_PAGINA): List<Pair<CobroEnMaquinaEntity, Int>> {
+    suspend fun comprobantes(limite: Int = COMPROBANTES_POR_PAGINA): List<Pair<CobroEnMaquinaEntity, Int?>> {
         val venueId = secureStorage.venueId ?: return emptyList()
-        return dao.conComprobante(venueId, limite).mapNotNull { f -> deudaDelComprobante(f)?.let { f to it.second } }
+        return dao.conComprobante(venueId, limite).mapNotNull { f ->
+            if (f.porRevisarEnElPanel()) f to null else deudaDelComprobante(f)?.let { f to it.second }
+        }
     }
 
     suspend fun cuantosComprobantes(): Int = secureStorage.venueId?.let { dao.contarComprobantes(it) } ?: 0

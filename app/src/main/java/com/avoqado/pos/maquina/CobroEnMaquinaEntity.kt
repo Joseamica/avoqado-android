@@ -410,6 +410,25 @@ fun CobroEnMaquinaEntity.bloqueaLaVenta(): Boolean = when (estado) {
 private fun CobroEnMaquinaEntity.creditoDeLaResolucion(): Int =
     respuestaServidor?.let { runCatching { (JSONObject(it).opt("creditCents") as? Number)?.toInt() }.getOrNull() } ?: 0
 
+/** Codex código POS r5 #3: el último cierre FÍSICO de este folio que quedó en su diario (un `status` con su folio que cierra), o null. */
+internal fun CobroEnMaquinaEntity.cierreFisico(): MensajeDeLaMaquina.Status? =
+    mensajesCrudos.lineSequence().mapNotNull { leerMensaje(it.substringAfter(' ')) as? MensajeDeLaMaquina.Status }
+        .lastOrNull { it.referenceCC == referenceCC && it.cierre() != null }
+
+/**
+ * Codex código POS r5 #3: lo que la máquina dijo de este folio CONTRADICE la resolución del gerente —más dinero que el resuelto, o un
+ * cierre físico del mismo folio con otro desenlace, otro crédito u otro cambio (el cliente pudo recibir ya su cambio)—. La deuda no se
+ * adivina: ni comprobante ni «te debemos» en papel hasta que lo revise el panel («Revisar en el panel»).
+ */
+fun CobroEnMaquinaEntity.porRevisarEnElPanel(): Boolean {
+    if (estado != EstadoDelIntento.RESUELTO) return false
+    val credito = creditoDeLaResolucion()
+    if (creditCents > credito) return true
+    val c = cierreFisico() ?: return false
+    val mismoDesenlace = if (c.cierre() == Cierre.PAGADO) desenlace == Desenlace.PAGADO else desenlace != Desenlace.PAGADO
+    return !mismoDesenlace || c.creditCents != credito || c.changeDispensedCents != changeDispensedCents
+}
+
 /**
  * Codex código POS r4 #5: el SERVIDOR guardó esta duda SÓLO como incidencia (422 `CASH_MACHINE_CLOSE_IMPOSSIBLE` con su `incidentId`):
  * no abrió duda que consultar. Ya es suya: no se consulta ni frena salir, salvo que llegue evidencia nueva (que sí vuelve a subir).

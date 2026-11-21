@@ -144,9 +144,8 @@ class SubidaDeLaMaquina @Inject constructor(
             // Codex código r3 #1: lo que llegó después de la resolución de un gerente sube como duda (el SERVIDOR abre su revisión).
             val esDuda = fila.estado == EstadoDelIntento.ESPERANDO || fila.estado == EstadoDelIntento.RESUELTO
             // Codex código r3 #14: el cuerpo siempre se arma; un carrito ilegible sube SIN carrito y el SERVIDOR guarda primero el dinero.
-            val cuerpo = if (esDuda) cuerpoDeLaDuda(fila) else cuerpoDelCierre(fila)
             val r = try {
-                if (esDuda) api.subirDuda(venueId, credencial, cuerpo) else api.subirCierre(venueId, credencial, cuerpo)
+                subirFolio(venueId, credencial, fila, esDuda)
             } catch (e: IOException) {
                 return@withContext true   // sin red: la fila se queda tal cual
             }
@@ -159,7 +158,7 @@ class SubidaDeLaMaquina @Inject constructor(
             val enConflicto = fila.conflicto != null
             val r = try {
                 if (enConflicto) api.consultarDuda(venueId, credencial, fila.referenceCC)
-                else api.subirDuda(venueId, credencial, cuerpoDeLaDuda(fila))
+                else subirFolio(venueId, credencial, fila, esDuda = true)
             } catch (e: IOException) {
                 return@withContext true
             }
@@ -168,6 +167,22 @@ class SubidaDeLaMaquina @Inject constructor(
             else if (!aplicar(fila, acuse, esDuda = true, porPost = !enConflicto)) return@withContext true
         }
         hayTrabajo(venueId)
+    }
+
+    /**
+     * Codex código POS r5 #4: un folio nunca se queda fuera de la cola ni del panel por pesar de más. Lo esencial (importes, `creditCents`
+     * como número y el diario recortado, [textoDeLoQueVio]) va siempre. Si el cuerpo con el carrito no cabe en [TOPE_DEL_CUERPO], o el
+     * SERVIDOR contesta 413, sale al momento SIN el carrito: el SERVIDOR guarda primero el dinero (D1) y anota lo que falta. Un 413 que
+     * quede nunca es rechazo: [leerAcuse] lo reintenta.
+     */
+    private suspend fun subirFolio(venueId: String, credencial: String, fila: CobroEnMaquinaEntity, esDuda: Boolean): RespuestaDelServidor {
+        suspend fun enviar(cuerpo: JSONObject) =
+            if (esDuda) api.subirDuda(venueId, credencial, cuerpo) else api.subirCierre(venueId, credencial, cuerpo)
+        fun cuerpo(conCarrito: Boolean) = if (esDuda) cuerpoDeLaDuda(fila, conCarrito) else cuerpoDelCierre(fila, conCarrito)
+        val completo = cuerpo(conCarrito = true)
+        if (completo.toString().toByteArray(Charsets.UTF_8).size > TOPE_DEL_CUERPO) return enviar(cuerpo(conCarrito = false))
+        val r = enviar(completo)
+        return if (r.codigo == 413) enviar(cuerpo(conCarrito = false)) else r
     }
 
     private suspend fun hayTrabajo(venueId: String) =
@@ -276,7 +291,7 @@ class SubidaDeLaMaquina @Inject constructor(
             (!conLoQueEntro || (json.centavos("creditCents") == fila.creditCents &&
                 json.centavos("changeDispensedCents") == fila.changeDispensedCents))
 
-    private fun cuerpoDelCierre(fila: CobroEnMaquinaEntity): JSONObject {
+    private fun cuerpoDelCierre(fila: CobroEnMaquinaEntity, conCarrito: Boolean = true): JSONObject {
         val outcome = fila.estado
         val cierre = JSONObject()
             .put("outcome", outcome)
@@ -292,17 +307,17 @@ class SubidaDeLaMaquina @Inject constructor(
         // Codex código r2 H15: el carrito viaja con todo desenlace: el primer mensaje del folio lo congela en el SERVIDOR (D2), también
         // un CANCELADO o un GUARDADO (el gerente ve qué partidas y qué cliente tenía el dinero). Codex código r3 #14: si el carrito de
         // disco no se puede leer, el cierre sube SIN él: el SERVIDOR guarda primero el dinero (D1) y deja la incidencia.
-        pedidoLegible(fila)?.let { cuerpo.put("pedido", it) }
+        if (conCarrito) pedidoLegible(fila)?.let { cuerpo.put("pedido", it) }
         if (outcome != EstadoDelIntento.PAGADO) cierre.put("cancelMode", fila.cancelPedido ?: JSONObject.NULL)
         return cuerpo
     }
 
     private fun pedidoLegible(fila: CobroEnMaquinaEntity): JSONObject? = runCatching { JSONObject(fila.pedidoJson) }.getOrNull()
 
-    private fun cuerpoDeLaDuda(fila: CobroEnMaquinaEntity): JSONObject = JSONObject()
+    private fun cuerpoDeLaDuda(fila: CobroEnMaquinaEntity, conCarrito: Boolean = true): JSONObject = JSONObject()
         .put("referenceCC", fila.referenceCC)
         .put("dueCents", fila.dueCents).put("saleCents", fila.saleCents).put("tipCents", fila.tipCents)
-        .apply { pedidoLegible(fila)?.let { put("pedido", it) } }   // Codex código r3 #14: ilegible, sube sin él (r6-2)
+        .apply { if (conCarrito) pedidoLegible(fila)?.let { put("pedido", it) } }   // Codex código r3 #14: ilegible, sube sin él (r6-2)
         .put("startedAt", iso(fila.creadoEn))
         .put("saleShiftId", fila.saleShiftId ?: JSONObject.NULL)
         .put("lastSeen", loUltimoQueVio(fila))
@@ -370,7 +385,8 @@ fun leerAcuse(r: RespuestaDelServidor): Acuse {
             if ("CASH_MACHINE_NOT_PAIRED" in r.cuerpo) TEXTO_PC_SIN_EMPAREJAR else ServerErrorText.fromResponseBody(r.cuerpo, TEXTO_PC_SIN_EMPAREJAR),
         )
         r.codigo == 404 -> Acuse.NoExiste
-        r.codigo >= 500 || r.codigo == 408 || r.codigo == 429 -> Acuse.Reintentar
+        // Codex código POS r5 #4: 413 = «demasiado grande», nunca un rechazo: el folio sigue en la cola (la subida ya mandó lo más chico).
+        r.codigo >= 500 || r.codigo == 408 || r.codigo == 429 || r.codigo == 413 -> Acuse.Reintentar
         // «Otro registro de este folio estaba en curso»: el SERVIDOR no escribió nada y pide repetir el MISMO folio.
         r.codigo == 409 && codigo == "CASH_MACHINE_CLOSE_RETRY" -> Acuse.Reintentar
         r.codigo in 400..499 -> {
@@ -408,9 +424,31 @@ private fun incidenciaDe(cuerpo: String): String? = runCatching {
     }
 }.getOrNull()
 
-/** Lo que la PC vio de un folio en duda (lo que sube y lo que lee el gerente): lo que entró y el diario. */
-fun textoDeLoQueVio(fila: CobroEnMaquinaEntity): String =
-    "Entró ${com.avoqado.pos.core.util.formatMoneyFromCents(fila.creditCents)}\n" + fila.mensajesCrudos
+/**
+ * Lo que la PC vio de un folio en duda (lo que sube y lo que lee el gerente): lo que entró y el diario. Codex código POS r5 #4: a lo más
+ * [tope] bytes, los mensajes más NUEVOS primero (el SERVIDOR guarda el principio si le sobra); el diario completo se queda en la PC.
+ */
+fun textoDeLoQueVio(fila: CobroEnMaquinaEntity, tope: Int = TOPE_DEL_DIARIO_QUE_SUBE): String {
+    val texto = StringBuilder("Entró ${com.avoqado.pos.core.util.formatMoneyFromCents(fila.creditCents)}")
+    val lineas = fila.mensajesCrudos.lines().filter { it.isNotBlank() }.asReversed()
+    var bytes = texto.toString().toByteArray(Charsets.UTF_8).size + RESERVA_DEL_AVISO
+    var van = 0
+    for (l in lineas) {
+        bytes += l.toByteArray(Charsets.UTF_8).size + 1
+        if (bytes > tope) break
+        texto.append('\n').append(l)
+        van++
+    }
+    if (van < lineas.size) texto.append("\n… y ${lineas.size - van} mensajes más viejos, sólo en esta PC")
+    return texto.toString()
+}
+
+/** Codex código POS r5 #4: lo más que sube del diario de un folio (64 KiB); lo demás se queda en la PC. */
+internal const val TOPE_DEL_DIARIO_QUE_SUBE = 64 * 1024
+private const val RESERVA_DEL_AVISO = 80
+
+/** Codex código POS r5 #4: el límite de siempre del SERVIDOR (1 MiB) con margen; un cuerpo más grande sale sin el carrito. */
+internal const val TOPE_DEL_CUERPO = 1_000_000
 
 /** Codex código r1 #11: el folio quedó como incidencia (el dinero sin venta): su texto, o null si es venta o cierre. */
 fun incidenciaDelEco(json: JSONObject): String? =

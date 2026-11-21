@@ -744,7 +744,8 @@ class SubidaDeLaMaquinaTest {
         val eco = evidencia(duda(REF_1), outcome = "CANCELADO", credit = 0, change = 0).put("status", "RESUELTO")
         cuando(
             "POST", ".*/cash-machine/doubts",
-            MockResponse().setResponseCode(413).setBody("""{"message":"Payload Too Large"}"""),
+            // Codex código POS r5 #4: un 413 ya no es «rechazo» (es «más chico»); el rechazo sin incidencia es un 400.
+            error(400, "El pedido debe ser un objeto", "VALIDATION_ERROR"),
             ok(abierta(2), 202),
             ok(JSONObject(eco.toString()).put("deviceId", JSONObject.NULL)),   // un TERMINADO que no dice de quién es el folio
             ok(eco),
@@ -827,6 +828,97 @@ class SubidaDeLaMaquinaTest {
         assertTrue("el SERVIDOR guardó primero el dinero", cierre.subido)
         assertEquals("Registrado como incidencia: faltaba el carrito de la venta", cierre.conflicto)
         assertTrue(dao.fila(REF_2)!!.dudaSubida)
+    }
+
+    // MARK: - Codex código POS r5 #4: un folio demasiado grande nunca se queda fuera de la cola ni del panel
+
+    /** Lo que el SERVIDOR de antes hacía con un cuerpo de más de 1 MiB: 413 sin `incidentId`, sin guardar nada. */
+    private fun conLimiteDe1MiB(respuesta: () -> MockResponse) = synchronized(guion) {
+        guion.add(0, { q: RecordedRequest -> q.bodySize > 1_048_576 } to ArrayDeque(List(10) { MockResponse().setResponseCode(413).setBody("""{"message":"La solicitud excede el tamaño máximo permitido.","code":"PAYLOAD_TOO_LARGE"}""") }))
+        guion.add(1, { q: RecordedRequest -> q.method == "POST" } to ArrayDeque(List(10) { respuesta() }))
+    }
+
+    /** Un `status` como los de APS, con hora y barra de cambio. */
+    private fun statusCompleto(ref: String, credit: Int, due: Int) =
+        JSONObject().put("comando", "status").put("cobrando", true).put("Status", JSONObject.NULL).put("referenceCC", ref)
+            .put("Credit", credit / 100.0).put("Due", due / 100.0).put("changeDispensed", 0).put("changeBar", "022220222000")
+            .put("fecha", "2026-11-21 18:00:00").toString()
+
+    /**
+     * Codex código POS r5 #4 (regresión de r4): venta de $5,000; sin internet entran $4,000 en monedas de $0.50 y el intento acaba en duda.
+     * El diario completo pasa de 1 MiB. Antes la PRIMERA duda viajaba entera, el SERVIDOR contestaba 413 y la fila quedaba fuera de los
+     * reintentos y de las consultas: el panel nunca veía ese dinero. Ahora sube lo esencial con el diario recortado (lo más nuevo primero).
+     */
+    @Test
+    fun `P1 Codex POS r5 #4 la primera duda con un diario de mas de 1 MiB llega al panel - lo nuevo primero y creditCents como numero`() = runBlocking {
+        val diario = (1..8_000).joinToString("\n") { i -> "g1 " + statusCompleto(REF_1, i * 50, 500_000) }
+        assertTrue("el caso de Codex: ${diario.length} bytes", diario.toByteArray().size > 1_048_576)
+        insertar(duda(REF_1).copy(dueCents = 500_000, saleCents = 500_000, tipCents = 0, creditCents = 400_000, mensajesCrudos = diario))
+        conLimiteDe1MiB { ok(abierta(1), 202) }
+
+        assertTrue("queda la consulta al gerente", subida.subir())
+
+        val q = pedido()
+        assertTrue("cabe: ${q.bodySize}", q.bodySize <= 1_048_576)
+        val b = cuerpo(q)
+        assertEquals(400_000, b.getInt("creditCents"))
+        assertEquals(500_000, b.getInt("dueCents"))
+        assertTrue("con su carrito", b.has("pedido"))
+        val lastSeen = b.getString("lastSeen")
+        assertTrue(lastSeen.toByteArray().size <= TOPE_DEL_DIARIO_QUE_SUBE)
+        assertTrue(lastSeen.startsWith("Entró \$4,000.00\ng1 " + statusCompleto(REF_1, 400_000, 500_000)))
+        assertTrue(lastSeen.endsWith("mensajes más viejos, sólo en esta PC"))
+        val f = dao.fila(REF_1)!!
+        assertTrue("el SERVIDOR ya la tiene: se consulta hasta que el panel la resuelva", f.dudaSubida)
+        assertNull(f.conflicto)
+        assertEquals("el diario completo se queda en la PC", diario, f.mensajesCrudos)
+        assertEquals(1, servidor.requestCount)
+    }
+
+    @Test
+    fun `P1 Codex POS r5 #4 un 413 se repite al momento sin el carrito, y si sigue el folio se queda en la cola - nunca excluido`() = runBlocking {
+        insertar(duda(REF_1), pagado.copy(referenceCC = REF_2))
+        val incidencia = evidencia(pagado.copy(referenceCC = REF_2)).put("incidentId", "cinc000000000000sincarrito").put("incident", "SIN_CARRITO")
+            .put("motivo", "SIN_CARRITO")
+        val grande = MockResponse().setResponseCode(413).setBody("""{"message":"La solicitud excede el tamaño máximo permitido.","code":"PAYLOAD_TOO_LARGE"}""")
+        cuando("POST", ".*/cash-machine/doubts", grande, ok(abierta(1), 202))
+        cuando("POST", ".*/cash-machine/sales", grande, grande, grande, ok(incidencia, 202))
+
+        assertTrue(subida.subir())
+
+        // El cuerpo de una petición grabada se lee UNA vez.
+        val primera = (1..4).map { pedido() }.groupBy({ it.path!!.substringAfterLast('/') }, ::cuerpo)
+        assertEquals(setOf("sales", "doubts"), primera.keys)
+        for ((ruta, cuerpos) in primera) {
+            assertTrue("$ruta: completo primero", cuerpos[0].has("pedido"))
+            assertFalse("$ruta: el 413 se repite SIN carrito", cuerpos[1].has("pedido"))
+            val entro = cuerpos.map { (it.optJSONObject("cierre") ?: it).getInt("creditCents") }
+            assertEquals("$ruta: con lo que entró", entro[0], entro[1])
+        }
+        assertTrue("la duda llegó al panel", dao.fila(REF_1)!!.dudaSubida)
+        assertNull("el cierre que siguió en 413 NO queda excluido", dao.fila(REF_2)!!.conflicto)
+        assertEquals(listOf(REF_2), dao.paraSubir("venue-1").map { it.referenceCC })
+        assertTrue("y sigue frenando salir", dao.fila(REF_2)!!.frenaLaSalida())
+
+        assertTrue(subida.subir())   // la pasada siguiente lo vuelve a mandar
+
+        assertTrue("el cierre ya tiene su incidencia", dao.fila(REF_2)!!.subido)
+        assertFalse(dao.fila(REF_2)!!.frenaLaSalida())
+    }
+
+    @Test
+    fun `P1 Codex POS r5 #4 un cuerpo que no cabe ni se manda entero - sale sin el carrito al primer intento`() = runBlocking {
+        val enorme = JSONObject().put("items", org.json.JSONArray().put(JSONObject().put("productId", "p1").put("quantity", 1).put("notes", "x".repeat(1_100_000))))
+        insertar(pagado.copy(pedidoJson = enorme.toString()))
+        cuando("POST", ".*/cash-machine/sales", ok(evidencia(pagado).put("incidentId", "cinc000000000000sincarrito").put("incident", "SIN_CARRITO"), 202))
+
+        assertFalse(subida.subir())
+
+        val q = pedido()
+        assertTrue(q.bodySize < 10_000)
+        assertFalse(cuerpo(q).has("pedido"))
+        assertEquals(1, servidor.requestCount)
+        assertTrue(dao.fila(REF_1)!!.subido)
     }
 
     private companion object {

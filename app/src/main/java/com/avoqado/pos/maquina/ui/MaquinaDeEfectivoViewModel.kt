@@ -30,7 +30,11 @@ import javax.inject.Inject
 enum class PruebaDeConexion { PROBANDO, CONECTADA, NO_RESPONDE }
 
 /** C7 (R5#9, R3#11): un cobro de la máquina que le debe dinero a un cliente, con su comprobante reimprimible. */
-data class ComprobantePorImprimir(val referenceCC: String, val debeCents: Int)
+data class ComprobantePorImprimir(
+    val referenceCC: String,
+    /** Codex código POS r5 #3: null = lo que dijo la máquina contradice la resolución: «Revisar en el panel», sin comprobante. */
+    val debeCents: Int?,
+)
 
 /** Lo que pinta la hoja «Máquina de efectivo». Las reglas de los botones viven aquí, para la hoja y para el ViewModel. */
 data class EstadoDeLaMaquina(

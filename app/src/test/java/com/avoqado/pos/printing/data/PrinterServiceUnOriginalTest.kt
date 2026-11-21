@@ -61,6 +61,46 @@ class PrinterServiceUnOriginalTest {
         assertNull("el original salió en la barra", impresos.single().second.reprintedAt)
     }
 
+    /**
+     * Codex código POS r5 #1: Windows acepta TODOS los bytes del original y falla al cerrar el trabajo (EndDocPrinter; el texto es el de
+     * `ProtocoloDeWindows`). El papel pudo salir: la segunda impresora recibe COPIA, nunca otro original del mismo folio.
+     */
+    @Test
+    fun `P1 Codex POS r5 #1 Windows falla al cerrar el trabajo del original - la otra impresora recibe COPIA, no otro original`() = runBlocking {
+        val service = servicio()
+        every { service.getPrinters(PrinterRole.RECEIPT) } returns listOf(caja, barra)
+        val impresos = mutableListOf<Pair<String, ReceiptData>>()
+        coEvery { service.printReceipt(any(), caja) } answers {
+            impresos += "caja" to firstArg<ReceiptData>()   // los bytes ya salieron…
+            throw com.avoqado.pos.printing.data.model.PrinterException.PrintFailed("La impresora «Caja» no recibió el ticket completo")
+        }
+        coEvery { service.printReceipt(any(), barra) } answers { impresos += "barra" to firstArg<ReceiptData>() }
+
+        assertEquals(PrinterService.PrintOutcome.Printed(1), service.imprimirOriginal(recibo))
+
+        assertNull("el original pudo salir en la caja", impresos[0].second.reprintedAt)
+        assertNotNull("la barra recibe una COPIA marcada", impresos[1].second.reprintedAt)
+    }
+
+    @Test
+    fun `P1 Codex POS r5 #1 un original que pudo salir es Failed aunque la otra impresora no tenga papel`() = runBlocking {
+        val service = servicio()
+        every { service.getPrinters(PrinterRole.RECEIPT) } returns listOf(caja, barra)
+        val impresos = mutableListOf<Pair<String, ReceiptData>>()
+        coEvery { service.printReceipt(any(), caja) } answers {
+            impresos += "caja" to firstArg<ReceiptData>()
+            throw com.avoqado.pos.printing.data.model.PrinterException.PrintFailed("La impresora «Caja» no recibió el ticket completo")
+        }
+        coEvery { service.printReceipt(any(), barra) } throws com.avoqado.pos.printing.data.model.PrinterException.OutOfPaper()
+
+        val r = service.imprimirOriginal(recibo)
+
+        assertTrue("dudoso, no «sin papel»: $r", r is PrinterService.PrintOutcome.Failed)
+        // La reimpresión manual de siempre no cambia: ahí gana «sin papel», el motivo accionable.
+        coEvery { service.printReceipt(any(), caja) } throws com.avoqado.pos.printing.data.model.PrinterException.PrintFailed("x")
+        assertEquals(PrinterService.PrintOutcome.OutOfPaper, service.manualPrintReceipt(recibo))
+    }
+
     @Test
     fun `la reimpresion manual de siempre no cambia`() = runBlocking {
         val service = servicio()
