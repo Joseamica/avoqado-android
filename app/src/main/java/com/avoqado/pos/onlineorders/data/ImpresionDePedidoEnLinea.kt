@@ -21,6 +21,8 @@ import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.coroutines.EmptyCoroutineContext
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
 /** Qué pasó al intentar sacar la comanda de un pedido en línea. */
@@ -200,17 +202,24 @@ class ImpresionDePedidoEnLinea internal constructor(
      */
     private suspend fun hayCocinaConfirmada(): Boolean {
         if (hayImpresoraDeCocina()) return true
-        val ahora = reloj()
-        val ultimo = ultimoRefrescoDeConfig
-        if (ultimo != null && ahora - ultimo < REFRESCO_DE_CONFIG_MS) return false
-        ultimoRefrescoDeConfig = ahora
-        if (ultimo == null && !configSinDescargar()) return false
-        refrescarConfig()
-        return hayImpresoraDeCocina()
+        // Ruling 94: el vigilante y «Reimprimir» corren en hilos distintos. La revisión se aparta bajo el candado: un intervalo, una descarga.
+        // El que espera entra con la revisión del otro ya hecha y vuelve a mirar (si esa descarga trajo cocina, imprime).
+        return turnoDeLaRevision.withLock {
+            val ultimo = ultimoRefrescoDeConfig
+            val ahora = reloj()
+            if (ultimo != null && ahora - ultimo < REFRESCO_DE_CONFIG_MS) return@withLock hayImpresoraDeCocina()
+            ultimoRefrescoDeConfig = ahora
+            if (ultimo == null && !configSinDescargar()) return@withLock false
+            refrescarConfig()
+            hayImpresoraDeCocina()
+        }
     }
 
     /** R2-5 / Ruling 80: cuándo se revisó por última vez un «no hay cocina» (se pidiera o no la configuración); null = nunca. */
-    @Volatile private var ultimoRefrescoDeConfig: Long? = null
+    private var ultimoRefrescoDeConfig: Long? = null
+
+    /** Ruling 94: una revisión de «no hay cocina» a la vez; guarda a [ultimoRefrescoDeConfig]. */
+    private val turnoDeLaRevision = Mutex()
 
     /** R2-6: el vigilante no pudo leer ese pedido: el mismo descanso que una comanda que no salió (no se relee en cada sondeo). */
     fun descansar(orderId: String) {

@@ -564,6 +564,49 @@ class ImpresionDePedidoEnLineaTest {
             assertEquals(1, despacho.llamadas)
         }
 
+    /**
+     * D661 · Ruling 94 (Codex ANDROID r4): el vigilante y «Reimprimir», en hilos distintos y justo al vencer el intervalo, leían el mismo
+     * plazo vencido antes de que cualquiera lo apartara y los dos descargaban la configuración. El turno se aparta de una vez: un
+     * intervalo, una descarga. La prueba junta a los dos dos veces: al entrar (antes de leer el plazo; ahí no hay candado y siempre se
+     * encuentran) y en el reloj, justo después de leerlo: si el turno no es atómico, los dos lo leyeron vencido; si lo es, el segundo espera
+     * el candado, ese encuentro no ocurre (medio segundo y sigue) y al entrar ya ve la revisión del primero.
+     */
+    @Test
+    fun `R94 the watcher and Reimprimir at the edge of the interval share one download`() = kotlinx.coroutines.runBlocking {
+        val descargas = java.util.concurrent.atomic.AtomicInteger()
+        // El reloj sólo junta a los dos DESPUÉS de que entraron (el vigilante también lo lee antes, para su descanso).
+        val yaEntraron = java.util.concurrent.atomic.AtomicBoolean(false)
+        val alEntrar = java.util.concurrent.CyclicBarrier(2) { yaEntraron.set(true) }
+        val trasLeerElPlazo = java.util.concurrent.CyclicBarrier(2)
+        val enCarrera = java.util.concurrent.atomic.AtomicBoolean(false)
+        val preguntasDeCocina = java.util.concurrent.atomic.AtomicInteger()
+        val impresion = ImpresionDePedidoEnLinea(
+            repositorio = repo,
+            hayImpresoraDeCocina = {
+                // Las dos primeras preguntas de la carrera son la entrada de cada camino.
+                if (enCarrera.get() && preguntasDeCocina.incrementAndGet() <= 2) alEntrar.await(10, java.util.concurrent.TimeUnit.SECONDS)
+                false
+            },
+            venueId = { "v1" },
+            despachar = { _, _, _, _, _, _ -> null },
+            reloj = {
+                if (yaEntraron.get()) runCatching { trasLeerElPlazo.await(500, java.util.concurrent.TimeUnit.MILLISECONDS) }
+                ahora
+            },
+            configSinDescargar = { true },
+            refrescarConfig = { descargas.incrementAndGet() },
+        )
+        assertFalse(impresion.puedeIntentar("p2"))
+        assertEquals(1, descargas.get())
+        ahora += 30_000 // justo en el borde: el plazo de los dos ya venció
+        enCarrera.set(true)
+        val delVigilante = async(kotlinx.coroutines.Dispatchers.IO) { impresion.puedeIntentar("p2") }
+        val deReimprimir = async(kotlinx.coroutines.Dispatchers.IO) { impresion.reimprimir(pedido()) }
+        assertFalse(delVigilante.await())
+        assertEquals(ResultadoImpresion.NoSalio, deReimprimir.await())
+        assertEquals("un intervalo, una descarga", 2, descargas.get())
+    }
+
     @Test
     fun `a business printer that is only the receipt printer gives no claim`() {
         val recibo = PrinterInfo("pr_caja", "Caja", "NETWORK", "192.168.1.9:9100")
