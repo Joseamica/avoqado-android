@@ -26,7 +26,9 @@ class PreparationDeliveryServiceTest {
         val setVenue: (String) -> Unit, val setAllowed: (Boolean) -> Unit, val cache: CachedPayloadDao,
         val setConnected: (Boolean) -> Unit = {}, val restart: () -> PreparationDeliveryService = { service },
         val acks: MutableSharedFlow<com.avoqado.pos.core.data.sync.SyncAck> = MutableSharedFlow(extraBufferCapacity = 8),
-        val transport: TransporteLan? = null, val storageVenue: (String) -> Unit = {}) {
+        val transport: TransporteLan? = null, val storageVenue: (String) -> Unit = {},
+        /** D16 (Codex r3 #3): se llama DESPUÉS de cada lectura del estado de la cola, con su número; sirve para intercalar un ACK. */
+        val afterStatusRead: Array<((Int) -> Unit)?> = arrayOf(null)) {
         fun job(): PreparationDeliveryJob = PreparationPeerProtocol.json.decodeFromString(records.getValue("preparation:v1:delivery:a").json)
     }
     private fun fixture(scope: kotlinx.coroutines.CoroutineScope, paperState: String = "QUEUED", phase: String = "PENDING", urgent: Boolean = false, urgencyPeer: Boolean = false,
@@ -79,7 +81,11 @@ class PreparationDeliveryServiceTest {
                 it.cacheKey > thirdArg<String>() && json.decodeFromString<PreparationDeliveryJob>(it.json).paperState in
                 setOf("QUEUED", "PRINTING", "FAILED", "UNCERTAIN", "REVIEW") }.sortedBy { it.cacheKey }.take(21)
         }
-        coEvery { intents.preparationStatuses(any(), any()) } coAnswers { secondArg<List<String>>().mapNotNull { origins[it] } }
+        val afterStatusRead = arrayOf<((Int) -> Unit)?>(null)
+        var statusReads = 0
+        coEvery { intents.preparationStatuses(any(), any()) } coAnswers {
+            secondArg<List<String>>().mapNotNull { origins[it] }.also { afterStatusRead[0]?.invoke(++statusReads) }
+        }
         coEvery { printer.reintentar(any(), any(), any()) } returns EstadoDeComanda.Salio
         coEvery { client.enviar(any(), any(), any()) } coAnswers {
             val command = json.decodeFromString<PreparationPeerProgress>(secondArg())
@@ -91,7 +97,8 @@ class PreparationDeliveryServiceTest {
         val acks = MutableSharedFlow<com.avoqado.pos.core.data.sync.SyncAck>(extraBufferCapacity = 8)
         val outbox = mockk<com.avoqado.pos.core.data.sync.SyncOutbox>().also { every { it.acks } returns acks }
         fun build() = PreparationDeliveryService(db, storage, transport, printer, configRepo, client, roles, screens, monitor, outbox).also { it.useScopeForTest(scope) }
-        return Fixture(build(), printer, client, records, origins, { venue = it }, { allowed = it }, cache, { online = it }, ::build, acks, transport)
+        return Fixture(build(), printer, client, records, origins, { venue = it }, { allowed = it }, cache, { online = it }, ::build, acks, transport,
+            afterStatusRead = afterStatusRead)
     }
 
 
@@ -514,18 +521,74 @@ class PreparationDeliveryServiceTest {
             coVerify(exactly = 0) { f.printer.reintentar(any(), any(), any()) }
         } finally { f.service.stop() }
     }
-    @Test fun `D16 si marcan resuelto el intent a media espera la tarea no se queda en cola para siempre`() = runTest {
+    @Test fun `D16 si marcan resuelto el intent a media espera se cancela sin papel y avisa`() = runTest {
         val f = fixture(backgroundScope, screensFromServer = setOf("s")); withoutPrinter(f)
         try {
             f.service.start("v1"); f.service.pass("v1")
             assertEquals("QUEUED", f.job().paperState)
-            f.origins.remove("a") // «Marcar resuelta» borra la fila de la cola
+            f.origins.remove("a") // «Marcar resuelta» sobre su rechazo borra la fila de la cola
             f.service.pass("v1")
-            assertEquals("decide su papel como antes de D16", "FAILED", f.job().paperState)
-            coVerify(exactly = 1) { f.printer.reintentar(any(), any(), any()) }
+            assertEquals("CANCELLED", f.job().paperState); assertTrue(f.job().done)
+            assertEquals(PreparationDeliveryService.AVISO_LIBERACION_SIN_CONFIRMAR, f.service.notice.value)
+            coVerify(exactly = 0) { f.printer.reintentar(any(), any(), any()) }
             f.service.pass("v1")
-            assertEquals("desde ahí, la tarea sin intent de siempre", "No se pudo confirmar la acción original. Lo guardado se conserva.", f.service.notice.value)
+            assertEquals("no vuelve a mirarse", PreparationDeliveryService.AVISO_LIBERACION_SIN_CONFIRMAR, f.service.notice.value)
+        } finally { f.service.stop() }
+    }
+    @Test fun `D16 si marcan resuelto el intent a media espera no imprime aunque haya impresora de respaldo`() = runTest {
+        val f = fixture(backgroundScope, screensFromServer = setOf("s")) // la impresora de respaldo SÍ imprime (Salio)
+        try {
+            f.service.start("v1"); f.service.pass("v1")
+            assertEquals("QUEUED", f.job().paperState)
+            f.origins.remove("a")
+            f.service.pass("v1")
+            assertEquals("CANCELLED", f.job().paperState)
+            assertEquals(PreparationDeliveryService.AVISO_LIBERACION_SIN_CONFIRMAR, f.service.notice.value)
+            coVerify(exactly = 0) { f.printer.reintentar(any(), any(), any()) }
+        } finally { f.service.stop() }
+    }
+    @Test fun `D16 una tarea con su ACK ya visto y el intent limpiado sigue su camino normal`() = runTest {
+        val f = fixture(backgroundScope, screensFromServer = setOf("s")); withoutPrinter(f)
+        val key = "preparation:v1:delivery:a"
+        // Una pasada ya vio el ACK (fase guardada) y después la limpieza de ACKED viejos borró el intent.
+        f.records[key] = f.records.getValue(key).copy(json = json.encodeToString(PreparationDeliveryJob.serializer(), f.job().copy(phase = "ACKED")))
+        f.origins.remove("a")
+        try {
+            f.service.start("v1"); f.service.pass("v1")
+            assertEquals("con el ACK, la regla de D16: sin aviso", "DONE", f.job().paperState)
+            assertNull(f.service.notice.value)
             coVerify(exactly = 1) { f.printer.reintentar(any(), any(), any()) }
+        } finally { f.service.stop() }
+    }
+    @Test fun `D16 un ACK que cae justo despues de releer el estado la despierta`() = runTest {
+        val f = fixture(backgroundScope, screensFromServer = setOf("s")); withoutPrinter(f)
+        // Lectura 1: la de la pasada. Lectura 2: la relectura antes del papel. El ACK se guarda y se emite justo DESPUÉS de esa:
+        // en ese instante la tarea ya tiene que estar inscrita, o el colector (en otro hilo) lo ignoraría.
+        var inscritaAlReleer = false
+        f.afterStatusRead[0] = { read -> if (read == 2) {
+            inscritaAlReleer = f.service.estaEnEspera("a")
+            acked(f); f.acks.tryEmit(com.avoqado.pos.core.data.sync.SyncAck("a", "ACKED"))
+        } }
+        try {
+            f.service.start("v1"); runCurrent()
+            f.afterStatusRead[0] = null
+            assertTrue("inscrita antes de releer", inscritaAlReleer)
+            assertEquals("DONE", f.job().paperState); assertNull(f.service.notice.value)
+        } finally { f.service.stop() }
+    }
+    @Test fun `D16 un REJECT que cae durante los envios por WiFi se cancela en la siguiente pasada sin esperar al reloj`() = runTest {
+        val f = fixture(backgroundScope, screensFromServer = setOf("s")); withoutPrinter(f)
+        // Tras la lectura de la pasada (todavía PENDING) llega el REJECT, antes de que la tarea se inscriba.
+        f.afterStatusRead[0] = { read -> if (read == 1) {
+            f.origins["a"] = f.origins.getValue("a").copy(status = SyncIntentEntity.STATUS_REJECTED, message = "Otro aparato cambió el producto")
+            f.acks.tryEmit(com.avoqado.pos.core.data.sync.SyncAck("a", "REJECTED"))
+        } }
+        try {
+            f.service.start("v1"); runCurrent()
+            f.afterStatusRead[0] = null
+            assertEquals("CANCELLED", f.job().paperState)
+            assertTrue(f.service.notice.value!!.contains("no fue aceptada"))
+            coVerify(exactly = 0) { f.printer.reintentar(any(), any(), any()) }
         } finally { f.service.stop() }
     }
     @Test fun `D16 una pasada de la sucursal anterior no apaga el receptor de la nueva ni toca sus tareas`() = runTest {

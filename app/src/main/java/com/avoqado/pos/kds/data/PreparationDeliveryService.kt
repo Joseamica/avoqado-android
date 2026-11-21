@@ -58,6 +58,8 @@ class PreparationDeliveryService @Inject constructor(
     private val enEspera = java.util.concurrent.ConcurrentHashMap<String, Long>()
     /** Reloj monotónico del tope; las pruebas lo adelantan. */
     internal var nanoTime: () -> Long = System::nanoTime
+    /** Para las pruebas: ¿la tarea está inscrita esperando el «sí»? */
+    internal fun estaEnEspera(intentId: String) = enEspera.containsKey(intentId)
     private data class Display(val venueId: String?, val keys: Set<String>)
     @Volatile private var display = Display(null, emptySet())
     fun setDisplayedKeys(venueId: String?, keys: Set<String>) { display = Display(venueId, keys.toSet()) }
@@ -71,8 +73,9 @@ class PreparationDeliveryService @Inject constructor(
         if (venue != venueId) { stop(); venue = venueId; cursor = "" }
         if (clock?.isActive == true) return
         clock = scope.launch {
-            // D16: hijo del reloj, así `stop()` lo apaga con él (nada de la sucursal anterior despierta a la nueva).
-            outbox?.let { cola -> launch { cola.acks.collect { ack ->
+            // D16: hijo del reloj, así `stop()` lo apaga con él (nada de la sucursal anterior despierta a la nueva). Se suscribe
+            // ANTES de la primera pasada (UNDISPATCHED): un ACK de esa pasada no se pierde.
+            outbox?.let { cola -> launch(start = CoroutineStart.UNDISPATCHED) { cola.acks.collect { ack ->
                 if ((ack.status == SyncIntentEntity.STATUS_ACKED || ack.status == SyncIntentEntity.STATUS_REJECTED) &&
                     enEspera.containsKey(ack.id) && current(venueId)) wake(venueId)
             } } }
@@ -192,10 +195,16 @@ class PreparationDeliveryService @Inject constructor(
                     val job = json.decodeFromString<PreparationDeliveryJob>(row.json)
                     check(job.venueId == v && row.cacheKey == "preparation:$v:delivery:${job.intentId}" && job.deviceId == transport.deviceId)
                     val origin = statuses[job.intentId]
-                    // D16 (Codex r2 #3): una liberación todavía en cola cuyo intent ya no existe («Marcar resuelta» de su rechazo)
-                    // no se queda esperando: decide su papel como lo hacía antes de D16 en su primera pasada, y desde ahí es la
-                    // tarea sin intent de siempre (este aviso en cada pasada).
+                    // D16: una liberación todavía en cola cuyo intent ya no existe. Sin evidencia de ACK (Codex r3 #1: alguien tocó
+                    // «Marcar resuelta» sobre su rechazo) se cancela SIN papel y se avisa; nunca espera ni imprime un «LIBERAR» que
+                    // el servidor pudo rechazar. Con evidencia de ACK (una pasada lo vio y luego se limpió el intent), sigue su camino.
                     val orphan = origin == null && job.paperState == "QUEUED" && job.paper != null
+                    if (orphan && job.phase != "ACKED") {
+                        save(row, job.copy(paperState = "CANCELLED", message = AVISO_LIBERACION_SIN_CONFIRMAR, done = true))
+                        enEspera.remove(job.intentId)
+                        _notice.value = AVISO_LIBERACION_SIN_CONFIRMAR
+                        return
+                    }
                     check(orphan || origin != null && origin.type == "KDS_ITEM_PROGRESS" && origin.staffId == job.staffId) {
                         "No se pudo confirmar la acción original. Lo guardado se conserva."
                     }
@@ -229,7 +238,8 @@ class PreparationDeliveryService @Inject constructor(
         var job = original.copy(phase = when (origin?.status) {
             SyncIntentEntity.STATUS_ACKED -> "ACKED"
             SyncIntentEntity.STATUS_REJECTED -> "REJECTED"
-            else -> "ACTION"
+            // D16: un intent ya confirmado y después limpiado conserva su evidencia de ACK.
+            else -> if (origin == null && original.phase == "ACKED") "ACKED" else "ACTION"
         })
         if (job.paperState == "PRINTING") job = job.copy(paperState = "UNCERTAIN",
             message = "La app se cerró durante la impresión. Revisa el ticket antes de repetirlo.")
@@ -261,8 +271,12 @@ class PreparationDeliveryService @Inject constructor(
         }
         if (!current(job.venueId)) return
         if (job.phase != "REJECTED" && job.paperState == "QUEUED" && job.paper != null) {
+            // D16 (Codex r3 #3): se inscribe ANTES de releer el estado. Un ACK/REJECT que cae después de la relectura encuentra
+            // la tarea inscrita y la despierta; uno que cae antes se ve en la relectura. Si al final no espera, se borra.
+            if (origin != null) enEspera.putIfAbsent(job.intentId, nanoTime())
             val latestOrigin = database.syncIntentDao().preparationStatuses(job.venueId, listOf(job.intentId)).singleOrNull()
-            if (latestOrigin?.status == SyncIntentEntity.STATUS_REJECTED) return
+            // Rechazada a media pasada: la siguiente pasada (ya, no en 30 s) la cancela con su rechazo.
+            if (latestOrigin?.status == SyncIntentEntity.STATUS_REJECTED) { wakeRequested = true; return }
             val work = job.paper!!
             val acknowledged = job.commands.groupBy { it.items.first().stationId }.filterValues { commands ->
                 commands.all { it.deliveryId in job.screenReceipts }
@@ -272,7 +286,7 @@ class PreparationDeliveryService @Inject constructor(
             // «Reimprimir» es un pedido explícito de papel: ni espera ni calla.
             // La urgencia con productos activos sigue pidiendo el acuse de la pantalla por WiFi (Codex r1 #4): ni espera ni calla.
             val soloPantallas = !job.manualPaper && job.urgencyNeedsScreen != true && pantallasDelServidor(decision.aImprimir, decision.respaldo)
-            val acked = latestOrigin?.status == SyncIntentEntity.STATUS_ACKED
+            val acked = latestOrigin?.status == SyncIntentEntity.STATUS_ACKED || latestOrigin == null && job.phase == "ACKED"
             if (decision.aImprimir.isEmpty()) { job = job.copy(paperState = "DONE"); save(row, job) }
             // D16: el papel se decide cuando el servidor ya tiene la liberación (su pantalla la toma de ahí), no a milisegundos
             // del toque. Mientras tanto la tarea sigue QUEUED, sin papel ni aviso. Sin conexión o pasado el tope, como hoy.
@@ -345,5 +359,7 @@ class PreparationDeliveryService @Inject constructor(
     companion object {
         /** D16: el presupuesto de la ronda EN LÍNEA (spec 2026-09-27 §5, H2), el mismo que la ruta del dinero. */
         const val TOPE_DE_LA_ESPERA_MS = com.avoqado.pos.tables.presentation.TableOrderViewModel.PRESUPUESTO_RONDA_MS
+        /** D16 (Codex r3 #1): la liberación en cola cuyo intent desapareció sin haberse confirmado. Texto fijo. */
+        const val AVISO_LIBERACION_SIN_CONFIRMAR = "No se pudo confirmar la liberación: avisa a cocina"
     }
 }
