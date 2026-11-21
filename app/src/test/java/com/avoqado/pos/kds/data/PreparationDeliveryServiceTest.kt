@@ -718,4 +718,33 @@ class PreparationDeliveryServiceTest {
             assertNull(f.service.notice.value)
         } finally { f.service.stop() }
     }
+    // 3.ª pasada con aparatos: la pantalla de cocina trabajó sin red sobre una cuenta que la caja nunca abrió; al volver la red,
+    // la caja avisaba «Un avance de otro aparato no coincide» por cada avance de un producto que ni tiene cargado.
+    private fun receptorDe(f: Fixture): CapturingSlot<suspend (PreparationPeerProgress) -> Boolean> {
+        val receptor = slot<suspend (PreparationPeerProgress) -> Boolean>()
+        every { f.transport!!.activarPreparacion(capture(receptor), any(), any()) } just Runs
+        return receptor
+    }
+    @Test fun `D16 un avance por WiFi de un producto que este aparato no tiene cargado se toma como recibido sin aviso`() = runTest {
+        val f = fixture(backgroundScope); val receptor = receptorDe(f)
+        f.service.persistence = mockk<PreparationPeerPersistence>().also { coEvery { it.receive(any()) } throws ProductoNoCargadoAqui() }
+        try {
+            f.service.start("v1"); f.service.pass("v1")
+            val deLaPantalla = f.job().commands.first().copy(deviceId = "pantalla")
+            assertTrue("recibido: el emisor deja de reenviarlo", receptor.captured(deLaPantalla))
+            assertNull(f.service.notice.value)
+        } finally { f.service.stop() }
+    }
+    @Test fun `D16 un avance por WiFi que choca de verdad sigue avisando`() = runTest {
+        val f = fixture(backgroundScope); val receptor = receptorDe(f)
+        f.service.persistence = mockk<PreparationPeerPersistence>().also {
+            coEvery { it.receive(any()) } throws IllegalArgumentException("El estado cambió en otro aparato. Actualiza el producto antes de continuar.")
+        }
+        try {
+            f.service.start("v1"); f.service.pass("v1")
+            val deLaPantalla = f.job().commands.first().copy(deviceId = "pantalla")
+            assertFalse(receptor.captured(deLaPantalla))
+            assertEquals("Un avance de otro aparato no coincide. Actualiza los productos de cocina.", f.service.notice.value)
+        } finally { f.service.stop() }
+    }
 }

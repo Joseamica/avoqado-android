@@ -45,7 +45,8 @@ class PreparationDeliveryService @Inject constructor(
 ) {
     private val json = PreparationPeerProtocol.json
     private val cache get() = database.cachedPayloadDao()
-    private val persistence = PreparationPeerPersistence(database)
+    /** Las pruebas la reemplazan (la real necesita la transacción de Room). */
+    internal var persistence = PreparationPeerPersistence(database)
     private var scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     internal fun useScopeForTest(testScope: CoroutineScope) { check(clock == null); scope = testScope }
     private val mutex = Mutex()
@@ -179,6 +180,9 @@ class PreparationDeliveryService @Inject constructor(
                     if (accepted) _changes.tryEmit(v)
                     accepted && current(v)
                 } catch (e: CancellationException) { throw e }
+                // D16 (3.ª pasada): un producto que este aparato no tiene cargado no es un desacuerdo: recibido, sin aviso, y el
+                // emisor deja de reenviarlo; se verá con la siguiente lectura del servidor.
+                catch (_: ProductoNoCargadoAqui) { true }
                 catch (e: Exception) {
                     // D16 (conjunto, punto 3): la causa no se veía en ningún lado; queda en el log del aparato.
                     android.util.Log.w("PreparacionPorWifi", "No se aplicó ${command.action} ${command.phase} ${command.deliveryId} " +
