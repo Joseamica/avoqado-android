@@ -65,6 +65,11 @@ class KDSRepositoryTest {
         val url = server.takeRequest(1, TimeUnit.SECONDS)!!.requestUrl!!
         assertEquals("1", url.queryParameter("urgencyVersion")); assertEquals("100", url.queryParameter("offset"))
     }
+    @Test fun `D17 cada platillo trae en cuantas estaciones se prepara (1 si el servidor no lo dice)`() = runTest {
+        server.enqueue(MockResponse().setBody(lista(comanda(itemJson = ",\"stationCount\":2"), comanda())))
+        val items = repo.fetchOrders("st-barra").getOrThrow().map { it.items.single().stationCount }
+        assertEquals(listOf(2, null), items) // sin el dato no se sabe: la cocina no ofrece «Liberar»
+    }
     @Test
     fun `la lista del vigilante pide las mas nuevas sin estacion ni urgencia`() = runTest {
         server.enqueue(MockResponse().setBody(lista(comanda(extraJson = ",\"needsPrint\":true"))))
@@ -178,6 +183,15 @@ class KDSRepositoryTest {
     }
 
     @Test
+    fun `D17 deshacer de una comanda con tiempos manda la hora que vio, con milisegundos y en UTC`() = runTest {
+        server.enqueue(MockResponse().setBody("{\"success\":true,\"data\":{}}"))
+        repo.recall("k1", 1_763_669_400_123).getOrThrow()
+        val deshacer = server.takeRequest(1, TimeUnit.SECONDS)!!
+        assertEquals("/api/v1/mobile/venues/v1/kds/orders/k1/recall", deshacer.path)
+        assertEquals("2025-11-20T20:10:00.123Z", JSONObject(deshacer.body.readUtf8()).getString("expectedDoneAt"))
+    }
+
+    @Test
     fun `recientes, deshacer y marcar todas usan sus rutas y sus cuerpos`() = runTest {
         server.enqueue(MockResponse().setBody(lista(comanda())))
         server.enqueue(MockResponse().setBody("{\"success\":true,\"data\":{}}"))
@@ -189,6 +203,7 @@ class KDSRepositoryTest {
 
         val recientes = server.takeRequest(1, TimeUnit.SECONDS)!!
         assertEquals("/api/v1/mobile/venues/v1/kds/orders/recent", recientes.requestUrl!!.encodedPath)
+        assertEquals("1", recientes.requestUrl!!.queryParameter("kitchenDoneVersion"))
         assertEquals("st-barra", recientes.requestUrl!!.queryParameter("stationId"))
         val deshacer = server.takeRequest(1, TimeUnit.SECONDS)!!
         assertEquals("POST", deshacer.method)

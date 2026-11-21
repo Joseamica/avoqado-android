@@ -119,7 +119,14 @@ data class PreparationCounts(
 
 @Serializable
 data class PreparationCapabilities(val version: Int = 0, val enabled: Boolean = false, val maxItems: Int = 100,
-    val replayLaneVersion: Int = 0, val urgencyVersion: Int = 0)
+    val replayLaneVersion: Int = 0, val urgencyVersion: Int = 0,
+    /** D17: el negocio deja a la cocina liberar tiempos desde su pantalla (interruptor del DASHBOARD, apagado de fábrica). */
+    val kitchenCanRelease: Boolean = false,
+    /**
+     * D17: el SERVIDOR saca del tablero lo que la cocina terminó, lo enseña en «Recientes» y lo regresa con «Deshacer».
+     * Sólo con 1 la tablet lo esconde también sin red: contra un servidor viejo no habría cómo regresarla (Codex r1 #7).
+     */
+    val kitchenDoneVersion: Int = 0)
 @Serializable data class PreparationCapabilitiesResponse(val data: PreparationCapabilities)
 
 @Serializable
