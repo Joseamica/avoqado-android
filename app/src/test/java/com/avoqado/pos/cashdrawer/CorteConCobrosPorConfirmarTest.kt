@@ -34,14 +34,14 @@ class CorteConCobrosPorConfirmarTest {
         val linea = PorConfirmarEnElCorte.de(listOf(cobro("a", 2_000)))!!
         assertEquals("Cobros con tarjeta por confirmar (1)", linea.etiqueta)
         assertEquals("$20.00", linea.importe)
-        assertEquals("Cobros con tarjeta por confirmar (1): $20.00", linea.texto)
+        assertEquals("Cobros con tarjeta por confirmar (1): $20.00. Pueden faltar en el total.", linea.texto)
     }
 
     @Test
     fun `P9 varias dudas suman su importe`() {
         val linea = PorConfirmarEnElCorte.de(listOf(cobro("a", 20_000), cobro("b", 15_000)))!!
         assertEquals(2, linea.cuantos)
-        assertEquals("Cobros con tarjeta por confirmar (2): $350.00", linea.texto)
+        assertEquals("Cobros con tarjeta por confirmar (2): $350.00. Pueden faltar en el total.", linea.texto)
     }
 
     @Test
@@ -98,6 +98,9 @@ class CorteConCobrosPorConfirmarTest {
                 // Codex r1 #1: si la terminal sí registró el cobro y el POS aún no se entera, ya viene en el desglose: no se afirma
                 // que «no están en el total».
                 assertFalse(t.contains("No están en el total"))
+                // Texto decidido por «OFFLINE» (21-nov): conserva la intención de B4 sin afirmar algo falso; en su propio renglón.
+                assertTrue("$ancho parcial=$parcial: falta «Pueden faltar en el total.»",
+                    t.contains(dosColumnas("2 cobros", "$1,350.00", ancho) + "\nPueden faltar en el total.\n"))
             }
         }
         assertTrue(papel(PorConfirmarEnElCorte.de(listOf(cobro("a", 2_000)))).contains(dosColumnas("1 cobro", "$20.00", PaperWidth.MM58)))

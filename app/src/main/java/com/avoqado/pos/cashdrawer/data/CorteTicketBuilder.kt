@@ -26,10 +26,16 @@ data class PorConfirmarEnElCorte(val cuantos: Int, val cents: Long, val completo
         cents == 0L -> "importe por confirmar"
         else -> "al menos $pesos"
     }
-    val texto: String get() = "$etiqueta: $importe"
+    val texto: String get() = "$etiqueta: $importe. $PUEDEN_FALTAR"
     private val pesos: String get() = com.avoqado.pos.core.util.formatMoney(cents / 100.0)
 
     companion object {
+        /**
+         * Lo que queda del B4 (decisión de «OFFLINE», 21-nov): su intención —explicar por qué el desglose puede no cuadrar— sin
+         * afirmar que no están (si la terminal sí registró el cobro, ya vienen en el desglose).
+         */
+        const val PUEDEN_FALTAR = "Pueden faltar en el total."
+
         /** `null` = no hay dudas: no sale la línea. La suma va en `Long` (Codex r2 #4: 22 intentos del tope desbordaban `Int`). */
         fun de(cobros: List<com.avoqado.pos.payment.presentation.CobroPorConfirmar>): PorConfirmarEnElCorte? {
             if (cobros.isEmpty()) return null
@@ -297,6 +303,7 @@ object CorteTicketBuilder {
             p.printLine("COBROS CON TARJETA POR CONFIRMAR")
             p.setBold(false)
             p.printTwoColumns(if (it.cuantos == 1) "1 cobro" else "${it.cuantos} cobros", it.importe)
+            p.printLine(PorConfirmarEnElCorte.PUEDEN_FALTAR)   // su propio renglón: en 58 mm no cabe junto al importe
             p.printDivider()
         }
 
