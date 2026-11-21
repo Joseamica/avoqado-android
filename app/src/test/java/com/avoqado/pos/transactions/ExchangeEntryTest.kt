@@ -33,6 +33,13 @@ class ExchangeEntryTest {
             decide(sale.copy(exchangeable = false, notExchangeableReason = "future-code")).blockedReason)
     }
 
+    // D661 (traspaso de la Task 7 del SERVIDOR): un pedido «No, entran solos» pagado con tarjeta en línea no admite Cambio.
+    @Test fun `ONLINE_CARD says the order was paid by card online and points to the order refund`() {
+        assertEquals("Este pedido se pagó con tarjeta en línea y no admite Cambio. Para regresarle su dinero a la clienta, usa la devolución del pedido.",
+            decide(sale.copy(exchangeable = false, notExchangeableReason = "ONLINE_CARD")).blockedReason)
+        assertTrue(decide(sale.copy(exchangeable = false, notExchangeableReason = "ONLINE_CARD")).visible)
+    }
+
     @Test fun `entry asks for manager PIN only when override is available`() {
         assertTrue(decide(refund = false, overrideEnabled = true).requiresPin)
         assertFalse(decide(refund = false, overrideEnabled = false).visible)
