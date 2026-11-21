@@ -2,9 +2,13 @@ package com.avoqado.pos.printing.data
 
 import android.content.Context
 import android.content.SharedPreferences
+import com.avoqado.pos.printing.data.model.PrinterStatus
 import com.avoqado.pos.printing.data.model.SavedPrinter
+import com.sunmi.peripheral.printer.SunmiPrinterService
+import io.mockk.coEvery
 import io.mockk.every
 import io.mockk.mockk
+import io.mockk.verify
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
@@ -103,5 +107,57 @@ class PrinterServiceGuardaDelPrimerByteTest {
         } finally {
             ticketera.socket.close()
         }
+    }
+
+    // MARK: - Ronda 5 · Familia 3 (Ruling 81): con la preparación del transporte hecha, justo antes del primer byte
+
+    /**
+     * La integrada Sunmi se inicializa antes de cada trabajo (`printerInit`, y si el servicio se colgó, se re-liga y reintenta). Si en eso el
+     * reclamo vence, no manda nada: el permiso se pregunta después de inicializar y antes de `sendRAWData`.
+     */
+    @Test
+    fun `R5 Family 3 the integrated printer asks after its init and sends nothing when the claim expired meanwhile`() = runBlocking {
+        val servicio = mockk<SunmiPrinterService>(relaxed = true)
+        var edadDelReclamo = 70_000L
+        every { servicio.printerInit(any()) } answers { edadDelReclamo += 25_000 } // el servicio tarda en inicializar
+        every { servicio.updatePrinterState() } returns 1
+        every { servicio.sendRAWData(any(), any()) } throws AssertionError("mandó el primer byte con el reclamo vencido")
+        val integrada = SunmiInnerPrinter(mockk(relaxed = true)).also { it.attachServiceForTest(servicio) }
+        val error = runCatching { integrada.printRaw(byteArrayOf(0x41), antesDelPrimerByte = { edadDelReclamo < 75_000 }) }.exceptionOrNull()
+        assertTrue("sale la negativa del permiso: $error", error is PermisoParaImprimirVencido)
+        verify(exactly = 0) { servicio.sendRAWData(any(), any()) }
+    }
+
+    /**
+     * USB y la integrada preparan su propio transporte: `PrinterService` no pregunta antes (el primer «sí» se quedaría) sino que les pasa el
+     * permiso, y su negativa sale tal cual: ni «impresora caída» ni la impresora en error.
+     */
+    @Test
+    fun `R5 Family 3 PrinterService lets the integrated printer ask the permission itself and keeps its refusal a refusal`() = runBlocking {
+        val integrada = mockk<SunmiInnerPrinter>(relaxed = true)
+        every { integrada.isAvailable } returns true
+        every { integrada.hasPhysicalPrinter } returns true
+        coEvery { integrada.ensureBound() } returns true
+        var preguntas = 0
+        var preguntasAlEntrar = -1
+        coEvery { integrada.printRaw(any(), any()) } coAnswers {
+            preguntasAlEntrar = preguntas
+            if (!secondArg<() -> Boolean>().invoke()) throw PermisoParaImprimirVencido()
+        }
+        val prefs = mockk<SharedPreferences>(relaxed = true)
+        every { prefs.getString(any(), any()) } returns null
+        val context = mockk<Context>(relaxed = true)
+        every { context.getSharedPreferences(any(), any()) } returns prefs
+        val service = PrinterService(context, integrada, mockk(relaxed = true))
+        val interna = SavedPrinter(id = "interna", name = "Impresora integrada", connectionType = "internal", address = "internal")
+
+        val error = runCatching {
+            withContext(GuardaDelPrimerByte { preguntas++; false }) { service.sendPrintData(byteArrayOf(0x41), interna) }
+        }.exceptionOrNull()
+
+        assertTrue("sale la negativa del permiso: $error", error is PermisoParaImprimirVencido)
+        assertEquals("PrinterService no lo preguntó antes de la integrada", 0, preguntasAlEntrar)
+        assertEquals(1, preguntas)
+        assertFalse("no es una impresora caída", service.printerStatuses.value["interna"] is PrinterStatus.Error)
     }
 }

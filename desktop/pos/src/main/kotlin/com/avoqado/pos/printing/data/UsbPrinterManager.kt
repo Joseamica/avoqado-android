@@ -166,7 +166,12 @@ internal class UsbPrinterManager(@Suppress("unused") private val context: Contex
         (abiertas.remove(printerId) as? Abierta.Com)?.let { runCatching { it.canal.close() } }
     }
 
-    fun write(printerId: String, data: ByteArray) {
+    /**
+     * D661 · Ruling 81: [antesDelPrimerByte] es lo último antes del primer byte del ticket: en una cola de Windows, ya con el documento y la
+     * página abiertos (`imprimirTrabajoCrudo`); en un COM, ya con el candado del puerto. Si dice que no, no sale nada
+     * ([PermisoParaImprimirVencido]) y la impresora sigue abierta.
+     */
+    fun write(printerId: String, data: ByteArray, antesDelPrimerByte: () -> Boolean = { true }) {
         if (cierresPendientes.containsKey(printerId)) throw PrinterException.NotConnected()   // la están cerrando
         val abierta = abiertas[printerId] ?: throw PrinterException.NotConnected()
         sinErroresSueltos(Momento.IMPRIMIR) {
@@ -175,12 +180,13 @@ internal class UsbPrinterManager(@Suppress("unused") private val context: Contex
                     // Se vuelve a mirar: entre abrir y escribir la borraron, la desconectaron o la pausaron.
                     val cola = sistema.cola(abierta.nombre) ?: throw PrinterException.ConnectionFailed(textoColaInexistente(abierta.nombre))
                     motivoFueraDeLinea(cola)?.let { throw PrinterException.ConnectionFailed(it) }
-                    sistema.imprimirEnCola(abierta.nombre, DOCUMENTO, data)
+                    sistema.imprimirEnCola(abierta.nombre, DOCUMENTO, data, antesDelPrimerByte)
                 }
                 // Bajo el candado de la impresora: dos tickets al mismo COM salen uno tras otro, nunca intercalados.
                 is Abierta.Com -> conCandado(printerId) {
                     if (cierresPendientes.containsKey(printerId)) throw PrinterException.NotConnected()
                     val canal = (abiertas[printerId] as? Abierta.Com)?.canal ?: throw PrinterException.NotConnected()
+                    if (!antesDelPrimerByte()) throw PermisoParaImprimirVencido()
                     cerrandoSiFalla(printerId) { canal.escribir(data) }
                 }
             }
@@ -190,6 +196,8 @@ internal class UsbPrinterManager(@Suppress("unused") private val context: Contex
     private inline fun cerrandoSiFalla(printerId: String, bloque: () -> Unit) {
         try {
             bloque()
+        } catch (e: PermisoParaImprimirVencido) {
+            throw e   // Ruling 81: no salió nada y la impresora está bien: sigue abierta.
         } catch (t: Throwable) {
             close(printerId)
             throw t
