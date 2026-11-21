@@ -346,7 +346,10 @@ fun PreparationServiceScreen(orderId: String? = null, onDismiss: () -> Unit, urg
                             if (row.stationCount > 1) Text("${row.stationCount} estaciones · Entregar exige que todas estén listas", style = MaterialTheme.typography.bodySmall)
                             if (state.items.count { it.urgencyProductKey == row.urgencyProductKey } < row.stationCount)
                                 Text("Carga las demás estaciones del producto antes de liberarlo o entregarlo.", style = MaterialTheme.typography.bodySmall)
-                            PreparationControls(row.productName, row.preparation,
+                            // D15: lo anulado en la caja ya no tiene acciones (ni «Reabrir»): el SERVIDOR las rechaza.
+                            if (row.removedAt != null) Text("Anulado en la caja: ya no se prepara ni se entrega.",
+                                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                            else PreparationControls(row.productName, row.preparation,
                                 listOf(PreparationAction.RELEASE, PreparationAction.DELIVER, PreparationAction.CANCEL, PreparationAction.REOPEN, PreparationAction.CLEAR_URGENT),
                                 can = viewModel::can,
                                 onAction = { action, quantity, from, reason -> viewModel.act(row, action, quantity, from, reason) },

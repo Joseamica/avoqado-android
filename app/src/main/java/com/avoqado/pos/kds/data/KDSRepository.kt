@@ -355,6 +355,7 @@ class KDSRepository @Inject constructor(
                 },
                 preparationRevision = json.optInt("preparationRevision", 0),
                 stationCount = json.optInt("stationCount", 0).takeIf { it >= 1 },
+                removedAt = json.optString("removedAt", "").takeIf { it.isNotBlank() && it != "null" },
             )
         } catch (e: Exception) {
             Log.e(TAG, "Parse item error: ${e.message}")

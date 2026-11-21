@@ -65,6 +65,11 @@ class KDSRepositoryTest {
         val url = server.takeRequest(1, TimeUnit.SECONDS)!!.requestUrl!!
         assertEquals("1", url.queryParameter("urgencyVersion")); assertEquals("100", url.queryParameter("offset"))
     }
+    @Test fun `D15 el renglon anulado en la caja trae removedAt y el viejo no`() = runTest {
+        server.enqueue(MockResponse().setBody(lista(comanda(itemJson = ",\"removedAt\":\"2026-11-20T18:00:00.000Z\""), comanda(itemJson = ",\"removedAt\":null"), comanda())))
+        val items = repo.fetchOrders("st-barra").getOrThrow().map { it.items.single().removedAt }
+        assertEquals(listOf("2026-11-20T18:00:00.000Z", null, null), items)
+    }
     @Test fun `D17 cada platillo trae en cuantas estaciones se prepara (1 si el servidor no lo dice)`() = runTest {
         server.enqueue(MockResponse().setBody(lista(comanda(itemJson = ",\"stationCount\":2"), comanda())))
         val items = repo.fetchOrders("st-barra").getOrThrow().map { it.items.single().stationCount }

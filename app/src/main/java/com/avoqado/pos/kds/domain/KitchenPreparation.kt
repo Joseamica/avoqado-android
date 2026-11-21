@@ -140,6 +140,8 @@ data class PreparationLine(
     val localOrderId: String? = null,
     val unavailableReason: String? = null,
     val draftRoundKey: String? = null,
+    /** D15: la caja lo anuló (su nombre ya trae «ANULADO · »). Ya no se prepara ni se entrega: el SERVIDOR rechaza cualquier acción. */
+    val removedAt: String? = null,
 ) {
     /** Survives a LAN provisional row becoming a server row. Never identifies a component by SKU. */
     val stableKey: String get() = if (externalId != null && sourceKey != null)

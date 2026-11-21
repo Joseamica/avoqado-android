@@ -78,7 +78,25 @@ data class KDSOrderItem(
      * local): la cocina sólo ofrece «Liberar» cuando el servidor dijo 1 (Codex r7 #1); lo de varias estaciones lo libera la caja.
      */
     val stationCount: Int? = null,
+    /**
+     * D15: el SERVIDOR lo quitó de la cuenta después de mandarlo (anulado en la caja, o retirado por la plataforma). Sigue en la
+     * comanda para que la cocina vea que cambió; su nombre ya trae la etiqueta («ANULADO · », «RETIRADO · ») para las pantallas
+     * viejas. `null` = sigue vivo.
+     */
+    val removedAt: String? = null,
 )
+
+/** Un renglón quitado, partido para pintarlo: la etiqueta sin tachar y el nombre tachado. */
+data class RenglonQuitado(val etiqueta: String, val nombre: String)
+
+private val ETIQUETAS_DE_QUITADO = listOf("ANULADO", "RETIRADO")
+
+/** D15: `null` si el renglón sigue vivo; si el servidor lo quitó, su etiqueta (la del nombre, o «ANULADO») y el nombre sin ella. */
+fun KDSOrderItem.quitado(): RenglonQuitado? {
+    if (removedAt == null) return null
+    val etiqueta = ETIQUETAS_DE_QUITADO.firstOrNull { productName.startsWith("$it · ") } ?: return RenglonQuitado("ANULADO", productName)
+    return RenglonQuitado(etiqueta, productName.removePrefix("$etiqueta · "))
+}
 
 /**
  * Etapa 3 del KDS (3.5, D8): una comanda guardada en ESTE aparato — llegó por el WiFi del local (antes de acusar) o se
