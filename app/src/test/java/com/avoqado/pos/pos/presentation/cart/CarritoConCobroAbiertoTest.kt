@@ -230,6 +230,19 @@ class CarritoConCobroAbiertoTest {
         assertEquals("user-1", vm.cartState.value.selectedStaffId)
     }
 
+    /** D7 (Codex r1 #1 del PR #319): en WINDOWS el borrado del disco puede fallar y la memoria vuelve al vendedor dado de baja. */
+    @Test
+    fun `P1 al cerrar el cobro el vendedor que queda es el de la sesion aunque el disco no haya olvidado al dado de baja`() {
+        val vm = cafeConElCobroAbierto()
+        coEvery { staffRepository.getActiveStaff() } returns Result.success(listOf(StaffMember(id = "otro", firstName = "Ana", lastName = "Q")))
+
+        vm.fetchStaff()
+        vm.cerrarCobro() // el disco sigue diciendo «staff-99» (setup): el guardado falló
+
+        assertEquals("la venta sigue", listOf("Café"), vm.cartState.value.items.map { it.name })
+        assertEquals("ni el carrito ni el cobro llevan al dado de baja", "user-1", vm.cartState.value.selectedStaffId)
+    }
+
     @Test
     fun `cambiar de sucursal termina la venta aunque quedara el cobro abierto`() {
         val vm = carrito()
