@@ -90,6 +90,23 @@ const val TOPE_DEL_TABLERO = 100
 fun idsParaMarcarTodas(comandas: List<KDSOrder>): List<String> =
     comandas.filterNot { it.needsAcceptance || it.preparationVersion == 1 }.map { it.id }.take(TOPE_DEL_TABLERO)
 
+// MARK: - D17: la comanda con tiempos sale cuando la cocina termina
+
+/**
+ * La cocina ya terminó su parte de una comanda por producto (v1): ningún producto tiene algo retenido, pendiente ni
+ * preparando. Espejo de `cocinaTermino` del SERVIDOR. Una comanda vieja (v0) o con un producto sin avance no cuenta.
+ */
+fun terminadaEnCocina(comanda: KDSOrder): Boolean =
+    comanda.preparationVersion == 1 && comanda.items.isNotEmpty() &&
+        comanda.items.all { item -> item.preparation?.let { it.unfinished == 0 } == true }
+
+/**
+ * Lo que el tablero ya no enseña (D17, founder 20-nov): lo que la cocina terminó pasa a «Recientes». Sólo si el SERVIDOR
+ * hace lo mismo (`kitchenDoneVersion`): contra uno viejo, esconderla la dejaba sin «Deshacer» (Codex r1 #7).
+ */
+fun sinTerminadasEnCocina(comandas: List<KDSOrder>, capacidades: PreparationCapabilities): List<KDSOrder> =
+    if (capacidades.kitchenDoneVersion >= 1) comandas.filterNot(::terminadaEnCocina) else comandas
+
 // MARK: - KDS 3.6: los tiempos de una mesa
 
 /** Los platillos de UN tiempo de la tarjeta. [tiempo] `null` = sin encabezado. */
@@ -155,7 +172,8 @@ data class AvisoDeCocina(val texto: String, val esError: Boolean)
 
 enum class AccionDeCocina(val sinRed: String, val generico: String) {
     LISTO("Sin conexión: la comanda sigue pendiente. Márcala cuando vuelva la red.", "No se pudo marcar la comanda como lista."),
-    DESHACER("Sin conexión: la comanda no regresó. Inténtalo cuando vuelva la red.", "No se pudo regresar la comanda."),
+    // D17 (Codex r18 #6): sin respuesta no se sabe si el servidor alcanzó a regresarla; no se afirma que no.
+    DESHACER("Sin conexión: no se pudo confirmar si la comanda regresó. Revisa el tablero cuando vuelva la red.", "No se pudo regresar la comanda."),
     MARCAR_TODAS("Sin conexión: las comandas siguen pendientes. Inténtalo cuando vuelva la red.", "No se pudieron marcar las comandas."),
     RECIENTES("Sin conexión: no se pueden ver las recientes. Inténtalo cuando vuelva la red.", "No se pudieron cargar las recientes."),
     PANTALLA("Sin conexión: la pantalla no cambió. Inténtalo cuando vuelva la red.", "No se pudo cambiar la pantalla."),
@@ -203,6 +221,7 @@ object TextosDeCocina {
     const val CAMBIAR_ESTACION = "Cambiar de estación"
     const val LISTO = "Listo"
     const val RECIENTES = "Recientes"
+    const val RECIENTES_LEYENDO = "Leyendo…"
     const val RECIENTES_DETALLE = "Lo que se marcó como listo en la última hora"
     const val RECIENTES_VACIO = "Nada se marcó como listo en la última hora."
     const val DESHACER = "Deshacer"

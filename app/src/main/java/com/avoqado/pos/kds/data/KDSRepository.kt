@@ -158,7 +158,8 @@ class KDSRepository @Inject constructor(
     /** «Recientes»: las últimas 20 terminadas en 60 min, para deshacer un LISTO por error. */
     suspend fun fetchRecientes(stationId: String?): Result<List<KDSOrder>> {
         val (venueId, token) = sesion() ?: return sinSesion()
-        val url = ruta(venueId, "kds/orders/recent") + (conEstacion(stationId)?.let { "?$it" } ?: "")
+        // D17: esta app sabe regresar una comanda con tiempos (manda `expectedDoneAt`); el SERVIDOR sólo se las enseña a quien lo pide.
+        val url = ruta(venueId, "kds/orders/recent") + "?" + listOfNotNull(conEstacion(stationId), "kitchenDoneVersion=1").joinToString("&")
         val request = Request.Builder()
             .url(url)
             .header("Authorization", "Bearer $token")
@@ -174,11 +175,21 @@ class KDSRepository @Inject constructor(
         return ejecutar(accion(ruta(venueId, "kds/orders/$orderId/bump"), token, "POST")).map { }
     }
 
-    /** «Deshacer»: la comanda terminada vuelve a la cocina. */
-    suspend fun recall(kdsId: String): Result<Unit> {
+    /**
+     * «Deshacer»: la comanda terminada vuelve a la cocina. En una comanda con tiempos (D17) viaja la hora en que la cocina la
+     * terminó, tal como se vio en «Recientes»: si otra pantalla ya la regresó y la volvieron a terminar, el SERVIDOR no deshace
+     * ese Listo nuevo (Codex r1 #4).
+     */
+    suspend fun recall(kdsId: String, terminadaEnMillis: Long? = null): Result<Unit> {
         val (venueId, token) = sesion() ?: return sinSesion()
-        return ejecutar(accion(ruta(venueId, "kds/orders/$kdsId/recall"), token, "POST")).map { }
+        val cuerpo = terminadaEnMillis?.let { JSONObject().put("expectedDoneAt", isoUtc(it)) }
+        return ejecutar(accion(ruta(venueId, "kds/orders/$kdsId/recall"), token, "POST", cuerpo)).map { }
     }
+
+    private fun isoUtc(millis: Long): String =
+        java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", java.util.Locale.US).apply {
+            timeZone = java.util.TimeZone.getTimeZone("UTC")
+        }.format(java.util.Date(millis))
 
     /** «Marcar todas listas». Devuelve cuántas terminó el servidor. Tope del servidor: 100 ids. */
     suspend fun bumpBatch(ids: List<String>): Result<Int> {
@@ -298,7 +309,9 @@ class KDSRepository @Inject constructor(
                 needsPrint = json.optBoolean("needsPrint", false),
                 orderNumber = orderNumber,
                 orderType = displayType,
-                items = items,
+                // QA del conjunto 3 (21-nov): el orden dentro de la tarjeta es el de la ronda (el id del renglón de la comanda), no el
+                // que devuelve la base: actualizar un producto lo movía al final y el 2.º toque de una ráfaga caía en otro.
+                items = items.sortedBy { it.id },
                 createdAt = createdAt,
                 status = status,
                 startedAt = startedAt,
@@ -343,6 +356,8 @@ class KDSRepository @Inject constructor(
                     kotlinx.serialization.json.Json.decodeFromString<com.avoqado.pos.kds.domain.PreparationCounts>(it.toString())
                 },
                 preparationRevision = json.optInt("preparationRevision", 0),
+                stationCount = json.optInt("stationCount", 0).takeIf { it >= 1 },
+                removedAt = json.optString("removedAt", "").takeIf { it.isNotBlank() && it != "null" },
             )
         } catch (e: Exception) {
             Log.e(TAG, "Parse item error: ${e.message}")

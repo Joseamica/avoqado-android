@@ -12,6 +12,7 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.runCurrent
+import kotlinx.coroutines.test.advanceTimeBy
 import org.junit.Assert.*
 import org.junit.Rule
 import org.junit.Test
@@ -54,6 +55,28 @@ class PreparationServiceViewModelTest {
             assertEquals(SIN_RED_AL_LEER, model.state.value.message)
             assertFalse(model.state.value.loading)
         } finally { model.close() }
+    }
+    @Test fun `QA 3 la hoja abierta se relee sola (lo anulado en otro aparato llega) y deja de leer al cerrarla`() = runTest {
+        val repository = mockk<KitchenPreparationRepository>(relaxed = true)
+        every { repository.notice } returns MutableStateFlow(null)
+        every { repository.negotiated("v") } returns true
+        val row = PreparationLine("line", orderId = "order", productName = "Jugo", quantity = 1, preparation = PreparationCounts(HELD = 1))
+        coEvery { repository.localPage(any(), any(), any(), any()) } returns null
+        coEvery { repository.savedPage(any(), any(), any(), any()) } returns null
+        coEvery { repository.page(any(), any(), any(), any()) } returns PreparationPage(1, listOf(row), 1, false)
+        val storage = mockk<SecureStorage>(); every { storage.venueId } returns "v"
+        val outbox = mockk<SyncOutbox>(); every { outbox.acks } returns MutableSharedFlow<SyncAck>()
+        val model = PreparationServiceViewModel(repository, storage, outbox)
+        try {
+            model.open("order"); runCurrent()
+            val anulado = row.copy(productName = "ANULADO · Jugo", preparation = PreparationCounts(CANCELLED = 1), removedAt = "2026-11-21T08:00:00.000Z")
+            coEvery { repository.page(any(), any(), any(), any()) } returns PreparationPage(1, listOf(anulado), 1, false)
+            advanceTimeBy(SONDEO_DE_LA_HOJA_MS + 1); runCurrent()
+            assertEquals(listOf("ANULADO · Jugo"), model.state.value.items.map { it.productName })
+        } finally { model.close() }
+        coVerify(exactly = 2) { repository.page("v", "order", null, false) }
+        advanceTimeBy(SONDEO_DE_LA_HOJA_MS * 3); runCurrent()
+        coVerify(exactly = 2) { repository.page("v", "order", null, false) } // cerrada: ya no lee
     }
     @Test fun `D68 un corte a media respuesta tambien se dice en espanol`() {
         assertEquals(SIN_RED_AL_LEER, textoDeCocina(java.net.ProtocolException("unexpected end of stream"), "x", SIN_RED_AL_LEER))

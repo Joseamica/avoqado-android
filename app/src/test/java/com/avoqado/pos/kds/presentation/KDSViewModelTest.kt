@@ -315,6 +315,247 @@ class KDSViewModelTest {
         assertEquals(listOf("k9"), vm.recientes.value.map { it.id })
     }
 
+    // QA del conjunto 2 (21-nov): con una sola tarjeta la cabecera seguía diciendo «1–2 de 2».
+    @Test
+    fun `la cabecera cuenta las tarjetas que se ven, no solo la ultima lectura del servidor`() {
+        val leida = KDSViewModel.BoardPaging(offset = 0, total = 2, count = 2)
+        assertEquals("1–1 de 1 comandas", rangoDeComandas(leida, 1)) // la cocina terminó una aquí (sin red)
+        assertEquals("1–2 de 2 comandas", rangoDeComandas(KDSViewModel.BoardPaging(total = 1, count = 1), 2)) // llegó una por WiFi
+        assertEquals("0–0 de 0 comandas", rangoDeComandas(leida, 0))
+        assertEquals("101–150 de 205 comandas", rangoDeComandas(KDSViewModel.BoardPaging(offset = 100, total = 205, count = 50), 50))
+    }
+
+    // QA del conjunto (20-nov): al volver la red, «Recientes» se quedaba en «Sin conexión…» hasta cerrarla y abrirla otra vez.
+    @Test
+    fun `al primer sondeo bueno la hoja de Recientes abierta deja el Sin conexion y vuelve a leer`() = runTest {
+        coEvery { repo.fetchRecientes("st-barra") } returns Result.failure(IOException("sin red"))
+        val vm = armar()
+        vm.abrirRecientes()
+        advanceUntilIdle()
+        assertEquals(AvisoDeCocina(AccionDeCocina.RECIENTES.sinRed, esError = false), vm.recientesNoLeidas.value)
+
+        coEvery { repo.fetchRecientes("st-barra") } returns Result.success(listOf(comanda("k9", 500)))
+        vm.refrescar() // el sondeo del tablero ya contesta
+        advanceUntilIdle()
+
+        assertNull(vm.recientesNoLeidas.value)
+        assertEquals(listOf("k9"), vm.recientes.value.map { it.id })
+    }
+
+    // QA del conjunto (20-nov): «Sin conexión. Se usa la capacidad confirmada…» se quedaba en la barra con la red de vuelta.
+    @Test
+    fun `al primer sondeo bueno ningun aviso de Sin conexion se queda en la barra y se reconfirman las capacidades`() = runTest {
+        val preparacion = mockk<com.avoqado.pos.kds.data.KitchenPreparationRepository>(relaxed = true)
+        every { preparacion.capabilities } returns kotlinx.coroutines.flow.MutableStateFlow(
+            com.avoqado.pos.kds.domain.PreparationCapabilities(version = 1, enabled = true, kitchenDoneVersion = 1))
+        coEvery { preparacion.merge(any(), any(), any()) } answers { secondArg() }
+        coEvery { preparacion.pendingKeys(any(), any()) } returns emptySet()
+        val avisoDelRepositorio = kotlinx.coroutines.flow.MutableStateFlow<String?>("Sin conexión. Se usa la capacidad confirmada en este aparato.")
+        every { preparacion.notice } returns avisoDelRepositorio
+        coEvery { preparacion.refreshCapabilities("v1") } answers { avisoDelRepositorio.value = null }
+        val conTiempos = comanda("k5", 500).copy(preparationVersion = 1, items = listOf(KDSOrderItem(id = "i-k5", productName = "Pozole",
+            quantity = 1, externalId = "sync:r:0", preparation = com.avoqado.pos.kds.domain.PreparationCounts(PENDING = 1))))
+        every { repo.venueIdActual() } returns "v1"
+        every { printConfig.getCurrentConfig() } answers { config }
+        every { prefs.estacion("v1") } returns "st-barra"
+        every { prefs.foto(any(), any(), any()) } returns null
+        every { roleManager.role } returns "KITCHEN"
+        every { roleManager.canManagePrinters } returns false
+        every { planManager.hasFeature("KITCHEN_DISPLAY") } returns true
+        coEvery { repo.fetchOrders(any()) } returns Result.success(listOf(conTiempos))
+        coEvery { repo.fetchBoardPage(any(), any()) } coAnswers { repo.fetchOrders(firstArg()).map { KDSRepository.BoardPage(it) } }
+        coEvery { repo.fetchDeliveryChannels() } returns Result.success(emptyList())
+        val vm = KDSViewModel(
+            repo, mockk(relaxed = true), mockk(relaxed = true), printConfig, Provider { cola },
+            prefs, roleManager, planManager, mockk(relaxed = true),
+            receptor, ticketsLocales, preparationRepository = preparacion,
+        )
+
+        vm.refrescar()
+        advanceUntilIdle()
+
+        assertNull(vm.aviso.value) // la lectura del tablero fue buena: el «Sin conexión» viejo del repositorio no se pinta
+        coVerify { preparacion.refreshCapabilities("v1") }
+    }
+
+    @Test
+    fun `D17 la comanda que la cocina termino sale del tablero y no vuelve a parpadear con la copia vieja`() = runTest {
+        val preparacion = mockk<com.avoqado.pos.kds.data.KitchenPreparationRepository>(relaxed = true)
+        every { preparacion.capabilities } returns kotlinx.coroutines.flow.MutableStateFlow(
+            com.avoqado.pos.kds.domain.PreparationCapabilities(version = 1, enabled = true, kitchenDoneVersion = 1))
+        coEvery { preparacion.merge(any(), any(), any()) } answers {
+            secondArg<List<com.avoqado.pos.kds.domain.PreparationLine>>().map { it.copy(preparation = com.avoqado.pos.kds.domain.PreparationCounts(READY = 1)) }
+        }
+        coEvery { preparacion.pendingKeys(any(), any()) } returns emptySet()
+        // Un mock relajado devuelve un objeto cualquiera como aviso: al leerlo como texto truena y la tablet cae a la copia del servidor.
+        every { preparacion.notice } returns kotlinx.coroutines.flow.MutableStateFlow<String?>(null)
+        // La foto (sin red) todavía la trae «Preparando»; la cocina ya la dejó Lista en este aparato.
+        val conTiempos = comanda("k5", 500).copy(preparationVersion = 1, items = listOf(KDSOrderItem(id = "i-k5", productName = "Pozole",
+            quantity = 1, externalId = "sync:r:0", preparation = com.avoqado.pos.kds.domain.PreparationCounts(PREPARING = 1))))
+        coEvery { repo.fetchOrders(any()) } returns Result.success(listOf(conTiempos, comanda("k1", 1_000)))
+        every { repo.venueIdActual() } returns "v1"
+        every { printConfig.getCurrentConfig() } answers { config }
+        every { prefs.estacion("v1") } returns "st-barra"
+        every { prefs.foto(any(), any(), any()) } returns null
+        every { roleManager.role } returns "KITCHEN"
+        every { roleManager.canManagePrinters } returns false
+        every { planManager.hasFeature("KITCHEN_DISPLAY") } returns true
+        coEvery { repo.fetchBoardPage(any(), any()) } coAnswers { repo.fetchOrders(firstArg()).map { KDSRepository.BoardPage(it) } }
+        coEvery { repo.fetchDeliveryChannels() } returns Result.success(emptyList())
+        val vm = KDSViewModel(
+            repo, mockk(relaxed = true), mockk(relaxed = true), printConfig, Provider { cola },
+            prefs, roleManager, planManager, mockk(relaxed = true),
+            receptor, ticketsLocales, preparationRepository = preparacion,
+        )
+        // Desde la PRIMERA pintura (abrir la app sin red, Codex r5 #3) y en las siguientes (r4 D4): ni un instante con la copia vieja.
+        val pinturas = mutableListOf<List<String>>()
+        val vigia = backgroundScope.launch { vm.comandas.collect { pinturas.add(it.map { o -> o.id }) } }
+        vm.refrescar()
+        advanceUntilIdle()
+        assertEquals(listOf("k1"), vm.comandas.value.map { it.id })
+        vm.refrescar()
+        advanceUntilIdle()
+        vigia.cancel()
+        assertTrue(pinturas.none { "k5" in it })
+    }
+
+    @Test
+    fun `D17 deshacer una comanda con tiempos manda la hora en que la cocina la termino`() = runTest {
+        val conTiempos = comanda("k9", 500).copy(preparationVersion = 1, completedAt = 1_700_000_000_123)
+        coEvery { repo.fetchRecientes("st-barra") } returns Result.success(listOf(conTiempos, comanda("k8", 400)))
+        coEvery { repo.recall(any(), any()) } returns Result.success(Unit)
+        val vm = armar()
+
+        vm.abrirRecientes()
+        vm.deshacer("k9")
+        vm.abrirRecientes()
+        vm.deshacer("k8")
+
+        coVerify { repo.recall("k9", 1_700_000_000_123) }
+        coVerify { repo.recall("k8", null) } // la de un solo Listo, como siempre
+    }
+
+    @Test
+    fun `D17 si Deshacer no puede, el porque sale dentro de la hoja de Recientes`() = runTest {
+        val conTiempos = comanda("k9", 500).copy(preparationVersion = 1, completedAt = 1_700_000_000_123)
+        coEvery { repo.fetchRecientes("st-barra") } returns Result.success(listOf(conTiempos))
+        coEvery { repo.recall(any(), any()) } returns Result.failure(
+            KdsHttpException(409, "KDS_RECALL_NOTHING_READY", "Ya no queda nada listo en esta comanda: se entregó o se canceló."))
+        val vm = armar()
+        vm.abrirRecientes()
+        vm.deshacer("k9")
+        assertEquals("Ya no queda nada listo en esta comanda: se entregó o se canceló.", vm.avisoDeRecientes.value["k9"]?.texto)
+        vm.abrirRecientes()
+        assertTrue(vm.avisoDeRecientes.value.isEmpty()) // al volver a abrir, sin el aviso viejo
+    }
+
+    @Test
+    fun `D17 la lectura de una hoja ya cerrada no pisa la de la hoja abierta`() = runTest {
+        val conTiempos = comanda("k9", 500).copy(preparationVersion = 1, completedAt = 1_700_000_000_123)
+        val primera = kotlinx.coroutines.CompletableDeferred<Result<List<KDSOrder>>>()
+        coEvery { repo.fetchRecientes("st-barra") } coAnswers { primera.await() } andThen Result.success(listOf(conTiempos))
+        val vm = armar()
+        vm.abrirRecientes() // se queda leyendo
+        vm.abrirRecientes() // la cerró y la volvió a abrir: esta sí lee
+        assertEquals(listOf("k9"), vm.recientes.value.map { it.id })
+        primera.complete(Result.failure(java.io.IOException("se cayó")))
+        advanceUntilIdle()
+        assertEquals(listOf("k9"), vm.recientes.value.map { it.id })
+        assertNull(vm.recientesNoLeidas.value)
+    }
+
+    @Test
+    fun `D17 un Deshacer a la vez - mientras va al servidor no se abre otra hoja ni se toca otro, y al confirmarse la hoja se cierra`() = runTest {
+        val a1 = comanda("k1", 500).copy(preparationVersion = 1, completedAt = 1_700_000_000_001)
+        val b1 = comanda("k2", 500).copy(preparationVersion = 1, completedAt = 1_700_000_000_002)
+        coEvery { repo.fetchRecientes("st-barra") } returns Result.success(listOf(a1, b1))
+        val respuesta = kotlinx.coroutines.CompletableDeferred<Result<Unit>>()
+        coEvery { repo.recall(any(), any()) } coAnswers { respuesta.await() }
+        val vm = armar()
+        vm.abrirRecientes()
+        vm.deshacer("k1")
+        assertTrue(vm.deshaciendo.value)
+        vm.deshacer("k2") // ignorado
+        vm.cerrarRecientes()
+        vm.abrirRecientes() // ignorado mientras va el Deshacer
+        assertFalse(vm.recientesAbierta.value)
+        respuesta.complete(Result.success(Unit))
+        advanceUntilIdle()
+        assertFalse(vm.deshaciendo.value)
+        coVerify(exactly = 1) { repo.recall(any(), any()) }
+    }
+
+    @Test
+    fun `D17 al confirmarse el Deshacer la hoja abierta se cierra`() = runTest {
+        val a1 = comanda("k1", 500).copy(preparationVersion = 1, completedAt = 1_700_000_000_001)
+        coEvery { repo.fetchRecientes("st-barra") } returns Result.success(listOf(a1))
+        coEvery { repo.recall(any(), any()) } returns Result.success(Unit)
+        val vm = armar()
+        vm.abrirRecientes()
+        assertTrue(vm.recientesAbierta.value)
+        vm.deshacer("k1")
+        assertFalse(vm.recientesAbierta.value)
+    }
+
+    @Test
+    fun `D17 abrir Recientes arranca vacia y leyendo, sin filas de la apertura anterior`() = runTest {
+        val cocina = comanda("k1", 500).copy(preparationVersion = 1, completedAt = 1_700_000_000_123)
+        val lectura = kotlinx.coroutines.CompletableDeferred<Result<List<KDSOrder>>>()
+        coEvery { repo.fetchRecientes("st-barra") } returns Result.success(listOf(cocina)) coAndThen { lectura.await() }
+        val vm = armar()
+        vm.abrirRecientes()
+        assertEquals(listOf("k1"), vm.recientes.value.map { it.id })
+        vm.abrirRecientes()
+        assertEquals(emptyList<KDSOrder>(), vm.recientes.value)
+        assertTrue(vm.recientesLeyendo.value)
+    }
+
+    @Test
+    fun `D17 cerrar la hoja descarta su lectura tardia`() = runTest {
+        val lectura = kotlinx.coroutines.CompletableDeferred<Result<List<KDSOrder>>>()
+        coEvery { repo.fetchRecientes("st-barra") } coAnswers { lectura.await() }
+        val vm = armar()
+        vm.abrirRecientes() // se queda leyendo
+        vm.cerrarRecientes()
+        lectura.complete(Result.failure(java.io.IOException("se cayó")))
+        advanceUntilIdle()
+        assertNull(vm.recientesNoLeidas.value)
+        assertFalse(vm.recientesLeyendo.value)
+        assertNull(vm.aviso.value)
+    }
+
+    @Test
+    fun `D17 el porque de un Deshacer con la hoja ya cerrada va a la barra del tablero, no a una hoja nueva`() = runTest {
+        val conTiempos = comanda("k9", 500).copy(preparationVersion = 1, completedAt = 1_700_000_000_123)
+        coEvery { repo.fetchRecientes("st-barra") } returns Result.success(listOf(conTiempos))
+        val respuesta = kotlinx.coroutines.CompletableDeferred<Result<Unit>>()
+        coEvery { repo.recall(any(), any()) } coAnswers { respuesta.await() }
+        val vm = armar()
+        vm.abrirRecientes()
+        vm.deshacer("k9")
+        vm.cerrarRecientes()
+        respuesta.complete(Result.failure(KdsHttpException(409, "KDS_RECALL_NOTHING_READY", "Ya no queda nada listo en esta comanda.")))
+        advanceUntilIdle()
+        assertTrue(vm.avisoDeRecientes.value.isEmpty())
+        assertEquals("Ya no queda nada listo en esta comanda.", vm.aviso.value?.texto)
+    }
+
+    @Test
+    fun `D17 Liberar sale en la cocina solo con el permiso de cocina del repositorio`() = runTest {
+        val preparacion = mockk<com.avoqado.pos.kds.data.KitchenPreparationRepository>(relaxed = true)
+        every { preparacion.capabilities } returns kotlinx.coroutines.flow.MutableStateFlow(com.avoqado.pos.kds.domain.PreparationCapabilities())
+        every { repo.venueIdActual() } returns "v1"
+        val vm = KDSViewModel(
+            repo, mockk(relaxed = true), mockk(relaxed = true), printConfig, Provider { cola },
+            prefs, roleManager, planManager, mockk(relaxed = true),
+            receptor, ticketsLocales, preparationRepository = preparacion,
+        )
+        every { preparacion.canFromKitchen(com.avoqado.pos.kds.domain.PreparationAction.RELEASE) } returns false
+        org.junit.Assert.assertFalse(vm.canPreparation(com.avoqado.pos.kds.domain.PreparationAction.RELEASE))
+        every { preparacion.canFromKitchen(com.avoqado.pos.kds.domain.PreparationAction.RELEASE) } returns true
+        assertTrue(vm.canPreparation(com.avoqado.pos.kds.domain.PreparationAction.RELEASE))
+    }
+
     @Test
     fun `deshacer regresa la comanda a la cocina y la saca de Recientes`() = runTest {
         coEvery { repo.fetchRecientes("st-barra") } returns Result.success(listOf(comanda("k9", 500)))

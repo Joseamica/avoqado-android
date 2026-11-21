@@ -45,7 +45,7 @@ fun preparationReleasePaper(selected: List<PreparationLine>, quantity: Int, conf
 
 fun preparationDeliveryJob(venueId: String, actor: String, deviceId: String, intentId: String,
     selected: List<PreparationLine>, action: PreparationAction, quantity: Int,
-    from: PreparationState?, reason: String?, config: PrintConfig): PreparationDeliveryJob {
+    from: PreparationState?, reason: String?, config: PrintConfig, withPaper: Boolean = true): PreparationDeliveryJob {
     val eligible = selected.filter { it.sourceKey != null && it.externalId != null }
     val batches = eligible.groupBy { it.stationId }.values.flatMap { it.chunked(20) }
     val commands = batches.mapIndexed { index, rows -> PreparationPeerProgress(version = if (action.priority) 2 else 1,
@@ -58,6 +58,7 @@ fun preparationDeliveryJob(venueId: String, actor: String, deviceId: String, int
         orderNumber = selected.firstOrNull()?.orderNumber,
         urgencyNeedsScreen = (action == PreparationAction.URGENT && (held.isEmpty() || selected.any { it.preparation.PENDING + it.preparation.PREPARING > 0 })).takeIf { action == PreparationAction.URGENT },
         paper = when {
+            !withPaper -> null
             action == PreparationAction.RELEASE -> preparationReleasePaper(selected, quantity, config, venueId)
             action == PreparationAction.URGENT && held.isNotEmpty() -> preparationReleasePaper(held, 1, config, venueId, urgent = true)
             else -> null

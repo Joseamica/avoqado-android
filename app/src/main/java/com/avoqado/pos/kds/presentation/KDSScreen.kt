@@ -1,5 +1,6 @@
 package com.avoqado.pos.kds.presentation
 
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -23,6 +24,8 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -48,9 +51,11 @@ import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
@@ -89,7 +94,11 @@ import com.avoqado.pos.kds.domain.puedeApagar
 import com.avoqado.pos.printing.routing.PrintConfig
 import com.avoqado.pos.printing.routing.PrinterInfo
 import com.avoqado.pos.printing.routing.StationInfo
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.flow.first
 
 // MARK: - Entry Point
 
@@ -128,6 +137,9 @@ fun KDSScreen(
     val comandas by viewModel.comandas.collectAsState()
     val recientes by viewModel.recientes.collectAsState()
     val recientesNoLeidas by viewModel.recientesNoLeidas.collectAsState()
+    val avisoDeRecientes by viewModel.avisoDeRecientes.collectAsState()
+    val recientesLeyendo by viewModel.recientesLeyendo.collectAsState()
+    val deshaciendo by viewModel.deshaciendo.collectAsState()
     val sinConexion by viewModel.sinConexion.collectAsState()
     val aviso by viewModel.aviso.collectAsState()
     val exito by viewModel.exito.collectAsState()
@@ -158,7 +170,7 @@ fun KDSScreen(
     val recibiendoPorWifi by viewModel.recibiendoPorWifi.collectAsState()
 
     var showSettings by remember { mutableStateOf(false) }
-    var showRecientes by remember { mutableStateOf(false) }
+    val showRecientes by viewModel.recientesAbierta.collectAsState()
     var confirmacion by remember { mutableStateOf<Confirmacion?>(null) }
     // Qué canal está eligiendo duración. `null` = el diálogo está cerrado.
     var pausando by remember { mutableStateOf<CanalReparto?>(null) }
@@ -189,13 +201,15 @@ fun KDSScreen(
         is VistaDeCocina.ElegirEstacion -> null
     }
 
+    // QA del conjunto 2 (21-nov): la barra de aviso va ENCIMA, abajo, sin empujar el tablero: al aparecer sin red movía las tarjetas
+    // ~65 px y el toque siguiente caía en otro lado.
+    Box(modifier = Modifier.fillMaxSize()) {
     Column(
         modifier = Modifier
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.surfaceVariant),
     ) {
         if (sinConexion) BannerSinConexion(texto = if (recibiendoPorWifi) TextosDeCocina.SIN_INTERNET_CON_WIFI else TextosDeCocina.SIN_CONEXION)
-        aviso?.let { BarraDeAviso(it, onCerrar = viewModel::cerrarAviso) }
 
         when (val v = vista) {
             is VistaDeCocina.ElegirEstacion -> SelectorDeEstacion(
@@ -225,7 +239,7 @@ fun KDSScreen(
                 isLargeFont = settings.largeFontEnabled,
                 canalesReparto = canalesReparto,
                 onDismiss = onDismiss,
-                onAbrirRecientes = { showRecientes = true; viewModel.abrirRecientes() },
+                onAbrirRecientes = viewModel::abrirRecientes,
                 onMarcarTodas = { confirmacion = Confirmacion.MARCAR_TODAS },
                 onSettings = { showSettings = true },
                 onListo = viewModel::listo,
@@ -237,6 +251,8 @@ fun KDSScreen(
                 onReanudar = viewModel::reanudarReparto,
             )
         }
+    }
+        aviso?.let { BarraDeAviso(it, onCerrar = viewModel::cerrarAviso, modifier = Modifier.align(Alignment.BottomCenter)) }
     }
 
     // MARK: - Confirmaciones
@@ -333,13 +349,16 @@ fun KDSScreen(
         )
     }
 
-    // MARK: - Recientes
+    // MARK: - Recientes (D17: abierta o cerrada lo decide el ViewModel; se cierra sola si cambia la estación o la pantalla)
     if (showRecientes) {
         RecientesSheet(
             recientes = recientes,
             noLeidas = recientesNoLeidas,
+            avisos = avisoDeRecientes,
+            leyendo = recientesLeyendo,
+            deshaciendo = deshaciendo,
             onDeshacer = viewModel::deshacer,
-            onDismiss = { showRecientes = false },
+            onDismiss = viewModel::cerrarRecientes,
         )
     }
 
@@ -399,10 +418,11 @@ private fun BannerSinConexion(texto: String) {
 // MARK: - Barra de aviso (fija hasta "Entendido")
 
 @Composable
-private fun BarraDeAviso(aviso: AvisoDeCocina, onCerrar: () -> Unit) {
+private fun BarraDeAviso(aviso: AvisoDeCocina, onCerrar: () -> Unit, modifier: Modifier = Modifier) {
     Row(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
+            .shadow(6.dp)
             .background(if (aviso.esError) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.surfaceContainerHigh)
             .padding(horizontal = AvoqadoTheme.spacing.md, vertical = AvoqadoTheme.spacing.sm)
             .testTag("kds-aviso"),
@@ -704,7 +724,7 @@ private fun TableroDeCocina(
 
         if (paging.total != null || paging.offset > 0) Row(Modifier.fillMaxWidth().padding(horizontal = AvoqadoTheme.spacing.md),
             verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
-            Text("${paging.offset + (if (paging.count == 0) 0 else 1)}–${paging.offset + paging.count} de ${paging.total ?: "—"} comandas",
+            Text(rangoDeComandas(paging, comandas.size),
                 Modifier.weight(1f), style = MaterialTheme.typography.labelLarge)
             if (paging.offset > 0) OutlinedButton(onClick = onPreviousPage, enabled = !paging.loading) { Text("Anterior") }
             if (paging.nextOffset != null) OutlinedButton(onClick = onNextPage, enabled = !paging.loading) { Text("Siguiente") }
@@ -757,14 +777,18 @@ private fun TableroDeCocina(
 
 // MARK: - Recientes
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 private fun RecientesSheet(
     recientes: List<KDSOrder>,
     noLeidas: AvisoDeCocina?,
+    avisos: Map<String, AvisoDeCocina> = emptyMap(),
+    leyendo: Boolean = false,
+    deshaciendo: Boolean = false,
     onDeshacer: (String) -> Unit,
     onDismiss: () -> Unit,
 ) {
+    val desplazamiento = rememberScrollState()
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
@@ -774,7 +798,7 @@ private fun RecientesSheet(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .verticalScroll(rememberScrollState())
+                .verticalScroll(desplazamiento)
                 .padding(horizontal = AvoqadoTheme.spacing.lg),
         ) {
             Text(
@@ -789,7 +813,14 @@ private fun RecientesSheet(
                 modifier = Modifier.padding(bottom = AvoqadoTheme.spacing.lg),
             )
 
-            if (noLeidas != null) {
+            if (leyendo) {
+                Text(
+                    text = TextosDeCocina.RECIENTES_LEYENDO,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(vertical = AvoqadoTheme.spacing.xl).testTag("kds-recientes-leyendo"),
+                )
+            } else if (noLeidas != null) {
                 // I2: no se pudo leer — nunca se pinta como «no hay nada».
                 Text(
                     text = noLeidas.texto,
@@ -814,16 +845,45 @@ private fun RecientesSheet(
                         horizontalArrangement = Arrangement.SpaceBetween,
                     ) {
                         Text(
-                            text = "#${orden.orderNumber} · ${orden.items.size} ${if (orden.items.size == 1) "platillo" else "platillos"}",
+                            text = "#${orden.orderNumber} · ${com.avoqado.pos.kds.domain.resumenDePlatillos(orden.items)}",
                             style = MaterialTheme.typography.bodyLarge,
                             color = MaterialTheme.colorScheme.onSurface,
                         )
                         TextButton(
                             onClick = { onDeshacer(orden.id) },
+                            enabled = !deshaciendo,
                             modifier = Modifier.testTag("kds-deshacer-${orden.id}"),
                         ) {
                             Text(TextosDeCocina.DESHACER)
                         }
+                    }
+                    val aviso = avisos[orden.id]
+                    if (aviso != null) {
+                        // D17 (Codex r14, r15 y r16): por qué no se pudo «Deshacer» ESTA comanda, justo debajo de su botón, y la hoja
+                        // se desliza lo necesario para que se vea aunque el botón estuviera al ras del borde.
+                        val aLaVista = remember { BringIntoViewRequester() }
+                        LaunchedEffect(aviso) {
+                            // Codex r17 #1: si la persona está arrastrando la hoja, el deslizamiento se cancela; se reintenta al soltar.
+                            // Sin tope (Codex r18 #1): se reintenta cada vez que suelta, hasta que se vea o cambie el aviso.
+                            while (true) {
+                                snapshotFlow { desplazamiento.isScrollInProgress }.first { !it }
+                                try {
+                                    aLaVista.bringIntoView()
+                                    return@LaunchedEffect
+                                } catch (e: CancellationException) {
+                                    currentCoroutineContext().ensureActive()
+                                }
+                            }
+                        }
+                        Text(
+                            text = aviso.texto,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = if (aviso.esError) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier
+                                .padding(bottom = AvoqadoTheme.spacing.sm)
+                                .bringIntoViewRequester(aLaVista)
+                                .testTag("kds-recientes-aviso-${orden.id}"),
+                        )
                     }
                 }
             }
