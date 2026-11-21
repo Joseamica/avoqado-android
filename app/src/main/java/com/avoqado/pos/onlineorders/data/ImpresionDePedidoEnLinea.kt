@@ -254,9 +254,10 @@ class ImpresionDePedidoEnLinea internal constructor(
 }
 
 /**
- * Ruling 50 enmendado (ronda 4, el 66 de la TPV): la comanda con tope es la de tarjeta de «Nadie» (D661: `CARD_ONLINE` sin aceptación, la
- * que el SERVIDOR lista en `comandasPorImprimir`), la saque el vigilante o la bandeja: el vigilante la vuelve a reclamar solo, y es la única
- * con la regla del papel devuelto y la del reclamo repetido. «Mi equipo» y el folio que se cobra en caja no lo llevan.
+ * Ruling 50 enmendado (ronda 4, el 66 de la TPV): la comanda con tope es la de un pedido de tarjeta de «Nadie» (D661: `CARD_ONLINE` sin
+ * aceptación; el SERVIDOR lo lista en `comandasPorImprimir` mientras está en su ventana), la saque el vigilante o la bandeja: el vigilante la
+ * vuelve a reclamar solo, y es la única con la regla del papel devuelto y la del reclamo repetido. «Mi equipo» y el folio que se cobra en caja
+ * no lo llevan.
  */
 private fun esComandaDeTarjetaEnNadie(order: OnlineOrder) = order.paymentMode == "CARD_ONLINE" && order.requiresAcceptance == false
 

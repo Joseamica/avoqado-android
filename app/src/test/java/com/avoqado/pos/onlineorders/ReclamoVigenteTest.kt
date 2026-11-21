@@ -220,7 +220,8 @@ class ReclamoVigenteTest {
 
     /** Una ticketera de red falsa en esta máquina: contesta «con papel» y guarda lo que llega en cada conexión (un trabajo = una conexión). */
     private class TicketeraDeRed {
-        private val servidor = ServerSocket(0, 50, InetAddress.getLoopbackAddress())
+        // La misma dirección literal que marca la configuración (con `preferIPv6Addresses` la de loopback sería `::1`).
+        private val servidor = ServerSocket(0, 50, InetAddress.getByName("127.0.0.1"))
         private val trabajos = LinkedBlockingQueue<List<Byte>>()
         val puerto: Int get() = servidor.localPort
 
