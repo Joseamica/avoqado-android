@@ -60,13 +60,17 @@ class AjustesDeLaMaquinaTest {
         assertNull(prefs.ip)
         assertFalse(prefs.activa)
 
-        prefs.guardar("192.168.1.50", activa = true)
+        prefs.guardar("192.168.1.50", activa = true, venueId = "venue-1", nombreDeLaSucursal = "La Galeterie Centro")
 
         val otra = MaquinaDeEfectivoPrefs(contexto)
         assertEquals("192.168.1.50", otra.ip)
         assertTrue(otra.activa)
+        assertEquals("venue-1" to "La Galeterie Centro", otra.venueId to otra.nombreDeLaSucursal)
+        assertTrue("Codex código r1 #10: activa en SU sucursal", otra.activaEn("venue-1"))
+        assertFalse("y no en otra", otra.activaEn("venue-2"))
         otra.guardar("192.168.1.50", activa = false)
         assertFalse(MaquinaDeEfectivoPrefs(contexto).activa)
+        assertEquals("apagar no olvida la sucursal", "venue-1", MaquinaDeEfectivoPrefs(contexto).venueId)
     }
 
     // MARK: - Permiso (R5#10)
@@ -109,12 +113,15 @@ class AjustesDeLaMaquinaTest {
             dao.insertar(fila("AQ000000000002", EstadoDelIntento.CANCELADO, subido = true))
             dao.insertar(fila("AQ000000000003", EstadoDelIntento.GUARDADO, subido = true))
             dao.insertar(fila("AQ000000000004", EstadoDelIntento.RESUELTO))
+            // Codex código r1 #9: lo que el SERVIDOR ya guardó como incidencia (la duda subida, en conflicto o no) ya no frena.
+            dao.insertar(fila("AQ000000000005", EstadoDelIntento.ESPERANDO, dudaSubida = true))
+            dao.insertar(fila("AQ000000000006", EstadoDelIntento.ESPERANDO, dudaSubida = true).copy(conflicto = "otra PC", respuestaServidor = "{}"))
             assertEquals(0, dao.pendientes(null))
             assertFalse(dao.hayPendientesDeLaMaquina())
 
             val frenan = listOf(
                 fila("AQ00000000000A", EstadoDelIntento.EN_CURSO),
-                fila("AQ00000000000B", EstadoDelIntento.ESPERANDO, dudaSubida = true),   // subida, pero sin decisión del gerente
+                fila("AQ00000000000B", EstadoDelIntento.ESPERANDO, dudaSubida = true).copy(cierreTardio = "PAGADO"),   // su cierre no ha subido
                 fila("AQ00000000000C", EstadoDelIntento.ESPERANDO),
                 fila("AQ00000000000D", EstadoDelIntento.PAGADO),
                 fila("AQ00000000000E", EstadoDelIntento.CANCELADO),
@@ -171,9 +178,9 @@ class AjustesDeLaMaquinaTest {
         servidor.enqueue(MockResponse().setResponseCode(201).setBody("""{"success":true,"bindingId":"b1","credential":"cred-1"}"""))
         servidor.start()
 
-        val credencial = emparejamiento().emparejar("192.168.1.50").getOrThrow()
+        val emparejado = emparejamiento().emparejar("192.168.1.50").getOrThrow()
 
-        assertEquals("cred-1", credencial)
+        assertEquals(Emparejado("cred-1", "venue-1", "La Galeterie"), emparejado)
         val pedido = servidor.takeRequest()
         assertEquals("POST", pedido.method)
         assertEquals("/api/v1/mobile/venues/venue-1/cash-machine/binding", pedido.path)
@@ -216,7 +223,10 @@ class AjustesDeLaMaquinaTest {
     }
 
     private fun emparejamiento() = EmparejamientoDeLaMaquina(
-        mockk { every { venueId } returns "venue-1" },
+        mockk {
+            every { venueId } returns "venue-1"
+            every { venueName } returns "La Galeterie"
+        },
         okHttp,
     ).apply { baseUrl = servidor.url("/api/v1").toString().trimEnd('/') }
 

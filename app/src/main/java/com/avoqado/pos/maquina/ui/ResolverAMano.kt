@@ -64,7 +64,18 @@ private enum class Modo(val etiqueta: String, val valor: String?) { DEVOLVIO("Lo
  * permiso se explica cómo entrar (cambio de usuario por PIN, como Ajustes de la máquina). Con «No sé» el cobro sigue esperando.
  */
 @Composable
-internal fun ResolverAMano(vista: VistaDeLaMaquina, onResolver: (ResolucionDelGerente) -> Unit, onCerrar: () -> Unit) {
+internal fun ResolverAMano(vista: VistaDeLaMaquina, onResolver: (ResolucionDelGerente) -> Unit, onCerrar: () -> Unit) =
+    ResolverAMano(vista.puedeResolver, vista.resolviendo, vista.avisoDeResolver, onResolver, onCerrar)
+
+/** Codex código r1 #7: el mismo formulario para la duda de esta venta, para las otras dudas de Cobrar y para Ajustes. */
+@Composable
+internal fun ResolverAMano(
+    puedeResolver: Boolean,
+    resolviendo: Boolean,
+    aviso: String?,
+    onResolver: (ResolucionDelGerente) -> Unit,
+    onCerrar: () -> Unit,
+) {
     var opcion by remember { mutableStateOf<Opcion?>(null) }
     var modo by remember { mutableStateOf<Modo?>(null) }
     var entro by remember { mutableStateOf("") }
@@ -83,8 +94,8 @@ internal fun ResolverAMano(vista: VistaDeLaMaquina, onResolver: (ResolucionDelGe
             PrimaryButton(
                 text = "Resolver",
                 fullWidth = true,
-                isLoading = vista.resolviendo,
-                enabled = vista.puedeResolver && o != null && credit != null && change != null && vio.isNotBlank() &&
+                isLoading = resolviendo,
+                enabled = puedeResolver && o != null && credit != null && change != null && vio.isNotBlank() &&
                     (o == Opcion.COBRO || modo != null),
                 onClick = {
                     if (o == null || credit == null || change == null) return@PrimaryButton
@@ -103,7 +114,7 @@ internal fun ResolverAMano(vista: VistaDeLaMaquina, onResolver: (ResolucionDelGe
         },
     ) {
         Column(verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
-            if (!vista.puedeResolver) {
+            if (!puedeResolver) {
                 Text(TEXTO_SIN_PERMISO_RESOLVER, color = MaterialTheme.colorScheme.error)
                 return@Column
             }
@@ -122,7 +133,7 @@ internal fun ResolverAMano(vista: VistaDeLaMaquina, onResolver: (ResolucionDelGe
             AvoqadoPillTextField(value = cambio, onValueChange = { cambio = it }, placeholder = "Cambio que dio (ej. 12.50)", keyboardType = KeyboardType.Decimal)
             AvoqadoPillTextField(value = hora, onValueChange = { hora = it }, placeholder = "Hora del comprobante (ej. 18:05)")
             AvoqadoPillTextField(value = vio, onValueChange = { vio = it }, placeholder = "Lo que viste en la máquina")
-            vista.avisoDeResolver?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+            aviso?.let { Text(it, color = MaterialTheme.colorScheme.error) }
             Spacer(Modifier.height(AvoqadoTheme.spacing.xs))
         }
     }

@@ -75,7 +75,7 @@ class MaquinaDeEfectivoTest {
     private val canal = CanalFalso()
     private val dao = CobroEnMaquinaSobreSqlite()
     private val contexto = AjustesDeLaMaquinaTest.contextoConPreferencias()
-    private val prefs = MaquinaDeEfectivoPrefs(contexto).apply { guardar("192.168.1.50", activa = true) }
+    private val prefs = MaquinaDeEfectivoPrefs(contexto).apply { guardar("192.168.1.50", activa = true, venueId = "venue-1") }
     private val boveda = object : BovedaDeLaMaquina {
         var credencial: String? = "cred-1"
         override fun guardar(credencial: String) { this.credencial = credencial }
@@ -129,6 +129,47 @@ class MaquinaDeEfectivoTest {
         boveda.credencial = "cred-1"
         prefs.guardar("192.168.1.50", activa = false)
         assertFalse(m.activa())
+    }
+
+    @Test
+    fun `P1 Codex r1 #10 con la sesion en otra sucursal la maquina no cobra ni se conecta`() = runTest {
+        every { sesion.venueId } returns "venue-2"
+        val m = maquina()
+
+        assertFalse("la credencial y la máquina son de la sucursal 1", m.activa())
+        m.arrancar()
+        runCurrent()
+        assertNull(canal.conectadaA)
+    }
+
+    @Test
+    fun `Codex r1 #7 las dudas de esta PC en la sucursal, para resolverlas desde Cobrar y Ajustes`() = runTest {
+        val base = CobroEnMaquinaEntity("AQ000000000001", "venue-1", "venta-1", "{}", 1_000, 0, 1_000, null, null, 1, EstadoDelIntento.ESPERANDO)
+        dao.insertar(base)
+        dao.insertar(base.copy(referenceCC = "AQ000000000002", llaveDeVenta = "venta-2", creadoEn = 2))
+        dao.insertar(base.copy(referenceCC = "AQ000000000003", llaveDeVenta = "venta-3", venueId = "venue-2"))
+        dao.insertar(base.copy(referenceCC = "AQ000000000004", llaveDeVenta = "venta-4", estado = EstadoDelIntento.PAGADO))
+        val m = maquina()
+
+        assertEquals(listOf("AQ000000000002", "AQ000000000001"), m.dudasEnEspera().map { it.referenceCC })
+        assertEquals(listOf("AQ000000000002", "AQ000000000001"), m.enEspera().first().map { it.referenceCC })
+        assertEquals("AQ000000000001", m.intentoDeLaVenta("venta-1")?.referenceCC)
+        assertNull(m.intentoDeLaVenta("venta-4"))
+    }
+
+    @Test
+    fun `P1 Codex r1 #8 un CANCELADO o GUARDADO que resolvio el gerente libera la venta, un PAGADO o uno sin saber no`() = runTest {
+        val base = CobroEnMaquinaEntity("AQ000000000001", "venue-1", "venta-1", "{}", 1_000, 0, 1_000, null, null, 1, EstadoDelIntento.RESUELTO)
+        dao.insertar(base.copy(desenlaceDelServidor = "CANCELADO"))
+        dao.insertar(base.copy(referenceCC = "AQ000000000002", llaveDeVenta = "venta-2", desenlaceDelServidor = "GUARDADO"))
+        dao.insertar(base.copy(referenceCC = "AQ000000000003", llaveDeVenta = "venta-3", desenlaceDelServidor = "PAGADO"))
+        dao.insertar(base.copy(referenceCC = "AQ000000000004", llaveDeVenta = "venta-4"))
+        val m = maquina()
+
+        assertFalse("la máquina devolvió todo: la tarjeta sí", m.ventaBloqueada("venta-1"))
+        assertFalse(m.ventaBloqueada("venta-2"))
+        assertTrue(m.ventaBloqueada("venta-3"))
+        assertTrue("sin saber cómo terminó, sigue frenada", m.ventaBloqueada("venta-4"))
     }
 
     @Test

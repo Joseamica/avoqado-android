@@ -46,12 +46,18 @@ class MaquinaDeEfectivoViewModelTest {
         okHttp.dispatcher.executorService.shutdown()
     }
 
-    private fun vm() = MaquinaDeEfectivoViewModel(
+    private var sucursal = "venue-1"
+    private val sesion = mockk<com.avoqado.pos.core.data.local.SecureStorage> {
+        every { venueId } answers { sucursal }
+        every { venueName } answers { if (sucursal == "venue-1") "La Galeterie Centro" else "La Galeterie Sur" }
+    }
+
+    private fun vm(maquina: MaquinaDeEfectivo? = null) = MaquinaDeEfectivoViewModel(
         prefs,
         boveda,
-        EmparejamientoDeLaMaquina(mockk { every { venueId } returns "venue-1" }, okHttp)
-            .apply { baseUrl = servidor.url("/api/v1").toString().trimEnd('/') },
+        EmparejamientoDeLaMaquina(sesion, okHttp).apply { baseUrl = servidor.url("/api/v1").toString().trimEnd('/') },
         cobros,
+        maquina,
     )
 
     private fun MaquinaDeEfectivoViewModel.esperar(que: String, condicion: (com.avoqado.pos.maquina.ui.EstadoDeLaMaquina) -> Boolean) =
@@ -74,6 +80,7 @@ class MaquinaDeEfectivoViewModelTest {
         assertEquals("cred-1", boveda.leer())
         assertEquals("192.168.1.50", prefs.ip)
         assertTrue(prefs.activa)
+        assertEquals("Codex código r1 #10: con su sucursal", "venue-1" to "La Galeterie Centro", prefs.venueId to prefs.nombreDeLaSucursal)
         assertEquals("192.168.1.50", listo.ipGuardada)
         assertEquals("¡Máquina emparejada!", listo.listo)
         assertEquals("192.168.1.50", JSONObject(servidor.takeRequest().body.readUtf8()).getString("machineIp"))
@@ -101,15 +108,66 @@ class MaquinaDeEfectivoViewModelTest {
         io.mockk.coEvery { maquina.imprimirComprobante("AQ000000000001") } returns
             com.avoqado.pos.printing.data.PrinterService.PrintOutcome.Printed(1) andThen
             com.avoqado.pos.printing.data.PrinterService.PrintOutcome.OutOfPaper
-        val vm = MaquinaDeEfectivoViewModel(
-            prefs, boveda, EmparejamientoDeLaMaquina(mockk { every { venueId } returns "venue-1" }, okHttp), cobros, maquina,
-        ).abierta()
+        io.mockk.coEvery { maquina.dudasEnEspera() } returns emptyList()
+        every { maquina.puedeResolver() } returns false
+        val vm = vm(maquina).abierta()
 
         assertEquals(listOf(com.avoqado.pos.maquina.ui.ComprobantePorImprimir("AQ000000000001", 500)), vm.estado.value.comprobantes)
         vm.imprimirComprobante("AQ000000000001")
         vm.esperar("impreso") { it.listo == "¡Comprobante impreso!" }
         vm.imprimirComprobante("AQ000000000001")
         vm.esperar("sin papel, con el resultado real") { it.aviso == "La impresora no tiene papel" }
+    }
+
+    @Test
+    fun `P1 Codex r1 #10 desde otra sucursal la hoja dice con cual esta emparejada y con pendientes no se empareja aqui`() {
+        prefs.guardar("192.168.1.50", activa = true, venueId = "venue-1", nombreDeLaSucursal = "La Galeterie Centro")
+        boveda.guardar("cred-1")
+        runBlocking { cobros.insertar(fila("AQ00000000000A", EstadoDelIntento.PAGADO)) }   // sin subir, de la sucursal 1
+        sucursal = "venue-2"
+        val vm = vm().abierta()
+
+        assertEquals("La Galeterie Centro", vm.estado.value.emparejadaConOtra)
+        assertFalse("la misma IP en otra sucursal dejaría los cobros de la 1 sin dueño", vm.estado.value.puedeEmparejar)
+        vm.emparejar()
+        vm.esperar("aviso") { it.aviso == TEXTO_PENDIENTES_DE_LA_MAQUINA && !it.ocupado }
+        assertEquals(0, servidor.requestCount)
+        assertEquals("venue-1", prefs.venueId)
+    }
+
+    @Test
+    fun `Codex r1 #10 sin pendientes se puede emparejar la nueva sucursal y queda la de la sesion`() {
+        servidor.enqueue(MockResponse().setResponseCode(201).setBody("""{"success":true,"bindingId":"b2","credential":"cred-2"}"""))
+        prefs.guardar("192.168.1.50", activa = true, venueId = "venue-1", nombreDeLaSucursal = "La Galeterie Centro")
+        boveda.guardar("cred-1")
+        sucursal = "venue-2"
+        val vm = vm().abierta()
+        assertTrue(vm.estado.value.puedeEmparejar)
+
+        vm.emparejar()
+
+        vm.esperar("emparejada aquí") { it.emparejadaConOtra == null && it.emparejada && !it.ocupado }
+        assertEquals("venue-2" to "La Galeterie Sur", prefs.venueId to prefs.nombreDeLaSucursal)
+        assertEquals("cred-2", boveda.leer())
+    }
+
+    @Test
+    fun `P1 Codex r1 #7 Ajustes enseña las dudas de esta PC y las resuelve con gerente`() {
+        val maquina = mockk<MaquinaDeEfectivo>()
+        val duda = fila("AQ00000000000D", EstadoDelIntento.ESPERANDO)
+        io.mockk.coEvery { maquina.comprobantes() } returns emptyList()
+        io.mockk.coEvery { maquina.dudasEnEspera() } returns listOf(duda) andThen emptyList()
+        every { maquina.puedeResolver() } returns true
+        val resolucion = ResolucionDelGerente(Desenlace.CANCELADO, 5_000, 5_000, null, "1", "pantalla: devolvió todo")
+        io.mockk.coEvery { maquina.resolver("AQ00000000000D", resolucion) } returns ResultadoDeResolver.Resuelto(Desenlace.CANCELADO, 5_000, 5_000)
+        val vm = vm(maquina).abierta()
+        assertEquals(listOf(CobroEnEspera("AQ00000000000D", 18_000, 1)), vm.estado.value.enEspera)
+        assertTrue(vm.estado.value.puedeResolver)
+
+        vm.resolver("AQ00000000000D", resolucion)
+
+        vm.esperar("resuelta, ya no está") { it.enEspera.isEmpty() && it.listo == "¡Cobro resuelto!" }
+        io.mockk.coVerify(exactly = 1) { maquina.resolver("AQ00000000000D", resolucion) }
     }
 
     @Test
@@ -128,12 +186,12 @@ class MaquinaDeEfectivoViewModelTest {
     fun `P1 con cobros de la maquina sin subir o en duda no se cambia la IP ni se desempareja, y se dice por que`() {
         listOf(
             fila("AQ00000000000A", EstadoDelIntento.EN_CURSO),
-            fila("AQ00000000000B", EstadoDelIntento.ESPERANDO, dudaSubida = true),
+            fila("AQ00000000000B", EstadoDelIntento.ESPERANDO),
             fila("AQ00000000000C", EstadoDelIntento.PAGADO),
         ).forEach { pendiente ->
             cobros.db.createStatement().use { it.executeUpdate("DELETE FROM cobros_en_maquina") }
             runBlocking { cobros.insertar(pendiente) }
-            prefs.guardar("192.168.1.50", activa = true)
+            prefs.guardar("192.168.1.50", activa = true, venueId = "venue-1")
             boveda.guardar("cred-1")
             val vm = vm().abierta()
             val abierta = vm.estado.value
@@ -156,7 +214,7 @@ class MaquinaDeEfectivoViewModelTest {
 
     @Test
     fun `P1 el freno se vuelve a contar al tocar, no sale del estado con que se abrio la hoja`() {
-        prefs.guardar("192.168.1.50", activa = true)
+        prefs.guardar("192.168.1.50", activa = true, venueId = "venue-1")
         boveda.guardar("cred-1")
         val vm = vm().abierta()
         assertFalse(vm.estado.value.hayPendientes)
@@ -172,7 +230,7 @@ class MaquinaDeEfectivoViewModelTest {
     @Test
     fun `desemparejar avisa al servidor y borra la credencial y la casilla`() {
         servidor.enqueue(MockResponse().setBody("""{"success":true,"revoked":true}"""))
-        prefs.guardar("192.168.1.50", activa = true)
+        prefs.guardar("192.168.1.50", activa = true, venueId = "venue-1")
         boveda.guardar("cred-1")
         val vm = vm().abierta()
         assertTrue(vm.estado.value.emparejada)
@@ -188,7 +246,7 @@ class MaquinaDeEfectivoViewModelTest {
 
     @Test
     fun `sin internet desemparejar no borra la credencial`() {
-        prefs.guardar("192.168.1.50", activa = true)
+        prefs.guardar("192.168.1.50", activa = true, venueId = "venue-1")
         boveda.guardar("cred-1")
         servidor.shutdown()
         val vm = vm().abierta()
@@ -203,7 +261,7 @@ class MaquinaDeEfectivoViewModelTest {
     @Test
     fun `P1 una PC que perdio su credencial (perfil copiado) se vuelve a emparejar con su IP aunque haya pendientes`() {
         servidor.enqueue(MockResponse().setResponseCode(201).setBody("""{"success":true,"bindingId":"b2","credential":"cred-2"}"""))
-        prefs.guardar("192.168.1.50", activa = true)                                   // la bóveda está vacía
+        prefs.guardar("192.168.1.50", activa = true, venueId = "venue-1")              // la bóveda está vacía
         runBlocking { cobros.insertar(fila("AQ00000000000A", EstadoDelIntento.PAGADO)) }
         val vm = vm().abierta()
         assertTrue(vm.estado.value.credencialPerdida)

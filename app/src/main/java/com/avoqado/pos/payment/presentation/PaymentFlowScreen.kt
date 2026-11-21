@@ -345,6 +345,10 @@ fun PaymentFlowScreen(
                         onRetryTerminals = { viewModel.probeTerminalAvailability(background = false) },
                         maquina = vistaDeLaMaquina,
                         onCobrarConMaquina = viewModel::cobrarConMaquina,
+                        onResolverOtraDeLaMaquina = { ref, r ->
+                            viewModel.maquina?.resolverOtra(ref, r)
+                                ?: com.avoqado.pos.maquina.ResultadoDeResolver.NoSe(com.avoqado.pos.maquina.TEXTO_SIN_PERMISO_RESOLVER)
+                        },
                     )
                     TipSelectionSheet(
                         amountCents = currentState.amount,
@@ -385,6 +389,10 @@ fun PaymentFlowScreen(
                     onSaldoSelected = { scopeDeSaldo.launch { viewModel.actualizarFilaDeSaldo(); if (viewModel.conductaDelSaldo.value.habilitada) { identificadaDeSaldo = null; muestraSaldo = true } } },
                     maquina = vistaDeLaMaquina,
                     onCobrarConMaquina = viewModel::cobrarConMaquina,
+                    onResolverOtraDeLaMaquina = { ref, r ->
+                        viewModel.maquina?.resolverOtra(ref, r)
+                            ?: com.avoqado.pos.maquina.ResultadoDeResolver.NoSe(com.avoqado.pos.maquina.TEXTO_SIN_PERMISO_RESOLVER)
+                    },
                 )
             }
             is PaymentFlowState.CollectingCashAmount -> {

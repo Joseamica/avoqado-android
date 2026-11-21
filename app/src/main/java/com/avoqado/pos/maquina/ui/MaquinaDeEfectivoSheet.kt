@@ -18,6 +18,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -61,6 +64,8 @@ fun MaquinaDeEfectivoSheet(onDismiss: () -> Unit, viewModel: MaquinaDeEfectivoVi
                 onDesemparejar = viewModel::desemparejar,
                 onCerrar = cerrar,
                 onImprimirComprobante = viewModel::imprimirComprobante,
+                onResolver = viewModel::resolver,
+                onResolverCerrado = viewModel::avisoDeResolverVisto,
             )
             estado.listo?.let { AvoqadoSuccessToast(message = it, onDismiss = viewModel::toastVisto) }
         }
@@ -77,7 +82,12 @@ internal fun ContenidoDeLaMaquina(
     onDesemparejar: () -> Unit,
     onCerrar: () -> Unit,
     onImprimirComprobante: (String) -> Unit = {},
+    onResolver: (String, com.avoqado.pos.maquina.ResolucionDelGerente) -> Unit = { _, _ -> },
+    onResolverCerrado: () -> Unit = {},
 ) {
+    var resolviendoFolio by remember { mutableStateOf<String?>(null) }
+    // Al resolverse, la duda sale de la lista: el diálogo se cierra solo.
+    val folioAbierto = resolviendoFolio?.takeIf { folio -> estado.enEspera.any { it.referenceCC == folio } }
     Column(Modifier.fillMaxSize()) {
         AvoqadoFullscreenHeader(
             title = "Máquina de efectivo",
@@ -103,6 +113,8 @@ internal fun ContenidoDeLaMaquina(
             Text(
                 text = when {
                     !estado.cargado -> "Revisando…"
+                    // Codex código r1 #10: en otra sucursal la máquina no cobra; se dice con cuál está emparejada.
+                    estado.emparejadaConOtra != null -> "Esta PC está emparejada con ${estado.emparejadaConOtra}"
                     estado.emparejada -> "Emparejada con ${estado.ipGuardada}"
                     estado.credencialPerdida -> "Esta PC perdió su credencial (¿se copió de otra PC?): vuelve a emparejarla"
                     else -> "Sin emparejar"
@@ -150,6 +162,24 @@ internal fun ContenidoDeLaMaquina(
             estado.aviso?.takeUnless { it == TEXTO_PENDIENTES_DE_LA_MAQUINA && estado.hayPendientes && estado.activa }
                 ?.let { Nota(it, error = true) }
 
+            // Codex código r1 #7: los cobros de esta PC «Esperando a la máquina», con «Resolver con gerente».
+            if (estado.enEspera.isNotEmpty()) {
+                Text(com.avoqado.pos.maquina.TEXTO_COBROS_EN_ESPERA, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                estado.enEspera.forEach { c ->
+                    androidx.compose.foundation.layout.Row(
+                        Modifier.fillMaxWidth(),
+                        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            "Folio ${c.referenceCC} · ${com.avoqado.pos.core.util.formatMoneyFromCents(c.dueCents)}",
+                            style = MaterialTheme.typography.bodyMedium,
+                            modifier = Modifier.weight(1f),
+                        )
+                        OutlinedButton(onClick = { resolviendoFolio = c.referenceCC }) { Text("Resolver con gerente") }
+                    }
+                }
+            }
+
             // C7 (R5#9, R3#11): lo que la máquina les debe a clientes, con su comprobante (mismo folio) para reimprimir.
             if (estado.comprobantes.isNotEmpty()) {
                 Text("Lo que la máquina les debe a clientes", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
@@ -170,7 +200,18 @@ internal fun ContenidoDeLaMaquina(
             }
         }
     }
+    folioAbierto?.let { folio ->
+        DialogoDeResolver(estado, folio, onResolver, onCerrar = { resolviendoFolio = null; onResolverCerrado() })
+    }
 }
+
+@Composable
+private fun DialogoDeResolver(
+    estado: EstadoDeLaMaquina,
+    folio: String,
+    onResolver: (String, com.avoqado.pos.maquina.ResolucionDelGerente) -> Unit,
+    onCerrar: () -> Unit,
+) = ResolverAMano(estado.puedeResolver, estado.resolviendo, estado.avisoDeResolver, onResolver = { onResolver(folio, it) }, onCerrar = onCerrar)
 
 @Composable
 private fun Nota(texto: String, error: Boolean = false) {

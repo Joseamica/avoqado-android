@@ -81,6 +81,53 @@ internal fun FilaEfectivoEnLaMaquina(fila: FilaDeLaMaquina, aviso: String?, avis
 }
 
 /**
+ * Codex código r1 #7: las OTRAS dudas de esta PC, con «Resolver con gerente», en la selección de método de Cobrar. Resolverlas nunca
+ * cobra la venta en pantalla (la decisión la escribe el SERVIDOR; la PC se entera en su siguiente subida).
+ */
+@Composable
+internal fun CobrosEnEsperaDeLaMaquina(
+    enEspera: List<com.avoqado.pos.maquina.CobroEnEspera>,
+    puedeResolver: Boolean,
+    onResolver: suspend (String, com.avoqado.pos.maquina.ResolucionDelGerente) -> com.avoqado.pos.maquina.ResultadoDeResolver,
+) {
+    if (enEspera.isEmpty()) return
+    val scope = rememberCoroutineScope()
+    var abierta by remember { mutableStateOf<String?>(null) }
+    var resolviendo by remember { mutableStateOf(false) }
+    var aviso by remember { mutableStateOf<String?>(null) }
+    Column(Modifier.fillMaxWidth().padding(vertical = AvoqadoTheme.spacing.sm)) {
+        Text(
+            "${com.avoqado.pos.maquina.TEXTO_COBROS_EN_ESPERA} (${enEspera.size})",
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.SemiBold,
+            color = MaterialTheme.colorScheme.error,
+        )
+        enEspera.forEach { c ->
+            Row(Modifier.fillMaxWidth().padding(top = AvoqadoTheme.spacing.xs), verticalAlignment = Alignment.CenterVertically) {
+                Text("Folio ${c.referenceCC} · ${formatMoneyFromCents(c.dueCents)}", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+                OutlinedButton(onClick = { abierta = c.referenceCC; aviso = null }) { Text("Resolver con gerente") }
+            }
+        }
+    }
+    abierta?.let { ref ->
+        ResolverAMano(
+            puedeResolver = puedeResolver,
+            resolviendo = resolviendo,
+            aviso = aviso,
+            onResolver = { r ->
+                scope.launch {
+                    resolviendo = true
+                    val resultado = onResolver(ref, r)
+                    resolviendo = false
+                    if (resultado is com.avoqado.pos.maquina.ResultadoDeResolver.NoSe) aviso = resultado.texto else abierta = null
+                }
+            },
+            onCerrar = { abierta = null },
+        )
+    }
+}
+
+/**
  * La pantalla del cobro en la máquina (C5): lo que hay que pagar, lo que entró y el cambio; «Cancelar y devolverme mi dinero»
  * sólo con el cobro propio; «¿Sigues ahí?» del abandono; «Esperando a la máquina» con «Resolver con gerente». El dinero lo dice
  * la máquina, nunca esta pantalla: aquí sólo se enseña.

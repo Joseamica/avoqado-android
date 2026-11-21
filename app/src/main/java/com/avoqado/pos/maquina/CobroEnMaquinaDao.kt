@@ -19,6 +19,16 @@ interface CobroEnMaquinaDao {
     @Query(CobroEnMaquinaSql.BLOQUEAN_LA_VENTA)
     suspend fun bloqueanLaVenta(llaveDeVenta: String): Int
 
+    @Query(CobroEnMaquinaSql.INTENTO_DE_LA_VENTA)
+    suspend fun intentoDeLaVenta(llaveDeVenta: String): CobroEnMaquinaEntity?
+
+    @Query(CobroEnMaquinaSql.EN_ESPERA)
+    suspend fun enEspera(venueId: String): List<CobroEnMaquinaEntity>
+
+    /** Codex código r1 #7: las dudas de la sucursal en vivo (la franja de Cobrar). */
+    @Query(CobroEnMaquinaSql.EN_ESPERA)
+    fun observarEnEspera(venueId: String): kotlinx.coroutines.flow.Flow<List<CobroEnMaquinaEntity>>
+
     @Insert
     suspend fun insertar(fila: CobroEnMaquinaEntity)
 
@@ -96,6 +106,9 @@ interface CobroEnMaquinaDao {
 
     @Query(CobroEnMaquinaSql.ANOTAR_CONFLICTO)
     suspend fun anotarConflicto(referenceCC: String, conflicto: String): Int
+
+    @Query(CobroEnMaquinaSql.MARCAR_DUDA_EN_CONFLICTO)
+    suspend fun marcarDudaEnConflicto(referenceCC: String, conflicto: String, respuesta: String): Int
 
     @Query(CobroEnMaquinaSql.MARCAR_DUDA_SUBIDA)
     suspend fun marcarDudaSubida(referenceCC: String, subida: Boolean): Int

@@ -1,5 +1,6 @@
 package com.avoqado.pos.maquina
 
+import kotlinx.coroutines.flow.map
 import java.sql.Connection
 import java.sql.DriverManager
 import java.sql.PreparedStatement
@@ -28,7 +29,11 @@ internal open class CobroEnMaquinaSobreSqlite : CobroEnMaquinaDao, AutoCloseable
         return db.prepareStatement(expandido).apply { args.forEachIndexed { i, v -> setObject(i + 1, v) } }
     }
 
-    private fun actualizar(sql: String, vararg valores: Pair<String, Any?>): Int = preparar(sql, *valores).use { it.executeUpdate() }
+    /** Sube con cada escritura: las consultas en vivo (`observarEnEspera`) vuelven a leer, como las de Room. */
+    private val cambios = kotlinx.coroutines.flow.MutableStateFlow(0)
+
+    private fun actualizar(sql: String, vararg valores: Pair<String, Any?>): Int =
+        preparar(sql, *valores).use { it.executeUpdate() }.also { cambios.value++ }
 
     private fun filas(sql: String, vararg valores: Pair<String, Any?>): List<CobroEnMaquinaEntity> = preparar(sql, *valores).use { st ->
         val rs = st.executeQuery()
@@ -64,6 +69,17 @@ internal open class CobroEnMaquinaSobreSqlite : CobroEnMaquinaDao, AutoCloseable
 
     /** Una sola lectura: sin un reloj que sondee (con `runTest` un sondeo infinito no termina nunca). */
     override fun observar(referenceCC: String) = kotlinx.coroutines.flow.flowOf(fila(referenceCC))
+
+    override suspend fun intentoDeLaVenta(llaveDeVenta: String) =
+        filas(CobroEnMaquinaSql.INTENTO_DE_LA_VENTA, "llaveDeVenta" to llaveDeVenta).singleOrNull()
+
+    override suspend fun enEspera(venueId: String) = filas(CobroEnMaquinaSql.EN_ESPERA, "venueId" to venueId)
+
+    override fun observarEnEspera(venueId: String) = cambios.map { filas(CobroEnMaquinaSql.EN_ESPERA, "venueId" to venueId) }
+
+    override suspend fun marcarDudaEnConflicto(referenceCC: String, conflicto: String, respuesta: String) = actualizar(
+        CobroEnMaquinaSql.MARCAR_DUDA_EN_CONFLICTO, "referenceCC" to referenceCC, "conflicto" to conflicto, "respuesta" to respuesta,
+    )
 
     override suspend fun bloqueanLaVenta(llaveDeVenta: String): Int =
         preparar(CobroEnMaquinaSql.BLOQUEAN_LA_VENTA, "llaveDeVenta" to llaveDeVenta).use { st ->

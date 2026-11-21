@@ -49,6 +49,13 @@ data class EstadoDeLaMaquina(
     val listo: String? = null,
     /** C7: lo que la máquina les debe a clientes (diferencia de precio o dinero no devuelto), los más nuevos primero. */
     val comprobantes: List<ComprobantePorImprimir> = emptyList(),
+    /** Codex código r1 #7: los cobros de esta PC «Esperando a la máquina» en la sucursal, con «Resolver con gerente». */
+    val enEspera: List<com.avoqado.pos.maquina.CobroEnEspera> = emptyList(),
+    val puedeResolver: Boolean = false,
+    val resolviendo: Boolean = false,
+    val avisoDeResolver: String? = null,
+    /** Codex código r1 #10: la sucursal con que está emparejada esta PC cuando la sesión está en OTRA (la máquina no cobra aquí). */
+    val emparejadaConOtra: String? = null,
 ) {
     val emparejada: Boolean get() = activa && conCredencial
 
@@ -61,7 +68,8 @@ data class EstadoDeLaMaquina(
     private val ipNueva: Boolean get() = ip.trim() != ipGuardada
 
     val puedeEmparejar: Boolean
-        get() = cargado && !ocupado && esIpv4(ip) && !(emparejada && !ipNueva) && !(ipBloqueada && ipNueva)
+        get() = cargado && !ocupado && esIpv4(ip) && !(emparejada && !ipNueva && emparejadaConOtra == null) &&
+            !(ipBloqueada && (ipNueva || emparejadaConOtra != null))
 
     val puedeDesemparejar: Boolean get() = cargado && !ocupado && activa && !hayPendientes
 }
@@ -121,15 +129,18 @@ class MaquinaDeEfectivoViewModel @Inject constructor(
         if (actual.ocupado) return
         val ip = actual.ip.trim()
         if (!esIpv4(ip)) return _estado.update { it.copy(aviso = TEXTO_IP_INVALIDA) }
-        if (actual.emparejada && ip == actual.ipGuardada) return
+        // Ya emparejada con esta IP en ESTA sucursal: nada que hacer. Emparejada en otra (Codex código r1 #10) sí se puede emparejar aquí.
+        if (actual.emparejada && ip == actual.ipGuardada && actual.emparejadaConOtra == null) return
         _estado.update { it.copy(ocupado = true, aviso = null, listo = null) }
         viewModelScope.launch {
             val aviso = intentar {
-                // R5#2: cambiar la IP de una máquina activa con cobros sin subir o en duda los dejaría sin dueño.
-                if (prefs.activa && ip != prefs.ip && cobros.hayPendientesDeLaMaquina()) return@intentar TEXTO_PENDIENTES_DE_LA_MAQUINA
-                val credencial = emparejamiento.emparejar(ip).getOrElse { return@intentar textoDeFalla(it, TEXTO_SIN_RED_EMPAREJAR) }
-                boveda.guardar(credencial)          // primero la credencial: la casilla nunca se prende sin ella
-                prefs.guardar(ip, activa = true)
+                // R5#2 y Codex código r1 #10: cambiar la IP o la sucursal de una máquina activa con cobros sin subir o en duda los
+                // dejaría sin dueño (la credencial nueva no sube lo de la otra sucursal).
+                val otraSucursal = prefs.venueId != emparejamiento.sucursalDeLaSesion
+                if (prefs.activa && (ip != prefs.ip || otraSucursal) && cobros.hayPendientesDeLaMaquina()) return@intentar TEXTO_PENDIENTES_DE_LA_MAQUINA
+                val emparejado = emparejamiento.emparejar(ip).getOrElse { return@intentar textoDeFalla(it, TEXTO_SIN_RED_EMPAREJAR) }
+                boveda.guardar(emparejado.credencial)          // primero la credencial: la casilla nunca se prende sin ella
+                prefs.guardar(ip, activa = true, venueId = emparejado.venueId, nombreDeLaSucursal = emparejado.nombreDeLaSucursal)
                 null
             }
             refrescar(aviso = aviso, listo = "¡Máquina emparejada!".takeIf { aviso == null })
@@ -152,6 +163,28 @@ class MaquinaDeEfectivoViewModel @Inject constructor(
     }
 
     fun toastVisto() = _estado.update { it.copy(listo = null) }
+
+    /** Codex código r1 #7: «Resolver con gerente» de una duda de esta PC (el gerente entró con su PIN: cambio de usuario). */
+    fun resolver(referenceCC: String, r: com.avoqado.pos.maquina.ResolucionDelGerente) {
+        val maquina = maquinaDeEfectivo ?: return
+        if (_estado.value.resolviendo) return
+        _estado.update { it.copy(resolviendo = true, avisoDeResolver = null) }
+        viewModelScope.launch {
+            val resultado = try {
+                maquina.resolver(referenceCC, r)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                com.avoqado.pos.maquina.ResultadoDeResolver.NoSe(e.message ?: "No se pudo resolver")
+            }
+            val aviso = (resultado as? com.avoqado.pos.maquina.ResultadoDeResolver.NoSe)?.texto
+            _estado.update { it.copy(resolviendo = false, avisoDeResolver = aviso) }
+            if (aviso == null) refrescar(listo = "¡Cobro resuelto!")
+        }
+    }
+
+    /** El diálogo de resolver se cerró: su aviso no se queda para el siguiente. */
+    fun avisoDeResolverVisto() = _estado.update { it.copy(avisoDeResolver = null) }
 
     /** C7: (re)imprime el comprobante de [referenceCC] con el mismo folio; el resultado real de la impresora se dice. */
     fun imprimirComprobante(referenceCC: String) {
@@ -198,10 +231,15 @@ class MaquinaDeEfectivoViewModel @Inject constructor(
         }
         val comprobantes = runCatching { maquinaDeEfectivo?.comprobantes().orEmpty() }.getOrDefault(emptyList())
             .map { (fila, debe) -> ComprobantePorImprimir(fila.referenceCC, debe) }
+        val enEspera = runCatching { maquinaDeEfectivo?.dudasEnEspera().orEmpty() }.getOrDefault(emptyList())
+            .map { com.avoqado.pos.maquina.CobroEnEspera(it.referenceCC, it.dueCents, it.creadoEn) }
+        val emparejadaConOtra = (prefs.nombreDeLaSucursal ?: "otra sucursal")
+            .takeIf { activa && prefs.venueId != emparejamiento.sucursalDeLaSesion }
         _estado.update {
             it.copy(
                 cargado = true, ocupado = false, ip = if (campo) ip.orEmpty() else it.ip, ipGuardada = ip, activa = activa,
                 conCredencial = conCredencial, hayPendientes = pendientes, aviso = aviso, listo = listo, comprobantes = comprobantes,
+                enEspera = enEspera, puedeResolver = maquinaDeEfectivo?.puedeResolver() == true, emparejadaConOtra = emparejadaConOtra,
             )
         }
     }

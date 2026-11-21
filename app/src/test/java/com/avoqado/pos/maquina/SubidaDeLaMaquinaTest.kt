@@ -431,6 +431,35 @@ class SubidaDeLaMaquinaTest {
         assertTrue(dao.tardiosParaSubir("venue-1").isEmpty())
     }
 
+    @Test
+    fun `P1 Codex r1 #9 una duda en conflicto con su incidencia ya no frena y se sigue consultando por su folio`() = runBlocking {
+        insertar(duda(REF_1))
+        cuando(
+            "POST", ".*/cash-machine/doubts",
+            MockResponse().setResponseCode(409).setBody(
+                JSONObject().put("message", "Esta duda de la máquina ya se subió con otros importes o desde otra PC")
+                    .put("code", "CASH_MACHINE_DOUBT_CONFLICT")
+                    .put("details", JSONObject().put("motivo", "OTRA_EVIDENCIA").put("incidentId", "cinc000000000000000000004")).toString(),
+            ),
+        )
+        val resuelta = evidencia(duda(REF_1), outcome = "CANCELADO", credit = 5_000, change = 5_000)
+            .put("status", "RESUELTO").put("resolvedBy", "GERENTE")
+        cuando("GET", ".*/cash-machine/doubts/$REF_1", ok(resuelta))
+
+        assertTrue("se sigue consultando", subida.subir())
+        val fila = dao.fila(REF_1)!!
+        assertEquals("Esta duda de la máquina ya se subió con otros importes o desde otra PC", fila.conflicto)
+        assertTrue(fila.dudaSubida)
+        assertEquals("la incidencia ya está en el SERVIDOR: no frena cerrar sesión", 0, dao.pendientes("venue-1"))
+
+        assertFalse(subida.subir())
+
+        val resueltaAqui = dao.fila(REF_1)!!
+        assertEquals(EstadoDelIntento.RESUELTO, resueltaAqui.estado)
+        assertEquals("CANCELADO", resueltaAqui.desenlaceDelServidor)
+        assertEquals("GET", servidor.takeRequest().let { servidor.takeRequest() }.method)
+    }
+
     // MARK: - Disparadores (R3#12, R5#6)
 
     @Test

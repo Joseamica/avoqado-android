@@ -52,14 +52,28 @@ class MaquinaDeEfectivoPrefs @Inject constructor(@ApplicationContext context: Co
     /** Emparejada con el SERVIDOR (R4-3). La credencial vive aparte, en [BovedaDeLaMaquina]. */
     val activa: Boolean get() = prefs.getBoolean(ACTIVA, false)
 
-    fun guardar(ip: String?, activa: Boolean) {
-        check(prefs.edit().putString(IP, ip).putBoolean(ACTIVA, activa).commit()) { "No se pudo guardar el ajuste de la máquina" }
+    /** Codex código r1 #10: la sucursal con la que se emparejó. La máquina sólo cobra con la sesión en ESA sucursal. */
+    val venueId: String? get() = prefs.getString(SUCURSAL, null)
+
+    /** Su nombre, para decir «Esta PC está emparejada con <sucursal>» desde otra. */
+    val nombreDeLaSucursal: String? get() = prefs.getString(NOMBRE_DE_LA_SUCURSAL, null)
+
+    fun guardar(ip: String?, activa: Boolean, venueId: String? = this.venueId, nombreDeLaSucursal: String? = this.nombreDeLaSucursal) {
+        check(
+            prefs.edit().putString(IP, ip).putBoolean(ACTIVA, activa).putString(SUCURSAL, venueId)
+                .putString(NOMBRE_DE_LA_SUCURSAL, nombreDeLaSucursal).commit(),
+        ) { "No se pudo guardar el ajuste de la máquina" }
     }
+
+    /** Codex código r1 #10: emparejada, y con la sesión en la MISMA sucursal del emparejamiento. */
+    fun activaEn(venueIdDeLaSesion: String?): Boolean = activa && venueId != null && venueId == venueIdDeLaSesion
 
     companion object {
         const val NOMBRE = "avoqado_maquina_efectivo"
         private const val IP = "ip"
         private const val ACTIVA = "activa"
+        private const val SUCURSAL = "sucursal"
+        private const val NOMBRE_DE_LA_SUCURSAL = "sucursal_nombre"
     }
 }
 
@@ -91,6 +105,9 @@ suspend fun probarConexion(ip: String, okHttp: OkHttpClient, puerto: Int = 8080,
     }
 }
 
+/** Lo que deja un emparejamiento: la credencial (DPAPI) y la sucursal en que vale (Codex código r1 #10). */
+data class Emparejado(val credencial: String, val venueId: String, val nombreDeLaSucursal: String?)
+
 /**
  * `POST|DELETE /mobile/venues/:venueId/cash-machine/binding` (R4-3). ONLINE-ONLY a propósito: el SERVIDOR revoca y entrega la
  * credencial; nada se encola. El `X-Device-ID` lo pone `DeviceHeadersInterceptor` en el cliente de la app. Una falla de red
@@ -104,11 +121,18 @@ class EmparejamientoDeLaMaquina @Inject constructor(
     /** Seam de pruebas: apuntar a un MockWebServer. */
     internal var baseUrl: String = ApiConstants.BASE_URL
 
-    /** La credencial (sale sólo aquí; nunca a la bitácora). */
-    suspend fun emparejar(machineIp: String): Result<String> =
-        llamar(Request.Builder().post(JSONObject().put("machineIp", machineIp).toString().toRequestBody(JSON))) { cuerpo ->
-            JSONObject(cuerpo).optString("credential").takeIf { it.isNotBlank() } ?: error("El servidor no mandó la credencial")
+    /** La sucursal de la sesión (con la que se empareja, Codex código r1 #10). */
+    val sucursalDeLaSesion: String? get() = secureStorage.venueId
+
+    /** La credencial (sale sólo aquí; nunca a la bitácora) y la sucursal en que se emparejó (Codex código r1 #10). */
+    suspend fun emparejar(machineIp: String): Result<Emparejado> {
+        val venueId = secureStorage.venueId
+        val nombre = secureStorage.venueName
+        return llamar(Request.Builder().post(JSONObject().put("machineIp", machineIp).toString().toRequestBody(JSON))) { cuerpo ->
+            val credencial = JSONObject(cuerpo).optString("credential").takeIf { it.isNotBlank() } ?: error("El servidor no mandó la credencial")
+            Emparejado(credencial, requireNotNull(venueId), nombre)
         }
+    }
 
     suspend fun desemparejar(): Result<Unit> = llamar(Request.Builder().delete()) {}
 

@@ -152,12 +152,22 @@ internal object CobroEnMaquinaSql {
     const val POR_REFERENCIA: String = "SELECT * FROM cobros_en_maquina WHERE referenceCC = :referenceCC"
 
     /**
-     * Lo que impide otro intento de la MISMA venta: uno abierto, uno en duda, uno pagado o uno que resolvió un gerente (su
-     * desenlace lo sabe el SERVIDOR). Sólo un `CANCELADO` o un `GUARDADO` dejan volver a intentar.
+     * Lo que impide otro intento de la MISMA venta: uno abierto, uno en duda, uno pagado o uno que el SERVIDOR resolvió como pagado (o
+     * sin saber cómo). Un `CANCELADO` o un `GUARDADO`, de la máquina o del gerente (Codex código r1 #8), dejan volver a intentar.
      */
     const val BLOQUEAN_LA_VENTA: String =
         "SELECT COUNT(*) FROM cobros_en_maquina WHERE llaveDeVenta = :llaveDeVenta " +
-            "AND estado IN ('EN_CURSO', 'ESPERANDO', 'PAGADO', 'RESUELTO')"
+            "AND (estado IN ('EN_CURSO', 'ESPERANDO', 'PAGADO') OR (estado = 'RESUELTO' AND COALESCE(desenlaceDelServidor, 'PAGADO') = 'PAGADO'))"
+
+    /** Codex código r1 #7: el intento abierto o en duda de esta venta, para que la pantalla de la máquina lo recupere tras reiniciar. */
+    const val INTENTO_DE_LA_VENTA: String =
+        "SELECT * FROM cobros_en_maquina WHERE llaveDeVenta = :llaveDeVenta AND estado IN ('EN_CURSO', 'ESPERANDO') " +
+            "ORDER BY creadoEn DESC, referenceCC DESC LIMIT 1"
+
+    /** Codex código r1 #7: las dudas de ESTA PC en la sucursal, para «Resolver con gerente» desde Cobrar y desde Ajustes. Acotada. */
+    const val EN_ESPERA: String =
+        "SELECT * FROM cobros_en_maquina WHERE venueId = :venueId AND estado = 'ESPERANDO' " +
+            "ORDER BY creadoEn DESC, referenceCC DESC LIMIT 100"
 
     /** Sólo si el `paycash` no salió (`enviar` = false): nada llegó a la máquina, no hay evidencia que guardar. */
     const val BORRAR_SIN_ENVIAR: String =
@@ -209,12 +219,16 @@ internal object CobroEnMaquinaSql {
             "WHERE referenceCC = :referenceCC AND estado = 'ESPERANDO' AND cierreTardio IS NULL"
 
     /**
-     * R5#2: lo que frena cerrar sesión, cambiar de sucursal y cambiar la IP o desemparejar la máquina: un intento abierto, una
-     * duda (subida o no: sólo la cierra la decisión del gerente) o un cierre final sin acuse. `:venueId` null = todas.
+     * R5#2: lo que frena cerrar sesión, cambiar de sucursal y cambiar la IP o desemparejar la máquina: lo que SÓLO está en esta PC. Un
+     * intento abierto, una duda (o su cierre tardío) que el SERVIDOR todavía no tiene, o un cierre final sin acuse. Codex código r1 #9:
+     * lo que el SERVIDOR ya guardó como incidencia (una duda subida, en conflicto o no) ya no frena: se sigue consultando por su folio.
+     * `:venueId` null = todas.
      */
     const val PENDIENTES: String =
         "SELECT COUNT(*) FROM cobros_en_maquina WHERE (:venueId IS NULL OR venueId = :venueId) " +
-            "AND (estado IN ('EN_CURSO', 'ESPERANDO') OR (estado IN ('PAGADO', 'CANCELADO', 'GUARDADO') AND subido = 0))"
+            "AND (estado = 'EN_CURSO' " +
+            "OR (estado = 'ESPERANDO' AND (dudaSubida = 0 OR (cierreTardio IS NOT NULL AND subido = 0 AND conflicto IS NULL))) " +
+            "OR (estado IN ('PAGADO', 'CANCELADO', 'GUARDADO') AND subido = 0))"
 
     const val POR_SUBIR: String =
         "SELECT * FROM cobros_en_maquina " +
@@ -229,8 +243,10 @@ internal object CobroEnMaquinaSql {
      * importes): eso espera a un gerente y no se reintenta. Sigue contando en [PENDIENTES].
      */
     const val PARA_SUBIR: String =
-        "SELECT * FROM cobros_en_maquina WHERE venueId = :venueId AND conflicto IS NULL " +
-            "AND ((estado IN ('PAGADO', 'CANCELADO', 'GUARDADO') AND subido = 0) OR (estado = 'ESPERANDO' AND dudaSubida = 0)) " +
+        "SELECT * FROM cobros_en_maquina WHERE venueId = :venueId " +
+            "AND ((estado IN ('PAGADO', 'CANCELADO', 'GUARDADO') AND subido = 0 AND conflicto IS NULL) " +
+            // Codex código r1 #9: una duda en conflicto CON su incidencia (respuesta guardada) sí sube su observación nueva.
+            "OR (estado = 'ESPERANDO' AND dudaSubida = 0 AND (conflicto IS NULL OR respuestaServidor IS NOT NULL))) " +
             "ORDER BY creadoEn ASC, referenceCC ASC"
 
     /** Codex código r1 #6: los cierres tardíos de dudas que el SERVIDOR ya tiene (la duda va primero: congela el carrito). */
@@ -243,10 +259,18 @@ internal object CobroEnMaquinaSql {
         "UPDATE cobros_en_maquina SET subido = 1, conflicto = :conflicto, respuestaServidor = :respuesta " +
             "WHERE referenceCC = :referenceCC AND estado = 'ESPERANDO' AND cierreTardio IS NOT NULL"
 
-    /** Las dudas ya subidas que esperan la decisión del gerente (R5#6): se consultan cada 60 s. */
+    /**
+     * Las dudas ya subidas que esperan la decisión del gerente (R5#6): se consultan cada 60 s. Codex código r1 #9: también las que el
+     * SERVIDOR guardó en conflicto (con su incidencia): siguen consultándose por su folio hasta que se resuelvan.
+     */
     const val ESPERAN_AL_GERENTE: String =
         "SELECT * FROM cobros_en_maquina WHERE venueId = :venueId AND estado = 'ESPERANDO' AND dudaSubida = 1 " +
-            "AND conflicto IS NULL ORDER BY creadoEn ASC, referenceCC ASC"
+            "ORDER BY creadoEn ASC, referenceCC ASC"
+
+    /** Codex código r1 #9: el SERVIDOR guardó la duda en conflicto con su incidencia: ya la tiene (no frena), se ve y se consulta. */
+    const val MARCAR_DUDA_EN_CONFLICTO: String =
+        "UPDATE cobros_en_maquina SET dudaSubida = 1, conflicto = :conflicto, respuestaServidor = :respuesta " +
+            "WHERE referenceCC = :referenceCC AND estado = 'ESPERANDO'"
 
     /**
      * El SERVIDOR repitió el folio y los importes (200), guardó el dinero como incidencia (202) o rechazó el cierre DEJANDO su

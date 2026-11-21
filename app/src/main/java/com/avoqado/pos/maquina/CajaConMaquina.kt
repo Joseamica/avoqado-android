@@ -32,6 +32,9 @@ data class CierreEnPantalla(
     val aDeberCents: Int get() = (creditCents - dueCents - changeDispensedCents).coerceAtLeast(0)
 }
 
+/** Codex código r1 #7: un cobro de esta PC «Esperando a la máquina», para resolverlo con gerente desde Cobrar o Ajustes. */
+data class CobroEnEspera(val referenceCC: String, val dueCents: Int, val creadoEn: Long)
+
 /** Lo que pinta «Cobrar» de la máquina. null en la caja = no hay máquina en esta PC: todo como hoy. */
 data class VistaDeLaMaquina(
     val fila: FilaDeLaMaquina,
@@ -47,6 +50,8 @@ data class VistaDeLaMaquina(
     val avisoDeResolver: String?,
     /** El gerente decidió CANCELADO o GUARDADO: la pantalla lo dice y deja salir. */
     val resuelto: Desenlace?,
+    /** Codex código r1 #7: las OTRAS dudas de esta PC en la sucursal (la de esta venta ya se ve en su pantalla). */
+    val enEspera: List<CobroEnEspera> = emptyList(),
 )
 
 /**
@@ -69,6 +74,8 @@ class CajaConMaquina(
         val resolviendo: Boolean = false,
         val avisoDeResolver: String? = null,
         val resuelto: Desenlace? = null,
+        /** Codex código r1 #7: la duda de esta venta leída del disco (tras reiniciar no hay cobro vivo que la muestre). */
+        val guardada: EstadoDelCobro.Esperando? = null,
     )
 
     private val local = MutableStateFlow(Local())
@@ -80,9 +87,11 @@ class CajaConMaquina(
     private var enVuelo = false
 
     val vista: StateFlow<VistaDeLaMaquina?> =
-        combine(local, maquina.ahora, maquina.cobro.estado, maquina.avisoDeSubida) { l, ahora, estado, avisoDeSubida ->
+        combine(local, maquina.ahora, maquina.cobro.estado, maquina.avisoDeSubida, maquina.enEspera()) { l, ahora, estado, avisoDeSubida, dudas ->
             val v = l.venta ?: return@combine null
+            // El cobro vivo de esta venta; si no lo hay (se reinició la app), su duda guardada (Codex código r1 #7).
             val mio = estado.takeIf { folioDe(it) != null && folioDe(it) == l.miFolio }
+                ?: l.guardada?.takeIf { it.referenceCC == l.miFolio }
             VistaDeLaMaquina(
                 fila = filaDeLaMaquina(ahora, v.conProductos, v.ventaNueva, l.ventaEnDuda, cobroVivo = vivo(estado) || l.apartada),
                 cobro = mio,
@@ -93,6 +102,7 @@ class CajaConMaquina(
                 resolviendo = l.resolviendo,
                 avisoDeResolver = l.avisoDeResolver,
                 resuelto = l.resuelto,
+                enEspera = dudas.filter { it.referenceCC != l.miFolio }.map { CobroEnEspera(it.referenceCC, it.dueCents, it.creadoEn) },
             )
         }.stateIn(scope, SharingStarted.Eagerly, null)
 
@@ -128,7 +138,13 @@ class CajaConMaquina(
         maquina.arrancar()
         scope.launch {
             val enDuda = maquina.ventaBloqueada(venta!!.llaveDeVenta)
-            local.value.takeIf { it.venta == venta }?.let { local.value = it.copy(ventaEnDuda = enDuda) }
+            // Codex código r1 #7: si esta venta quedó «Esperando» (o abierta por un proceso que murió), su pantalla vuelve con su folio.
+            val intento = maquina.intentoDeLaVenta(venta.llaveDeVenta)
+            local.value.takeIf { it.venta == venta }?.let { l ->
+                local.value = if (intento == null || l.miFolio != null) l.copy(ventaEnDuda = enDuda)
+                else l.copy(ventaEnDuda = true, miFolio = intento.referenceCC, miCotizada = intento.quoteId != null,
+                    guardada = EstadoDelCobro.Esperando(intento.referenceCC, intento.dueCents))
+            }
         }
     }
 
@@ -186,7 +202,7 @@ class CajaConMaquina(
      */
     fun listo() {
         val l = local.value
-        local.value = l.copy(miFolio = null, resuelto = null, avisoDeResolver = null)
+        local.value = l.copy(miFolio = null, resuelto = null, avisoDeResolver = null, guardada = null)
         val v = l.venta ?: return
         scope.launch {
             val enDuda = maquina.ventaBloqueada(v.llaveDeVenta)
@@ -217,6 +233,13 @@ class CajaConMaquina(
             }
         }
     }
+
+    /**
+     * Codex código r1 #7: el gerente resuelve OTRA duda de esta PC desde Cobrar (no la de esta venta). Nunca cobra la venta en pantalla:
+     * si fue un `PAGADO`, su ticket sale por «Tickets sin imprimir».
+     */
+    suspend fun resolverOtra(referenceCC: String, r: ResolucionDelGerente): ResultadoDeResolver =
+        if (referenceCC == local.value.miFolio) ResultadoDeResolver.NoSe(TEXTO_ES_LA_DE_ESTA_VENTA) else maquina.resolver(referenceCC, r)
 
     private fun folioDe(e: EstadoDelCobro): String? = when (e) {
         EstadoDelCobro.Libre -> null

@@ -50,6 +50,8 @@ const val TEXTO_SIN_RED_RESOLVER = "Se necesita internet para resolver: el cobro
 const val TEXTO_NO_SE_SABE_EL_MODO = "Sin saber si la máquina devolvió o guardó el dinero, el cobro sigue esperando"
 const val TEXTO_DUDA_SIN_SUBIR = "Este cobro todavía no llega al servidor: inténtalo en un momento"
 const val TEXTO_ESCRIBE_LO_QUE_VISTE = "Escribe lo que viste en la máquina"
+const val TEXTO_ES_LA_DE_ESTA_VENTA = "Ese cobro es el de esta venta: resuélvelo en su pantalla"
+const val TEXTO_COBROS_EN_ESPERA = "Cobros esperando a la máquina"
 
 /** «Te debemos $X de cambio: pasa a caja a cobrarlo · Folio AQ…» (plan 1a, textos fijos; C7). */
 fun textoDeLaDeuda(cents: Long, referenceCC: String): String =
@@ -257,8 +259,11 @@ class MaquinaDeEfectivo internal constructor(
         }
     }
 
-    /** ¿Esta PC cobra con la máquina? La casilla (sólo se prende en WINDOWS, C6) y una credencial que ESTA PC descifra (R5#3). */
-    fun activa(): Boolean = prefs.activa && runCatching { boveda.leer() }.getOrNull() != null
+    /**
+     * ¿Esta PC cobra con la máquina? La casilla (sólo se prende en WINDOWS, C6), una credencial que ESTA PC descifra (R5#3) y la sesión en
+     * la sucursal con que se emparejó (Codex código r1 #10): en otra, la fila no aparece y Ajustes dice con cuál está emparejada.
+     */
+    fun activa(): Boolean = prefs.activaEn(secureStorage.venueId) && runCatching { boveda.leer() }.getOrNull() != null
 
     private var ipConectada: String? = null
     private var recuperada = false
@@ -288,6 +293,16 @@ class MaquinaDeEfectivo internal constructor(
     }
 
     suspend fun fila(referenceCC: String): CobroEnMaquinaEntity? = dao.porReferencia(referenceCC)
+
+    /** Codex código r1 #7: el intento abierto o en duda de esta venta (la pantalla de la máquina lo recupera tras reiniciar). */
+    suspend fun intentoDeLaVenta(llaveDeVenta: String): CobroEnMaquinaEntity? = dao.intentoDeLaVenta(llaveDeVenta)
+
+    /** Codex código r1 #7: las dudas de ESTA PC en la sucursal de la sesión, en vivo (la franja de Cobrar). */
+    fun enEspera(): Flow<List<CobroEnMaquinaEntity>> =
+        secureStorage.venueId?.let(dao::observarEnEspera) ?: kotlinx.coroutines.flow.flowOf(emptyList())
+
+    /** Lo mismo, una lectura (Ajustes › Máquina de efectivo). */
+    suspend fun dudasEnEspera(): List<CobroEnMaquinaEntity> = secureStorage.venueId?.let { dao.enEspera(it) }.orEmpty()
 
     /** Las ventas apartadas para la máquina que todavía no tienen su fila (se cotizan o piden el turno). */
     private val apartadas: MutableSet<String> = java.util.Collections.synchronizedSet(mutableSetOf())

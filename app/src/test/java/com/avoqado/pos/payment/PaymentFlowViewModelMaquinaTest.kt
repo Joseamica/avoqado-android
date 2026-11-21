@@ -112,7 +112,7 @@ class PaymentFlowViewModelMaquinaTest {
     @After fun cerrar() = dao.close()
 
     private fun TestScope.vm(activa: Boolean = true): PaymentFlowViewModel {
-        prefs.guardar("192.168.1.50", activa)
+        prefs.guardar("192.168.1.50", activa, venueId = "venue-1")
         every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings(showReviewScreen = false, showTipScreen = false)
         coEvery { terminalPaymentService.fetchOnlineTerminals(any()) } returns TerminalListResult.Success(emptyList())
         every { secureStorage.venueName } returns "La Galeterie"
@@ -296,6 +296,48 @@ class PaymentFlowViewModelMaquinaTest {
         vm.selectPaymentMethod(PaymentMethod.CARD)
         runCurrent()
         assertTrue(vm.state.value is PaymentFlowState.SelectingTerminal)
+    }
+
+    @Test
+    fun `P1 Codex r1 #7 tras reiniciar, la pantalla de la maquina recupera la duda de esta venta y el gerente la resuelve`() = runTest {
+        val vm = vm()
+        every { secureStorage.venuePermissions } returns listOf("payments:create", "cash-machine:resolve")
+        coEvery { api.resolverDuda("venue-1", "AQ000000000007", any()) } returns RespuestaDelServidor(200, "{}")
+        val cart = CartState(items = listOf(cafe))
+        // Lo que dejó el proceso anterior: la venta quedó «Esperando a la máquina» y la app se cerró.
+        dao.insertar(
+            com.avoqado.pos.maquina.CobroEnMaquinaEntity(
+                "AQ000000000007", "venue-1", cart.llaveParaLaMaquina, "{}", 18_000, 0, 18_000, null, "q-1", 1, EstadoDelIntento.ESPERANDO,
+            ),
+        )
+
+        vm.startPaymentFlow(cart)
+        runCurrent()
+
+        assertEquals(EstadoDelCobro.Esperando("AQ000000000007", 18_000), vm.maquina!!.vista.value!!.cobro)
+        vm.maquina!!.resolver(ResolucionDelGerente(Desenlace.PAGADO, 20_000, 2_000, null, null, "Ticket 0042"))
+        runCurrent()
+        assertEquals(18_000 to 2_000, (vm.state.value as PaymentFlowState.Success).let { it.totalAmount to it.changeAmount })
+    }
+
+    @Test
+    fun `Codex r1 #7 las otras dudas de esta PC se ven en Cobrar y resolverlas no cobra la venta en pantalla`() = runTest {
+        val vm = vm()
+        every { secureStorage.venuePermissions } returns listOf("payments:create", "cash-machine:resolve")
+        coEvery { api.resolverDuda("venue-1", "AQ000000000008", any()) } returns RespuestaDelServidor(200, "{}")
+        dao.insertar(
+            com.avoqado.pos.maquina.CobroEnMaquinaEntity(
+                "AQ000000000008", "venue-1", "otra-venta", "{}", 5_000, 0, 5_000, null, null, 1, EstadoDelIntento.ESPERANDO,
+            ),
+        )
+        vm.startPaymentFlow(CartState(items = listOf(cafe)))
+        runCurrent()
+
+        assertEquals(listOf("AQ000000000008"), vm.maquina!!.vista.value!!.enEspera.map { it.referenceCC })
+        assertTrue(vm.maquina!!.resolverOtra("AQ000000000008", ResolucionDelGerente(Desenlace.PAGADO, 5_000, 0, null, null, "x"))
+            is com.avoqado.pos.maquina.ResultadoDeResolver.Resuelto)
+        runCurrent()
+        assertTrue("la venta en pantalla sigue sin cobrar", vm.state.value is PaymentFlowState.SelectingPaymentMethod)
     }
 
     @Test

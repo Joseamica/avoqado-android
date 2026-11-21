@@ -200,7 +200,9 @@ class SubidaDeLaMaquina @Inject constructor(
                 // Un cierre con su incidencia DURABLE en el SERVIDOR (409/422) ya no es de la PC: queda visible y deja de frenar
                 // cerrar sesión. Sin incidencia (un 400) el dinero sólo está aquí: visible y sin acuse.
                 when {
-                    esDuda || incidenciaDe(r.cuerpo) == null -> dao.anotarConflicto(fila.referenceCC, texto)
+                    incidenciaDe(r.cuerpo) == null -> dao.anotarConflicto(fila.referenceCC, texto)
+                    // Codex código r1 #9: la duda en conflicto ya es durable en el SERVIDOR: no frena y se sigue consultando por su folio.
+                    esDuda -> dao.marcarDudaEnConflicto(fila.referenceCC, texto, r.cuerpo)
                     fila.estado == EstadoDelIntento.ESPERANDO -> dao.marcarTardioSubido(fila.referenceCC, texto, r.cuerpo)
                     else -> dao.marcarSubido(fila.referenceCC, texto, r.cuerpo)
                 }
