@@ -704,4 +704,18 @@ class PreparationDeliveryServiceTest {
             coVerify(exactly = 1) { f.printer.reintentar(any(), any(), any()) }
         } finally { f.service.stop() }
     }
+    // 2.ª pasada con aparatos (A2): el D3 recibió por el WiFi del local SU PROPIO «Preparar» y lo rechazó («Un avance de otro
+    // aparato no coincide»). Un avance de este mismo aparato ya está aplicado aquí: se toma como recibido, sin tocar nada.
+    @Test fun `D16 el receptor por WiFi toma como recibido el avance de este mismo aparato sin aviso`() = runTest {
+        val f = fixture(backgroundScope)
+        val receptor = slot<suspend (PreparationPeerProgress) -> Boolean>()
+        every { f.transport!!.activarPreparacion(capture(receptor), any(), any()) } just Runs
+        try {
+            f.service.start("v1"); f.service.pass("v1")
+            val propio = f.job().commands.first()
+            assertEquals("d1", propio.deviceId)
+            assertTrue(receptor.captured(propio))
+            assertNull(f.service.notice.value)
+        } finally { f.service.stop() }
+    }
 }

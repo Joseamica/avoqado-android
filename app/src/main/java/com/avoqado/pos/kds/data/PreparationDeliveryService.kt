@@ -168,7 +168,10 @@ class PreparationDeliveryService @Inject constructor(
         }
         if (receiverVenue != v || receiverUrgencyVersion != cap.urgencyVersion) {
             transport.activarPreparacion(receiver = { command ->
-                if (!current(v) || command.venueId != v || command.version == 2 && cap.urgencyVersion != 1) false else try {
+                // D16 (2.ª pasada con aparatos, A2): el WiFi del local puede devolverle a este aparato SU PROPIO avance (el D3 se
+                // anuncia también a sí mismo). Ya está aplicado aquí: se toma como recibido, sin tocar nada y sin aviso.
+                if (command.deviceId == transport.deviceId) true
+                else if (!current(v) || command.venueId != v || command.version == 2 && cap.urgencyVersion != 1) false else try {
                     val accepted = persistence.receive(command)
                     if (accepted && command.phase == "REJECTED") {
                         avisar("recibo:${command.deliveryId}", "Una acción de otro aparato no fue aceptada. Revisa el producto con cocina antes de continuar.")
