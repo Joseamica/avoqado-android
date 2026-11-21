@@ -1503,21 +1503,19 @@ class CartViewModel @Inject constructor(
     }
 
     private fun defaultCartState(): CartState {
-        val sesion = vendedorDeLaSesion()
+        val (sesionId, sesionNombre) = vendedorDeLaSesion()
         return CartState(
-            selectedStaffId = secureStorage.selectedStaffIdForCurrentVenue ?: sesion.selectedStaffId,
-            selectedStaffName = secureStorage.selectedStaffNameForCurrentVenue ?: sesion.selectedStaffName,
+            selectedStaffId = secureStorage.selectedStaffIdForCurrentVenue ?: sesionId,
+            selectedStaffName = secureStorage.selectedStaffNameForCurrentVenue ?: sesionNombre,
         )
     }
 
-    /** Quien inició sesión, sin mirar la selección guardada en disco (que pudo no borrarse: D7, Codex r1 #1). */
-    private fun vendedorDeLaSesion(): CartState = CartState(
-        selectedStaffId = secureStorage.userId.orEmpty(),
-        selectedStaffName = listOfNotNull(secureStorage.userFirstName, secureStorage.userLastName)
+    /** Id y nombre de quien inició sesión, sin mirar la selección guardada en disco (que pudo no borrarse: D7, Codex r1 #1). */
+    private fun vendedorDeLaSesion(): Pair<String, String> =
+        secureStorage.userId.orEmpty() to listOfNotNull(secureStorage.userFirstName, secureStorage.userLastName)
             .joinToString(" ")
             .trim()
-            .ifEmpty { secureStorage.userEmail ?: "Staff" },
-    )
+            .ifEmpty { secureStorage.userEmail ?: "Staff" }
 
     fun fetchStaff() {
         viewModelScope.launch {
@@ -1563,8 +1561,8 @@ class CartViewModel @Inject constructor(
             // cliente: sólo deja de llevar al vendedor dado de baja. Vaciarla borraba el vínculo y la cajera podía cobrar la
             // compra completa en un folio nuevo: $40 en A + $100 en B por una compra de $100 (CartSplitContinuidadTest).
             if (alCerrarElCobro || hayVentaAMedias()) {
-                val sinVendedor = vendedorDeLaSesion()
-                _cartState.update { it.copy(selectedStaffId = sinVendedor.selectedStaffId, selectedStaffName = sinVendedor.selectedStaffName) }
+                val (sesionId, sesionNombre) = vendedorDeLaSesion()
+                _cartState.update { it.copy(selectedStaffId = sesionId, selectedStaffName = sesionNombre) }
                 return
             }
             // Sin venta a medias (no hay vínculo que soltar) se vacía como siempre.

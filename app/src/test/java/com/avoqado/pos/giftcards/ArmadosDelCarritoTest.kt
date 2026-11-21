@@ -21,8 +21,8 @@ class ArmadosDelCarritoTest {
             "com/avoqado/pos/pos/presentation/cart/CartViewModel.kt:<fuera>:finalizarVenta" to 1,
             "com/avoqado/pos/pos/presentation/cart/CartViewModel.kt:defaultCartState:CartState" to 1,
             "com/avoqado/pos/pos/presentation/cart/CartViewModel.kt:aplicarVendedores:_cartState.value =" to 1,
-            // D9: al cerrar un cobro, la baja del vendedor sólo cambia el vendedor (la venta puede traer un abono).
-            "com/avoqado/pos/pos/presentation/cart/CartViewModel.kt:aplicarVendedores:defaultCartState" to 2,
+            // D9/D7: al cerrar un cobro o con venta a medias, la baja del vendedor sólo pone al de la sesión (sin armar carrito).
+            "com/avoqado/pos/pos/presentation/cart/CartViewModel.kt:aplicarVendedores:defaultCartState" to 1,
             "com/avoqado/pos/pos/presentation/cart/CartViewModel.kt:consumePendingTableCobrar:clearCart" to 1,
             // D13: «Agregar al carrito» de una clase pendiente empieza una venta NUEVA (el carrito ya está vacío y sin cliente).
             "com/avoqado/pos/pos/presentation/cart/CartViewModel.kt:agregarClasePendiente:clearCart" to 1,
