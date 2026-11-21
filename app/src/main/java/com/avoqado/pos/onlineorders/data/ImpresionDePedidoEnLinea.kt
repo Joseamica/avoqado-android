@@ -272,8 +272,9 @@ class ImpresionDePedidoEnLinea internal constructor(
 private fun esComandaDeTarjetaEnNadie(order: OnlineOrder) = order.paymentMode == "CARD_ONLINE" && order.requiresAcceptance == false
 
 /**
- * Ruling 50: el permiso de mandar el primer byte de UNA comanda de tarjeta de «Nadie» reclamada. Lo pregunta `PrinterService` justo antes de
- * escribir en cada impresora, ya con su turno, su permiso USB y su conexión. El primer «sí» se queda (ya empezó: termina aunque la siguiente
+ * Ruling 50: el permiso de mandar el primer byte de UNA comanda de tarjeta de «Nadie» reclamada. Se pregunta justo antes del primer byte de
+ * cada impresora, después de su preparación (Ruling 81: `PrinterService` para WiFi y Bluetooth; la USB y la integrada dentro de su
+ * transporte). El primer «sí» se queda (ya empezó: termina aunque la siguiente
  * estación tarde; «empezó» es «se concedió», aunque esa impresora falle después); antes de eso, un reclamo de [VIGENCIA_UTIL_DEL_RECLAMO_MS]
  * o más dice que no.
  */
