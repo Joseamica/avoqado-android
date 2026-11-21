@@ -24,6 +24,7 @@ import com.avoqado.pos.maquina.TEXTO_CON_PREMIO
 import com.avoqado.pos.maquina.TEXTO_SOLO_VENTA_COMPLETA
 import com.avoqado.pos.maquina.TurnoDelNegocio
 import com.avoqado.pos.maquina.resolverConElEco
+import com.avoqado.pos.maquina.ticketDeLaFila
 import com.avoqado.pos.payment.data.CashPaymentRepository
 import com.avoqado.pos.payment.data.OrderRepository
 import com.avoqado.pos.payment.data.PaymentSyncService
@@ -791,6 +792,53 @@ class PaymentFlowViewModelMaquinaTest {
 
         assertEquals(TicketDelCobro.IMPRESO, dao.todas().single().ticketImpreso)
         assertEquals(0, vm.maquina!!.vista.value!!.ticketsSinImprimir)
+    }
+
+    @Test
+    fun `P1 Codex r4 #11 el ticket armado de la fila sale con el mismo IVA y quien atendio que el de la caja`() = runTest {
+        val impresos = mutableListOf<ReceiptData>()
+        coEvery { printerService.imprimirOriginal(capture(impresos)) } returns PrinterService.PrintOutcome.Printed(1)
+        val vm = vm()
+        val cart = CartState(items = listOf(cafe), orderTaxPercent = 16, selectedStaffId = "staff-ana", selectedStaffName = "Ana")
+        val ref = mandarALaMaquina(vm, cart)
+        canal.llega(status(ref, 18_000)); runCurrent()
+        canal.llega(status(ref, 18_000, credit = 20_000, change = 2_000, cobrando = false, estado = "Pago Completado")); runCurrent()
+
+        val caja = impresos.single()
+        val deLaFila = ticketDeLaFila(dao.fila(ref)!!, "La Galeterie")
+
+        assertEquals("Ana", caja.cashierName)
+        assertTrue("la caja imprime el IVA aparte", caja.taxAmount > 0)
+        assertEquals(
+            listOf<Any?>(caja.taxAmount, caja.cashierName, caja.subtotal, caja.discountAmount, caja.total, caja.tipAmount),
+            listOf<Any?>(deLaFila.taxAmount, deLaFila.cashierName, deLaFila.subtotal, deLaFila.discountAmount, deLaFila.total, deLaFila.tipAmount),
+        )
+    }
+
+    @Test
+    fun `P1 Codex r4 #12 un PAGADO que llega mientras Cobrar todavia lee su fila cobra la venta y saca su ticket una vez`() = runTest {
+        coEvery { printerService.imprimirOriginal(any()) } returns PrinterService.PrintOutcome.Printed(1)
+        val vm = vm()
+        vm.startPaymentFlow(CartState(items = listOf(cafe))); runCurrent()
+        var lecturaLenta = false
+        // La máquina acepta y cierra en el mismo instante en que sale el `paycash`…
+        canal.alEnviar = { json ->
+            val o = JSONObject(json)
+            if (o.getString("comando") == "paycash") {
+                val ref = o.getString("referenceCC")
+                canal.llega(status(ref, 18_000))
+                canal.llega(status(ref, 18_000, credit = 20_000, change = 2_000, cobrando = false, estado = "Pago Completado"))
+                lecturaLenta = true
+            }
+        }
+        // …y la primera lectura de disco que sigue tarda: el cierre se atiende mientras tanto.
+        dao.alLeer = { if (lecturaLenta) { lecturaLenta = false; repeat(100) { kotlinx.coroutines.yield() } } }
+
+        vm.cobrarConMaquina(); runCurrent()
+
+        val exito = vm.state.value as PaymentFlowState.Success
+        assertEquals(18_000 to 2_000, exito.totalAmount to exito.changeAmount)
+        coVerify(exactly = 1) { printerService.imprimirOriginal(any()) }
     }
 
     @Test

@@ -191,16 +191,9 @@ internal object CobroEnMaquinaSql {
 
     const val POR_REFERENCIA: String = "SELECT * FROM cobros_en_maquina WHERE referenceCC = :referenceCC"
 
-    /**
-     * Lo que impide otro intento de la MISMA venta: uno abierto, uno en duda, uno pagado o uno que el SERVIDOR resolvió como pagado (o
-     * sin saber cómo). Un `CANCELADO` o un `GUARDADO`, de la máquina o del gerente (Codex código r1 #8), dejan volver a intentar…
-     * salvo que la máquina haya dicho algo DESPUÉS de la resolución que el SERVIDOR todavía no tiene (Codex código r3 #1): mientras esa
-     * evidencia sólo esté en esta PC, la venta sigue frenada.
-     */
-    const val BLOQUEAN_LA_VENTA: String =
-        "SELECT COUNT(*) FROM cobros_en_maquina WHERE llaveDeVenta = :llaveDeVenta " +
-            "AND (estado IN ('EN_CURSO', 'ESPERANDO', 'PAGADO') OR (estado = 'RESUELTO' " +
-            "AND (COALESCE(desenlaceDelServidor, 'PAGADO') = 'PAGADO' OR dudaSubida = 0)))"
+    /** Las filas de una venta que PUEDEN impedir cobrarla otra vez; cuáles la frenan lo decide UNA regla ([bloqueaLaVenta]). */
+    const val FILAS_DE_LA_VENTA: String =
+        "SELECT * FROM cobros_en_maquina WHERE llaveDeVenta = :llaveDeVenta AND estado IN ('EN_CURSO', 'ESPERANDO', 'PAGADO', 'RESUELTO')"
 
     /** Codex código r1 #7: el intento abierto o en duda de esta venta, para que la pantalla de la máquina lo recupere tras reiniciar. */
     const val INTENTO_DE_LA_VENTA: String =
@@ -255,7 +248,7 @@ internal object CobroEnMaquinaSql {
      */
     const val PUEDEN_FRENAR: String =
         "SELECT * FROM cobros_en_maquina WHERE estado IN ('EN_CURSO', 'ESPERANDO') " +
-            "OR (estado IN ('PAGADO', 'CANCELADO', 'GUARDADO') AND subido = 0)"
+            "OR (estado IN ('PAGADO', 'CANCELADO', 'GUARDADO') AND subido = 0) OR (estado = 'RESUELTO' AND dudaSubida = 0)"
 
     const val POR_SUBIR: String =
         "SELECT * FROM cobros_en_maquina " +
@@ -384,18 +377,47 @@ internal object CobroEnMaquinaSql {
 }
 
 /**
- * Codex código r3 #2, #3 y R5#2: LA regla de qué impide salir de esta PC —cerrar sesión, cambiar de sucursal, desemparejar o cambiar la
- * IP de la máquina—. La misma para las cuatro.
+ * Codex código r3 #2, #3, R5#2 y Codex código POS r4 #4, #5: LA regla de qué impide salir de esta PC —cerrar sesión, cambiar de
+ * sucursal, desemparejar o cambiar la IP de la máquina—. La misma para las cuatro.
  * - Frena lo que sólo esta PC puede terminar: un intento abierto, una duda PROPIA que espera su desenlace (aunque el SERVIDOR ya la
- *   tenga: mientras siga abierta, el dinero de esa venta no tiene dueño fuera de aquí) y un cierre sin acuse ni incidencia allá.
- * - Nunca frena lo que el SERVIDOR ya cerró (resuelto, subido o guardado como incidencia) ni el folio que él atribuye a OTRA PC.
+ *   tenga: mientras siga abierta, el dinero de esa venta no tiene dueño fuera de aquí), un cierre sin acuse ni incidencia allá, y la
+ *   evidencia que sólo está en esta PC: la que llegó después de resolver, o la nueva de un folio de OTRA PC o de una duda que el
+ *   SERVIDOR guardó como incidencia (422).
+ * - Nunca frena lo que el SERVIDOR ya tiene (resuelto con su evidencia, subido o guardado como incidencia).
  */
 fun CobroEnMaquinaEntity.frenaLaSalida(): Boolean = when (estado) {
     EstadoDelIntento.EN_CURSO -> true
-    EstadoDelIntento.ESPERANDO -> !esDeOtraPc()
+    EstadoDelIntento.ESPERANDO -> if (esDeOtraPc() || esIncidenciaSinDuda()) !dudaSubida else true
     EstadoDelIntento.PAGADO, EstadoDelIntento.CANCELADO, EstadoDelIntento.GUARDADO -> !subido && !(conflicto != null && respuestaServidor != null)
+    EstadoDelIntento.RESUELTO -> !dudaSubida
     else -> false
 }
+
+/**
+ * Codex código r1 #8, r3 #1 y Codex código POS r4 #1: LA regla de qué impide cobrar otra vez la MISMA venta: un intento abierto, en duda o
+ * pagado, o uno que el SERVIDOR resolvió como pagado (o sin saber cómo). Un `CANCELADO` o un `GUARDADO` de un gerente deja volver a
+ * intentar sólo si su evidencia ya está allá y la resolución cubre todo lo que la máquina contó en esta PC: el eco de una resolución
+ * anterior nunca suelta dinero que entró después.
+ */
+fun CobroEnMaquinaEntity.bloqueaLaVenta(): Boolean = when (estado) {
+    EstadoDelIntento.EN_CURSO, EstadoDelIntento.ESPERANDO, EstadoDelIntento.PAGADO -> true
+    EstadoDelIntento.RESUELTO -> (desenlaceDelServidor ?: Desenlace.PAGADO.name) == Desenlace.PAGADO.name || !dudaSubida ||
+        creditCents > creditoDeLaResolucion()
+    else -> false
+}
+
+/** Lo que entró según la resolución del SERVIDOR (su eco en `respuestaServidor`); sin saberlo, 0. */
+private fun CobroEnMaquinaEntity.creditoDeLaResolucion(): Int =
+    respuestaServidor?.let { runCatching { (JSONObject(it).opt("creditCents") as? Number)?.toInt() }.getOrNull() } ?: 0
+
+/**
+ * Codex código POS r4 #5: el SERVIDOR guardó esta duda SÓLO como incidencia (422 `CASH_MACHINE_CLOSE_IMPOSSIBLE` con su `incidentId`):
+ * no abrió duda que consultar. Ya es suya: no se consulta ni frena salir, salvo que llegue evidencia nueva (que sí vuelve a subir).
+ */
+fun CobroEnMaquinaEntity.esIncidenciaSinDuda(): Boolean =
+    conflicto != null && respuestaServidor?.let { runCatching { JSONObject(it).optString("code") }.getOrNull() } == CODIGO_IMPOSIBLE
+
+internal const val CODIGO_IMPOSIBLE = "CASH_MACHINE_CLOSE_IMPOSSIBLE"
 
 /** Codex código r2 H8: el SERVIDOR atribuye este folio a OTRA PC (409 `OTRA_PC` con su incidencia). */
 fun CobroEnMaquinaEntity.esDeOtraPc(): Boolean = conflicto != null && motivoDelConflicto(respuestaServidor) == MOTIVO_OTRA_PC
@@ -431,7 +453,8 @@ val CobroEnMaquinaEntity.desenlace: Desenlace?
  * Codex código r2, bloque A: el diario de UN folio. Cada mensaje físico va una sola vez: lo que se compara es el mensaje tal cual lo
  * mandó la máquina, sin la hora en que llegó ni la conexión (H13: APS repite el mismo `status` y eso no es evidencia nueva ni sube la
  * versión de la duda). Se guarda con su generación (`g<n> <json>`) para quien lo revise. Tope de 8 KB al TEXTO: se van primero los más
- * viejos. Codex código r3 #13: la comparación es contra TODA la historia del folio, por las huellas, que no se recortan.
+ * viejos, y sólo si ya llegaron al SERVIDOR (Codex código POS r4 #15). Codex código r3 #13: la comparación es contra TODA la historia del
+ * folio, por las huellas, que no se recortan.
  */
 internal object DiarioDelFolio {
     const val MAXIMO = 8_192
@@ -444,8 +467,13 @@ internal object DiarioDelFolio {
         java.security.MessageDigest.getInstance("SHA-256").digest(fisico.toByteArray(Charsets.UTF_8))
             .take(8).joinToString("") { "%02x".format(it) }
 
-    /** El diario con [crudo] agregado, o null si ese mensaje ya llegó alguna vez a este folio (aunque su texto ya no quepa). */
-    fun agregar(diario: String, huellas: String, generacion: Int, crudo: String): Anotado? {
+    /**
+     * El diario con [crudo] agregado, o null si ese mensaje ya llegó alguna vez a este folio (aunque su texto ya no quepa). [entregado]: el
+     * SERVIDOR ya tiene todo [diario]; sin eso no se recorta nada (Codex código POS r4 #15). ponytail: mientras no se entrega, el diario
+     * crece sin tope; lo acota que sólo entra cada mensaje físico DISTINTO de un folio (un billete o moneda más). Si un folio llegara a
+     * pesar de más, partirlo por lo entregado aquí.
+     */
+    fun agregar(diario: String, huellas: String, generacion: Int, crudo: String, entregado: Boolean): Anotado? {
         val fisico = crudo.replace('\r', ' ').replace('\n', ' ')
         val lineas = diario.lines().filter { it.isNotBlank() }
         // Un folio de antes de la v23 no tiene huellas: se siembran con lo que su texto todavía guarda.
@@ -453,7 +481,7 @@ internal object DiarioDelFolio {
         val nueva = huella(fisico)
         if (nueva in conocidas.split(' ') || lineas.any { it.substringAfter(' ') == fisico }) return null
         val nuevas = ArrayDeque(lineas + "g$generacion $fisico")
-        while (nuevas.size > 1 && nuevas.sumOf { it.length + 1 } > MAXIMO) nuevas.removeFirst()
+        while (entregado && nuevas.size > 1 && nuevas.sumOf { it.length + 1 } > MAXIMO) nuevas.removeFirst()
         return Anotado(nuevas.joinToString("\n"), if (conocidas.isEmpty()) nueva else "$conocidas $nueva")
     }
 }

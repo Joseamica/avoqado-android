@@ -93,5 +93,19 @@ class ReceiptLayoutInterpreterMaquinaTest {
         assertTrue(t, Regex("Folio:\\s+$folio").containsMatchIn(t))
         assertTrue(t, "Te debemos \$5.00: pasa a caja a cobrarlo".replace(" ", "") in t.replace(Regex("\\s"), ""))
         assertFalse("no es una venta: ni renglones ni total ni QR", "Café" in t || "TOTAL" in t)
+        assertFalse("el original no dice reimpresión", "Reimpresión" in t)
+    }
+
+    @Test
+    fun `P1 Codex r4 #10 el comprobante reimpreso dice REIMPRESION, como cualquier ticket`() {
+        val copia = ReceiptData(
+            orderNumber = folio, orderType = "", items = emptyList(), subtotal = 0, taxAmount = 0, total = 500, venueName = "La Galeterie",
+            date = Date(0), kind = KIND_COMPROBANTE_DE_LA_MAQUINA, reprintedAt = Date(60_000),
+            cashMachine = ReceiptCashMachine(referenceCC = folio, owedCents = 500, title = "COMPROBANTE DE DIFERENCIA"),
+        )
+
+        val t = texto(copia)
+
+        assertTrue(t, Regex("Reimpresión:\\s+\\S+").containsMatchIn(t))
     }
 }

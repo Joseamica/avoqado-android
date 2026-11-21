@@ -179,6 +179,21 @@ class MaquinaDeEfectivoTest {
         // Codex código r3 #1: un CANCELADO con evidencia posterior que el SERVIDOR todavía no tiene sigue frenado.
         dao.insertar(base.copy(referenceCC = "AQ000000000005", llaveDeVenta = "venta-5", desenlaceDelServidor = "CANCELADO", dudaSubida = false))
         assertTrue(m.ventaBloqueada("venta-5"))
+        // Codex código POS r4 #1: la evidencia ya llegó, pero la máquina contó MÁS de lo que dice la resolución: sigue frenada.
+        dao.insertar(
+            base.copy(
+                referenceCC = "AQ000000000006", llaveDeVenta = "venta-6", desenlaceDelServidor = "CANCELADO", creditCents = 10_000,
+                respuestaServidor = """{"outcome":"CANCELADO","creditCents":0,"changeDispensedCents":0}""",
+            ),
+        )
+        assertTrue("la máquina contó \$100 que «Cancelado, \$0» no dice", m.ventaBloqueada("venta-6"))
+        dao.insertar(
+            base.copy(
+                referenceCC = "AQ000000000007", llaveDeVenta = "venta-7", desenlaceDelServidor = "CANCELADO", creditCents = 10_000,
+                respuestaServidor = """{"outcome":"CANCELADO","creditCents":10000,"changeDispensedCents":10000}""",
+            ),
+        )
+        assertFalse("la resolución cubre lo que entró: la tarjeta sí", m.ventaBloqueada("venta-7"))
     }
 
     @Test
@@ -462,11 +477,16 @@ class MaquinaDeEfectivoTest {
         val m = maquina()
 
         assertEquals(listOf("AQ000000000003" to 5_000, "AQ000000000001" to 500), m.comprobantes().map { it.first.referenceCC to it.second })
-        // El de diferencia de una venta es su propio papel, reimprimible (en UNA impresora de recibos).
+        // Codex código POS r4 #10: el de diferencia de una venta pasa por el MISMO reclamo del folio: un solo original, luego «REIMPRESIÓN».
         assertEquals(PrinterService.PrintOutcome.Printed(1), m.imprimirComprobante("AQ000000000001"))
         assertEquals(PrinterService.PrintOutcome.Printed(1), m.imprimirComprobante("AQ000000000001"))
         assertNull("no debe nada", m.imprimirComprobante("AQ000000000002"))
-        coVerify(exactly = 2) { impresora.imprimirOriginal(match { it.orderNumber == "AQ000000000001" }) }
+        coVerify(exactly = 1) { impresora.imprimirOriginal(match { it.orderNumber == "AQ000000000001" }) }
+        coVerify(exactly = 1) {
+            impresora.manualPrintReceipt(
+                match { it.orderNumber == "AQ000000000001" && it.reprintedAt != null && it.cashMachine?.title == "COMPROBANTE DE DIFERENCIA" },
+            )
+        }
         // Codex código r3 #11: el de un CANCELADO ES el papel de su folio: el original una vez, después copias marcadas.
         assertEquals(PrinterService.PrintOutcome.Printed(1), m.imprimirComprobante("AQ000000000003"))
         assertEquals(PrinterService.PrintOutcome.Printed(1), m.imprimirComprobante("AQ000000000003"))
@@ -484,6 +504,46 @@ class MaquinaDeEfectivoTest {
         prefs.guardar("192.168.1.50", activa = true, venueId = "venue-1", bindingId = "cbind0000000000000000000b")
 
         assertEquals("cbind0000000000000000000a", dao.fila(ref)!!.bindingId)
+    }
+
+    @Test
+    fun `P1 Codex r4 #10 si el ticket del folio ya salio, el comprobante de diferencia sale como REIMPRESION, nunca como otro original`() = runTest {
+        dao.insertar(
+            pagadoSubido.copy(
+                ticketImpreso = TicketDelCobro.IMPRESO, aDeberCents = 500,
+                respuestaServidor = """{"outcome":"PAGADO","excedenteCents":500}""",
+            ),
+        )
+        coEvery { impresora.manualPrintReceipt(any()) } returns PrinterService.PrintOutcome.Printed(1)
+        val m = maquina()
+
+        assertEquals(PrinterService.PrintOutcome.Printed(1), m.imprimirComprobante("AQ000000000001"))
+
+        coVerify(exactly = 0) { impresora.imprimirOriginal(any()) }
+        coVerify(exactly = 1) { impresora.manualPrintReceipt(match { it.reprintedAt != null && it.cashMachine?.owedCents == 500L }) }
+    }
+
+    @Test
+    fun `P1 Codex r4 #11 el ticket armado de la fila lleva el IVA cobrado aparte y quien atendio, como el de la caja`() = runTest {
+        coEvery { api.cotizar(any(), any()) } returns cotizacion(18_000, 750)
+        val m = maquina()
+        val ref = (
+            m.cobrar(
+                venta().copy(
+                    renglonesLocales = """[{"name":"Café","quantity":1,"unitCents":15520,"totalCents":15520}]""",
+                    impuestoAgregadoCents = 2_480, atendio = "Ana",
+                ),
+            ) as InicioEnLaMaquina.Iniciado
+            ).referenceCC
+        dao.cerrar(ref, EstadoDelIntento.PAGADO, 20_000, 1_250, 5)
+
+        val t = ticketDeLaFila(dao.fila(ref)!!, "La Galeterie")
+
+        assertEquals("Ana", t.cashierName)
+        assertEquals("el IVA aparte, no en cero", 2_480, t.taxAmount)
+        assertEquals(15_520 to 18_750, t.subtotal to t.total)
+        assertEquals(listOf("Café"), t.items.map { it.name })
+        assertEquals("los renglones se siguen leyendo igual", listOf("Café"), renglonesDelTicket(dao.fila(ref)!!.renglonesJson)!!.map { it.name })
     }
 
     @Test

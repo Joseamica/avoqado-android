@@ -479,7 +479,10 @@ class SubidaDeLaMaquinaTest {
 
         // Después llega a esta PC su propio cierre físico: va al diario y vuelve a subir, para que el SERVIDOR lo tenga.
         assertTrue(dao.anotarMensaje(REF_1, 1, """{"comando":"status","Status":"Pago Completado","referenceCC":"$REF_1"}""", 20_000, 18_750))
+        // Codex código POS r4 #4: esa evidencia NUEVA sólo está aquí: frena salir hasta entregarla.
+        assertEquals(1, dao.pendientes("venue-1"))
         subida.subir()
+        assertEquals("entregada (otra vez su incidencia): ya no frena", 0, dao.pendientes("venue-1"))
 
         val pedidos = (1..servidor.requestCount).map { pedido() }
         assertEquals(listOf("POST", "POST"), pedidos.map { it.method })
@@ -704,8 +707,10 @@ class SubidaDeLaMaquinaTest {
         assertTrue(entregada.dudaSubida)
         assertEquals(EstadoDelIntento.RESUELTO, entregada.estado)
         assertEquals("CANCELADO", entregada.desenlaceDelServidor)
-        assertEquals("el SERVIDOR ya la tiene: manda su resolución", 0, dao.bloqueanLaVenta(entregada.llaveDeVenta))
-        assertEquals("lo resuelto no frena salir", 0, dao.pendientes("venue-1"))
+        // Codex código POS r4 #1: el eco de la resolución ANTERIOR («Cancelado, $0») no cubre los $120 que contó la máquina: la venta
+        // nunca vuelve a admitir tarjeta por eso. La evidencia ya está allá: salir sí.
+        assertEquals("la máquina contó más de lo que dice la resolución", 1, dao.bloqueanLaVenta(entregada.llaveDeVenta))
+        assertEquals("lo entregado no frena salir", 0, dao.pendientes("venue-1"))
     }
 
     @Test
@@ -721,6 +726,88 @@ class SubidaDeLaMaquinaTest {
         assertTrue("este POST la llevó: ya está allá", fila.dudaSubida)
         assertEquals(10_000, fila.creditCents)
         assertEquals(1, servidor.requestCount)
+        assertEquals("Codex código POS r4 #1: «Cancelado, \$0» no cubre los \$100 que vio la PC", 1, dao.bloqueanLaVenta(fila.llaveDeVenta))
+    }
+
+    /** Codex código POS r4 #1/#3: un folio que un gerente resolvió «Cancelado, $0» y, DESPUÉS, la máquina dice que entraron $100. */
+    private suspend fun resueltaConEvidenciaNueva(): CobroEnMaquinaEntity {
+        insertar(duda(REF_1).copy(dudaSubida = true, versionDeLaDuda = 1))
+        val resuelta = evidencia(duda(REF_1), outcome = "CANCELADO", credit = 0, change = 0).put("status", "RESUELTO").put("resolvedBy", "GERENTE")
+        assertTrue(dao.resolverConElEco(dao.fila(REF_1)!!, resuelta, resuelta.toString()))
+        assertTrue(dao.anotarMensaje(REF_1, 1, statusDe(REF_1, 10_000), 10_000, 18_750))
+        return dao.fila(REF_1)!!
+    }
+
+    @Test
+    fun `P1 Codex r4 #3 un rechazo sin incidencia, un RECIBIDO o un TERMINADO sin dueno no entregan la evidencia - sigue frenando y vuelve a subir`() = runBlocking {
+        val antes = resueltaConEvidenciaNueva()
+        val eco = evidencia(duda(REF_1), outcome = "CANCELADO", credit = 0, change = 0).put("status", "RESUELTO")
+        cuando(
+            "POST", ".*/cash-machine/doubts",
+            MockResponse().setResponseCode(413).setBody("""{"message":"Payload Too Large"}"""),
+            ok(abierta(2), 202),
+            ok(JSONObject(eco.toString()).put("deviceId", JSONObject.NULL)),   // un TERMINADO que no dice de quién es el folio
+            ok(eco),
+        )
+
+        repeat(3) { i ->
+            assertTrue("vuelta $i: queda trabajo", subida.subir())
+            val f = dao.fila(REF_1)!!
+            assertFalse("vuelta $i: sin constancia del SERVIDOR sigue pendiente", f.dudaSubida)
+            assertEquals("vuelta $i: frena salir", 1, dao.pendientes("venue-1"))
+            assertEquals("vuelta $i: y la venta", 1, dao.bloqueanLaVenta(antes.llaveDeVenta))
+        }
+        assertFalse(subida.subir())
+
+        assertTrue("el TERMINADO de ESTA PC sí la entrega", dao.fila(REF_1)!!.dudaSubida)
+        assertEquals(0, dao.pendientes("venue-1"))
+        assertEquals("pero la resolución no cubre lo que entró (#1)", 1, dao.bloqueanLaVenta(antes.llaveDeVenta))
+        assertEquals(4, servidor.requestCount)
+    }
+
+    @Test
+    fun `P1 Codex r4 #3 una incidencia durable del servidor si entrega la evidencia tras resolver`() = runBlocking {
+        resueltaConEvidenciaNueva()
+        cuando(
+            "POST", ".*/cash-machine/doubts",
+            MockResponse().setResponseCode(409).setBody(
+                JSONObject().put("message", "Esta duda ya se subió con otros importes").put("code", "CASH_MACHINE_DOUBT_CONFLICT")
+                    .put("details", JSONObject().put("motivo", "OTRA_EVIDENCIA").put("deviceId", DISPOSITIVO).put("incidentId", "cinc000000000000000000013"))
+                    .toString(),
+            ),
+        )
+
+        assertFalse(subida.subir())
+
+        assertTrue(dao.fila(REF_1)!!.dudaSubida)
+        assertEquals(0, dao.pendientes("venue-1"))
+    }
+
+    @Test
+    fun `P1 Codex r4 #5 una duda que el servidor contesta 422 con su incidencia queda entregada - sin vueltas POST y GET y sin frenar la salida`() = runBlocking {
+        insertar(duda(REF_1))
+        val imposible = MockResponse().setResponseCode(422).setBody(
+            JSONObject().put("message", "El adeudo de esta duda no lo puede cobrar la máquina").put("code", "CASH_MACHINE_CLOSE_IMPOSSIBLE")
+                .put("details", JSONObject().put("incidentId", "cinc000000000000000000012")).toString(),
+        )
+        cuando("POST", ".*/cash-machine/doubts", imposible, imposible)
+        cuando("GET", ".*/cash-machine/doubts/$REF_1", error(404, "Ese folio no tiene una duda", "CASH_MACHINE_DOUBT_NOT_FOUND"))
+
+        assertFalse("el SERVIDOR ya la tiene como incidencia: no queda trabajo", subida.subir())
+        assertFalse(subida.subir())
+
+        assertEquals("ni se consulta ni se vuelve a subir", 1, servidor.requestCount)
+        val f = dao.fila(REF_1)!!
+        assertTrue(f.dudaSubida)
+        assertEquals("no frena salir", 0, dao.pendientes("venue-1"))
+        assertEquals("pero su venta sigue frenada", 1, dao.bloqueanLaVenta(f.llaveDeVenta))
+
+        // Lo nuevo que diga la máquina sí vuelve a subir (y frena salir mientras sólo está aquí).
+        assertTrue(dao.anotarMensaje(REF_1, 1, statusDe(REF_1, 5_000), 5_000, 18_750))
+        assertEquals(1, dao.pendientes("venue-1"))
+        assertFalse(subida.subir())
+        assertEquals(2, servidor.requestCount)
+        assertEquals(0, dao.pendientes("venue-1"))
     }
 
     @Test

@@ -3046,10 +3046,13 @@ class PaymentFlowViewModel @Inject constructor(
                 stampRewardId = cart.pendingStampRewardId,
             )
         }
-        // Codex código r1 #14: los renglones del ticket de la caja, por si no hay red para cotizar (con red mandan los del SERVIDOR).
-        val renglones = com.avoqado.pos.maquina.renglonesParaCongelar(papelDelCobro(currentBaseAmount(), cobrado = currentBaseAmount()).renglones)
+        // Codex código r1 #14: los renglones del ticket de la caja, por si no hay red para cotizar (con red mandan los del SERVIDOR). Codex
+        // código POS r4 #11: con el IVA aparte y quién atendió del MISMO papel, para que el ticket armado de la fila salga igual.
+        val papel = papelDelCobro(currentBaseAmount(), cobrado = currentBaseAmount())
         val venta = com.avoqado.pos.maquina.VentaPorCobrar(
-            venueId, cart.llaveParaLaMaquina, pedido, currentBaseAmount(), currentTipCents, renglonesLocales = renglones,
+            venueId, cart.llaveParaLaMaquina, pedido, currentBaseAmount(), currentTipCents,
+            renglonesLocales = com.avoqado.pos.maquina.renglonesParaCongelar(papel.renglones),
+            impuestoAgregadoCents = papel.impuestoAgregado, atendio = atendioDelCobro(cart),
         )
         // Codex código r1 #1: la venta queda apartada en ESTE toque, antes de pedir el turno o cotizar: la tarjeta (F4) ya no sale.
         if (!caja.apartar()) return
@@ -6686,6 +6689,16 @@ class PaymentFlowViewModel @Inject constructor(
         return papelDelCobro(base, cobrado = base)
     }
 
+    /**
+     * «Atendió» del papel de este cobro (D4 de mesas40): el mesero dueño de la mesa; si no, el vendedor elegido; si no, la sesión. Lo
+     * comparten el ticket ([buildReceiptSnapshot]) y el papel congelado de la máquina (Codex código POS r4 #11).
+     */
+    private fun atendioDelCobro(cart: CartState?): String? = if (mesaDelCobro != null) {
+        mesaDelCobro?.meseroNombre ?: nombreDeLaSesionDelCobro
+    } else {
+        cart?.selectedStaffName?.takeIf { cart.selectedStaffId.isNotBlank() } ?: nombreDeLaSesionDelCobro
+    }
+
     private fun buildReceiptSnapshot(method: PaymentMethod? = null, changeCents: Int? = null): ReceiptData? {
         val cart = cartState
         val successState = _state.value as? PaymentFlowState.Success
@@ -6747,11 +6760,7 @@ class PaymentFlowViewModel @Inject constructor(
             // D4 (mesas40, founder 14-oct, precedente Toast/Square): en el cobro de una MESA, «Atendió» = el mesero dueño
             // de la cuenta aunque cobre otra persona (el pago sigue a nombre de quien cobra, `selectedStaffId`). Sin mesero,
             // o en mostrador sin vendedor elegido, la sesión. Nunca el literal «Staff» del carrito sin vendedor.
-            cashierName = if (mesaDelCobro != null) {
-                mesaDelCobro?.meseroNombre ?: nombreDeLaSesionDelCobro
-            } else {
-                cart?.selectedStaffName?.takeIf { cart.selectedStaffId.isNotBlank() } ?: nombreDeLaSesionDelCobro
-            },
+            cashierName = atendioDelCobro(cart),
             customerName = _attachedCustomerName.value,
             // 🔴 EL BILLETE REAL QUE ENTREGÓ EL CLIENTE, no una resta al revés.
             //

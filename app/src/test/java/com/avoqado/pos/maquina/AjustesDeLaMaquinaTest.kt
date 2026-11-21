@@ -112,11 +112,14 @@ class AjustesDeLaMaquinaTest {
             dao.insertar(fila("AQ000000000001", EstadoDelIntento.PAGADO, subido = true))
             dao.insertar(fila("AQ000000000002", EstadoDelIntento.CANCELADO, subido = true))
             dao.insertar(fila("AQ000000000003", EstadoDelIntento.GUARDADO, subido = true))
-            dao.insertar(fila("AQ000000000004", EstadoDelIntento.RESUELTO))
+            // Codex código POS r4 #4: lo resuelto cuya evidencia ya tiene el SERVIDOR no frena.
+            dao.insertar(fila("AQ000000000004", EstadoDelIntento.RESUELTO, dudaSubida = true))
             // Codex código r2 H8: el cierre cuyo folio es de OTRA PC tiene su incidencia en el SERVIDOR: no frena (ni la sesión ni la máquina).
             dao.insertar(fila("AQ000000000007", EstadoDelIntento.PAGADO).copy(conflicto = "otra PC", respuestaServidor = "{}"))
             // Codex código r3 #3: tampoco la duda que el SERVIDOR atribuye a OTRA PC (409 OTRA_PC con su incidencia).
             dao.insertar(fila("AQ000000000006", EstadoDelIntento.ESPERANDO, dudaSubida = true).copy(conflicto = "otra PC", respuestaServidor = OTRA_PC))
+            // Codex código POS r4 #5: la duda que el SERVIDOR guardó como incidencia (422 con `incidentId`) ya es suya: no frena.
+            dao.insertar(fila("AQ000000000009", EstadoDelIntento.ESPERANDO, dudaSubida = true).copy(conflicto = "imposible", respuestaServidor = IMPOSIBLE))
             assertEquals(0, dao.pendientes(null))
             assertEquals(0, dao.pendientes("venue-1"))
             assertFalse("Codex código r3 #3: se puede desemparejar y cambiar la IP", dao.hayPendientesDeLaMaquina())
@@ -131,13 +134,18 @@ class AjustesDeLaMaquinaTest {
                 fila("AQ00000000000D", EstadoDelIntento.PAGADO),
                 fila("AQ00000000000E", EstadoDelIntento.CANCELADO),
                 fila("AQ00000000000F", EstadoDelIntento.GUARDADO, venue = "venue-2"),
+                // Codex código POS r4 #4: evidencia que llegó después de resolver y que sólo está en esta PC.
+                fila("AQ00000000000G", EstadoDelIntento.RESUELTO),
+                // …y la evidencia NUEVA de un folio de OTRA PC o de una incidencia 422, hasta que se entregue.
+                fila("AQ00000000000H", EstadoDelIntento.ESPERANDO).copy(conflicto = "otra PC", respuestaServidor = OTRA_PC),
+                fila("AQ00000000000J", EstadoDelIntento.ESPERANDO).copy(conflicto = "imposible", respuestaServidor = IMPOSIBLE),
             )
             frenan.forEachIndexed { i, f ->
                 dao.insertar(f)
                 assertEquals(f.estado, i + 1, dao.pendientes(null))
             }
             assertTrue(dao.hayPendientesDeLaMaquina())
-            assertEquals("por sucursal", 7, dao.pendientes("venue-1"))
+            assertEquals("por sucursal", 10, dao.pendientes("venue-1"))
             assertEquals(1, dao.pendientes("venue-2"))
             assertEquals(0, dao.pendientes("venue-3"))
         }
@@ -218,6 +226,19 @@ class AjustesDeLaMaquinaTest {
     }
 
     @Test
+    fun `recorte R1 con cobros de la maquina sin terminar el servidor no empareja otra PC ni desempareja, y la hoja lo dice claro`() = runBlocking {
+        val aMedias = MockResponse().setResponseCode(409).setBody(
+            """{"message":"La máquina tiene cobros sin terminar.","code":"CASH_MACHINE_FOLIOS_PENDING","details":{"count":2,"folios":[{"referenceCC":"AQ000000000001","kind":"ESPERANDO"}]}}""",
+        )
+        servidor.enqueue(aMedias)
+        servidor.enqueue(aMedias)
+        servidor.start()
+
+        assertEquals(TEXTO_FOLIOS_SIN_TERMINAR, emparejamiento().emparejar("192.168.1.50").exceptionOrNull()?.message)
+        assertEquals(TEXTO_FOLIOS_SIN_TERMINAR_AL_DESEMPAREJAR, emparejamiento().desemparejar().exceptionOrNull()?.message)
+    }
+
+    @Test
     fun `sin red la falla es de red, para que la hoja diga que hace falta internet`() = runBlocking {
         servidor.start()
         val repo = emparejamiento()
@@ -240,6 +261,9 @@ class AjustesDeLaMaquinaTest {
 
         /** El 409 `OTRA_PC` con su incidencia, como lo guarda la subida en `respuestaServidor`. */
         const val OTRA_PC = """{"message":"Este folio es de otra PC","code":"CASH_MACHINE_DOUBT_CONFLICT","details":{"motivo":"OTRA_PC","deviceId":"la-otra-pc","incidentId":"cinc000000000000000000009"}}"""
+
+        /** Codex código POS r4 #5: el 422 de una duda que el SERVIDOR sólo pudo guardar como incidencia (no abrió duda). */
+        const val IMPOSIBLE = """{"message":"El adeudo de esta duda no lo puede cobrar la máquina","code":"CASH_MACHINE_CLOSE_IMPOSSIBLE","details":{"incidentId":"cinc000000000000000000012"}}"""
 
         fun fila(
             ref: String,

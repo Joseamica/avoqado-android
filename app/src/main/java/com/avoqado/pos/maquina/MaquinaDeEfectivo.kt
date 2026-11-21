@@ -42,7 +42,6 @@ const val TEXTO_VENTA_CON_INTENTO = "Esta venta ya tiene un cobro en la máquina
 const val TEXTO_VENTA_EN_DUDA = "Esta venta espera a la máquina: un gerente la resuelve en el panel"
 const val TEXTO_SOLO_VENTA_COMPLETA = "La máquina cobra sólo una venta nueva y completa: cóbrala con tarjeta"
 const val TEXTO_SOLO_MAQUINA_O_TARJETA = "En esta PC se cobra con la máquina o con tarjeta"
-const val TEXTO_ESPERANDO = "Esperando a la máquina"
 /** Recorte R2 (21-nov): las dudas se resuelven sólo en el panel; la caja lo dice y espera. */
 const val TEXTO_ESPERANDO_AL_PANEL = "Esperando a la máquina: un gerente lo resuelve en el panel"
 const val TEXTO_SIGUES_AHI = "¿Sigues ahí? Toca para continuar"
@@ -140,9 +139,21 @@ fun deudaDelComprobante(fila: CobroEnMaquinaEntity): Pair<String, Int>? {
     return (if (desenlace == Desenlace.PAGADO && excedente > 0) "COMPROBANTE DE DIFERENCIA" else "COMPROBANTE DE LA MÁQUINA") to fila.aDeberCents
 }
 
+/**
+ * Codex código POS r4 #11: el papel que se congela con el intento, de lo que armó la caja: los renglones (los de la cotización, o los del
+ * carrito sin red), el IVA cobrado aparte y quién atendió. Así el ticket armado de la fila sale igual que el de la pantalla. Vive en la
+ * columna `renglonesJson` (sin migración); una fila de antes guarda ahí sólo el arreglo de renglones.
+ */
+fun papelParaCongelar(renglones: String?, impuestoAgregadoCents: Int, atendio: String?): String =
+    JSONObject().put("renglones", renglones?.let { runCatching { org.json.JSONArray(it) }.getOrNull() } ?: org.json.JSONArray())
+        .put("impuestoAgregadoCents", impuestoAgregadoCents).put("atendio", atendio ?: JSONObject.NULL).toString()
+
+private fun papelCongelado(json: String?): JSONObject? =
+    json?.trim()?.takeIf { it.startsWith("{") }?.let { runCatching { JSONObject(it) }.getOrNull() }
+
 /** Codex código r1 #14: los renglones congelados de la fila (`[{name, quantity, unitCents, totalCents, modifiers?}]`), para el ticket. */
 fun renglonesDelTicket(json: String?): List<com.avoqado.pos.printing.data.model.ReceiptItem>? {
-    val arreglo = json?.let { runCatching { org.json.JSONArray(it) }.getOrNull() } ?: return null
+    val arreglo = papelCongelado(json)?.optJSONArray("renglones") ?: json?.let { runCatching { org.json.JSONArray(it) }.getOrNull() } ?: return null
     return (0 until arreglo.length()).mapNotNull { i ->
         val r = arreglo.optJSONObject(i) ?: return@mapNotNull null
         val modificadores = r.optJSONArray("modifiers")?.let { m -> (0 until m.length()).map { m.optString(it) } }?.ifEmpty { null }
@@ -165,20 +176,32 @@ fun renglonesParaCongelar(items: List<com.avoqado.pos.printing.data.model.Receip
 
 /**
  * Codex código r1 #12: el ticket de una venta pagada de la máquina, armado de su fila (sin el carrito, que ya no está tras reiniciar):
- * los renglones congelados, lo recibido, el cambio, lo que no dio de cambio y «Precio por confirmar» si se cobró sin cotizar.
+ * los renglones congelados, lo recibido, el cambio, lo que no dio de cambio y «Precio por confirmar» si se cobró sin cotizar. Codex código
+ * POS r4 #11: los totales salen con la MISMA regla del ticket de la caja ([com.avoqado.pos.printing.data.model.TotalesDelTicket]) y el IVA
+ * aparte y quién atendió que se congelaron al empezar.
  */
 fun ticketDeLaFila(fila: CobroEnMaquinaEntity, negocio: String): com.avoqado.pos.printing.data.model.ReceiptData {
     val renglones = renglonesDelTicket(fila.renglonesJson).orEmpty()
     val debe = deudaFisica(Desenlace.PAGADO, fila.dueCents, fila.creditCents, fila.changeDispensedCents)
+    val papel = papelCongelado(fila.renglonesJson)
+    val totales = com.avoqado.pos.printing.data.model.TotalesDelTicket.desdeLoCobrado(
+        cobrado = fila.saleCents,
+        propina = fila.tipCents,
+        subtotalBruto = renglones.takeIf { it.isNotEmpty() }?.sumOf { it.totalPrice } ?: fila.saleCents,
+        cargo = 0,
+        impuestoAgregado = papel?.optInt("impuestoAgregadoCents", 0) ?: 0,
+    )
     return com.avoqado.pos.printing.data.model.ReceiptData(
         orderNumber = fila.referenceCC,
         orderType = "",
         items = renglones,
-        subtotal = fila.saleCents,
-        taxAmount = 0,
+        subtotal = totales.subtotal,
+        taxAmount = totales.impuesto,
         tipAmount = fila.tipCents.takeIf { it > 0 },
-        total = fila.dueCents,
+        discountAmount = totales.descuento.takeIf { it > 0 },
+        total = totales.total,
         paymentMethod = "Efectivo",
+        cashierName = papel?.takeIf { !it.isNull("atendio") }?.optString("atendio")?.takeIf { it.isNotBlank() },
         venueName = negocio,
         date = Date(fila.cierreEn ?: fila.creadoEn),
         cashTendered = fila.creditCents,
@@ -238,6 +261,10 @@ data class VentaPorCobrar(
     val tipCents: Int,
     /** Codex código r1 #14: los renglones del carrito ([renglonesParaCongelar]); sin red, el ticket sale de éstos. */
     val renglonesLocales: String? = null,
+    /** Codex código POS r4 #11: el IVA cobrado aparte del ticket de la caja; se congela con el intento. */
+    val impuestoAgregadoCents: Int = 0,
+    /** Codex código POS r4 #11: «Atendió» del ticket de la caja; se congela con el intento. */
+    val atendio: String? = null,
 )
 
 sealed interface InicioEnLaMaquina {
@@ -457,7 +484,8 @@ class MaquinaDeEfectivo internal constructor(
             // Antes de escribir en disco: si ya se salió de este cobro, ni se guarda.
             if (puerta.siSigueAbierta { true } == null) return InicioEnLaMaquina.NoSeCobra(TEXTO_COBRO_ABANDONADO)
             val venta = VentaParaLaMaquina(
-                v.venueId, v.llaveDeVenta, v.pedidoJson, sale, tip, turno.turnoActual(), quoteId, renglones, vigenteHasta, prefs.bindingId,
+                v.venueId, v.llaveDeVenta, v.pedidoJson, sale, tip, turno.turnoActual(), quoteId,
+                papelParaCongelar(renglones, v.impuestoAgregadoCents, v.atendio), vigenteHasta, prefs.bindingId,
             )
             return when (val r = cobro.cobrar(venta, puerta)) {
                 is ResultadoDeInicio.Iniciado -> InicioEnLaMaquina.Iniciado(r.referenceCC)
@@ -561,15 +589,19 @@ class MaquinaDeEfectivo internal constructor(
     }
 
     /**
-     * El comprobante de [referenceCC] desde la lista de lo que se debe (Ajustes). Si ese comprobante ES el papel del folio (un CANCELADO,
-     * o una venta que quedó como incidencia), pasa por [imprimirPapelDelFolio]: el original una vez, después copias. El comprobante de
-     * diferencia de una venta (el precio bajó al subir) es otro papel: sale aparte, reimprimible. null = esa fila no le debe nada.
+     * El comprobante de [referenceCC] desde la lista de lo que se debe (Ajustes). TODO papel del folio pasa por [imprimirPapelDelFolio] y
+     * su reclamo (Codex código POS r4 #10): un CANCELADO o una venta que quedó como incidencia (su comprobante ES el papel del folio), y
+     * también el comprobante de diferencia de una venta (el precio bajó al subir). El primero que sale del folio es el original; los
+     * demás, «REIMPRESIÓN»: una deuda nunca se presenta dos veces como original. null = esa fila no le debe nada.
      */
     suspend fun imprimirComprobante(referenceCC: String): PrinterService.PrintOutcome? {
         val fila = dao.porReferencia(referenceCC) ?: return null
-        if (fila.desenlace != Desenlace.PAGADO || fila.conflicto != null) return imprimirPapelDelFolio(referenceCC, aPedido = true)
-        val c = comprobanteDeLaMaquina(fila, secureStorage.venueName ?: "Avoqado") ?: return null
-        return printerService.imprimirOriginal(c)
+        val diferencia = if (fila.desenlace == Desenlace.PAGADO && fila.conflicto == null) {
+            comprobanteDeLaMaquina(fila, secureStorage.venueName ?: "Avoqado") ?: return null
+        } else {
+            null
+        }
+        return imprimirPapelDelFolio(referenceCC, diferencia, aPedido = true)
     }
 
     /**

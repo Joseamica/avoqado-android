@@ -174,10 +174,11 @@ class SubidaDeLaMaquina @Inject constructor(
         dao.paraSubir(venueId).isNotEmpty() || dao.esperanAlGerente(venueId).any(::consultable)
 
     /**
-     * Codex código r2 H8: una duda cuyo folio el SERVIDOR atribuye a OTRA PC ya no se consulta (su decisión nunca le llega a ésta). Sí
-     * vuelve a subir cuando su diario trae algo nuevo (su propio cierre físico): el SERVIDOR lo agrega a la incidencia.
+     * Codex código r2 H8: una duda cuyo folio el SERVIDOR atribuye a OTRA PC ya no se consulta (su decisión nunca le llega a ésta). Codex
+     * código POS r4 #5: tampoco la que él guardó sólo como incidencia (422): no hay duda que consultar, y preguntar daba 404 y la volvía a
+     * subir sin fin. Las dos sí vuelven a subir cuando su diario trae algo nuevo: el SERVIDOR lo agrega a la incidencia.
      */
-    private fun consultable(fila: CobroEnMaquinaEntity) = !fila.esDeOtraPc()
+    private fun consultable(fila: CobroEnMaquinaEntity) = !fila.esDeOtraPc() && !fila.esIncidenciaSinDuda()
 
     /**
      * Aplica el acuse (leído en UN solo lugar: [leerAcuse]). false = la pasada se corta (sesión vencida, sin emparejar o sin permiso: lo
@@ -185,7 +186,7 @@ class SubidaDeLaMaquina @Inject constructor(
      * incidencia durable de un 409/422; RECIBIDO se conserva y se reenvía el MISMO mensaje, que lo reanuda.
      */
     private suspend fun aplicar(fila: CobroEnMaquinaEntity, acuse: Acuse, esDuda: Boolean, porPost: Boolean): Boolean {
-        if (fila.estado == EstadoDelIntento.RESUELTO) return entregarTrasResolver(fila, acuse)
+        if (fila.estado == EstadoDelIntento.RESUELTO) return entregarTrasResolver(fila, acuse, porPost)
         when (acuse) {
             Acuse.SinSesion -> return false
             is Acuse.SinEmparejar -> {
@@ -228,21 +229,26 @@ class SubidaDeLaMaquina @Inject constructor(
     }
 
     /**
-     * Codex código r3 #1: la evidencia que llegó DESPUÉS de la resolución de un gerente. Toda respuesta final del SERVIDOR (el eco del
-     * folio, su conflicto o su rechazo) dice que ya la vio: deja de frenar la venta y de subir. La resolución guardada no se toca.
+     * Codex código r3 #1 y Codex código POS r4 #3: la evidencia que llegó DESPUÉS de la resolución de un gerente. Sólo la entrega una
+     * constancia de que el SERVIDOR la guardó: su incidencia durable (`incidentId`) o el TERMINADO de ESTA PC. Un rechazo sin incidencia
+     * (400, 413…), un RECIBIDO o un TERMINADO sin dueño la dejan pendiente: sigue frenando salir y vuelve a subir. La resolución guardada
+     * no se toca (si no cubre lo que entró, la venta sigue frenada: [bloqueaLaVenta]).
      */
-    private suspend fun entregarTrasResolver(fila: CobroEnMaquinaEntity, acuse: Acuse): Boolean = when (acuse) {
-        Acuse.SinSesion -> false
-        is Acuse.SinEmparejar -> {
-            _aviso.value = acuse.texto
-            false
+    private suspend fun entregarTrasResolver(fila: CobroEnMaquinaEntity, acuse: Acuse, porPost: Boolean): Boolean {
+        when (acuse) {
+            Acuse.SinSesion -> return false
+            is Acuse.SinEmparejar -> {
+                _aviso.value = acuse.texto
+                return false
+            }
+            is Acuse.ConIncidencia -> dao.marcarEvidenciaEntregada(fila.referenceCC, fila.mensajesCrudos, fila.creditCents)
+            is Acuse.Terminado -> if (esDeEstaPc(acuse.deviceId, porPost)) {
+                dao.marcarEvidenciaEntregada(fila.referenceCC, fila.mensajesCrudos, fila.creditCents)
+            }
+            is Acuse.Rechazo, is Acuse.Recibido, Acuse.Reintentar, Acuse.NoExiste -> Unit
         }
-        Acuse.Reintentar, Acuse.NoExiste -> true
-        else -> {
-            dao.marcarEvidenciaEntregada(fila.referenceCC, fila.mensajesCrudos, fila.creditCents)
-            _aviso.value = null
-            true
-        }
+        _aviso.value = null
+        return true
     }
 
     /**

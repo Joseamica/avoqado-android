@@ -1015,9 +1015,13 @@ class CobroConMaquinaTest {
         assertEquals(EstadoDelIntento.ESPERANDO, dao.fila(ref)!!.estado)
         val primero = status(ref, credit = 100)
         assertTrue(dao.anotarMensaje(ref, 1, primero, 100, due))
-        // Sin internet llegan más de 8 KB de mensajes distintos del mismo folio: el TEXTO del diario suelta los más viejos.
+        // Llegan más de 8 KB de mensajes distintos del mismo folio, y el SERVIDOR acusa cada uno: el TEXTO del diario suelta los más viejos
+        // (sólo los que ya entregó, Codex código POS r4 #15).
         var n = 1
-        while (primero in dao.fila(ref)!!.mensajesCrudos) assertTrue(dao.anotarMensaje(ref, 1, status(ref, credit = 100 + n++), null, null))
+        while (primero in dao.fila(ref)!!.mensajesCrudos) {
+            dao.marcarDudaSubida(ref, true)
+            assertTrue(dao.anotarMensaje(ref, 1, status(ref, credit = 100 + n++), null, null))
+        }
         dao.marcarDudaSubida(ref, true)   // el SERVIDOR ya tiene todo eso
         val antes = dao.fila(ref)!!
 
@@ -1026,5 +1030,84 @@ class CobroConMaquinaTest {
         val despues = dao.fila(ref)!!
         assertEquals("ni el diario, ni lo que entró, ni la marca de subida (la versión) cambian", antes, despues)
         assertTrue(despues.dudaSubida)
+    }
+
+    // MARK: - Codex código POS r4
+
+    @Test
+    fun `P1 Codex r4 #15 el diario nunca recorta lo que todavia no llega al servidor`() = runTest {
+        val cobro = nuevoCobro()
+        val ref = cobroPropio(cobro)
+        canal.llega(cancelada("AQOTRAOPERAC1", credit = 0, change = 0, due = 5_000)); runCurrent()   // A queda en duda, sin subir
+        val primero = status(ref, credit = 100)
+        assertTrue(dao.anotarMensaje(ref, 1, primero, 100, due))
+        // Sin internet llegan más de 8 KB de mensajes distintos del mismo folio: ninguno ha llegado al SERVIDOR.
+        (1..80).forEach { assertTrue(dao.anotarMensaje(ref, 1, status(ref, credit = 100 + it), null, null)) }
+
+        val sinEntregar = dao.fila(ref)!!.mensajesCrudos
+        assertTrue("pasa de 8 KB", sinEntregar.length > DiarioDelFolio.MAXIMO)
+        assertTrue("el primero sigue: no se ha entregado", primero in sinEntregar)
+        (1..80).forEach { assertTrue("ni ninguno de los demás ($it)", status(ref, credit = 100 + it) in sinEntregar) }
+
+        // El SERVIDOR acusa todo eso: lo entregado ya se puede recortar, nunca lo nuevo.
+        dao.marcarDudaSubida(ref, true)
+        val ultimo = status(ref, credit = 999)
+        assertTrue(dao.anotarMensaje(ref, 1, ultimo, null, null))
+        val recortado = dao.fila(ref)!!.mensajesCrudos
+        assertTrue("cabe en 8 KB", recortado.length <= DiarioDelFolio.MAXIMO)
+        assertFalse("lo entregado más viejo se fue", primero in recortado)
+        assertTrue("lo nuevo nunca se va", recortado.endsWith(ultimo))
+    }
+
+    @Test
+    fun `P1 Codex r4 #2 el cierre nunca registra menos de lo que la maquina ya conto - devolucion en 0 tras 50 queda debiendo 50`() = runTest {
+        val cobro = nuevoCobro()
+        val ref = cobroPropio(cobro)
+        canal.llega(status(ref, credit = 5_000)); runCurrent()
+        assertEquals(5_000, dao.fila(ref)!!.creditCents)
+        cobro.cancelarPorElCliente(); runCurrent()
+
+        canal.llega(cancelada(ref, credit = 0, change = 0)); runCurrent()
+
+        val f = dao.fila(ref)!!
+        assertEquals(EstadoDelIntento.CANCELADO, f.estado)
+        assertEquals("lo que ya contó la máquina no se borra", 5_000 to 0, f.creditCents to f.changeDispensedCents)
+        assertEquals("no consta que los \$50 regresaron: se le deben", 5_000, f.aDeberCents)
+        assertEquals(EstadoDelCobro.Cerrado(ref, Desenlace.CANCELADO, due, 5_000, 0), cobro.estado.value)
+    }
+
+    @Test
+    fun `P1 Codex r4 #2 el abandono tampoco registra menos de lo que la maquina ya conto`() = runTest {
+        val cobro = nuevoCobro()
+        val ref = cobroPropio(cobro)
+        canal.llega(status(ref, credit = 5_000)); runCurrent()
+        advanceTimeBy(150_001)   // «¿Sigues ahí?» y nadie contestó: cancel "2"
+        assertEquals(listOf(1 to "2"), canal.cancels())
+
+        canal.llega(cancelada(ref, credit = 0, change = 0)); runCurrent()
+
+        val f = dao.fila(ref)!!
+        assertEquals(EstadoDelIntento.GUARDADO, f.estado)
+        assertEquals(5_000, f.creditCents)
+        assertEquals(5_000, f.aDeberCents)
+    }
+
+    @Test
+    fun `P1 Codex r4 #6 los status intermedios no alargan los 30 s de cancelando sin cierre`() = runTest {
+        val cobro = nuevoCobro()
+        val ref = cobroPropio(cobro)
+        cobro.cancelarPorElCliente(); runCurrent()
+        assertTrue(cobro.estado.value is EstadoDelCobro.Cancelando)
+
+        // La QuickPay sigue informando su estado (el mismo, o con otro crédito) y nunca manda el cierre.
+        repeat(3) { i ->
+            advanceTimeBy(9_000)
+            canal.llega(if (i == 1) status(ref, credit = 1_000) else status(ref)); runCurrent()
+        }
+        assertTrue("a los 27 s sigue cancelando", cobro.estado.value is EstadoDelCobro.Cancelando)
+        advanceTimeBy(3_001)
+
+        assertEquals("a los 30 s desde el PRIMER cancel: duda", EstadoDelCobro.Esperando(ref, due), cobro.estado.value)
+        assertEquals(EstadoDelIntento.ESPERANDO, dao.fila(ref)!!.estado)
     }
 }

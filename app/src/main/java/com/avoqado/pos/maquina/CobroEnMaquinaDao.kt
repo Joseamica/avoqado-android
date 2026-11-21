@@ -15,9 +15,12 @@ interface CobroEnMaquinaDao {
     @Query(CobroEnMaquinaSql.POR_REFERENCIA)
     fun observar(referenceCC: String): kotlinx.coroutines.flow.Flow<CobroEnMaquinaEntity?>
 
-    /** Para la caja (C5): mientras dé > 0, la misma venta tampoco se cobra con tarjeta (R2#1). */
-    @Query(CobroEnMaquinaSql.BLOQUEAN_LA_VENTA)
-    suspend fun bloqueanLaVenta(llaveDeVenta: String): Int
+    @Query(CobroEnMaquinaSql.FILAS_DE_LA_VENTA)
+    suspend fun filasDeLaVenta(llaveDeVenta: String): List<CobroEnMaquinaEntity>
+
+    /** Para la caja (C5): mientras dé > 0, la misma venta tampoco se cobra con tarjeta (R2#1). UNA regla: [bloqueaLaVenta]. */
+    @Transaction
+    suspend fun bloqueanLaVenta(llaveDeVenta: String): Int = filasDeLaVenta(llaveDeVenta).count { it.bloqueaLaVenta() }
 
     @Query(CobroEnMaquinaSql.INTENTO_DE_LA_VENTA)
     suspend fun intentoDeLaVenta(llaveDeVenta: String): CobroEnMaquinaEntity?
@@ -59,7 +62,9 @@ interface CobroEnMaquinaDao {
         if (fila.estado != EstadoDelIntento.EN_CURSO && fila.estado != EstadoDelIntento.ESPERANDO && fila.estado != EstadoDelIntento.RESUELTO) {
             return false
         }
-        val anotado = DiarioDelFolio.agregar(fila.mensajesCrudos, fila.huellasDelDiario, generacion, crudo) ?: return false
+        // Codex código POS r4 #15: sólo lo que el SERVIDOR ya tiene (la duda o lo de después de resolver, acusados) se puede recortar.
+        val entregado = fila.estado != EstadoDelIntento.EN_CURSO && fila.dudaSubida
+        val anotado = DiarioDelFolio.agregar(fila.mensajesCrudos, fila.huellasDelDiario, generacion, crudo, entregado) ?: return false
         val credito = if (creditCents != null && dueCents == fila.dueCents) maxOf(fila.creditCents, creditCents) else fila.creditCents
         return escribirDiario(referenceCC, fila.mensajesCrudos, anotado.diario, anotado.huellas, fila.creditCents, credito) > 0
     }

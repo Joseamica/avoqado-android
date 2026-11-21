@@ -26,6 +26,9 @@ internal open class CobroEnMaquinaSobreSqlite : CobroEnMaquinaDao, AutoCloseable
     /** Codex código r3 #12: corre justo después de escribir un cierre (p. ej. la subida guarda su acuse antes del primer papel). */
     var alCerrar: (String) -> Unit = {}
 
+    /** Codex código POS r4 #12: corre antes de cada lectura por folio (una lectura de disco que tarda). */
+    var alLeer: suspend () -> Unit = {}
+
     override fun close() = db.close()
 
     private fun preparar(sql: String, vararg valores: Pair<String, Any?>): PreparedStatement {
@@ -72,7 +75,10 @@ internal open class CobroEnMaquinaSobreSqlite : CobroEnMaquinaDao, AutoCloseable
 
     fun todas(): List<CobroEnMaquinaEntity> = filas("SELECT * FROM cobros_en_maquina ORDER BY creadoEn, referenceCC")
 
-    override suspend fun porReferencia(referenceCC: String) = fila(referenceCC)
+    override suspend fun porReferencia(referenceCC: String): CobroEnMaquinaEntity? {
+        alLeer()
+        return fila(referenceCC)
+    }
 
     /** En vivo como Room: vuelve a leer con cada escritura (sin reloj que sondee: con `runTest` un sondeo infinito no termina nunca). */
     override fun observar(referenceCC: String) = cambios.map { fila(referenceCC) }
@@ -97,10 +103,8 @@ internal open class CobroEnMaquinaSobreSqlite : CobroEnMaquinaDao, AutoCloseable
     /** `pendientes` es el de la interfaz (la regla en Kotlin), heredado sin tocar: corre sobre esta consulta. */
     override suspend fun puedenFrenar() = filas(CobroEnMaquinaSql.PUEDEN_FRENAR)
 
-    override suspend fun bloqueanLaVenta(llaveDeVenta: String): Int =
-        preparar(CobroEnMaquinaSql.BLOQUEAN_LA_VENTA, "llaveDeVenta" to llaveDeVenta).use { st ->
-            st.executeQuery().let { it.next(); it.getInt(1) }
-        }
+    /** `bloqueanLaVenta` es el de la interfaz (la regla en Kotlin, [bloqueaLaVenta]), heredado sin tocar: corre sobre esta consulta. */
+    override suspend fun filasDeLaVenta(llaveDeVenta: String) = filas(CobroEnMaquinaSql.FILAS_DE_LA_VENTA, "llaveDeVenta" to llaveDeVenta)
 
     override suspend fun insertar(fila: CobroEnMaquinaEntity) {
         val f = fila

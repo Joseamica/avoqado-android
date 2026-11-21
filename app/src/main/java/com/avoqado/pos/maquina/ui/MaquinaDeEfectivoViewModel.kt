@@ -171,7 +171,9 @@ class MaquinaDeEfectivoViewModel @Inject constructor(
             val aviso = intentar {
                 if (cobros.hayPendientesDeLaMaquina()) return@intentar TEXTO_PENDIENTES_DE_LA_MAQUINA
                 emparejamiento.desemparejar().getOrElse { return@intentar textoDeFalla(it, TEXTO_SIN_RED_DESEMPAREJAR) }
-                boveda.borrar()
+                // Codex código POS r4 #4: si mientras se daba de baja llegó evidencia que sólo está aquí, la credencial se queda para
+                // entregarla (el SERVIDOR la guarda como incidencia con su dinero).
+                if (!cobros.hayPendientesDeLaMaquina()) boveda.borrar()
                 prefs.guardar(prefs.ip, activa = false)   // la IP se queda para volver a emparejar
                 null
             }

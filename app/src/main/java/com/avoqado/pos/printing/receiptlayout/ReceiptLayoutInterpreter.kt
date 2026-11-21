@@ -33,6 +33,8 @@ object ReceiptLayoutInterpreter {
         return T.wrap(T.force(m.title ?: L.COMPROBANTE_DE_LA_MAQUINA), width).map { text(it, Align.CENTER, bold = true) } +
             row(L.FOLIO, T.force(m.referenceCC)) +
             row(L.FECHA, ReceiptFormat.dateTime(input.sale.occurredAt, input.sale.timezone)) +
+            // Codex código POS r4 #10: la copia se marca como cualquier ticket: la misma deuda no se presenta dos veces como original.
+            (input.sale.reprint?.let { row(L.REIMPRESION, ReceiptFormat.dateTime(it.printedAt, input.sale.timezone)) } ?: emptyList()) +
             (m.owedCents?.takeIf { it > 0L }?.let { T.wrap("Te debemos ${ReceiptFormat.money(it)}: pasa a caja a cobrarlo", width).map { l -> text(l, bold = true) } }
                 ?: emptyList()) +
             T.wrap("${L.COBRADO_EN_LA_MAQUINA} ${T.force(m.referenceCC)}", width).map { text(it) }

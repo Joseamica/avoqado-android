@@ -31,7 +31,6 @@ import com.avoqado.pos.maquina.Desenlace
 import com.avoqado.pos.maquina.EstadoDelCobro
 import com.avoqado.pos.maquina.FilaDeLaMaquina
 import com.avoqado.pos.maquina.TEXTO_AYUDA
-import com.avoqado.pos.maquina.TEXTO_ESPERANDO
 import com.avoqado.pos.maquina.TEXTO_ESPERANDO_AL_PANEL
 import com.avoqado.pos.maquina.TEXTO_SIGUES_AHI
 import com.avoqado.pos.maquina.VistaDeLaMaquina
@@ -151,8 +150,7 @@ fun PantallaDeLaMaquina(vista: VistaDeLaMaquina, caja: CajaConMaquina, onSalir: 
                 }
                 is EstadoDelCobro.Esperando -> {
                     // Recorte R2: la caja no resuelve; consulta el folio y, cuando el panel lo resuelve, enseña cómo terminó.
-                    Titulo(TEXTO_ESPERANDO)
-                    Nota(TEXTO_ESPERANDO_AL_PANEL)
+                    Titulo(TEXTO_ESPERANDO_AL_PANEL)
                     Nota("La máquina no confirmó cómo terminó este cobro. No lo cobres otra vez.")
                     Monto("Por pagar", c.dueCents)
                     Spacer(Modifier.height(AvoqadoTheme.spacing.xl))

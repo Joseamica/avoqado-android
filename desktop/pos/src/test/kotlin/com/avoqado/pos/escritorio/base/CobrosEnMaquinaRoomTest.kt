@@ -99,10 +99,16 @@ class CobrosEnMaquinaRoomTest {
             )
             dao.insertar(duda)
             assertEquals(1, dao.pendientes("venue-1"), "una duda propia ya subida sigue frenando salir (r3 #2)")
-            assertEquals(1, dao.resolver("AQ000000000001", "GERENTE", 0, 0, null, """{"outcome":"CANCELADO"}""", "CANCELADO"))
+            assertEquals(1, dao.resolver("AQ000000000001", "GERENTE", 0, 0, null, """{"outcome":"CANCELADO","creditCents":0}""", "CANCELADO"))
             assertEquals(0, dao.pendientes(null), "lo que el SERVIDOR resolvió no frena")
+            assertEquals(0, dao.bloqueanLaVenta("venta-1"), "«Cancelado, \$0» sin nada que lo contradiga: la tarjeta sí")
             assertTrue(dao.anotarMensaje("AQ000000000001", 1, "tarde", 10_000, 18_750), "lo que llega después de resolver es evidencia (r3 #1)")
-            assertEquals(1, dao.bloqueanLaVenta("venta-1"), "y frena la venta hasta que el SERVIDOR la tenga")
+            assertEquals(1, dao.bloqueanLaVenta("venta-1"), "y frena la venta")
+            assertEquals(1, dao.pendientes(null), "Codex código POS r4 #4: y salir, mientras sólo está en esta PC")
+            val conEvidencia = dao.porReferencia("AQ000000000001")!!
+            assertEquals(1, dao.marcarEvidenciaEntregada("AQ000000000001", conEvidencia.mensajesCrudos, conEvidencia.creditCents))
+            assertEquals(0, dao.pendientes(null), "entregada, ya no frena salir")
+            assertEquals(1, dao.bloqueanLaVenta("venta-1"), "Codex código POS r4 #1: la máquina contó \$100 que la resolución no dice")
         } finally {
             base.close()
             carpeta.toFile().deleteRecursively()

@@ -94,7 +94,7 @@ class CobroEnMaquinaMigracionTest {
             }
         }
         // El diario de antes (sin huellas) se siembra con lo que su texto todavía guarda: su mensaje no vuelve a contar.
-        assertNull(DiarioDelFolio.agregar("g1 {\"comando\":\"status\"}", "", 2, "{\"comando\":\"status\"}"))
+        assertNull(DiarioDelFolio.agregar("g1 {\"comando\":\"status\"}", "", 2, "{\"comando\":\"status\"}", entregado = true))
     }
 
     @Test

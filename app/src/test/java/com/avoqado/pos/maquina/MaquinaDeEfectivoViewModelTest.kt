@@ -206,6 +206,8 @@ class MaquinaDeEfectivoViewModelTest {
             // Codex código r2 H1: una duda que el SERVIDOR ya tiene sigue frenando: con el dinero en duda, la PC conserva su máquina.
             fila("AQ00000000000E", EstadoDelIntento.ESPERANDO, dudaSubida = true),
             fila("AQ00000000000C", EstadoDelIntento.PAGADO),
+            // Codex código POS r4 #4: lo que la máquina dijo después de resolver y que sólo está en esta PC.
+            fila("AQ00000000000G", EstadoDelIntento.RESUELTO),
         ).forEach { pendiente ->
             cobros.db.createStatement().use { it.executeUpdate("DELETE FROM cobros_en_maquina") }
             runBlocking { cobros.insertar(pendiente) }
@@ -260,6 +262,25 @@ class MaquinaDeEfectivoViewModelTest {
         assertNull(boveda.leer())
         assertFalse(prefs.activa)
         assertFalse(fin.emparejada)
+    }
+
+    @Test
+    fun `P1 Codex r4 #4 si llega evidencia mientras se desempareja, la credencial se queda para entregarla`() {
+        prefs.guardar("192.168.1.50", activa = true, venueId = "venue-1")
+        boveda.guardar("cred-1")
+        servidor.dispatcher = object : okhttp3.mockwebserver.Dispatcher() {
+            override fun dispatch(request: okhttp3.mockwebserver.RecordedRequest): MockResponse {
+                // Mientras el SERVIDOR da de baja la PC, la máquina avisa algo de un cobro: queda en esta PC sin entregar.
+                runBlocking { cobros.insertar(fila("AQ00000000000A", EstadoDelIntento.ESPERANDO)) }
+                return MockResponse().setBody("""{"success":true,"revoked":true}""")
+            }
+        }
+        val vm = vm().abierta()
+
+        vm.desemparejar()
+
+        vm.esperar("desemparejada") { !it.activa && !it.ocupado }
+        assertEquals("sin la credencial esa evidencia ya no podría subir", "cred-1", boveda.leer())
     }
 
     @Test

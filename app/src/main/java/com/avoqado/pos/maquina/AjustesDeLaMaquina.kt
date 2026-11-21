@@ -30,8 +30,9 @@ const val TEXTO_PENDIENTES_DE_LA_MAQUINA = "Hay cobros de la máquina sin subir 
 const val TEXTO_SIN_PERMISO = "Pide a un gerente que entre con su PIN (cambio de usuario) para configurar la máquina"
 const val TEXTO_SIN_RED_EMPAREJAR = "Se necesita internet para emparejar"
 const val TEXTO_SIN_RED_DESEMPAREJAR = "Se necesita internet para desemparejar"
-/** Recorte R1 (21-nov): el SERVIDOR no empareja otra PC mientras el negocio tenga cobros de la máquina a medias (409). */
+/** Recorte R1 (21-nov): el SERVIDOR no empareja otra PC (ni apaga ésta) mientras el negocio tenga cobros de la máquina a medias (409). */
 const val TEXTO_FOLIOS_SIN_TERMINAR = "Hay cobros de la máquina sin terminar: termínalos en el panel antes de emparejar otra PC"
+const val TEXTO_FOLIOS_SIN_TERMINAR_AL_DESEMPAREJAR = "Hay cobros de la máquina sin terminar: termínalos en el panel antes de desemparejar esta PC"
 
 /**
  * La IP de la máquina como la acepta el SERVIDOR (`z.ip({ version: 'v4' })`): cuatro números de 0 a 255 con dígitos ASCII.
@@ -170,7 +171,7 @@ class EmparejamientoDeLaMaquina @Inject constructor(
     suspend fun emparejar(machineIp: String): Result<Emparejado> {
         val venueId = secureStorage.venueId
         val nombre = secureStorage.venueName
-        return llamar(Request.Builder().post(JSONObject().put("machineIp", machineIp).toString().toRequestBody(JSON))) { cuerpo ->
+        return llamar(Request.Builder().post(JSONObject().put("machineIp", machineIp).toString().toRequestBody(JSON)), TEXTO_FOLIOS_SIN_TERMINAR) { cuerpo ->
             val json = JSONObject(cuerpo)
             val credencial = json.optString("credential").takeIf { it.isNotBlank() } ?: error("El servidor no mandó la credencial")
             val reemplazadas = json.optJSONArray("replaced")?.let { r -> (0 until r.length()).mapNotNull { r.optJSONObject(it)?.optString("machineIp") } }
@@ -182,9 +183,10 @@ class EmparejamientoDeLaMaquina @Inject constructor(
         }
     }
 
-    suspend fun desemparejar(): Result<Unit> = llamar(Request.Builder().delete()) {}
+    suspend fun desemparejar(): Result<Unit> = llamar(Request.Builder().delete(), TEXTO_FOLIOS_SIN_TERMINAR_AL_DESEMPAREJAR) {}
 
-    private suspend fun <T> llamar(pedido: Request.Builder, leer: (String) -> T): Result<T> = withContext(Dispatchers.IO) {
+    /** [conFoliosAMedias]: lo que dice la hoja si el SERVIDOR contesta el 409 `CASH_MACHINE_FOLIOS_PENDING` (recorte R1). */
+    private suspend fun <T> llamar(pedido: Request.Builder, conFoliosAMedias: String, leer: (String) -> T): Result<T> = withContext(Dispatchers.IO) {
         val venueId = secureStorage.venueId ?: return@withContext Result.failure(IllegalStateException("Sin sucursal activa"))
         val request = pedido.url("$baseUrl/mobile/venues/$venueId/cash-machine/binding")
             // R5#10: el 403 lo explica la hoja; nunca el diálogo de PIN de gerente del ForbiddenInterceptor.
@@ -196,7 +198,7 @@ class EmparejamientoDeLaMaquina @Inject constructor(
                 when {
                     r.isSuccessful -> runCatching { leer(cuerpo) }
                     r.code == 403 -> Result.failure(IllegalStateException(TEXTO_SIN_PERMISO))
-                    r.code == 409 && codigoDe(cuerpo) == CODIGO_FOLIOS_PENDIENTES -> Result.failure(IllegalStateException(TEXTO_FOLIOS_SIN_TERMINAR))
+                    r.code == 409 && codigoDe(cuerpo) == CODIGO_FOLIOS_PENDIENTES -> Result.failure(IllegalStateException(conFoliosAMedias))
                     else -> Result.failure(IllegalStateException(ServerErrorText.fromResponseBody(cuerpo, "No se pudo. Inténtalo de nuevo.")))
                 }
             }
