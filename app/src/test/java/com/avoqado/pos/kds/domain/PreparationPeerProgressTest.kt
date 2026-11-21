@@ -44,6 +44,28 @@ class PreparationPeerProgressTest {
         assertNotNull(runCatching { command.copy(items = List(21) { item }).validate() }.exceptionOrNull())
         assertNotNull(runCatching { command.copy(staffId = "").validate() }.exceptionOrNull())
     }
+    // QA del conjunto (20-nov): caja y cocina liberan el MISMO tiempo casi a la vez, con la hoja de esa mesa cerrada en la caja.
+    private val todo get() = command.copy(quantity = 3, intentId = "otro", deliveryId = "otro:0")
+    private fun conPropio(action: PreparationAction = PreparationAction.RELEASE, reason: String? = null) =
+        PreparationLocalLine(row, listOf(PreparationEffect("mio", 0, action, 3, null, reason)))
+
+    @Test fun `el mismo liberar completo de otro aparato converge sin rechazo ni cambio, tambien su ACKED`() {
+        val propio = conPropio()
+        assertEquals(propio, applyPreparationPeerProgress(propio, item, todo))
+        assertEquals(propio, applyPreparationPeerProgress(propio, item, todo.copy(phase = "ACKED")))
+        assertEquals(PreparationCounts(PENDING = 3), propio.projected().preparation)
+    }
+    @Test fun `un avance distinto sigue chocando, pero su ACKED adelanta la copia vieja en vez de rechazarla en cada pasada`() {
+        val propio = conPropio(PreparationAction.CANCEL, "Se fue")
+        assertNotNull(runCatching { applyPreparationPeerProgress(propio, item, todo) }.exceptionOrNull())
+        val adelantada = applyPreparationPeerProgress(propio, item, todo.copy(phase = "ACKED"))
+        assertEquals(1, adelantada.base.preparationRevision)
+        assertEquals(PreparationCounts(PENDING = 3), adelantada.projected().preparation) // lo confirmado por el servidor
+    }
+    @Test fun `liberar parcial igual desde la misma revision no converge (como en el servidor)`() {
+        val parcial = PreparationLocalLine(row, listOf(PreparationEffect("mio", 0, PreparationAction.RELEASE, 1)))
+        assertNotNull(runCatching { applyPreparationPeerProgress(parcial, item, command.copy(intentId = "otro", deliveryId = "otro:0")) }.exceptionOrNull())
+    }
     @Test fun `business rejection removes only the matching projection and ack waits for canonical baseline`() {
         val applied = applyPreparationPeerProgress(PreparationLocalLine(row), item, command)
         assertEquals(applied, applyPreparationPeerProgress(applied, item, command.copy(phase = "ACKED")))

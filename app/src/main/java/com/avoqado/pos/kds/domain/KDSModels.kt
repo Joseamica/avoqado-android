@@ -86,6 +86,14 @@ data class KDSOrderItem(
     val removedAt: String? = null,
 )
 
+/** D15 × D17 (QA del conjunto): «Recientes» cuenta sólo lo que se preparó; lo anulado (o retirado) va aparte. */
+fun resumenDePlatillos(items: List<KDSOrderItem>): String {
+    val anulados = items.count { it.removedAt != null }
+    val vivos = items.size - anulados
+    val platillos = "$vivos ${if (vivos == 1) "platillo" else "platillos"}"
+    return if (anulados == 0) platillos else "$platillos · $anulados ${if (anulados == 1) "anulado" else "anulados"}"
+}
+
 /** Un renglón quitado, partido para pintarlo: la etiqueta sin tachar y el nombre tachado. */
 data class RenglonQuitado(val etiqueta: String, val nombre: String)
 

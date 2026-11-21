@@ -25,6 +25,14 @@ class RenglonQuitadoTest {
         assertEquals(PreparationCounts(PENDING = 1), PreparationLocalLine(viva, listOf(reabrir)).projected().preparation)
     }
 
+    @Test fun `Recientes no cuenta lo anulado como platillo y lo dice aparte`() {
+        val vivo = item("Agua", null)
+        val anulado = item("ANULADO · Coca", "2026-11-20T18:00:00.000Z")
+        assertEquals("3 platillos · 1 anulado", resumenDePlatillos(listOf(vivo, vivo, vivo, anulado)))
+        assertEquals("1 platillo", resumenDePlatillos(listOf(vivo)))
+        assertEquals("0 platillos · 2 anulados", resumenDePlatillos(listOf(anulado, anulado)))
+    }
+
     @Test fun `sin etiqueta conocida se dice ANULADO y el nombre queda entero`() =
         assertEquals(RenglonQuitado("ANULADO", "Agua"), item("Agua", "2026-11-20T18:00:00.000Z").quitado())
 }

@@ -374,6 +374,7 @@ class KDSViewModel @Inject constructor(
                 val nuevas = page.items
                 _boardPaging.value = BoardPaging(requestedOffset, page.total, page.nextOffset, count = nuevas.size)
                 _sinConexion.value = false
+                quitarAvisosDeSinConexion(venueId)
                 // M4: un sondeo que arrancó ANTES de un LISTO puede traer todavía esa comanda — se ignora mientras
                 // el bump está en vuelo, o hasta que el servidor confirme que ya no la manda.
                 olvidarBumpsConfirmadosPorElServidor(nuevas)
@@ -467,7 +468,9 @@ class KDSViewModel @Inject constructor(
             ocultasPorTerminadas = (proyectadas.map { it.id }.toSet() - visibles.map { it.id }.toSet())
             proyeccionLeida = true
             _comandas.value = visibles
-            repository.notice.value?.let { _aviso.value = AvisoDeCocina(it, esError = false) }
+            // QA del conjunto (20-nov): con el tablero leyéndose bien, un «Sin conexión» viejo del repositorio no se vuelve a pintar.
+            repository.notice.value?.takeUnless { it.esSinConexion() && !_sinConexion.value }
+                ?.let { _aviso.value = AvisoDeCocina(it, esError = false) }
             } catch (e: kotlinx.coroutines.CancellationException) { throw e }
             catch (e: Exception) {
                 if (epoch == preparationEpoch) {
@@ -478,6 +481,22 @@ class KDSViewModel @Inject constructor(
                 }
             }
         }
+    }
+
+    private fun String.esSinConexion() = startsWith("Sin conexión")
+
+    /**
+     * QA del conjunto (20-nov): la UI no miente. Al primer sondeo bueno del tablero se quita todo «Sin conexión…» que se quedó a
+     * la vista: el de la barra, el de «Recientes» abierta (se vuelve a leer, sin cerrarla) y el de las capacidades de preparación
+     * (se reconfirman con el servidor; hasta entonces no se repinta).
+     */
+    private fun quitarAvisosDeSinConexion(venueId: String?) {
+        if (_aviso.value?.texto?.esSinConexion() == true) cerrarAviso()
+        if (_recientesNoLeidas.value?.texto?.esSinConexion() == true && estacionDeLaHoja != null &&
+            !_recientesLeyendo.value && !_deshaciendo.value) leerHoja()
+        val repository = preparationRepository
+        if (venueId != null && repository != null && repository.notice.value?.esSinConexion() == true)
+            viewModelScope.launch { repository.refreshCapabilities(venueId) }
     }
 
     /** Las capacidades confirmadas (sin red, las guardadas). Función y no la propiedad: `publicar` puede correr antes de inicializarla. */

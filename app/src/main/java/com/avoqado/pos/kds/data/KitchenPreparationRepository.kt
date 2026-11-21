@@ -289,7 +289,7 @@ class KitchenPreparationRepository @Inject constructor(
         val ids = local.flatMap { it.effects.map(PreparationEffect::intentId) }.distinct()
         val statuses = ids.chunked(200).flatMap { intents.preparationStatuses(venueId, it) }.associateBy { it.id }
         val rejected = statuses.values.filter { it.status == SyncIntentEntity.STATUS_REJECTED }.map { it.id }.toSet()
-        if (rejected.isNotEmpty()) _notice.value = "Una acción no fue aceptada: ${statuses[rejected.first()]?.message ?: "otro compañero cambió el producto"}. Revisa su estado antes de repetirla."
+        if (rejected.isNotEmpty()) _notice.value = "Una acción no fue aceptada: ${(statuses[rejected.first()]?.message ?: "otro compañero cambió el producto").trimEnd().removeSuffix(".")}. Revisa su estado antes de repetirla."
         val corrected = local.map { saved -> saved.copy(effects = saved.effects.filterNot { it.intentId in rejected }) }
         cache.upsertAll(corrected.map { cached(venueId, it) })
         corrected.map { it.projected() }
