@@ -28,6 +28,13 @@ class PreparationDeliveryService @Inject constructor(
     private val configRepository: PrintConfigRepository,
     private val client: ClienteDeComandas,
     private val roles: com.avoqado.pos.core.domain.RoleManager,
+    /**
+     * D16 de Flautas: qué estaciones tienen pantalla de cocina HOY según el servidor (D6) y si la caja está conectada (la misma
+     * bandera con la que la cola decide si manda). Hilt y el inyector de escritorio SIEMPRE las inyectan; sin ellas (pruebas
+     * viejas) no se espera el «sí» del servidor ni se calla nada: el lado seguro.
+     */
+    private val pantallas: EstadoDePantallasDeCocina? = null,
+    private val conexion: com.avoqado.pos.core.util.ConnectivityMonitor? = null,
 ) {
     private val json = PreparationPeerProtocol.json
     private val cache get() = database.cachedPayloadDao()
@@ -41,6 +48,13 @@ class PreparationDeliveryService @Inject constructor(
     private var receiverVenue: String? = null
     private var receiverUrgencyVersion = 0
     @Volatile private var wakeRequested = false
+    /**
+     * D16: las liberaciones que esperan el «sí» del servidor (id del intent → `System.nanoTime()` de cuando esta app la vio
+     * esperar). Cada pasada las revisa PRIMERO, por su llave (Codex r1 #2): ni el cursor de 50 ni una pasada larga las deja
+     * atrás. [repasoProgramado] = ya hay otra pasada pedida.
+     */
+    private val enEspera = java.util.concurrent.ConcurrentHashMap<String, Long>()
+    private val repasoProgramado = java.util.concurrent.atomic.AtomicBoolean(false)
     private data class Display(val venueId: String?, val keys: Set<String>)
     @Volatile private var display = Display(null, emptySet())
     fun setDisplayedKeys(venueId: String?, keys: Set<String>) { display = Display(venueId, keys.toSet()) }
@@ -62,7 +76,7 @@ class PreparationDeliveryService @Inject constructor(
         }
     }
     @Synchronized fun stop() {
-        clock?.cancel(); clock = null; venue = null; cursor = ""; receiverVenue = null
+        clock?.cancel(); clock = null; venue = null; cursor = ""; receiverVenue = null; enEspera.clear()
         transport.desactivarPreparacion(); _notice.value = null
         display = Display(null, emptySet())
     }
@@ -153,16 +167,18 @@ class PreparationDeliveryService @Inject constructor(
         try {
             wakeRequested = false
             if (!attach(v)) return
-            val rows = cache.preparationDeliveries(v, "preparation:$v:delivery:", cursor)
-            val statuses = database.syncIntentDao().preparationStatuses(v, rows.map {
-                it.cacheKey.removePrefix("preparation:$v:delivery:")
-            }).associateBy { it.id }
+            val prefix = "preparation:$v:delivery:"
+            // D16: primero las que esperan el «sí» del servidor, por su llave (una que ya no existe se olvida).
+            val waiting = enEspera.keys.toList().mapNotNull { id ->
+                cache.get(prefix + id)?.takeIf { it.venueId == v } ?: run { enEspera.remove(id); null }
+            }
+            val rows = cache.preparationDeliveries(v, prefix, cursor)
+            val statuses = database.syncIntentDao().preparationStatuses(v, (waiting + rows).map {
+                it.cacheKey.removePrefix(prefix)
+            }.distinct()).associateBy { it.id }
             val deadline = System.nanoTime() + 30_000_000_000L
             var processed = 0
-            for (row in rows) {
-                if (!current(v)) return
-                if (System.nanoTime() >= deadline) break
-                cursor = row.cacheKey; processed++
+            suspend fun one(row: CachedPayloadEntity) {
                 try {
                     val job = json.decodeFromString<PreparationDeliveryJob>(row.json)
                     check(job.venueId == v && row.cacheKey == "preparation:$v:delivery:${job.intentId}" && job.deviceId == transport.deviceId)
@@ -174,10 +190,27 @@ class PreparationDeliveryService @Inject constructor(
                 } catch (e: CancellationException) { throw e }
                 catch (e: Exception) { _notice.value = e.message ?: "Hay un avance de cocina que necesita revisión." }
             }
+            for (row in waiting) { if (!current(v)) return; one(row) }
+            val seen = waiting.map { it.cacheKey }.toSet()
+            for (row in rows) {
+                if (!current(v)) return
+                if (System.nanoTime() >= deadline) break
+                cursor = row.cacheKey; processed++
+                if (row.cacheKey !in seen) one(row)
+            }
             if (processed == rows.size && rows.size < 50) cursor = ""
         } finally {
             mutex.unlock()
             if (wakeRequested) venue?.let { next -> scope.launch { pass(next) } }
+            // D16: sin tomar el candado mientras se espera; una sola pasada pedida a la vez. Termina sola: la tarea decide al
+            // llegar el «sí», al perder la conexión o al vencer el tope.
+            else if (enEspera.isNotEmpty()) venue?.takeIf { current(it) }?.let { next ->
+                if (repasoProgramado.compareAndSet(false, true)) scope.launch {
+                    try { delay(PASO_DE_LA_ESPERA_MS) } finally { repasoProgramado.set(false) }
+                    wakeRequested = true // si otra pasada tiene el candado, ella lanza una nueva al terminar
+                    pass(next)
+                }
+            }
         }
     }
 
@@ -188,6 +221,7 @@ class PreparationDeliveryService @Inject constructor(
         _changes.tryEmit(job.venueId)
     }
     private suspend fun deliver(row: CachedPayloadEntity, original: PreparationDeliveryJob, origin: SyncIntentEntity) {
+        var waitingNow = false
         var job = original.copy(phase = when (origin.status) {
             SyncIntentEntity.STATUS_ACKED -> "ACKED"
             SyncIntentEntity.STATUS_REJECTED -> "REJECTED"
@@ -230,13 +264,21 @@ class PreparationDeliveryService @Inject constructor(
                 commands.all { it.deliveryId in job.screenReceipts }
             }.keys.filterNotNull().toSet()
             val decision = KitchenDeliveryPolicy.decidir(work.planes, work.config, acknowledged)
+            // D16 de Flautas: lo único que iría a papel es el respaldo de estaciones que el SERVIDOR confirma como pantalla.
+            // «Reimprimir» es un pedido explícito de papel: ni espera ni calla.
+            // La urgencia con productos activos sigue pidiendo el acuse de la pantalla por WiFi (Codex r1 #4): ni espera ni calla.
+            val soloPantallas = !job.manualPaper && job.urgencyNeedsScreen != true && pantallasDelServidor(decision.aImprimir, decision.respaldo)
+            val acked = latestOrigin?.status == SyncIntentEntity.STATUS_ACKED
             if (decision.aImprimir.isEmpty()) { job = job.copy(paperState = "DONE"); save(row, job) }
+            // D16: el papel se decide cuando el servidor ya tiene la liberación (su pantalla la toma de ahí), no a milisegundos
+            // del toque. Mientras tanto la tarea sigue QUEUED, sin papel ni aviso. Sin conexión o pasado el tope, como hoy.
+            else if (soloPantallas && !acked && esperaElSi(job)) waitingNow = true
             else {
                 val photos = cache.preparationSnapshots(job.venueId,
                     job.commands.flatMap { it.items }.map { "preparation:${job.venueId}:${it.stableKey}" }).associateBy { it.cacheKey }
                 val safe = job.commands.isNotEmpty() && job.commands.all { command -> command.items.all { item ->
                     val local = photos["preparation:${job.venueId}:${item.stableKey}"]?.let {
-                        runCatching { json.decodeFromString<PreparationLocalLine>(it.json).projected() }.getOrNull()
+                        runCatching { json.decodeFromString<PreparationLocalLine>(it.json).upTo(job.intentId).projected() }.getOrNull()
                     }
                     local != null && local.preparationRevision == item.expectedRevision + 1 &&
                         local.preparation == item.before.move(command.action, command.quantity, command.from, command.reason, command.intentId)
@@ -250,7 +292,11 @@ class PreparationDeliveryService @Inject constructor(
                     val result = printer.reintentar(pending, maxIntentos = 1)
                     job = when (result) {
                         EstadoDeComanda.Salio -> job.copy(paperState = "DONE", message = null)
-                        is EstadoDeComanda.NoSalio -> job.copy(paper = result.trabajo ?: pending, paperState = "FAILED",
+                        // D16 (la regla de D6): el servidor ya la tiene, nada tronó y lo único sin papel son estaciones de
+                        // respaldo que el servidor confirma como pantalla ⇒ no hay nada que avisar ni que revisar.
+                        is EstadoDeComanda.NoSalio -> if (soloPantallas && acked && result.trabajo == null &&
+                            pantallasDelServidor(result.saltados, decision.respaldo)) job.copy(paperState = "DONE", message = null)
+                            else job.copy(paper = result.trabajo ?: pending, paperState = "FAILED",
                             message = result.causa ?: "No salió el ticket de liberación. Avisa a cocina.")
                         else -> job.copy(paperState = "UNCERTAIN", message = "Revisa si salió el ticket de liberación.")
                     }
@@ -269,5 +315,42 @@ class PreparationDeliveryService @Inject constructor(
         save(row, job)
         if (job.message != null) _notice.value = job.message
         else if (_notice.value == original.message) _notice.value = null
+        if (!waitingNow) enEspera.remove(job.intentId)
+    }
+
+    /**
+     * D16 (Codex r1 #3): la copia local HASTA el efecto de esta tarea. Lo que este mismo aparato hizo después (otra liberación del
+     * mismo producto mientras ésta esperaba el «sí») no la invalida; lo anterior se comprueba igual (`projected()` revienta si la
+     * cadena no cuadra). Sin su efecto (ya se refrescó del servidor), la copia entera, como siempre.
+     */
+    private fun PreparationLocalLine.upTo(intentId: String): PreparationLocalLine {
+        val own = effects.indexOfFirst { it.intentId == intentId }
+        return if (own < 0) this else copy(effects = effects.take(own + 1))
+    }
+
+    /**
+     * D16: TODOS los [planes] son de estaciones de [respaldo] que el SERVIDOR, en su último sondeo, confirma como pantalla de
+     * cocina (D6, `EstadoDePantallasDeCocina`). Por id: un plan sin estación nunca. Sin respuesta del servidor, `false`.
+     */
+    private fun pantallasDelServidor(planes: List<com.avoqado.pos.printing.routing.TicketPlan>, respaldo: List<String>): Boolean {
+        val estado = pantallas ?: return false
+        return planes.isNotEmpty() && planes.all { plan -> plan.stationId?.let { it in respaldo && estado.esPantallaDelServidor(it) } == true }
+    }
+
+    /**
+     * D16: se espera el «sí» sólo con la caja conectada y dentro del tope, contado desde el toque con el reloj de pared (sobrevive
+     * a reiniciar la app) Y desde que esta app la vio esperar con el monotónico (un reloj que se atrasa no la alarga).
+     */
+    private fun esperaElSi(job: PreparationDeliveryJob): Boolean {
+        if (conexion?.isFullyConnected != true) return false
+        val since = enEspera.getOrPut(job.intentId) { System.nanoTime() }
+        return System.currentTimeMillis() - job.createdAtMillis in 0 until TOPE_DE_LA_ESPERA_MS &&
+            (System.nanoTime() - since) / 1_000_000 < TOPE_DE_LA_ESPERA_MS
+    }
+
+    companion object {
+        /** D16: el presupuesto de la ronda EN LÍNEA (spec 2026-09-27 §5, H2), el mismo que la ruta del dinero. */
+        const val TOPE_DE_LA_ESPERA_MS = com.avoqado.pos.tables.presentation.TableOrderViewModel.PRESUPUESTO_RONDA_MS
+        const val PASO_DE_LA_ESPERA_MS = 1_000L
     }
 }
