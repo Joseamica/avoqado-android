@@ -675,4 +675,33 @@ class PreparationDeliveryServiceTest {
             assertTrue("sobrevive a cerrar la app", again.notice.value!!.startsWith("La preparación no fue aceptada"))
         } finally { again.stop() }
     }
+    // D15 r5 #4: el SERVIDOR marca `yaAplicada` en cada renglón que otra caja ya había liberado (éxito «sin cambios»).
+    private fun ackedWith(f: Fixture, vararg yaAplicada: Boolean?) {
+        val items = yaAplicada.mapIndexed { i, ya -> """{"id":"k$i","preparationRevision":1""" + (if (ya == null) "" else ""","yaAplicada":$ya""") + "}" }
+        f.origins["a"] = f.origins.getValue("a").copy(status = SyncIntentEntity.STATUS_ACKED,
+            resultJson = """{"orderId":"order","items":[${items.joinToString(",")}]}""")
+    }
+    @Test fun `D16 si todo el ACK trae yaAplicada otra caja ya libero e imprimio - sin papel y sin aviso`() = runTest {
+        val f = fixture(backgroundScope); ackedWith(f, true)
+        try {
+            f.service.start("v1"); f.service.pass("v1")
+            assertEquals("DONE", f.job().paperState); assertNull(f.service.notice.value)
+            coVerify(exactly = 0) { f.printer.reintentar(any(), any(), any()) }
+        } finally { f.service.stop() }
+    }
+    @Test fun `D16 un ACK mixto con yaAplicada imprime como hoy`() = runTest {
+        val f = fixture(backgroundScope); ackedWith(f, true, null)
+        try {
+            f.service.start("v1"); f.service.pass("v1")
+            assertEquals("DONE", f.job().paperState)
+            coVerify(exactly = 1) { f.printer.reintentar(any(), any(), any()) }
+        } finally { f.service.stop() }
+    }
+    @Test fun `D16 un ACK sin el campo yaAplicada imprime como hoy`() = runTest {
+        val f = fixture(backgroundScope); ackedWith(f, null)
+        try {
+            f.service.start("v1"); f.service.pass("v1")
+            coVerify(exactly = 1) { f.printer.reintentar(any(), any(), any()) }
+        } finally { f.service.stop() }
+    }
 }

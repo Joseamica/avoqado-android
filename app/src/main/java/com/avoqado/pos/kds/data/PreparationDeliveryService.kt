@@ -17,6 +17,11 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.sync.Mutex
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -309,6 +314,10 @@ class PreparationDeliveryService @Inject constructor(
             val soloPantallas = !job.manualPaper && job.urgencyNeedsScreen != true && pantallasDelServidor(decision.aImprimir, decision.respaldo)
             val acked = latestOrigin?.status == SyncIntentEntity.STATUS_ACKED || latestOrigin == null && job.phase == "ACKED"
             if (decision.aImprimir.isEmpty()) { job = job.copy(paperState = "DONE"); save(row, job) }
+            // D15 r5 #4 (SERVIDOR): dos cajas liberaron lo mismo casi a la vez; el servidor contestó éxito a las dos y marcó con
+            // `yaAplicada` lo que ya estaba hecho. Si TODO venía hecho, otra caja ya liberó e imprimió: sin papel y sin aviso.
+            // Una parte (mixto) o un servidor viejo sin el campo: como hoy. «Reimprimir» lo pidió una persona: sale igual.
+            else if (acked && !job.manualPaper && todoYaAplicado(latestOrigin?.resultJson)) { job = job.copy(paperState = "DONE", message = null); save(row, job) }
             // D16: el papel se decide cuando el servidor ya tiene la liberación (su pantalla la toma de ahí), no a milisegundos
             // del toque. Mientras tanto la tarea sigue QUEUED, sin papel ni aviso. Sin conexión o pasado el tope, como hoy.
             else if (soloPantallas && !acked && origin != null && esperaElSi(job)) waitingNow = true
@@ -355,6 +364,17 @@ class PreparationDeliveryService @Inject constructor(
         if (job.message != null) avisar(job.intentId, job.message!!)
         else if (_notice.value == original.message) _notice.value = null
         if (!waitingNow) enEspera.remove(job.intentId)
+    }
+
+    /**
+     * D15 r5 #4: ¿cada renglón del ACK (`resultJson.items`) trae `yaAplicada: true`? Sin renglones, sin el campo (servidor viejo)
+     * o con un JSON que no se entiende: `false` (se imprime como hoy).
+     */
+    private fun todoYaAplicado(resultJson: String?): Boolean {
+        val items = runCatching {
+            json.parseToJsonElement(resultJson ?: return false).jsonObject["items"]?.jsonArray
+        }.getOrNull() ?: return false
+        return items.isNotEmpty() && items.all { (it as? JsonObject)?.get("yaAplicada")?.jsonPrimitive?.booleanOrNull == true }
     }
 
     /**
