@@ -51,6 +51,7 @@ import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -87,7 +88,11 @@ import com.avoqado.pos.kds.domain.puedeApagar
 import com.avoqado.pos.printing.routing.PrintConfig
 import com.avoqado.pos.printing.routing.PrinterInfo
 import com.avoqado.pos.printing.routing.StationInfo
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.flow.first
 
 // MARK: - Entry Point
 
@@ -119,6 +124,19 @@ fun KDSScreen(
     val recientes by viewModel.recientes.collectAsState()
     val recientesNoLeidas by viewModel.recientesNoLeidas.collectAsState()
     val avisoDeRecientes by viewModel.avisoDeRecientes.collectAsState()
+    val recientesLeyendo by viewModel.recientesLeyendo.collectAsState()
+    val deshaciendo by viewModel.deshaciendo.collectAsState()
+    // D17 (Codex r20 y r21): salir de la cocina, rotar o mandar la app atrás (Inicio) cierra «Recientes»: al volver no reaparece
+    // sola con lo de antes.
+    val ciclo = LocalLifecycleOwner.current
+    DisposableEffect(ciclo) {
+        val alParar = LifecycleEventObserver { _, evento -> if (evento == Lifecycle.Event.ON_STOP) viewModel.cerrarRecientes() }
+        ciclo.lifecycle.addObserver(alParar)
+        onDispose {
+            ciclo.lifecycle.removeObserver(alParar)
+            viewModel.cerrarRecientes()
+        }
+    }
     val sinConexion by viewModel.sinConexion.collectAsState()
     val aviso by viewModel.aviso.collectAsState()
     val exito by viewModel.exito.collectAsState()
@@ -149,7 +167,7 @@ fun KDSScreen(
     val recibiendoPorWifi by viewModel.recibiendoPorWifi.collectAsState()
 
     var showSettings by remember { mutableStateOf(false) }
-    var showRecientes by remember { mutableStateOf(false) }
+    val showRecientes by viewModel.recientesAbierta.collectAsState()
     var confirmacion by remember { mutableStateOf<Confirmacion?>(null) }
     // Qué canal está eligiendo duración. `null` = el diálogo está cerrado.
     var pausando by remember { mutableStateOf<CanalReparto?>(null) }
@@ -216,7 +234,7 @@ fun KDSScreen(
                 isLargeFont = settings.largeFontEnabled,
                 canalesReparto = canalesReparto,
                 onDismiss = onDismiss,
-                onAbrirRecientes = { showRecientes = true; viewModel.abrirRecientes() },
+                onAbrirRecientes = viewModel::abrirRecientes,
                 onMarcarTodas = { confirmacion = Confirmacion.MARCAR_TODAS },
                 onSettings = { showSettings = true },
                 onListo = viewModel::listo,
@@ -324,14 +342,16 @@ fun KDSScreen(
         )
     }
 
-    // MARK: - Recientes
+    // MARK: - Recientes (D17: abierta o cerrada lo decide el ViewModel; se cierra sola si cambia la estación o la pantalla)
     if (showRecientes) {
         RecientesSheet(
             recientes = recientes,
             noLeidas = recientesNoLeidas,
-            aviso = avisoDeRecientes,
+            avisos = avisoDeRecientes,
+            leyendo = recientesLeyendo,
+            deshaciendo = deshaciendo,
             onDeshacer = viewModel::deshacer,
-            onDismiss = { showRecientes = false },
+            onDismiss = viewModel::cerrarRecientes,
         )
     }
 
@@ -754,10 +774,13 @@ private fun TableroDeCocina(
 private fun RecientesSheet(
     recientes: List<KDSOrder>,
     noLeidas: AvisoDeCocina?,
-    aviso: AvisoDeDeshacer? = null,
+    avisos: Map<String, AvisoDeCocina> = emptyMap(),
+    leyendo: Boolean = false,
+    deshaciendo: Boolean = false,
     onDeshacer: (String) -> Unit,
     onDismiss: () -> Unit,
 ) {
+    val desplazamiento = rememberScrollState()
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
@@ -767,7 +790,7 @@ private fun RecientesSheet(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .verticalScroll(rememberScrollState())
+                .verticalScroll(desplazamiento)
                 .padding(horizontal = AvoqadoTheme.spacing.lg),
         ) {
             Text(
@@ -782,7 +805,14 @@ private fun RecientesSheet(
                 modifier = Modifier.padding(bottom = AvoqadoTheme.spacing.lg),
             )
 
-            if (noLeidas != null) {
+            if (leyendo) {
+                Text(
+                    text = TextosDeCocina.RECIENTES_LEYENDO,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(vertical = AvoqadoTheme.spacing.xl).testTag("kds-recientes-leyendo"),
+                )
+            } else if (noLeidas != null) {
                 // I2: no se pudo leer — nunca se pinta como «no hay nada».
                 Text(
                     text = noLeidas.texto,
@@ -813,20 +843,34 @@ private fun RecientesSheet(
                         )
                         TextButton(
                             onClick = { onDeshacer(orden.id) },
+                            enabled = !deshaciendo,
                             modifier = Modifier.testTag("kds-deshacer-${orden.id}"),
                         ) {
                             Text(TextosDeCocina.DESHACER)
                         }
                     }
-                    if (aviso != null && aviso.comandaId == orden.id) {
+                    val aviso = avisos[orden.id]
+                    if (aviso != null) {
                         // D17 (Codex r14, r15 y r16): por qué no se pudo «Deshacer» ESTA comanda, justo debajo de su botón, y la hoja
                         // se desliza lo necesario para que se vea aunque el botón estuviera al ras del borde.
                         val aLaVista = remember { BringIntoViewRequester() }
-                        LaunchedEffect(aviso) { aLaVista.bringIntoView() }
+                        LaunchedEffect(aviso) {
+                            // Codex r17 #1: si la persona está arrastrando la hoja, el deslizamiento se cancela; se reintenta al soltar.
+                            // Sin tope (Codex r18 #1): se reintenta cada vez que suelta, hasta que se vea o cambie el aviso.
+                            while (true) {
+                                snapshotFlow { desplazamiento.isScrollInProgress }.first { !it }
+                                try {
+                                    aLaVista.bringIntoView()
+                                    return@LaunchedEffect
+                                } catch (e: CancellationException) {
+                                    currentCoroutineContext().ensureActive()
+                                }
+                            }
+                        }
                         Text(
-                            text = aviso.aviso.texto,
+                            text = aviso.texto,
                             style = MaterialTheme.typography.bodyMedium,
-                            color = if (aviso.aviso.esError) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                            color = if (aviso.esError) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier
                                 .padding(bottom = AvoqadoTheme.spacing.sm)
                                 .bringIntoViewRequester(aLaVista)

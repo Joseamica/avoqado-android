@@ -251,10 +251,11 @@ class KitchenPreparationRepositoryTest {
     }
 
     @Test fun `D17 con el interruptor prendido la cocina libera con orders update, apagado sigue pidiendo orders create`() = runTest {
-        every { roles.hasVenuePermission("orders:create") } returns false
         val apagado = repository(capability = """{"version":1,"enabled":true}""")
-        org.junit.Assert.assertFalse(apagado.can(PreparationAction.RELEASE))
         val prendido = repository(capability = """{"version":1,"enabled":true,"kitchenCanRelease":true,"kitchenDoneVersion":1}""")
+        // después de armarlos: `repository()` vuelve a declarar «todo permitido» y la declaración más nueva gana
+        every { roles.hasVenuePermission("orders:create") } returns false
+        org.junit.Assert.assertFalse(apagado.can(PreparationAction.RELEASE))
         assertTrue(prendido.canFromKitchen(PreparationAction.RELEASE))
         org.junit.Assert.assertFalse(prendido.can(PreparationAction.RELEASE)) // «Servicio y entregas» sigue pidiendo orders:create
         org.junit.Assert.assertFalse(apagado.canFromKitchen(PreparationAction.RELEASE))
