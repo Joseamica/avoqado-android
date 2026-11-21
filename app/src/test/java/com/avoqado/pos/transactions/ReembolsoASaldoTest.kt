@@ -492,7 +492,7 @@ class ReembolsoASaldoTest {
         store.guardar(pidio)
         val vm = ventaAbierta()
         withTimeout(5_000) { while (vm.reembolsoPendiente.value == null) yield() }
-        vm.confirmarReembolsoPendiente()
+        vm.tocarYEsperar { confirmarReembolsoPendiente() }
         withTimeout(10_000) { vm.avisoDeReembolso.first { it != null } }
         assertEquals(0, server.requestCount)
         // Beatriz ya está en la pantalla y toca ella: su sesión es la de ahora.
@@ -535,14 +535,14 @@ class ReembolsoASaldoTest {
         assertTrue(vm.reembolsoBloqueado.value)
         // 3) «Confirmar estado» y un rechazo sin eco (un proxy): se conserva.
         server.enqueue(sinEco(respuesta(400, """{"success":false,"code":"STORE_CREDIT_REJECTED","message":"x"}""")))
-        vm.confirmarReembolsoPendiente()
+        vm.tocarYEsperar { confirmarReembolsoPendiente() }
         assertEquals(TextosCambio.REEMBOLSO_NO_CONFIRMADO,
             withTimeout(10_000) { vm.avisoDeReembolso.first { it == TextosCambio.REEMBOLSO_NO_CONFIRMADO } })
         assertEquals(pendiente(), store.pendiente("venue", "payment"))
         assertTrue(vm.reembolsoBloqueado.value)
         // 4) Quien está no tiene permiso: 403 con eco. NO se borra (el permiso se revisa antes de reconocer la llave).
         server.enqueue(respuesta(403, """{"success":false,"message":"Permission 'payments:refund' required"}"""))
-        vm.confirmarReembolsoPendiente()
+        vm.tocarYEsperar { confirmarReembolsoPendiente() }
         assertEquals(TextosCambio.REEMBOLSO_PIDE_GERENTE,
             withTimeout(10_000) { vm.avisoDeReembolso.first { it == TextosCambio.REEMBOLSO_PIDE_GERENTE } })
         assertEquals(pendiente(), store.pendiente("venue", "payment"))
@@ -591,6 +591,19 @@ class ReembolsoASaldoTest {
             mockk(relaxed = true), pendientes))
     }
 
+    /**
+     * Toca y espera a que TERMINE lo que lanzó el toque, no sólo a que salga su aviso (D36). Con `UnconfinedTestDispatcher` el modelo
+     * sigue en un hilo de IO después de poner el aviso y suelta «en vuelo» justo después: un segundo toque que cae en ese hueco se
+     * ignora a propósito (no se manda dos veces) y la prueba esperaba una petición que nunca salía. En el aparato no pasa: el aviso,
+     * soltar «en vuelo» y el toque corren en el hilo principal. Úsalo antes de volver a tocar o de cambiar un mock que el toque lee.
+     */
+    private suspend fun TransactionsViewModel.tocarYEsperar(toque: TransactionsViewModel.() -> Unit) {
+        val modelo = viewModelScope.coroutineContext.job
+        val antes = modelo.children.toSet()
+        toque()
+        withTimeout(10_000) { modelo.children.filter { it !in antes }.toList().joinAll() }
+    }
+
     @Test fun `Reembolso completo a saldo, se pierde la respuesta, se mata la app y al reabrir la venta Confirmar estado manda la misma llave`() = runBlocking {
         // 1) La cajera manda el reembolso completo a saldo: se guarda y el servidor SÍ lo escribe, pero la respuesta se pierde.
         server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AFTER_REQUEST))
@@ -628,7 +641,7 @@ class ReembolsoASaldoTest {
         assertNull(vm.avisoDeReembolso.value)
         assertEquals(pendiente(), vm.reembolsoPendiente.value)
         // «Confirmar estado» sin red: lo dice y no toca la red.
-        vm.confirmarReembolsoPendiente()
+        vm.tocarYEsperar { confirmarReembolsoPendiente() }
         assertEquals("El saldo a favor necesita conexión", withTimeout(5_000) { vm.avisoDeReembolso.first { it != null } })
         assertEquals(0, server.requestCount)
         assertEquals(pendiente(), store.pendiente("venue", "payment"))
