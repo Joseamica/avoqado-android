@@ -353,7 +353,8 @@ class AvisoDuraderoDeOtrasVentasTest {
         advanceUntilIdle()
 
         assertEquals("viajó el saldo que vio la caja", 6_000, cuerposEnviados.single().getInt("expectedRemainingCents"))
-        assertEquals("El saldo de esta cuenta cambió: ahora faltan ${'$'}30.00.", (vm.state.value as PaymentFlowState.Error).message)
+        // F1-textos (catálogo D5, fila 14 · F-E).
+        assertEquals("No se cobró la tarjeta: a esta cuenta le faltan ${'$'}30.00.", (vm.state.value as PaymentFlowState.Error).message)
         assertEquals(com.avoqado.pos.payment.data.SaldoVigente("venue-1", venta.identidadDeVenta, "orden-mostrador", 3_000), vm.saldoVigente.value)
         assertEquals("no se reenvía solo", 1, postsEnviados.size)
         assertTrue("la solicitud rechazada no queda como duda", ids().isEmpty())

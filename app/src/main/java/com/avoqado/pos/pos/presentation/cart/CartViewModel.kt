@@ -498,8 +498,11 @@ fun pagarDespuesNiGuardada(cliente: String) =
 const val PAGAR_DESPUES_NO_SE_GUARDO = "No se pudo guardar la cuenta en el aparato. Intenta de nuevo."
 
 /** Tablero D3 (21-oct). Mismo texto en iOS. */
-/** F1 bloque 2: la cuenta de [Seguir] sigue ligada a su folio; para otro cliente, se guarda primero. */
-const val CUENTA_LIGADA_GUARDALA = "Guarda esta cuenta para atender a otro cliente"
+/**
+ * F1 bloque 2: la cuenta de [Seguir] sigue ligada a su folio; para otro cliente, se guarda primero. F1-textos (catálogo D5, fila 16):
+ * dice por qué (hay una tarjeta por confirmar).
+ */
+const val CUENTA_LIGADA_GUARDALA = "Esta cuenta tiene una tarjeta por confirmar. Guárdala para atender a otro cliente."
 
 /** F1 (cabo del bloque 2, `plan-android.md` r2 #1): consta dinero de la cuenta pero no cuánto falta (sin red). Mismo texto en iOS. */
 const val SALDO_POR_CONFIRMAR = "Saldo por confirmar: ya entró un cobro con tarjeta de esta cuenta. Al volver la conexión se ve cuánto falta."
@@ -536,8 +539,17 @@ fun tituloDelAviso(aviso: String): String = when {
     aviso == DIVIDIR_SIN_CONEXION -> "Sin conexión"
     aviso == VENTA_A_MEDIAS_CAMBIADA || aviso.startsWith("La primera parte de esta venta") ||
         aviso.startsWith("Al subir la primera parte") -> "Venta a medio cobrar"
+    // F1-textos (catálogo D5, fila 15): los avisos de Mostrador de F1 no son «Venta de vales».
+    aviso.startsWith(com.avoqado.pos.payment.data.PRINCIPIO_DEL_AVISO_DE_SALDO) -> TITULO_COBRO_NO_ENVIADO
+    aviso == CUENTA_LIGADA_GUARDALA -> TITULO_TARJETA_POR_CONFIRMAR
     else -> "Venta de vales"
 }
+
+/** F1-textos (fila 15): título del aviso del 412 de Mostrador (fila 14). */
+const val TITULO_COBRO_NO_ENVIADO = "Cobro no enviado"
+
+/** F1-textos (fila 15): título del aviso de la cuenta con la tarjeta por confirmar (fila 16). */
+const val TITULO_TARJETA_POR_CONFIRMAR = "Tarjeta por confirmar"
 
 fun parteSinRedSaldoDistinto(carritoCents: Int, servidorCents: Int): String =
     "Al subir la primera parte, Avoqado dice que esta venta debe ${com.avoqado.pos.core.util.formatMoneyFromCents(servidorCents)} " +

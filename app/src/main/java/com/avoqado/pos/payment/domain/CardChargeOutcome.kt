@@ -272,8 +272,24 @@ object CardChargeDecision {
     const val CODIGO_CUENTA_CAMBIO = "ORDER_BALANCE_CHANGED"
     private const val LAPIDA_CUENTA_CAMBIO = "REJECTED_ORDER_BALANCE_CHANGED"
 
-    /** D4: si el SERVIDOR no dio su texto. */
-    const val CUENTA_CAMBIO_RESPALDO = "La cuenta cambió mientras se cobraba. No se cobró la tarjeta."
+    /** D4: si el SERVIDOR no dio su texto. F1-textos (catálogo D5, fila 14): no culpa a un cambio que muchas veces no pasó. */
+    const val CUENTA_CAMBIO_RESPALDO = "No se cobró la tarjeta: el importe no coincidía con lo que falta de la cuenta."
+
+    /**
+     * F1-textos (catálogo D5, fila 1 · F-B). El SERVIDOR soltó la cuenta a los 30 s sin aviso del banco, pero el banco todavía puede
+     * aprobar tarde: nunca «no se cobró» ni «puedes volver a cobrar»; si el cliente paga otra vez, mejor en efectivo (se devuelve del
+     * cajón; una segunda tarjeta no). Mismo texto en la TPV y el SERVIDOR; iOS, en su ficha.
+     */
+    const val SIN_RESPUESTA_DEL_BANCO = "No se pudo confirmar con el banco. Si el cliente paga otra vez, mejor en efectivo."
+
+    /** F1-textos (fila 1): el título de la pantalla con [SIN_RESPUESTA_DEL_BANCO]; «No se cobró» afirmaba lo que sólo dijo el silencio. */
+    const val TITULO_SIN_RESPUESTA_DEL_BANCO = "Sin respuesta del banco"
+
+    /** F1-textos (catálogo D5, fila 11 · F-D): desde F1 firma el gerente, no el cajero. Mismo texto en la TPV y el SERVIDOR. */
+    const val SE_MARCO_COMO_NO_COBRADO = "Se revisó y se marcó como no cobrado. Ya puedes cobrar esta cuenta."
+
+    /** F1-textos (fila 1): el título de la pantalla de error según su texto; `null` = el de siempre. */
+    fun tituloDelError(mensaje: String): String? = if (mensaje == SIN_RESPUESTA_DEL_BANCO) TITULO_SIN_RESPUESTA_DEL_BANCO else null
 
     /** D53: las lápidas de admisión cuyo texto escribe el SERVIDOR con el saldo (D7 «falta $X» y D53 «la cuenta cambió»). */
     private val LAPIDAS_DE_SALDO = setOf("REJECTED_ORDER_AMOUNT_OVER_BALANCE", "REJECTED_ORDER_BALANCE_CHANGED")
@@ -335,9 +351,9 @@ object CardChargeDecision {
             probe.cancelDisposition == "ACTIVE" -> CardChargeOutcome.Undetermined("El cobro sigue activo. Confirma en la terminal. No vuelvas a pasar la tarjeta.")
             probe.status == "COMPLETED" -> CardChargeOutcome.Undetermined(UNDETERMINED_MESSAGE)
             probe.status == "FAILED" && probe.outcomeEvidence == "NO_EVIDENCE_AFTER_WINDOW" ->
-                CardChargeOutcome.NotCharged("No se confirmó el cobro en 30 s. Puedes volver a cobrar. Si el banco lo aprueba tarde, se registra solo y te avisamos.", sinCobroNiRechazo = true)
+                CardChargeOutcome.NotCharged(SIN_RESPUESTA_DEL_BANCO, sinCobroNiRechazo = true)
             probe.status == "FAILED" && probe.outcomeEvidence == "OPERATOR_RECONCILED" ->
-                CardChargeOutcome.NotCharged("Un cajero confirmó que no se cobró. Puedes volver a cobrar.", sinCobroNiRechazo = true)
+                CardChargeOutcome.NotCharged(SE_MARCO_COMO_NO_COBRADO, sinCobroNiRechazo = true)
             // 🔴 El banco lo rechazó y el SERVIDOR lo supo por el webhook del procesador (AngelPay o Blumon),
             // sin que nadie declarara nada. Lo único accionable para el cajero es que PUEDE volver a cobrar:
             // el genérico de abajo lo deja sin saberlo y ahí es donde vuelve a pasar la tarjeta con miedo.

@@ -606,6 +606,8 @@ fun PaymentFlowScreen(
                     sinRed = fuente == com.avoqado.pos.payment.data.model.PaymentErrorSource.NETWORK,
                     pideGerente = pideGerente,
                     noSeCobro = fuente == com.avoqado.pos.payment.data.model.PaymentErrorSource.NO_SE_COBRO,
+                    // F1-textos (catálogo D5, fila 1): tras la ventana de 30 s el título no afirma «No se cobró».
+                    titleLabel = com.avoqado.pos.payment.domain.CardChargeDecision.tituloDelError(currentState.message),
                     retryLabel = when (fuente) {
                         com.avoqado.pos.payment.data.model.PaymentErrorSource.PIDE_PIN -> "Volver a cobrar"
                         com.avoqado.pos.payment.data.model.PaymentErrorSource.SOLO_GERENTE -> null

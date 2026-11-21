@@ -138,15 +138,27 @@ class CardChargeDecisionTest {
     fun `FAILED con NO_EVIDENCE_AFTER_WINDOW es NotCharged y lo dice sin llamarlo rechazo`() {
         val r = CardChargeDecision.decide(ChargeStatusProbe.Known(status = "FAILED", inProgress = false, outcome = "NOT_CHARGED", outcomeEvidence = "NO_EVIDENCE_AFTER_WINDOW"), isFinalAttempt = true)
         val out = (r as ProbeDecision.Resolved).outcome as CardChargeOutcome.NotCharged
-        assertTrue(out.message, out.message.contains("No se confirmó el cobro en 30 s"))
+        // F1-textos (catálogo D5, fila 1 · F-B): el banco todavía puede aprobar tarde, así que ni «no se cobró» ni «puedes volver a cobrar».
+        assertEquals("No se pudo confirmar con el banco. Si el cliente paga otra vez, mejor en efectivo.", out.message)
         assertFalse(out.message, out.message.contains("rechazado"))
+        assertFalse(out.message, out.message.contains("volver a cobrar"))
+        assertFalse(out.message, out.message.contains("te avisamos"))
     }
 
     @Test
-    fun `FAILED con OPERATOR_RECONCILED dice que lo confirmó un cajero, no la terminal`() {
+    fun `F1-textos fila 1 la pantalla de la ventana de 30 s se titula Sin respuesta del banco y las demas no cambian`() {
+        assertEquals("Sin respuesta del banco", CardChargeDecision.tituloDelError(CardChargeDecision.SIN_RESPUESTA_DEL_BANCO))
+        // Cualquier otro texto deja el título de siempre (el `when` de la pantalla: «No se cobró», «Sin conexión»…).
+        assertEquals(null, CardChargeDecision.tituloDelError(CardChargeDecision.SE_MARCO_COMO_NO_COBRADO))
+        assertEquals(null, CardChargeDecision.tituloDelError("El cobro se canceló. No se cobró la tarjeta."))
+    }
+
+    @Test
+    fun `FAILED con OPERATOR_RECONCILED dice que se reviso y que ya se puede cobrar, sin nombrar al cajero`() {
         val r = CardChargeDecision.decide(ChargeStatusProbe.Known(status = "FAILED", inProgress = false, outcome = "NOT_CHARGED", outcomeEvidence = "OPERATOR_RECONCILED"), isFinalAttempt = true)
         val out = (r as ProbeDecision.Resolved).outcome as CardChargeOutcome.NotCharged
-        assertEquals("Un cajero confirmó que no se cobró. Puedes volver a cobrar.", out.message)
+        // F1-textos (catálogo D5, fila 11 · F-D): desde F1 firma el gerente.
+        assertEquals("Se revisó y se marcó como no cobrado. Ya puedes cobrar esta cuenta.", out.message)
     }
 
     // 🔴 21-sep-2026: el webhook del procesador (AngelPay y Blumon) ya trae los RECHAZOS del banco — 187 en

@@ -28,5 +28,12 @@ data class DesenlaceDeFolio(val venueId: String, val orderId: String, val reques
  */
 data class SaldoVigente(val venueId: String, val identidadDeVenta: String, val orderId: String, val cents: Int)
 
+/** F1-textos (catálogo D5, fila 14 · F-E): el principio del aviso; el carrito lo usa para su título («Cobro no enviado», fila 15). */
+const val PRINCIPIO_DEL_AVISO_DE_SALDO = "No se cobró la tarjeta: a esta cuenta le faltan "
+
+/**
+ * F1-textos (catálogo D5, fila 14 · F-E). El 412 muchas veces no es un cambio de la cuenta (el SERVIDOR corrigió el precio o la tablet
+ * redondeó distinto): se dice lo cierto, que no se cobró y cuánto falta. Mismo texto en iOS (ficha).
+ */
 fun avisoDeSaldoCambiado(cents: Int): String =
-    "El saldo de esta cuenta cambió: ahora faltan ${com.avoqado.pos.core.util.formatMoneyFromCents(cents)}."
+    "$PRINCIPIO_DEL_AVISO_DE_SALDO${com.avoqado.pos.core.util.formatMoneyFromCents(cents)}."
