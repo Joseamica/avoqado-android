@@ -107,6 +107,19 @@ class TpvSettingsRepositoryVentaAMediasTest {
         assertEquals(2, llamadas.get())
     }
 
+    @Test
+    fun `con venta a medias el emisor conserva su area y el menu del aparato si entra`() = runTest {
+        val conMenu = emisor(huella = "h2").replace("\"fulfillmentAreaId\": \"area-cremeria\"", "\"fulfillmentAreaId\": \"area-cafe\", \"visibleMenuIds\": [\"menu-1\"]")
+        val repo = repositorio(emisor(huella = "h1"), conMenu)
+        repo.refreshIfFingerprintChanged(VENUE, "h1")
+        carrito.update(itemCount = 1, totalDisplay = "$40.00")
+
+        repo.refreshIfFingerprintChanged(VENUE, "h2")
+
+        assertEquals("area-cremeria", repo.terminalNavigation.value.fulfillmentAreaId)
+        assertEquals(listOf("menu-1"), repo.terminalNavigation.value.visibleMenuIds)
+    }
+
     // ── los dos caminos de fábrica ────────────────────────────────────────────────────────────
 
     @Test
