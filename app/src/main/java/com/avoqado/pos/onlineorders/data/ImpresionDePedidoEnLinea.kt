@@ -10,6 +10,7 @@ import com.avoqado.pos.onlineorders.presentation.estaPagado
 import com.avoqado.pos.onlineorders.presentation.formatoPesos
 import java.time.format.DateTimeFormatter
 import com.avoqado.pos.printing.data.EstadoDeComanda
+import com.avoqado.pos.printing.data.GuardaDelPrimerByte
 import com.avoqado.pos.printing.data.PrinterService
 import com.avoqado.pos.printing.data.model.MARCA_NEGRITA_ENCABEZADO
 import com.avoqado.pos.printing.data.model.PrinterRole
@@ -34,6 +35,12 @@ sealed interface ResultadoImpresion {
 
     /** Ya se está imprimiendo ESTE pedido en este aparato. */
     data object YaEnCurso : ResultadoImpresion
+
+    /**
+     * Ruling 50: la comanda esperó su impresora (el turno, el permiso USB, la conexión) hasta que su reclamo tuvo 75 s, y no mandó ni un
+     * byte. Se suelta sin descanso: la siguiente vuelta la reclama otra vez y el SERVIDOR decide (devuelto = no; si no, repetida con marca).
+     */
+    data object ReclamoVencido : ResultadoImpresion
 }
 
 /**
@@ -50,8 +57,14 @@ fun hayImpresoraDeCocina(localDeCocina: Boolean, config: com.avoqado.pos.printin
 /** Tras un `NoSalio` este aparato deja pasar este tiempo antes de volver a reclamar el mismo pedido (otro aparato lo toma). */
 private const val DESCANSO_TRAS_NO_SALIO_MS = 3 * 60 * 1000L
 
-/** D661 · R2-5: lo más seguido que se vuelve a pedir una configuración de impresión que nunca cargó (una vez por vuelta del vigilante). */
+/** D661 · R2-5 / Ruling 49: lo más seguido que se vuelve a pedir la configuración antes de creerle un «no hay cocina» (una vez por vuelta). */
 private const val REFRESCO_DE_CONFIG_MS = 30 * 1000L
+
+/**
+ * D661 · Ruling 50: hasta qué edad (reloj monotónico, desde ANTES de pedirlo) un reclamo deja mandar el PRIMER byte: los 90 s de vida del
+ * reclamo en el SERVIDOR menos 15 s de margen (red, reloj, la confirmación).
+ */
+private const val VIGENCIA_UTIL_DEL_RECLAMO_MS = 75 * 1000L
 
 /**
  * Task A4: la comanda de un pedido en línea sale UNA vez, en UN aparato.
@@ -73,10 +86,15 @@ class ImpresionDePedidoEnLinea internal constructor(
     private val venueId: () -> String?,
     private val despachar: suspend (venueId: String?, lineas: List<RoutableItem>, folio: String, tipo: String, orderId: String, encabezado: List<String>) -> EstadoDeComanda?,
     private val reloj: () -> Long = System::currentTimeMillis,
-    /** R2-5: la configuración de impresión de esta sucursal NUNCA se cargó (ni del SERVIDOR ni de la copia del aparato). */
-    private val configSinCargar: () -> Boolean = { false },
+    /**
+     * Ruling 49: la configuración de impresión en memoria NO es una descarga del SERVIDOR de este proceso (es la copia del aparato, o
+     * nada): su «no hay impresora de cocina» puede estar viejo.
+     */
+    private val configSinDescargar: () -> Boolean = { false },
     /** R2-5: la vuelve a pedir (la de siempre, con tope de espera: `PrintConfigRepository.refreshConTope`). */
     private val refrescarConfig: suspend () -> Unit = {},
+    /** Ruling 50: reloj monotónico (ms) para la edad del reclamo; no salta con la hora del aparato. */
+    private val relojMonotono: () -> Long = { android.os.SystemClock.elapsedRealtime() },
 ) {
     @Inject
     constructor(
@@ -95,7 +113,7 @@ class ImpresionDePedidoEnLinea internal constructor(
             )
         },
         venueId = { secureStorage.venueId },
-        configSinCargar = { secureStorage.venueId?.let { !printConfigRepository.tieneConfigDe(it) } ?: false },
+        configSinDescargar = { secureStorage.venueId?.let { !printConfigRepository.descargadaDelServidor(it) } ?: false },
         refrescarConfig = { secureStorage.venueId?.let { printConfigRepository.refreshConTope(it) } },
         despachar = { venue, lineas, folio, tipo, orderId, encabezado ->
             val config = venue?.let { printConfigRepository.savedConfig(it) }
@@ -131,12 +149,20 @@ class ImpresionDePedidoEnLinea internal constructor(
         return try {
             withContext(NonCancellable) {
                 val resultado = run {
-                    if (!hayImpresoraDeCocina() || venueId() != sucursal) return@run ResultadoImpresion.NoSalio
+                    if (!hayCocinaConfirmada() || venueId() != sucursal) return@run ResultadoImpresion.NoSalio
+                    // Ruling 50: la edad del reclamo se cuenta desde ANTES de pedirlo (lo que tarda la respuesta también se lo come).
+                    val pedidoEn = relojMonotono()
                     val reclamo = repositorio.reclamarComanda(order.orderId, deviceId)
                     if (!reclamo.reclamado) return@run ResultadoImpresion.OtroAparato
                     if (venueId() != sucursal) return@run ResultadoImpresion.NoSalio
+                    val permiso = PermisoDelReclamo(pedidoEn, relojMonotono)
                     // Ruling 9: el reclamo se concedió sobre otro que venció sin confirmarse; el papel pudo haber salido ya.
-                    if (!sacarComanda(order, sucursal, posibleRepetida = reclamo.posibleRepetida)) return@run ResultadoImpresion.NoSalio
+                    val salio = withContext(GuardaDelPrimerByte(permiso::puedeEscribir)) {
+                        sacarComanda(order, sucursal, posibleRepetida = reclamo.posibleRepetida)
+                    }
+                    // Esperó su impresora hasta que el reclamo se hizo viejo y no salió ni un byte: se suelta sin confirmar ni descansar.
+                    if (permiso.vencioSinEmpezar()) return@run ResultadoImpresion.ReclamoVencido
+                    if (!salio) return@run ResultadoImpresion.NoSalio
                     // Si la confirmación se pierde, el papel ya salió: a los 90 s otro aparato puede repetirla (límite aceptado, R20).
                     if (venueId() == sucursal) repositorio.confirmPrint(order.orderId, deviceId)
                     ResultadoImpresion.Impresa
@@ -156,10 +182,19 @@ class ImpresionDePedidoEnLinea internal constructor(
      */
     suspend fun puedeIntentar(orderId: String): Boolean {
         if (enDescanso(orderId) || orderId in enCurso) return false
+        return hayCocinaConfirmada()
+    }
+
+    /**
+     * Ruling 49: ¿hay impresora de cocina? Un SÍ vale siempre, también de la copia del aparato (imprimir sin red no espera). Un NO sólo
+     * vale con la configuración que este proceso DESCARGÓ del SERVIDOR; si viene de la copia del aparato o de nada (el dueño pudo agregar
+     * la impresora en el panel después), se vuelve a pedir —a lo más una vez cada [REFRESCO_DE_CONFIG_MS], o sea una por vuelta— y
+     * entonces se decide. Lo usan las tres puertas: [puedeIntentar] (el vigilante), [imprimirSiToca] («Mi equipo» y la bandeja) y
+     * [reimprimir].
+     */
+    private suspend fun hayCocinaConfirmada(): Boolean {
         if (hayImpresoraDeCocina()) return true
-        // R2-5: «no hay impresora de cocina» sólo vale si la configuración SÍ cargó. Si nunca cargó (arranque sin copia y sin red), se vuelve a
-        // pedir —a lo más una vez cada [REFRESCO_DE_CONFIG_MS], o sea una por vuelta— y entonces se decide.
-        if (!configSinCargar()) return false
+        if (!configSinDescargar()) return false
         val ahora = reloj()
         val ultimo = ultimoRefrescoDeConfig
         if (ultimo != null && ahora - ultimo < REFRESCO_DE_CONFIG_MS) return false
@@ -189,7 +224,8 @@ class ImpresionDePedidoEnLinea internal constructor(
         if (!enCurso.add(order.orderId)) return ResultadoImpresion.YaEnCurso
         return try {
             withContext(NonCancellable) {
-                if (!hayImpresoraDeCocina() || venueId() != sucursal) return@withContext ResultadoImpresion.NoSalio
+                if (!hayCocinaConfirmada() || venueId() != sucursal) return@withContext ResultadoImpresion.NoSalio
+                // Sin reclamo: la pidió una persona, no tiene edad que cuidar (Ruling 50).
                 if (sacarComanda(order, sucursal)) ResultadoImpresion.Impresa else ResultadoImpresion.NoSalio
             }
         } finally {
@@ -210,6 +246,30 @@ class ImpresionDePedidoEnLinea internal constructor(
         }
         return laComandaSalio(estado)
     }
+}
+
+/**
+ * Ruling 50: el permiso de mandar el primer byte de UNA comanda reclamada. Lo pregunta `PrinterService` justo antes de escribir en cada
+ * impresora, ya con su turno, su permiso USB y su conexión. El primer «sí» se queda (ya empezó: termina aunque la siguiente estación tarde);
+ * antes de eso, un reclamo de [VIGENCIA_UTIL_DEL_RECLAMO_MS] o más dice que no.
+ */
+private class PermisoDelReclamo(private val pedidoEn: Long, private val relojMonotono: () -> Long) {
+    private var empezo = false
+    private var vencio = false
+
+    @Synchronized
+    fun puedeEscribir(): Boolean {
+        if (empezo) return true
+        if (relojMonotono() - pedidoEn >= VIGENCIA_UTIL_DEL_RECLAMO_MS) {
+            vencio = true
+            return false
+        }
+        empezo = true
+        return true
+    }
+
+    @Synchronized
+    fun vencioSinEmpezar(): Boolean = vencio && !empezo
 }
 
 /** Los renglones del pedido como los entiende el ruteo por estación (`productId`/`categoryId` de S3; sin ellos ⇒ estación por defecto). */

@@ -52,25 +52,44 @@ class PrintConfigRepositoryTest {
         coVerify(exactly = 0) { apiService.getPrintConfig("venue-2") }
     }
 
-    /** D661 · R2-5: «nunca se cargó / falló la carga» no es lo mismo que «se cargó y no tiene impresora de cocina». */
-    @Test fun `R2-5 tieneConfigDe tells a failed first load apart from a loaded config without kitchen printer`() = runTest {
+    /** D661 · R2-5 / Ruling 49: sólo una descarga del SERVIDOR en este arranque hace confiable un «no hay impresora de cocina». */
+    @Test fun `R2-5 descargadaDelServidor tells a failed first load apart from a downloaded config without kitchen printer`() = runTest {
         coEvery { payloadCache.load(any(), any()) } returns null
         coEvery { apiService.getPrintConfig("venue-1") } throws RuntimeException("sin red")
-        assertFalse("nada pedido todavía", repository.tieneConfigDe("venue-1"))
+        assertFalse("nada pedido todavía", repository.descargadaDelServidor("venue-1"))
         repository.refresh("venue-1")
-        assertFalse("sin red y sin copia: nunca se cargó", repository.tieneConfigDe("venue-1"))
+        assertFalse("sin red y sin copia: nunca se descargó", repository.descargadaDelServidor("venue-1"))
         coEvery { apiService.getPrintConfig("venue-1") } returns PrintConfigResponse(true, PrintConfig())
         repository.refresh("venue-1")
-        assertTrue("cargada, aunque no tenga estaciones", repository.tieneConfigDe("venue-1"))
-        assertFalse("otra sucursal no cuenta", repository.tieneConfigDe("venue-2"))
+        assertTrue("descargada, aunque no tenga estaciones", repository.descargadaDelServidor("venue-1"))
+        assertFalse("otra sucursal no cuenta", repository.descargadaDelServidor("venue-2"))
     }
 
-    @Test fun `R2-5 a config hydrated from the device copy counts as loaded`() = runTest {
+    /** Ronda 3 · Familia 2: la copia del aparato imprime sin red, pero su «no hay cocina» puede estar viejo (Codex r2 #5). */
+    @Test fun `R3 Family 2 a config hydrated from the device copy is not a server download`() = runTest {
         val encoded = kotlinx.serialization.json.Json.encodeToString(PrintConfig.serializer(), configConEstacion())
         coEvery { payloadCache.load(PayloadCache.TYPE_PRINT_CONFIG, "venue-1") } returns PayloadCache.Cached(encoded, 100)
         coEvery { apiService.getPrintConfig("venue-1") } throws RuntimeException("sin red")
         repository.refresh("venue-1")
-        assertTrue(repository.tieneConfigDe("venue-1"))
+        assertEquals("la copia sí se usa para imprimir", 1, repository.getCurrentConfig().stations.size)
+        assertFalse(repository.descargadaDelServidor("venue-1"))
+    }
+
+    /**
+     * Ronda 3 · Familia 2: volver a la sucursal desde otra, sin red, deja en memoria la copia del aparato: su «no» se vuelve a preguntar.
+     * Rehidratar la MISMA sucursal encima de su descarga (un café sin estaciones, en cada venta) no la invalida.
+     */
+    @Test fun `R3 Family 2 coming back from another venue without network is the device copy again`() = runTest {
+        val sinEstaciones = kotlinx.serialization.json.Json.encodeToString(PrintConfig.serializer(), PrintConfig())
+        coEvery { payloadCache.load(PayloadCache.TYPE_PRINT_CONFIG, any()) } returns PayloadCache.Cached(sinEstaciones, 100)
+        coEvery { apiService.getPrintConfig("venue-1") } returns PrintConfigResponse(true, PrintConfig())
+        repository.refresh("venue-1")
+        coEvery { apiService.getPrintConfig(any()) } throws RuntimeException("sin red")
+        repository.refresh("venue-1") // sin estaciones en memoria: se rehidrata la copia de la MISMA sucursal
+        assertTrue("la misma sucursal rehidratada sigue siendo su descarga", repository.descargadaDelServidor("venue-1"))
+        repository.refresh("venue-2")
+        repository.refresh("venue-1")
+        assertFalse("de vuelta sin red: es la copia del aparato", repository.descargadaDelServidor("venue-1"))
     }
 
     @Test

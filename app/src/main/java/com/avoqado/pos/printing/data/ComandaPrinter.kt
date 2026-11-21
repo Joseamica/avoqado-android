@@ -258,6 +258,10 @@ class ComandaPrinter @Inject constructor(
                 }
                 printed++
                 Log.d(TAG, "✅ Printed comanda for station='${resolved.stationLabel}' on ${printer.displayAddress}")
+            } catch (e: PermisoParaImprimirVencido) {
+                // D661 · Ruling 50: no es una impresora caída. Sólo pasa antes del primer byte del trabajo (el primer «sí» se queda), así
+                // que se suelta ENTERO: ni las demás estaciones, ni «la libreta» (que avisaría «no salió» al gerente), ni Crashlytics.
+                throw e
             } catch (e: Exception) {
                 lastError = e.message
                 failedStations += stationLabel

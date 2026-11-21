@@ -39,11 +39,11 @@ class PrintConfigRepository @Inject constructor(
     fun getCurrentConfig(): PrintConfig = _config.value
 
     /**
-     * D661 · R2-5: ¿esta sucursal tiene una configuración CARGADA (del SERVIDOR o de la copia del aparato)? Falso si nunca llegó —arranque
-     * sin copia y con la descarga fallida—: no es lo mismo que «se cargó y no tiene impresora de cocina». Así la comanda en línea sabe cuándo
-     * volver a pedirla en vez de saltarse el papel para siempre.
+     * D661 · Ruling 49 (antes R2-5): ¿la configuración en memoria de esta sucursal la DESCARGÓ del SERVIDOR este proceso? La copia del
+     * aparato no cuenta: pudo guardarse antes de que el dueño agregara su impresora de cocina en el panel. Sólo con `true` se le cree a un
+     * «no hay impresora de cocina»; un «sí» de la copia sirve igual (imprimir sin red no espera).
      */
-    fun tieneConfigDe(venueId: String): Boolean = synchronized(candado) { venueConConfig == venueId }
+    fun descargadaDelServidor(venueId: String): Boolean = synchronized(candado) { venueDescargada == venueId && venueDeLaConfig == venueId }
 
     /** A round freezes this venue's known route before its first write/network attempt. */
     suspend fun savedConfig(venueId: String): PrintConfig {
@@ -69,8 +69,12 @@ class PrintConfigRepository @Inject constructor(
      */
     private var venueDeLaConfig: String? = null
 
-    /** R2-5: la sucursal de la que hay una configuración de verdad en memoria (no el vacío de «nunca la vi»). Bajo [candado]. */
-    private var venueConConfig: String? = null
+    /**
+     * Ruling 49: la sucursal cuya configuración en memoria se DESCARGÓ bien del SERVIDOR en este proceso (no la copia del aparato). Volver a
+     * hidratar la MISMA sucursal encima (la copia que esa descarga acaba de guardar) no la invalida; volver a ella desde otra sucursal sí:
+     * hasta la siguiente descarga buena, su «no» se vuelve a preguntar. Bajo [candado].
+     */
+    private var venueDescargada: String? = null
 
     /**
      * 🔴 OFFLINE-FIRST (bug encontrado en el smoke de impresión, 2026-07-25):
@@ -117,7 +121,7 @@ class PrintConfigRepository @Inject constructor(
                     if (it) {
                         _config.value = response.data
                         venueDeLaConfig = venueId
-                        venueConConfig = venueId
+                        venueDescargada = venueId
                     }
                 }
             }
@@ -176,9 +180,9 @@ class PrintConfigRepository @Inject constructor(
             // saldrían por las estaciones e impresoras de la otra. Mismo CAS que la respuesta tardía de [refresh].
             if (ultimoVenuePedido != venueId) return@synchronized false
             if (blob != null) {
+                if (venueDeLaConfig != venueId) venueDescargada = null
                 _config.value = blob
                 venueDeLaConfig = venueId
-                venueConConfig = venueId
             } else if (venueDeLaConfig != venueId) {
                 // Codex 3.6 (#3): la memoria es de otra sucursal y de ésta no hay copia: sin ruteo (ticket legado), nunca con
                 // las estaciones e impresoras de la anterior.

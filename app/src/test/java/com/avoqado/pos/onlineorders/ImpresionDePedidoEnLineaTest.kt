@@ -369,7 +369,7 @@ class ImpresionDePedidoEnLineaTest {
             venueId = { "v1" },
             despachar = { _, _, _, _, _, _ -> despacho.llamadas++; despacho.estado },
             reloj = { ahora },
-            configSinCargar = { !cargada },
+            configSinDescargar = { !cargada },
             refrescarConfig = { refrescos++; if (redVolvio) { cargada = true; hayCocina = true } },
         )
         // La descarga inicial falló y no hay copia: se pide otra vez antes de decidir; sigue sin red.
@@ -392,6 +392,87 @@ class ImpresionDePedidoEnLineaTest {
         ahora += 60_000
         assertFalse(impresion.puedeIntentar("p3"))
         assertEquals(2, refrescos)
+    }
+
+    // MARK: - Ronda 3 · Familia 2 (Ruling 49): «no hay impresora de cocina» sólo vale con la configuración del SERVIDOR
+
+    /** La copia del aparato (o nada) dice «sin cocina»: antes de saltarse el papel se vuelve a pedir, también en el camino de «Mi equipo». */
+    @Test
+    fun `R3 Family 2 a negative from the device copy is refreshed before skipping, also when the screen prints`() = runTest {
+        var descargada = false
+        var hayCocina = false
+        var refrescos = 0
+        coEvery { repo.reclamarComanda(any(), any()) } returns ReclamoDeImpresion(true)
+        coEvery { repo.confirmPrint(any(), any()) } returns true
+        val despacho = Despacho()
+        val impresion = ImpresionDePedidoEnLinea(
+            repositorio = repo, hayImpresoraDeCocina = { hayCocina }, venueId = { "v1" },
+            despachar = { _, _, _, _, _, _ -> despacho.llamadas++; despacho.estado }, reloj = { ahora },
+            configSinDescargar = { !descargada },
+            // El SERVIDOR ya tiene la impresora que el dueño agregó en el panel después de la última descarga buena.
+            refrescarConfig = { refrescos++; descargada = true; hayCocina = true },
+        )
+        // La bandeja (o la aceptación de «Mi equipo») manda imprimir directo, sin pasar por el vigilante.
+        assertEquals(ResultadoImpresion.Impresa, impresion.imprimirSiToca(pedido(), "dev-1"))
+        assertEquals(1, refrescos)
+        assertEquals(1, despacho.llamadas)
+    }
+
+    /** Descargada del SERVIDOR en este arranque y sin cocina (un café): se salta como hoy, sin volver a pedirla. */
+    @Test
+    fun `R3 Family 2 a fresh server configuration without kitchen is trusted, no refresh`() = runTest {
+        var refrescos = 0
+        val despacho = Despacho()
+        val impresion = ImpresionDePedidoEnLinea(
+            repositorio = repo, hayImpresoraDeCocina = { false }, venueId = { "v1" },
+            despachar = { _, _, _, _, _, _ -> despacho.llamadas++; despacho.estado }, reloj = { ahora },
+            configSinDescargar = { false }, refrescarConfig = { refrescos++ },
+        )
+        assertFalse(impresion.puedeIntentar("p1"))
+        assertEquals(ResultadoImpresion.NoSalio, impresion.imprimirSiToca(pedido(), "dev-1"))
+        assertEquals(0, refrescos)
+        assertEquals(0, despacho.llamadas)
+        coVerify(exactly = 0) { repo.reclamarComanda(any(), any()) }
+    }
+
+    /**
+     * Con las piezas reales: una copia del aparato SIN cocina, la primera descarga falla, y luego el SERVIDOR ya trae la impresora de cocina
+     * que se agregó en el panel. La comanda sale sin reiniciar y sin otra venta.
+     */
+    @Test
+    fun `R3 Family 2 with the real configuration repository a stale copy without kitchen recovers and the ticket prints`() = kotlinx.coroutines.runBlocking {
+        val api = mockk<com.avoqado.pos.core.data.network.ApiService>()
+        val cache = mockk<com.avoqado.pos.core.data.local.PayloadCache>(relaxed = true)
+        val sinCocina = PrintConfig(printers = listOf(PrinterInfo("pr_caja", "Caja", "NETWORK", "192.168.1.9:9100")))
+        val conCocina = PrintConfig(
+            printers = listOf(PrinterInfo("pr_cocina", "Cocina", "NETWORK", "192.168.1.50:9100")),
+            stations = listOf(StationInfo("st", "Cocina", printerId = "pr_cocina")),
+        )
+        coEvery { cache.load(com.avoqado.pos.core.data.local.PayloadCache.TYPE_PRINT_CONFIG, "v1") } returns
+            com.avoqado.pos.core.data.local.PayloadCache.Cached(kotlinx.serialization.json.Json.encodeToString(PrintConfig.serializer(), sinCocina), 600)
+        var descargas = 0
+        coEvery { api.getPrintConfig("v1") } answers {
+            if (++descargas == 1) throw java.io.IOException("sin red al arrancar")
+            com.avoqado.pos.printing.routing.PrintConfigResponse(true, conCocina)
+        }
+        val configRepo = com.avoqado.pos.printing.routing.PrintConfigRepository(api, cache)
+        val storage = mockk<com.avoqado.pos.core.data.local.SecureStorage>()
+        every { storage.venueId } returns "v1"
+        val printers = mockk<com.avoqado.pos.printing.data.PrinterService>()
+        every { printers.savedPrinters } returns kotlinx.coroutines.flow.MutableStateFlow(emptyList())
+        val dispatcher = mockk<com.avoqado.pos.core.domain.printing.ComandaDispatcher>()
+        coEvery { dispatcher.dispatch(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any()) } returns EstadoDeComanda.Salio
+        coEvery { repo.reclamarComanda("p1", "dev-1") } returns ReclamoDeImpresion(true)
+        coEvery { repo.confirmPrint("p1", "dev-1") } returns true
+        // Arranque: la descarga falla y queda la copia del aparato, sin cocina.
+        configRepo.refresh("v1")
+        assertTrue(configRepo.getCurrentConfig().stations.isEmpty())
+        val impresion = ImpresionDePedidoEnLinea(repo, dispatcher, printers, configRepo, storage)
+        // Volvió la red: antes de saltarse el papel se vuelve a pedir, y ya hay impresora de cocina.
+        assertTrue(impresion.puedeIntentar("p1"))
+        assertEquals(ResultadoImpresion.Impresa, impresion.imprimirSiToca(pedido(), "dev-1"))
+        assertEquals(2, descargas)
+        coVerify(exactly = 1) { repo.confirmPrint("p1", "dev-1") }
     }
 
     @Test
