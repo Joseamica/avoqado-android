@@ -339,6 +339,61 @@ class ImpresionDePedidoEnLineaTest {
         coVerify(exactly = 1) { repo.reclamarComanda(any(), any()) }
     }
 
+    /** R2-6 (menor de la re-revisión): sin renglones, o con la lectura fallida, el pedido descansa 3 min como una comanda que no salió. */
+    @Test
+    fun `R2-6 an order without items and an order whose read failed rest 3 minutes like a failed print`() = runTest {
+        val impresion = armar()
+        assertEquals(ResultadoImpresion.NoSalio, impresion.imprimirSiToca(pedido(emptyList()), "dev-1"))
+        assertFalse("sin renglones: descansa", impresion.puedeIntentar("p1"))
+        impresion.descansar("p9") // el vigilante no pudo leer p9
+        assertFalse(impresion.puedeIntentar("p9"))
+        ahora += 181_000
+        assertTrue(impresion.puedeIntentar("p1"))
+        assertTrue(impresion.puedeIntentar("p9"))
+        coVerify(exactly = 0) { repo.reclamarComanda(any(), any()) }
+    }
+
+    /** R2-5: la configuración que nunca se cargó (arranque sin copia y sin red) se vuelve a pedir, una vez por vuelta, y sale la comanda. */
+    @Test
+    fun `R2-5 a register whose print configuration never loaded refreshes it once per walk and then prints`() = runTest {
+        var cargada = false
+        var hayCocina = false
+        var redVolvio = false
+        var refrescos = 0
+        coEvery { repo.reclamarComanda(any(), any()) } returns ReclamoDeImpresion(true)
+        coEvery { repo.confirmPrint(any(), any()) } returns true
+        val despacho = Despacho()
+        val impresion = ImpresionDePedidoEnLinea(
+            repositorio = repo,
+            hayImpresoraDeCocina = { hayCocina },
+            venueId = { "v1" },
+            despachar = { _, _, _, _, _, _ -> despacho.llamadas++; despacho.estado },
+            reloj = { ahora },
+            configSinCargar = { !cargada },
+            refrescarConfig = { refrescos++; if (redVolvio) { cargada = true; hayCocina = true } },
+        )
+        // La descarga inicial falló y no hay copia: se pide otra vez antes de decidir; sigue sin red.
+        assertFalse(impresion.puedeIntentar("p1"))
+        assertEquals(1, refrescos)
+        // La misma vuelta (y lo que siga dentro de 30 s) no la vuelve a pedir.
+        assertFalse(impresion.puedeIntentar("p2"))
+        ahora += 29_000
+        assertFalse(impresion.puedeIntentar("p1"))
+        assertEquals(1, refrescos)
+        // Volvió la red: la siguiente vuelta la refresca, ya hay impresora de cocina y la comanda sale.
+        redVolvio = true
+        ahora += 2_000
+        assertTrue(impresion.puedeIntentar("p1"))
+        assertEquals(2, refrescos)
+        assertEquals(ResultadoImpresion.Impresa, impresion.imprimirSiToca(pedido(), "dev-1"))
+        assertEquals(1, despacho.llamadas)
+        // Ya cargada y SIN impresora de cocina (un café): no se vuelve a pedir; se dice que no, sin red.
+        hayCocina = false
+        ahora += 60_000
+        assertFalse(impresion.puedeIntentar("p3"))
+        assertEquals(2, refrescos)
+    }
+
     @Test
     fun `a business printer that is only the receipt printer gives no claim`() {
         val recibo = PrinterInfo("pr_caja", "Caja", "NETWORK", "192.168.1.9:9100")

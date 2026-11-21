@@ -52,6 +52,27 @@ class PrintConfigRepositoryTest {
         coVerify(exactly = 0) { apiService.getPrintConfig("venue-2") }
     }
 
+    /** D661 · R2-5: «nunca se cargó / falló la carga» no es lo mismo que «se cargó y no tiene impresora de cocina». */
+    @Test fun `R2-5 tieneConfigDe tells a failed first load apart from a loaded config without kitchen printer`() = runTest {
+        coEvery { payloadCache.load(any(), any()) } returns null
+        coEvery { apiService.getPrintConfig("venue-1") } throws RuntimeException("sin red")
+        assertFalse("nada pedido todavía", repository.tieneConfigDe("venue-1"))
+        repository.refresh("venue-1")
+        assertFalse("sin red y sin copia: nunca se cargó", repository.tieneConfigDe("venue-1"))
+        coEvery { apiService.getPrintConfig("venue-1") } returns PrintConfigResponse(true, PrintConfig())
+        repository.refresh("venue-1")
+        assertTrue("cargada, aunque no tenga estaciones", repository.tieneConfigDe("venue-1"))
+        assertFalse("otra sucursal no cuenta", repository.tieneConfigDe("venue-2"))
+    }
+
+    @Test fun `R2-5 a config hydrated from the device copy counts as loaded`() = runTest {
+        val encoded = kotlinx.serialization.json.Json.encodeToString(PrintConfig.serializer(), configConEstacion())
+        coEvery { payloadCache.load(PayloadCache.TYPE_PRINT_CONFIG, "venue-1") } returns PayloadCache.Cached(encoded, 100)
+        coEvery { apiService.getPrintConfig("venue-1") } throws RuntimeException("sin red")
+        repository.refresh("venue-1")
+        assertTrue(repository.tieneConfigDe("venue-1"))
+    }
+
     @Test
     fun `getCurrentConfig starts as safe empty default`() {
         val config = repository.getCurrentConfig()

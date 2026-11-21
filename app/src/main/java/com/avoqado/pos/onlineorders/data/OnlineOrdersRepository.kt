@@ -419,13 +419,15 @@ class OnlineOrdersRepository @Inject constructor(
      * `GET online-orders/to-pay` (+ `?section=toPay|toDeliver&cursor=…` para «Cargar más»). [conLatido] manda la cabecera que avisa
      * al servidor que ESTE aparato cobra folios (sólo pantallas que cobran; el vigilante y el panel no). La página 1 sin sección se
      * guarda en el aparato ([porPagarGuardado]). 403/404 ⇒ `disponible = false`, sin error.
+     * D661 · R2-1 (Ruling 35): [avisaTarjetas] manda `x-online-orders-card-alert: 1` («esta caja avisa los pagados en línea»). Sólo el
+     * compás del vigilante, con la ventana a la vista; la pantalla y «Cargar más» nunca (una visita breve no debe ofrecer la tarjeta).
      */
-    suspend fun porPagar(conLatido: Boolean, seccion: String? = null, cursor: String? = null): Result<ListaPorPagar> =
+    suspend fun porPagar(conLatido: Boolean, seccion: String? = null, cursor: String? = null, avisaTarjetas: Boolean = false): Result<ListaPorPagar> =
         // R103: la página 1 se lee ENTERA bajo [lecturaDePagina1]; «Cargar más» (sección y cursor) no la espera.
         if (seccion != null || cursor != null) {
-            leerPorPagar(conLatido, seccion, cursor)
+            leerPorPagar(conLatido, seccion, cursor, avisaTarjetas)
         } else {
-            lecturaDePagina1.withLock { leerPorPagar(conLatido, null, null) }
+            lecturaDePagina1.withLock { leerPorPagar(conLatido, null, null, avisaTarjetas) }
         }
 
     /**
@@ -445,7 +447,7 @@ class OnlineOrdersRepository @Inject constructor(
      */
     private val lecturaDePagina1 = Mutex()
 
-    private suspend fun leerPorPagar(conLatido: Boolean, seccion: String?, cursor: String?): Result<ListaPorPagar> {
+    private suspend fun leerPorPagar(conLatido: Boolean, seccion: String?, cursor: String?, avisaTarjetas: Boolean): Result<ListaPorPagar> {
         val (venueId, token) = sesion() ?: return sinSesion()
         // R102 (segunda red): el número de la lectura se toma ANTES de la red: lo que cuenta es cuándo se PIDIÓ, no cuándo llegó.
         val numero = secuenciaDeLecturas.incrementAndGet()
@@ -454,10 +456,10 @@ class OnlineOrdersRepository @Inject constructor(
             cursor?.let { "cursor=" + URLEncoder.encode(it, "UTF-8") },
         ).joinToString("&").let { if (it.isEmpty()) "" else "?$it" }
         val cliente = client.newBuilder().callTimeout(plazoTotalDeFoliosMs, java.util.concurrent.TimeUnit.MILLISECONDS).build()
-        // D661: esta app suena y abre los pagados en línea (el vigilante corre siempre que la app está al frente), así que toda lectura
-        // de «Por pagar» se anuncia como caja que avisa. El SERVIDOR sólo la cuenta con `orders:update` (task-3b-report, «Contract»).
+        // D661 · R2-1: sólo quien llama con [avisaTarjetas] (el compás del vigilante a la vista) se anuncia como caja que avisa. El SERVIDOR
+        // sólo la cuenta con `orders:update` (task-3b-report, «Contract»).
         val leido = ejecutarCancelable(
-            get(ruta(venueId, "online-orders/to-pay$consulta"), token, fondo = true, latido = conLatido, avisaTarjetas = true), cliente,
+            get(ruta(venueId, "online-orders/to-pay$consulta"), token, fondo = true, latido = conLatido, avisaTarjetas = avisaTarjetas), cliente,
         )
         val rechazo = (leido.exceptionOrNull() as? RechazoException)?.rechazo
         if (rechazo != null && rechazo.status in setOf(403, 404)) {

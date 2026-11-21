@@ -511,8 +511,10 @@ class VigilanteDePedidosEnLineaTest {
 
     private class Folios(var respuesta: Result<ListaPorPagar>) {
         val latidos = mutableListOf<Boolean>()
+        /** R2-1: si cada lectura se anunció como caja que avisa (`x-online-orders-card-alert`). */
+        val avisos = mutableListOf<Boolean>()
         var guardada: ListaPorPagar? = null
-        suspend fun leer(conLatido: Boolean): Result<ListaPorPagar> { latidos += conLatido; return respuesta }
+        suspend fun leer(conLatido: Boolean, avisa: Boolean): Result<ListaPorPagar> { latidos += conLatido; avisos += avisa; return respuesta }
     }
 
     private fun TestScope.armarConFolios(
@@ -526,6 +528,7 @@ class VigilanteDePedidosEnLineaTest {
             consultarPorPagar = folios::leer, puedeCobrar = { puedeCobrar }, foliosGuardados = { folios.guardada },
             efectivoEnCola = { enCola() },
             foliosConTarjeta = { _ -> conTarjeta() },
+            seVe = { f.seVe },
         )
         return f
     }
@@ -703,7 +706,16 @@ class VigilanteDePedidosEnLineaTest {
             }
             return pedidos[id]?.let { Result.success(it) } ?: Result.failure(IOException("sin red"))
         }
-        suspend fun imprimir(p: OnlineOrder) { impresas += p }
+        /** R2-4: pedidos cuya impresora se queda esperando para siempre (un permiso USB que nadie contesta). */
+        var atoradas = emptySet<String>()
+        val enCurso = mutableSetOf<String>()
+        suspend fun imprimir(p: OnlineOrder) {
+            if (p.orderId in atoradas) {
+                enCurso += p.orderId
+                kotlinx.coroutines.awaitCancellation()
+            }
+            impresas += p
+        }
     }
 
     private fun TestScope.armarD661(
@@ -711,6 +723,7 @@ class VigilanteDePedidosEnLineaTest {
         comandas: Comandas = Comandas(),
         inbox: Inbox = inbox(),
         puedeImprimir: suspend (String) -> Boolean = { true },
+        descansar: (String) -> Unit = {},
     ): Fixture {
         val f = Fixture(Falso(Result.success(inbox)))
         f.vigilante = VigilanteDePedidosEnLinea(
@@ -718,6 +731,7 @@ class VigilanteDePedidosEnLineaTest {
             scope = backgroundScope, venueActual = { f.venue },
             consultarPorPagar = folios::leer, puedeCobrar = { true }, foliosGuardados = { folios.guardada },
             leerPedido = comandas::leer, imprimirComanda = comandas::imprimir, puedeImprimirComanda = puedeImprimir,
+            descansarComanda = descansar, seVe = { f.seVe },
         )
         return f
     }
@@ -1040,6 +1054,80 @@ class VigilanteDePedidosEnLineaTest {
         assertEquals(ids, comandas.leidos)
         advanceTimeBy(2_000); runCurrent()
         assertEquals(ids, comandas.impresas.map { it.orderId })
+        f.vigilante.onStop(owner)
+    }
+
+    // MARK: - Ronda 2 (Codex r1)
+
+    /** R2-1 (Ruling 35): sólo el compás del vigilante, con la ventana a la vista, le dice al SERVIDOR que esta caja avisa. */
+    @Test
+    fun `R2-1 only the watcher cycle with the window in view announces it can alert`() = runTest {
+        val folios = Folios(Result.success(listaD661(listOf(tarjeta("t1")))))
+        val f = armarD661(folios)
+        f.vigilante.onStart(owner); runCurrent()
+        assertEquals("a la vista, el compás se anuncia", listOf(true), folios.avisos)
+        // Minimizada (WINDOWS): sigue leyendo, pero ya no se anuncia (ni banda visible ni, quizá, sonido).
+        f.seVe = false
+        advanceTimeBy(30_000); runCurrent()
+        assertEquals(listOf(true, false), folios.avisos)
+        // De vuelta a la vista: la siguiente lectura del compás se anuncia otra vez.
+        f.seVe = true
+        advanceTimeBy(30_000); runCurrent()
+        assertEquals(listOf(true, false, true), folios.avisos)
+        // La relectura inmediata (tras «Abrir y cobrar») nunca se anuncia: no mueve el compás y puede salir después de `onStop`.
+        f.vigilante.sondearFoliosYa(); runCurrent()
+        assertEquals(listOf(true, false, true, false), folios.avisos)
+        assertEquals("el latido de folios no cambia", listOf(true, true, true, true), folios.latidos)
+        f.vigilante.onStop(owner)
+    }
+
+    /** R2-4 (regresión de la ronda 1): una comanda atorada en una impresora no frena a las demás. */
+    @Test
+    fun `R2-4 a ticket stuck on one printer does not stop the next one`() = runTest {
+        val comandas = Comandas()
+        comandas.pedidos["a"] = pagadoNadie("a"); comandas.pedidos["b"] = pagadoNadie("b")
+        comandas.atoradas = setOf("a") // su impresora USB espera un permiso que nadie contesta
+        val folios = Folios(Result.success(listaD661(comandas = listOf(ComandaPorImprimir("a", "T-a"), ComandaPorImprimir("b", "T-b")))))
+        val f = armarD661(folios, comandas)
+        f.vigilante.onStart(owner); runCurrent()
+        advanceTimeBy(VigilanteDePedidosEnLinea.ESPERA_POR_COMANDA_MS + 1_000); runCurrent()
+        assertEquals("B sale aunque A siga atorada", listOf("b"), comandas.impresas.map { it.orderId })
+        assertTrue("A sigue en su trabajo: nadie la canceló", "a" in comandas.enCurso)
+        assertEquals("y sin lecturas a la vez", 1, comandas.maximoEnVuelo)
+        f.vigilante.onStop(owner)
+    }
+
+    /** R2-4: la lista que llega mientras una vuelta corre no se pierde: se recorre en cuanto la vuelta termina. */
+    @Test
+    fun `R2-4 a list that arrives while a walk is running is walked right after it`() = runTest {
+        val comandas = Comandas()
+        comandas.demora = 40_000 // la lectura de c1 tarda: la vuelta sigue viva cuando llega la siguiente lista
+        comandas.pedidos["c1"] = pagadoNadie("c1"); comandas.pedidos["c2"] = pagadoNadie("c2")
+        val folios = Folios(Result.success(listaD661(comandas = listOf(ComandaPorImprimir("c1", "T-c1")))))
+        val f = armarD661(folios, comandas)
+        f.vigilante.onStart(owner); runCurrent()
+        // A los 30 s llega c2 (otra caja abrió otro pedido) mientras la vuelta sigue leyendo c1.
+        folios.respuesta = Result.success(listaD661(comandas = listOf(ComandaPorImprimir("c1", "T-c1"), ComandaPorImprimir("c2", "T-c2"))))
+        advanceTimeBy(30_000); runCurrent()
+        assertTrue(comandas.impresas.isEmpty())
+        comandas.demora = 0
+        // La vuelta termina a los 40 s y recorre en seguida la lista que llegó: c2 no espera a la lectura de los 60 s.
+        advanceTimeBy(11_000); runCurrent()
+        assertTrue("c2 salió con la lista que llegó a media vuelta", comandas.impresas.any { it.orderId == "c2" })
+        assertEquals(1, comandas.maximoEnVuelo)
+        f.vigilante.onStop(owner)
+    }
+
+    /** R2-6 (menor de la re-revisión): un pedido cuya lectura falla entra al mismo descanso que una comanda que no salió. */
+    @Test
+    fun `R2-6 an order whose read fails rests like a ticket that did not print`() = runTest {
+        val comandas = Comandas() // c1 no está en `pedidos`: su lectura falla
+        val descansos = mutableListOf<String>()
+        val folios = Folios(Result.success(listaD661(comandas = listOf(ComandaPorImprimir("c1", "T-c1")))))
+        val f = armarD661(folios, comandas, descansar = { descansos += it })
+        f.vigilante.onStart(owner); runCurrent()
+        assertEquals(listOf("c1"), comandas.leidos)
+        assertEquals(listOf("c1"), descansos)
         f.vigilante.onStop(owner)
     }
 }

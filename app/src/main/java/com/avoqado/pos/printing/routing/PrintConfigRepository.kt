@@ -38,6 +38,13 @@ class PrintConfigRepository @Inject constructor(
 
     fun getCurrentConfig(): PrintConfig = _config.value
 
+    /**
+     * D661 · R2-5: ¿esta sucursal tiene una configuración CARGADA (del SERVIDOR o de la copia del aparato)? Falso si nunca llegó —arranque
+     * sin copia y con la descarga fallida—: no es lo mismo que «se cargó y no tiene impresora de cocina». Así la comanda en línea sabe cuándo
+     * volver a pedirla en vez de saltarse el papel para siempre.
+     */
+    fun tieneConfigDe(venueId: String): Boolean = synchronized(candado) { venueConConfig == venueId }
+
     /** A round freezes this venue's known route before its first write/network attempt. */
     suspend fun savedConfig(venueId: String): PrintConfig {
         synchronized(candado) {
@@ -61,6 +68,9 @@ class PrintConfigRepository @Inject constructor(
      * traer las estaciones de la sucursal anterior: nunca se usan como si fueran de la nueva. Bajo [candado].
      */
     private var venueDeLaConfig: String? = null
+
+    /** R2-5: la sucursal de la que hay una configuración de verdad en memoria (no el vacío de «nunca la vi»). Bajo [candado]. */
+    private var venueConConfig: String? = null
 
     /**
      * 🔴 OFFLINE-FIRST (bug encontrado en el smoke de impresión, 2026-07-25):
@@ -107,6 +117,7 @@ class PrintConfigRepository @Inject constructor(
                     if (it) {
                         _config.value = response.data
                         venueDeLaConfig = venueId
+                        venueConConfig = venueId
                     }
                 }
             }
@@ -167,6 +178,7 @@ class PrintConfigRepository @Inject constructor(
             if (blob != null) {
                 _config.value = blob
                 venueDeLaConfig = venueId
+                venueConConfig = venueId
             } else if (venueDeLaConfig != venueId) {
                 // Codex 3.6 (#3): la memoria es de otra sucursal y de ésta no hay copia: sin ruteo (ticket legado), nunca con
                 // las estaciones e impresoras de la anterior.

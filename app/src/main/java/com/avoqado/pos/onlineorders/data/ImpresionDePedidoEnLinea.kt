@@ -50,6 +50,9 @@ fun hayImpresoraDeCocina(localDeCocina: Boolean, config: com.avoqado.pos.printin
 /** Tras un `NoSalio` este aparato deja pasar este tiempo antes de volver a reclamar el mismo pedido (otro aparato lo toma). */
 private const val DESCANSO_TRAS_NO_SALIO_MS = 3 * 60 * 1000L
 
+/** D661 · R2-5: lo más seguido que se vuelve a pedir una configuración de impresión que nunca cargó (una vez por vuelta del vigilante). */
+private const val REFRESCO_DE_CONFIG_MS = 30 * 1000L
+
 /**
  * Task A4: la comanda de un pedido en línea sale UNA vez, en UN aparato.
  *
@@ -70,6 +73,10 @@ class ImpresionDePedidoEnLinea internal constructor(
     private val venueId: () -> String?,
     private val despachar: suspend (venueId: String?, lineas: List<RoutableItem>, folio: String, tipo: String, orderId: String, encabezado: List<String>) -> EstadoDeComanda?,
     private val reloj: () -> Long = System::currentTimeMillis,
+    /** R2-5: la configuración de impresión de esta sucursal NUNCA se cargó (ni del SERVIDOR ni de la copia del aparato). */
+    private val configSinCargar: () -> Boolean = { false },
+    /** R2-5: la vuelve a pedir (la de siempre, con tope de espera: `PrintConfigRepository.refreshConTope`). */
+    private val refrescarConfig: suspend () -> Unit = {},
 ) {
     @Inject
     constructor(
@@ -88,6 +95,8 @@ class ImpresionDePedidoEnLinea internal constructor(
             )
         },
         venueId = { secureStorage.venueId },
+        configSinCargar = { secureStorage.venueId?.let { !printConfigRepository.tieneConfigDe(it) } ?: false },
+        refrescarConfig = { secureStorage.venueId?.let { printConfigRepository.refreshConTope(it) } },
         despachar = { venue, lineas, folio, tipo, orderId, encabezado ->
             val config = venue?.let { printConfigRepository.savedConfig(it) }
             if (venue == null || secureStorage.venueId != venue) null else dispatcher.dispatch(
@@ -110,8 +119,12 @@ class ImpresionDePedidoEnLinea internal constructor(
     private val fallosRecientes = ConcurrentHashMap<String, Long>()
 
     suspend fun imprimirSiToca(order: OnlineOrder, deviceId: String): ResultadoImpresion {
-        // Sin renglones no hay comanda que sacar: reclamar sólo retendría el pedido a otro aparato.
-        if (order.items.isEmpty()) return ResultadoImpresion.NoSalio
+        // Sin renglones no hay comanda que sacar: reclamar sólo retendría el pedido a otro aparato. R2-6: descansa como una que no salió
+        // (si no, el vigilante lo volvía a leer en cada sondeo).
+        if (order.items.isEmpty()) {
+            descansar(order.orderId)
+            return ResultadoImpresion.NoSalio
+        }
         val sucursal = venueId() ?: return ResultadoImpresion.NoSalio
         if (enDescanso(order.orderId)) return ResultadoImpresion.NoSalio
         if (!enCurso.add(order.orderId)) return ResultadoImpresion.YaEnCurso
@@ -141,8 +154,27 @@ class ImpresionDePedidoEnLinea internal constructor(
      * [imprimirSiToca] mira en el aparato antes de reclamar —hay impresora de cocina, el pedido no está en su descanso tras un `NoSalio`
      * y no se está imprimiendo aquí—, sin tocar la red. El vigilante lo pregunta antes de cada lectura.
      */
-    suspend fun puedeIntentar(orderId: String): Boolean =
-        !enDescanso(orderId) && orderId !in enCurso && hayImpresoraDeCocina()
+    suspend fun puedeIntentar(orderId: String): Boolean {
+        if (enDescanso(orderId) || orderId in enCurso) return false
+        if (hayImpresoraDeCocina()) return true
+        // R2-5: «no hay impresora de cocina» sólo vale si la configuración SÍ cargó. Si nunca cargó (arranque sin copia y sin red), se vuelve a
+        // pedir —a lo más una vez cada [REFRESCO_DE_CONFIG_MS], o sea una por vuelta— y entonces se decide.
+        if (!configSinCargar()) return false
+        val ahora = reloj()
+        val ultimo = ultimoRefrescoDeConfig
+        if (ultimo != null && ahora - ultimo < REFRESCO_DE_CONFIG_MS) return false
+        ultimoRefrescoDeConfig = ahora
+        refrescarConfig()
+        return hayImpresoraDeCocina()
+    }
+
+    /** R2-5: cuándo se pidió por última vez la configuración que no había cargado; null = nunca. */
+    @Volatile private var ultimoRefrescoDeConfig: Long? = null
+
+    /** R2-6: el vigilante no pudo leer ese pedido: el mismo descanso que una comanda que no salió (no se relee en cada sondeo). */
+    fun descansar(orderId: String) {
+        fallosRecientes[orderId] = reloj()
+    }
 
     /** Ese pedido falló aquí hace menos de [DESCANSO_TRAS_NO_SALIO_MS] (de paso olvida los descansos ya vencidos). */
     private fun enDescanso(orderId: String): Boolean {

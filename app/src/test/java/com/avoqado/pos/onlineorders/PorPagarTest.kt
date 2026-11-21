@@ -143,8 +143,8 @@ class PorPagarTest {
             "comandasPorImprimir":[{"orderId":"c1","orderNumber":"T-0040"},{"orderNumber":"sin id"}]"""
         server.enqueue(MockResponse().setBody(cuerpo().replace("\"pollSeconds\":30", "\"pollSeconds\":30$d661")))
         server.enqueue(MockResponse().setBody(cuerpo()))
-        val lista = repo.porPagar(conLatido = false).getOrThrow()
-        // La caja que suena y abre se anuncia SIEMPRE (el SERVIDOR revisa orders:update); con o sin el latido de folios.
+        val lista = repo.porPagar(conLatido = false, avisaTarjetas = true).getOrThrow()
+        // R2-1: el compás del vigilante a la vista se anuncia como caja que avisa (el SERVIDOR revisa orders:update).
         assertEquals("1", server.takeRequest(1, TimeUnit.SECONDS)!!.getHeader("x-online-orders-card-alert"))
         // Ruling 13: el total llega en PESOS y aquí va en centavos exactos; un renglón dañado se salta.
         assertEquals(listOf("t1", "t2"), lista.tarjetasPorAbrir.map { it.orderId })
@@ -160,7 +160,22 @@ class PorPagarTest {
         // Un SERVIDOR viejo no las manda: listas vacías, sin error.
         val vieja = repo.porPagar(conLatido = true).getOrThrow()
         assertTrue(vieja.tarjetasPorAbrir.isEmpty()); assertTrue(vieja.comandasPorImprimir.isEmpty())
-        assertEquals("1", server.takeRequest(1, TimeUnit.SECONDS)!!.getHeader("x-online-orders-card-alert"))
+        // R2-1: la lectura de la pantalla (con el latido de folios) ya no se anuncia.
+        assertNull(server.takeRequest(1, TimeUnit.SECONDS)!!.getHeader("x-online-orders-card-alert"))
+    }
+
+    /** R2-1 (Ruling 35): una visita a la bandeja o «Cargar más» nunca le dicen al SERVIDOR que esta caja avisa. */
+    @Test
+    fun `R2-1 only the watcher read sends the card-alert header - the screen and its pagination never do`() = runTest {
+        repeat(4) { server.enqueue(MockResponse().setBody(cuerpo(cursorPagar = "c1"))) }
+        repo.porPagar(conLatido = true).getOrThrow() // la bandeja visible de quien cobra
+        repo.porPagar(conLatido = false).getOrThrow() // la bandeja de quien no cobra
+        repo.porPagar(conLatido = false, seccion = "toPay", cursor = "c1").getOrThrow() // «Cargar más»
+        repo.porPagar(conLatido = true, avisaTarjetas = true).getOrThrow() // el compás del vigilante, a la vista
+        val pedidas = List(4) { server.takeRequest(1, TimeUnit.SECONDS)!! }
+        assertEquals(listOf(null, null, null, "1"), pedidas.map { it.getHeader("x-online-orders-card-alert") })
+        // El latido de folios sigue igual que antes.
+        assertEquals(listOf("1", null, null, "1"), pedidas.map { it.getHeader("x-online-orders-to-pay") })
     }
 
     @Test
