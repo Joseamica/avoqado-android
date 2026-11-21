@@ -227,6 +227,11 @@ class TpvSettingsRepository internal constructor(
     private val receiptLogoCache: com.avoqado.pos.printing.data.ReceiptLogoCache? = null,
     /** D5 · B2b: al leer el plan con el piloto apagado, se borran las fotos de mesas de ESA sucursal. */
     private val fotosDeMesas: com.avoqado.pos.core.data.sync.FotosDeMesas? = null,
+    /**
+     * Encargo ec5b28 (founder «A», 21-nov): ¿hay una venta a medias? La MISMA señal que ya usa el cambio de papel desde el
+     * aparato (`PapelDelAparatoGateViewModel.ventaAMediasAhora`). null (pruebas viejas) = nunca hay venta a medias.
+     */
+    private val activeCartState: com.avoqado.pos.pos.data.ActiveCartState? = null,
 ) {
     @Inject
     constructor(
@@ -239,6 +244,7 @@ class TpvSettingsRepository internal constructor(
         displayModeAuthorityGate: DisplayModeAuthorityGate,
         receiptLogoCache: com.avoqado.pos.printing.data.ReceiptLogoCache,
         fotosDeMesas: com.avoqado.pos.core.data.sync.FotosDeMesas,
+        activeCartState: com.avoqado.pos.pos.data.ActiveCartState,
     ) : this(
         secureStorage = secureStorage,
         client = client,
@@ -249,6 +255,7 @@ class TpvSettingsRepository internal constructor(
         displayModeAuthorityGate = displayModeAuthorityGate,
         receiptLogoCache = receiptLogoCache,
         fotosDeMesas = fotosDeMesas,
+        activeCartState = activeCartState,
     )
 
     // `coerceInputValues`: un server NUEVO con un modo de panel que esta versión
@@ -545,7 +552,8 @@ class TpvSettingsRepository internal constructor(
                     // Una negación VIEJA (otra petición ya contestó después) no borra lo bueno ni pone fábrica.
                     val denied = whileCurrent {
                         _settings.value = applyIncludeTaxOverride(TpvSettings.DEFAULT, localIncludeTaxOverride)
-                        _terminalNavigation.value = TerminalNavigationSettings.DEFAULT
+                        // ec5b28: con venta a medias la navegación espera (la huella ya queda sin aplicar: el sondeo reintenta).
+                        _terminalNavigation.value = conservarLaLlaveConVentaAMedias(TerminalNavigationSettings.DEFAULT)
                         appliedFingerprints.remove(venueId)
                     }
                     if (denied) clearPersistedSettings(venueId)
@@ -586,8 +594,19 @@ class TpvSettingsRepository internal constructor(
             result.data.permisosDeLaSesion?.let { lista -> whileCurrent { secureStorage.guardarPermisosDeLaSesionSi(sello, venueId, lista) } }
 
             val terminalNavigation = result.data.toTerminalNavigationSettings()
-            if (!whileCurrent { _terminalNavigation.value = terminalNavigation; _generacionDelFiltro.update { it + 1 } }) return
-            persistTerminalNavigation(venueId, terminalNavigation)
+            // ec5b28 (founder «A», 21-nov): con venta a medias, lo que entra en la llave de la navegación se queda como estaba
+            // (rehacerla borra el carrito y cierra el cobro) y la huella queda SIN aplicar, abajo: el sondeo reintenta cada
+            // 15–20 s y el cambio entra solo en cuanto el carrito quede vacío. Sin venta a medias, igual que siempre.
+            var navegacionEnEspera = false
+            var navegacionAplicada = terminalNavigation
+            if (!whileCurrent {
+                    navegacionAplicada = conservarLaLlaveConVentaAMedias(terminalNavigation)
+                    navegacionEnEspera = navegacionAplicada != terminalNavigation
+                    _terminalNavigation.value = navegacionAplicada
+                    _generacionDelFiltro.update { it + 1 }
+                }
+            ) return
+            persistTerminalNavigation(venueId, navegacionAplicada)
             if (!stillCurrent()) return
 
             // Un journal legible O ilegible es una barrera: el settings legacy
@@ -670,7 +689,7 @@ class TpvSettingsRepository internal constructor(
 
                 // La huella sólo cuenta como aplicada si NINGÚN componente falló: si no, el siguiente poll reintenta.
                 val fingerprint = result.data?.fingerprints?.settings
-                if (fingerprint == null || status?.anyFailed == true) {
+                if (fingerprint == null || status?.anyFailed == true || navegacionEnEspera) {
                     appliedFingerprints.remove(venueId)
                 } else {
                     appliedFingerprints[venueId] = fingerprint
@@ -694,6 +713,33 @@ class TpvSettingsRepository internal constructor(
                 if (mine == refreshTicket.get()) _isLoading.value = false
             }
         }
+    }
+
+    /**
+     * Encargo ec5b28 (founder «A», 21-nov). Con venta a medias ([ActiveCartState.hasItems], la misma señal del cambio de papel
+     * desde el aparato), lo que entra en la llave de la pantalla (`mainContentKey`: la terminal, `defaultWorkspace` y las tres
+     * banderas de vales) se queda como está ahora:
+     * - misma terminal: se conservan esas cinco y su área de vales (`fulfillmentAreaId` va con las banderas: un emisor no
+     *   puede quedarse sin su área a media venta); lo demás (menú del aparato, nombre, pantalla del cliente…) entra;
+     * - otra terminal o ninguna (desligada, 4xx): se conserva la navegación ENTERA; mezclar dos terminales no tiene sentido.
+     * Sin venta a medias, [nueva] tal cual. Se llama bajo [ticketLock].
+     */
+    private fun conservarLaLlaveConVentaAMedias(nueva: TerminalNavigationSettings): TerminalNavigationSettings {
+        if (activeCartState?.hasItems != true) return nueva
+        val actual = _terminalNavigation.value
+        val conservada = if (nueva.terminalId != actual.terminalId) {
+            actual
+        } else {
+            nueva.copy(
+                defaultWorkspace = actual.defaultWorkspace,
+                canIssueAreaTickets = actual.canIssueAreaTickets,
+                canCheckoutAreaTickets = actual.canCheckoutAreaTickets,
+                canDeliverAreaTickets = actual.canDeliverAreaTickets,
+                fulfillmentAreaId = actual.fulfillmentAreaId,
+            )
+        }
+        if (conservada != nueva) Log.i("📦", "⏸️ Venta a medias: el cambio de papel o de terminal espera a que termine")
+        return conservada
     }
 
     /**
