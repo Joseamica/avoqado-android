@@ -99,7 +99,7 @@ class KDSRepository @Inject constructor(
         require(offset in 0..1_000_000)
         val (venueId, token) = sesion() ?: return sinSesion()
         val consulta = listOfNotNull("status=NEW,PREPARING,READY", conEstacion(stationId),
-            "urgencyVersion=1", "offset=$offset", "limit=100").joinToString("&")
+            "urgencyVersion=1", "kitchenDoneVersion=1", "offset=$offset", "limit=100").joinToString("&")
         val request = Request.Builder().url(ruta(venueId, "kds/orders?$consulta"))
             .header("Authorization", "Bearer $token").header(ForbiddenInterceptor.BACKGROUND_HEADER, "1").get().build()
         return ejecutar(request).mapCatching { body ->
