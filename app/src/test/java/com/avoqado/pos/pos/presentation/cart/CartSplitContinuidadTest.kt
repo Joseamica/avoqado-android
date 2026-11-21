@@ -292,33 +292,36 @@ class CartSplitContinuidadTest {
     }
 
     /**
-     * El otro reemplazo directo de `_cartState`: el staff guardado ya no existe y
-     * `fetchStaff` vacía el carrito. Sin limpiar el vínculo, ese carrito VACÍO
-     * pasa el guard —cero renglones nuevos, importe que bajó— y queda apuntando a
-     * la orden vieja.
-     *
-     * ⚠️ Alcance honesto: esto es **defensa en profundidad, no una fuga que se
-     * esté dando**. Por la UI no se llega: no se puede abrir un cobro con el
-     * carrito vacío (el botón "Cobrar" vive en la rama no-vacía de
-     * `CartPanelView`, el `IPhoneCartBar` está detrás de `!isEmpty`, y la hoja de
-     * dividir también), y en cuanto el cajero agrega el primer producto ese
-     * renglón trae un UUID nuevo que rompe el vínculo. El test llama al resolver
-     * directo sobre el carrito vacío, que es algo que la pantalla no hace: cuida
-     * el invariante del ViewModel, no un camino del usuario.
+     * P1 DINERO (D7, `hz:248b195b:D7`; Codex final r7 #6 de F1). Antes esta prueba exigía lo contrario: si el vendedor
+     * guardado ya no existía, la recarga de vendedores vaciaba el carrito y borraba el vínculo. Con una venta a medias eso
+     * pierde dinero: la venta A de $100 ya tiene $40, el carrito queda en «Saldo pendiente $60» ligado a A, el gerente quita
+     * al vendedor de la lista, la cajera abre el selector, el carrito se vacía y ella vuelve a capturar la compra y la cobra
+     * en un folio B: $40 en A + $100 en B por una compra de $100. Ahora la venta a medias sigue con su folio, su saldo y su
+     * cliente, y sólo deja de llevar al vendedor que ya no existe (lo mismo que ya hacía al cerrar un cobro).
      */
     @Test
-    fun `si el staff guardado ya no existe, vaciar el carrito tambien borra el vinculo`() = runTest {
+    fun `P1 si quitan al vendedor de una venta a medias, el carrito conserva su folio y su saldo`() = runTest {
         coEvery { staffRepository.getActiveStaff() } returns Result.success(emptyList())
+        every { secureStorage.userId } returns "user-1"
         val vm = createViewModel()
-        vm.sembrarSaldoPendiente("order-parte-1")
-        // Deja un staff seleccionado que la lista ya no contiene (se fue del local).
-        vm.selectStaff("staff-fantasma", "Ana")
+        vm.setSelectedCustomer("cli-1", "Ana Cliente")
+        vm.sembrarSaldoPendiente("order-a", cents = 6_000)
+        // El vendedor de esta venta; la lista que llega ya no lo trae (lo quitó el gerente).
+        vm.selectStaff("staff-fantasma", "Beto")
+        val saldo = vm.cartState.value.items
+        assertTrue("montaje: venta a medias ligada a A", vm.hayVentaAMedias())
+        every { secureStorage.selectedStaffIdForCurrentVenue } returns null
+        every { secureStorage.selectedStaffNameForCurrentVenue } returns null
 
         vm.fetchStaff()
         advanceUntilIdle()
 
-        assertTrue(vm.cartState.value.isEmpty)
-        assertNull(vm.resolvePendingSplitOrderForCharge())
+        assertEquals("el «Saldo pendiente» sigue en pantalla", saldo, vm.cartState.value.items)
+        assertEquals(6_000, vm.cartState.value.totalCents)
+        assertEquals("lo que falta se cobra contra A, no en un folio nuevo", "order-a", vm.resolvePendingSplitOrderForCharge())
+        assertEquals("cli-1", vm.selectedCustomer.value?.id)
+        assertEquals("sólo cambia el vendedor: quien inició sesión", "user-1", vm.cartState.value.selectedStaffId)
+        io.mockk.verify { secureStorage.clearSelectedStaffForCurrentVenue() }
     }
 
     // ── Membresías capturadas al abrir el cobro ────────────────────────────────
