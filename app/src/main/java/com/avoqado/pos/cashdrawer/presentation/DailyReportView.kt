@@ -293,10 +293,16 @@ fun DailyReportView(
             }
 
             // F1 P9: la tarjeta en duda se ve en el corte. No se dice si el desglose la cuenta: si la terminal sí la registró,
-            // ya viene arriba (Codex r1 #1).
+            // ya viene arriba (Codex r1 #1). Un solo texto que se parte, no dos columnas: en un teléfono angosto con letra grande el
+            // importe se quedaba sin ancho (Codex r3 #1).
             porConfirmar?.let {
                 Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
-                ReportRow(label = it.etiqueta, value = it.importe)
+                Text(
+                    text = it.texto,
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Medium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
             }
 
             Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxl))

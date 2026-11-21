@@ -112,7 +112,11 @@ class CorteConCobrosPorConfirmarTest {
     fun `P9 el corte en pantalla pinta la linea sin afirmar que no esta en el total`() {
         val corte = fuente("presentation/DailyReportView.kt")
         assertTrue(corte.contains("porConfirmar: com.avoqado.pos.cashdrawer.data.PorConfirmarEnElCorte? = null"))
-        assertTrue(corte.contains("ReportRow(label = it.etiqueta, value = it.importe)"))
+        // Codex r3 #1: en una fila de dos columnas, un teléfono angosto con letra grande dejaba el importe sin ancho. Un solo texto
+        // que se parte en renglones: el número y el importe siempre se ven.
+        val linea = corte.substringAfter("porConfirmar?.let {").substringBefore("\n            }")
+        assertTrue(linea.contains("text = it.texto"))
+        assertFalse(linea.contains("ReportRow("))
         assertFalse(corte.contains("No están en el total"))
     }
 
