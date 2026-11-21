@@ -8,6 +8,7 @@ import com.avoqado.pos.pos.data.model.ServiceCourseSnapshot
 import com.avoqado.pos.printing.data.*
 import com.avoqado.pos.printing.routing.*
 import io.mockk.*
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.*
 import org.junit.Assert.*
@@ -23,7 +24,9 @@ class PreparationDeliveryServiceTest {
     private class Fixture(val service: PreparationDeliveryService, val printer: ReintentoDeComanda,
         val client: ClienteDeComandas, val records: MutableMap<String, CachedPayloadEntity>, val origins: MutableMap<String, SyncIntentEntity>,
         val setVenue: (String) -> Unit, val setAllowed: (Boolean) -> Unit, val cache: CachedPayloadDao,
-        val setConnected: (Boolean) -> Unit = {}, val restart: () -> PreparationDeliveryService = { service }) {
+        val setConnected: (Boolean) -> Unit = {}, val restart: () -> PreparationDeliveryService = { service },
+        val acks: MutableSharedFlow<com.avoqado.pos.core.data.sync.SyncAck> = MutableSharedFlow(extraBufferCapacity = 8),
+        val transport: TransporteLan? = null, val storageVenue: (String) -> Unit = {}) {
         fun job(): PreparationDeliveryJob = PreparationPeerProtocol.json.decodeFromString(records.getValue("preparation:v1:delivery:a").json)
     }
     private fun fixture(scope: kotlinx.coroutines.CoroutineScope, paperState: String = "QUEUED", phase: String = "PENDING", urgent: Boolean = false, urgencyPeer: Boolean = false,
@@ -85,8 +88,10 @@ class PreparationDeliveryServiceTest {
         val screens = screensFromServer?.let { set -> mockk<EstadoDePantallasDeCocina>().also { every { it.esPantallaDelServidor(any()) } answers { firstArg<String>() in set } } }
         var online = connected
         val monitor = mockk<com.avoqado.pos.core.util.ConnectivityMonitor>().also { every { it.isFullyConnected } answers { online } }
-        fun build() = PreparationDeliveryService(db, storage, transport, printer, configRepo, client, roles, screens, monitor).also { it.useScopeForTest(scope) }
-        return Fixture(build(), printer, client, records, origins, { venue = it }, { allowed = it }, cache, { online = it }, ::build)
+        val acks = MutableSharedFlow<com.avoqado.pos.core.data.sync.SyncAck>(extraBufferCapacity = 8)
+        val outbox = mockk<com.avoqado.pos.core.data.sync.SyncOutbox>().also { every { it.acks } returns acks }
+        fun build() = PreparationDeliveryService(db, storage, transport, printer, configRepo, client, roles, screens, monitor, outbox).also { it.useScopeForTest(scope) }
+        return Fixture(build(), printer, client, records, origins, { venue = it }, { allowed = it }, cache, { online = it }, ::build, acks, transport)
     }
 
 
@@ -294,15 +299,24 @@ class PreparationDeliveryServiceTest {
             coVerify(exactly = 1) { f.printer.reintentar(any(), any(), any()) }
         } finally { f.service.stop() }
     }
-    @Test fun `D16 la espera pide otra pasada sola y decide al llegar el si`() = runTest {
+    @Test fun `D16 el si de su intent la despierta sin esperar al reloj`() = runTest {
         val f = fixture(backgroundScope, screensFromServer = setOf("s")); withoutPrinter(f)
         try {
-            // Sólo el reloj de 30 s y la pasada que pide la espera: el «sí» llega después de la primera pasada.
+            // Sólo el reloj de 30 s y el ACK: la primera pasada la deja esperando; el siguiente turno del reloj es a los 30 s.
             f.service.start("v1"); runCurrent()
             assertEquals("QUEUED", f.job().paperState)
-            acked(f)
-            advanceTimeBy(PreparationDeliveryService.PASO_DE_LA_ESPERA_MS + 500); runCurrent()
+            acked(f); f.acks.emit(com.avoqado.pos.core.data.sync.SyncAck("a", "ACKED")); runCurrent()
             assertEquals("DONE", f.job().paperState); assertNull(f.service.notice.value)
+        } finally { f.service.stop() }
+    }
+    @Test fun `D16 el rechazo de su intent la despierta y sale como rechazo`() = runTest {
+        val f = fixture(backgroundScope, screensFromServer = setOf("s")); withoutPrinter(f)
+        try {
+            f.service.start("v1"); runCurrent()
+            f.origins["a"] = f.origins.getValue("a").copy(status = SyncIntentEntity.STATUS_REJECTED, message = "Otro aparato cambió el producto")
+            f.acks.emit(com.avoqado.pos.core.data.sync.SyncAck("a", "REJECTED")); runCurrent()
+            assertEquals("CANCELLED", f.job().paperState); assertTrue(f.service.notice.value!!.contains("no fue aceptada"))
+            coVerify(exactly = 0) { f.printer.reintentar(any(), any(), any()) }
         } finally { f.service.stop() }
     }
     @Test fun `D16 sin internet avisa en el acto como hoy`() = runTest {
@@ -332,6 +346,19 @@ class PreparationDeliveryServiceTest {
             assertEquals(ReintentoDeComanda.CAUSA_SIN_IMPRESORA, f.service.notice.value)
         } finally { f.service.stop() }
     }
+    @Test fun `D16 el tope tambien se cuenta con el reloj monotonico`() = runTest {
+        val f = fixture(backgroundScope, screensFromServer = setOf("s")); withoutPrinter(f)
+        var now = 0L; f.service.nanoTime = { now }
+        try {
+            f.service.start("v1"); f.service.pass("v1")
+            assertEquals("QUEUED", f.job().paperState)
+            // El reloj de pared dice que apenas pasó nada (se atrasó); el monotónico, que ya pasó el tope.
+            now = (PreparationDeliveryService.TOPE_DE_LA_ESPERA_MS + 1_000) * 1_000_000
+            f.service.pass("v1")
+            assertEquals("FAILED", f.job().paperState)
+            assertEquals(ReintentoDeComanda.CAUSA_SIN_IMPRESORA, f.service.notice.value)
+        } finally { f.service.stop() }
+    }
     @Test fun `D16 un rechazo a media espera sale como rechazo y no imprime`() = runTest {
         val f = fixture(backgroundScope, screensFromServer = setOf("s")); withoutPrinter(f)
         try {
@@ -346,7 +373,8 @@ class PreparationDeliveryServiceTest {
     @Test fun `D16 una impresora que truena tras el si sigue avisando`() = runTest {
         val f = fixture(backgroundScope, phase = "ACKED", screensFromServer = setOf("s"))
         coEvery { f.printer.reintentar(any(), any(), any()) } coAnswers {
-            EstadoDeComanda.NoSalio(listOf("Cocina"), "Sin papel", "24", firstArg())
+            // Lo saltado también es de la estación de respaldo confirmada: sólo `trabajo == null` impide callarlo.
+            EstadoDeComanda.NoSalio(listOf("Cocina"), "Sin papel", "24", firstArg()).also { it.saltados = firstArg<TrabajoPendiente>().planes }
         }
         try {
             f.service.start("v1"); f.service.pass("v1")
@@ -440,7 +468,7 @@ class PreparationDeliveryServiceTest {
             assertEquals("la siguiente pasada la revisa primero", "DONE", f.job().paperState)
         } finally { f.service.stop() }
     }
-    @Test fun `D16 dos liberaciones seguidas del mismo producto no mandan la primera a revisar`() = runTest {
+    @Test fun `D16 dos liberaciones seguidas del mismo producto piden revisar la primera y no avisan de impresora`() = runTest {
         val f = fixture(backgroundScope, screensFromServer = setOf("s")); withoutPrinter(f)
         val key = "preparation:v1:${row.stableKey}"
         // La segunda liberación (otra unidad del mismo producto) se guardó mientras la primera esperaba el «sí».
@@ -450,7 +478,10 @@ class PreparationDeliveryServiceTest {
             f.service.start("v1"); f.service.pass("v1")
             assertEquals("QUEUED", f.job().paperState)
             acked(f); f.service.pass("v1")
-            assertEquals("DONE", f.job().paperState); assertNull(f.service.notice.value)
+            // Residual declarado (Codex r2 #2 quitó el recorte de la copia): aviso de REVISIÓN, nunca el de impresora.
+            assertEquals("REVIEW", f.job().paperState)
+            assertTrue(f.service.notice.value!!.startsWith("Revisa la liberación"))
+            coVerify(exactly = 0) { f.printer.reintentar(any(), any(), any()) }
         } finally { f.service.stop() }
     }
     @Test fun `D16 la urgencia con productos activos no espera el si`() = runTest {
@@ -460,6 +491,58 @@ class PreparationDeliveryServiceTest {
             f.service.start("v1"); f.service.pass("v1")
             coVerify(exactly = 1) { f.printer.reintentar(any(), any(), any()) }
             assertEquals("FAILED", f.job().paperState)
+        } finally { f.service.stop() }
+    }
+    @Test fun `D16 la urgencia con productos activos no se calla aunque el servidor ya la tenga`() = runTest {
+        val f = fixture(backgroundScope, phase = "ACKED", screensFromServer = setOf("s"), urgentMixed = true); withoutPrinter(f)
+        try {
+            f.service.start("v1"); f.service.pass("v1")
+            assertEquals("FAILED", f.job().paperState)
+            assertEquals(ReintentoDeComanda.CAUSA_SIN_IMPRESORA, f.service.notice.value)
+        } finally { f.service.stop() }
+    }
+    @Test fun `D16 liberar y luego cancelar en la misma caja no imprime un ticket viejo`() = runTest {
+        val f = fixture(backgroundScope, screensFromServer = setOf("s"))
+        val key = "preparation:v1:${row.stableKey}"
+        f.records[key] = CachedPayloadEntity(key, "v1", json.encodeToString(PreparationLocalLine.serializer(), PreparationLocalLine(row,
+            listOf(PreparationEffect("a", 0, PreparationAction.RELEASE, 1),
+                PreparationEffect("c", 1, PreparationAction.CANCEL, 1, PreparationState.PENDING, "Se acabó")))), 100)
+        try {
+            f.service.start("v1"); f.service.pass("v1")
+            acked(f); f.service.pass("v1")
+            assertEquals("REVIEW", f.job().paperState)
+            coVerify(exactly = 0) { f.printer.reintentar(any(), any(), any()) }
+        } finally { f.service.stop() }
+    }
+    @Test fun `D16 si marcan resuelto el intent a media espera la tarea no se queda en cola para siempre`() = runTest {
+        val f = fixture(backgroundScope, screensFromServer = setOf("s")); withoutPrinter(f)
+        try {
+            f.service.start("v1"); f.service.pass("v1")
+            assertEquals("QUEUED", f.job().paperState)
+            f.origins.remove("a") // «Marcar resuelta» borra la fila de la cola
+            f.service.pass("v1")
+            assertEquals("decide su papel como antes de D16", "FAILED", f.job().paperState)
+            coVerify(exactly = 1) { f.printer.reintentar(any(), any(), any()) }
+            f.service.pass("v1")
+            assertEquals("desde ahí, la tarea sin intent de siempre", "No se pudo confirmar la acción original. Lo guardado se conserva.", f.service.notice.value)
+            coVerify(exactly = 1) { f.printer.reintentar(any(), any(), any()) }
+        } finally { f.service.stop() }
+    }
+    @Test fun `D16 una pasada de la sucursal anterior no apaga el receptor de la nueva ni toca sus tareas`() = runTest {
+        val f = fixture(backgroundScope, screensFromServer = setOf("s")); withoutPrinter(f)
+        f.records["preparation_capabilities:v2"] = CachedPayloadEntity("preparation_capabilities:v2", "v2", """{"version":1,"enabled":true,"urgencyVersion":1}""", 100)
+        try {
+            f.service.start("v1"); f.service.pass("v1")
+            assertEquals("QUEUED", f.job().paperState)
+            f.setVenue("v2"); f.service.stop(); f.service.start("v2"); f.service.pass("v2")
+            verify { f.transport!!.activarPreparacion(any(), any(), any()) }
+            clearMocks(f.transport!!, answers = false) // desde aquí, el receptor instalado es el de v2
+            // Llega tarde el ACK de la tarea de v1 y una pasada vieja de v1.
+            acked(f); f.acks.emit(com.avoqado.pos.core.data.sync.SyncAck("a", "ACKED")); runCurrent()
+            f.service.pass("v1")
+            verify(exactly = 0) { f.transport!!.desactivarPreparacion() }
+            assertEquals("la tarea de v1 no se tocó", "QUEUED", f.job().paperState)
+            coVerify(exactly = 0) { f.printer.reintentar(any(), any(), any()) }
         } finally { f.service.stop() }
     }
 }
