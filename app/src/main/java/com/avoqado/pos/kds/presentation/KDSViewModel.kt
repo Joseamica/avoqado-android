@@ -67,6 +67,16 @@ data class KDSSettings(
     val largeFontEnabled: Boolean = false,
 )
 
+/**
+ * QA del conjunto 2 (21-nov): la cabecera cuenta lo que la pantalla ENSEÑA, no sólo lo que dijo la última lectura del servidor: una
+ * comanda que llegó por el WiFi del local (todavía sin servidor) suma, y una que la cocina terminó aquí (también sin red) resta. Antes
+ * decía «1–2 de 2» con una sola tarjeta.
+ */
+internal fun rangoDeComandas(paging: KDSViewModel.BoardPaging, visibles: Int): String {
+    val total = paging.total?.let { maxOf(paging.offset + visibles, it - paging.count + visibles) }
+    return "${paging.offset + (if (visibles == 0) 0 else 1)}–${paging.offset + visibles} de ${total ?: "—"} comandas"
+}
+
 /** Qué enseña la pantalla de cocina (spec 2026-09-27 §4 «Tablet» y §7). Espejo de `VistaDeCocina` de iOS. */
 sealed interface VistaDeCocina {
     /** Sin estación elegida — o la guardada ya no existe o se desactivó, y se dice. */

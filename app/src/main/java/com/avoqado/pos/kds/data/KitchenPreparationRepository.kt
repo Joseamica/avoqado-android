@@ -338,9 +338,15 @@ class KitchenPreparationRepository @Inject constructor(
             validateDraftOrigins(venueId, selected)
             checkOrigin()
             val id = UUID.randomUUID().toString()
-            val snapshots = selected.map { row ->
-                val saved = cache.get(rowKey(venueId, row))?.let { json.decodeFromString<PreparationLocalLine>(it.json) }
-                    ?: PreparationLocalLine(row)
+            val guardadas = selected.map { row ->
+                cache.get(rowKey(venueId, row))?.let { json.decodeFromString<PreparationLocalLine>(it.json) } ?: PreparationLocalLine(row)
+            }
+            // QA del conjunto 2 (21-nov): la caja y esta pantalla tocaron a la vez el mismo «Liberar»; el de la caja llegó por el WiFi un
+            // instante antes. Si lo pedido ya está hecho igual en todas las filas, termina en silencio (sin aviso y sin mandar nada).
+            val yaHechas = guardadas.map { it.projected() }
+            if (selected.indices.all { mismoAvanceYaHecho(selected[it], yaHechas[it], action, quantity, from) }) return@atomic yaHechas
+            val snapshots = selected.mapIndexed { index, row ->
+                val saved = guardadas[index]
                 check(saved.effects.size < 20) { "Hay 20 acciones de este producto por sincronizar. Conecta antes de continuar." }
                 val projected = saved.projected()
                 check(projected.preparationRevision == row.preparationRevision) { "Este producto cambió. Actualiza su estado." }

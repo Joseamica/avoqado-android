@@ -55,6 +55,7 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
@@ -200,13 +201,15 @@ fun KDSScreen(
         is VistaDeCocina.ElegirEstacion -> null
     }
 
+    // QA del conjunto 2 (21-nov): la barra de aviso va ENCIMA, abajo, sin empujar el tablero: al aparecer sin red movía las tarjetas
+    // ~65 px y el toque siguiente caía en otro lado.
+    Box(modifier = Modifier.fillMaxSize()) {
     Column(
         modifier = Modifier
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.surfaceVariant),
     ) {
         if (sinConexion) BannerSinConexion(texto = if (recibiendoPorWifi) TextosDeCocina.SIN_INTERNET_CON_WIFI else TextosDeCocina.SIN_CONEXION)
-        aviso?.let { BarraDeAviso(it, onCerrar = viewModel::cerrarAviso) }
 
         when (val v = vista) {
             is VistaDeCocina.ElegirEstacion -> SelectorDeEstacion(
@@ -248,6 +251,8 @@ fun KDSScreen(
                 onReanudar = viewModel::reanudarReparto,
             )
         }
+    }
+        aviso?.let { BarraDeAviso(it, onCerrar = viewModel::cerrarAviso, modifier = Modifier.align(Alignment.BottomCenter)) }
     }
 
     // MARK: - Confirmaciones
@@ -413,10 +418,11 @@ private fun BannerSinConexion(texto: String) {
 // MARK: - Barra de aviso (fija hasta "Entendido")
 
 @Composable
-private fun BarraDeAviso(aviso: AvisoDeCocina, onCerrar: () -> Unit) {
+private fun BarraDeAviso(aviso: AvisoDeCocina, onCerrar: () -> Unit, modifier: Modifier = Modifier) {
     Row(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
+            .shadow(6.dp)
             .background(if (aviso.esError) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.surfaceContainerHigh)
             .padding(horizontal = AvoqadoTheme.spacing.md, vertical = AvoqadoTheme.spacing.sm)
             .testTag("kds-aviso"),
@@ -718,7 +724,7 @@ private fun TableroDeCocina(
 
         if (paging.total != null || paging.offset > 0) Row(Modifier.fillMaxWidth().padding(horizontal = AvoqadoTheme.spacing.md),
             verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
-            Text("${paging.offset + (if (paging.count == 0) 0 else 1)}–${paging.offset + paging.count} de ${paging.total ?: "—"} comandas",
+            Text(rangoDeComandas(paging, comandas.size),
                 Modifier.weight(1f), style = MaterialTheme.typography.labelLarge)
             if (paging.offset > 0) OutlinedButton(onClick = onPreviousPage, enabled = !paging.loading) { Text("Anterior") }
             if (paging.nextOffset != null) OutlinedButton(onClick = onNextPage, enabled = !paging.loading) { Text("Siguiente") }

@@ -196,3 +196,21 @@ fun selectUrgentProducts(rows: List<PreparationLine>, keys: Set<String>): List<P
         return line
     }
 }
+
+/**
+ * QA del conjunto 2 (21-nov): lo que se pidió desde `vista` (la fila que la pantalla enseñaba) ya está hecho IGUAL en `ahora` (la copia
+ * de este aparato, que recibió un instante antes el mismo avance de otro aparato por el WiFi del local): justo una revisión después, el
+ * mismo cambio y el producto completo en su destino. Igual que la convergencia entre aparatos y que el SERVIDOR: sólo «Liberar» o
+ * «Marcar listo» completos; lo parcial o cualquier otro cambio no cuenta.
+ */
+fun mismoAvanceYaHecho(vista: PreparationLine, ahora: PreparationLine, action: PreparationAction, quantity: Int,
+    from: PreparationState?): Boolean {
+    if (ahora.preparationRevision != vista.preparationRevision + 1) return false
+    val esperado = runCatching { vista.preparation.move(action, quantity, from) }.getOrNull() ?: return false
+    if (PreparationState.entries.any { esperado[it] != ahora.preparation[it] }) return false
+    return when (action) {
+        PreparationAction.RELEASE -> esperado.HELD == 0
+        PreparationAction.READY -> esperado.PREPARING == 0
+        else -> false
+    }
+}

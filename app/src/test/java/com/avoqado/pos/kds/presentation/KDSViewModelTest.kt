@@ -315,6 +315,16 @@ class KDSViewModelTest {
         assertEquals(listOf("k9"), vm.recientes.value.map { it.id })
     }
 
+    // QA del conjunto 2 (21-nov): con una sola tarjeta la cabecera seguía diciendo «1–2 de 2».
+    @Test
+    fun `la cabecera cuenta las tarjetas que se ven, no solo la ultima lectura del servidor`() {
+        val leida = KDSViewModel.BoardPaging(offset = 0, total = 2, count = 2)
+        assertEquals("1–1 de 1 comandas", rangoDeComandas(leida, 1)) // la cocina terminó una aquí (sin red)
+        assertEquals("1–2 de 2 comandas", rangoDeComandas(KDSViewModel.BoardPaging(total = 1, count = 1), 2)) // llegó una por WiFi
+        assertEquals("0–0 de 0 comandas", rangoDeComandas(leida, 0))
+        assertEquals("101–150 de 205 comandas", rangoDeComandas(KDSViewModel.BoardPaging(offset = 100, total = 205, count = 50), 50))
+    }
+
     // QA del conjunto (20-nov): al volver la red, «Recientes» se quedaba en «Sin conexión…» hasta cerrarla y abrirla otra vez.
     @Test
     fun `al primer sondeo bueno la hoja de Recientes abierta deja el Sin conexion y vuelve a leer`() = runTest {
