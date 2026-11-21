@@ -232,6 +232,13 @@ class TpvSettingsRepository internal constructor(
      * aparato (`PapelDelAparatoGateViewModel.ventaAMediasAhora`). null (pruebas viejas) = nunca hay venta a medias.
      */
     private val activeCartState: com.avoqado.pos.pos.data.ActiveCartState? = null,
+    /**
+     * Codex r1 #1: un cobro con saldo de tarjeta de regalo vacía el carrito ANTES de mandarse; mientras vuela también es
+     * venta a medias. Lee `SolicitudesDeTarjetaStore.enVueloDeEsteProceso`.
+     */
+    private val cobroDeTarjetaEnVuelo: () -> Boolean = { false },
+    /** Codex r1 #3/#4: donde se escucha el carrito. null (pruebas viejas) = no se escucha. */
+    alcance: kotlinx.coroutines.CoroutineScope? = null,
 ) {
     @Inject
     constructor(
@@ -245,6 +252,7 @@ class TpvSettingsRepository internal constructor(
         receiptLogoCache: com.avoqado.pos.printing.data.ReceiptLogoCache,
         fotosDeMesas: com.avoqado.pos.core.data.sync.FotosDeMesas,
         activeCartState: com.avoqado.pos.pos.data.ActiveCartState,
+        solicitudesDeTarjeta: com.avoqado.pos.giftcards.data.SolicitudesDeTarjetaStore,
     ) : this(
         secureStorage = secureStorage,
         client = client,
@@ -256,6 +264,8 @@ class TpvSettingsRepository internal constructor(
         receiptLogoCache = receiptLogoCache,
         fotosDeMesas = fotosDeMesas,
         activeCartState = activeCartState,
+        cobroDeTarjetaEnVuelo = { solicitudesDeTarjeta.enVueloDeEsteProceso.isNotEmpty() },
+        alcance = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + Dispatchers.IO),
     )
 
     // `coerceInputValues`: un server NUEVO con un modo de panel que esta versión
@@ -464,6 +474,25 @@ class TpvSettingsRepository internal constructor(
     private var completosEnCurso = 0
     private val filtroRefresh = Mutex()
 
+    /** Codex r1 #3/#4: la sucursal cuya navegación quedó esperando a que termine la venta. Siempre bajo [ticketLock]. */
+    private var navegacionEnEsperaDe: String? = null
+
+    /** Codex r1 #5: el disco de la navegación, en orden: quien comprueba que sigue vigente escribe sin que otro se meta. */
+    private val navegacionEnDisco = Mutex()
+
+    init {
+        // Codex r1 #3/#4: lo que esperaba a la venta entra en cuanto el carrito queda vacío, sin esperar al sondeo (en una fila
+        // de clientes cada sondeo podía caer en la venta siguiente; con el sondeo en 404 nadie pedía ajustes). El StateFlow sólo
+        // emite cambios: un 0 es «se acaba de vaciar». Leer la espera bajo el candado cierra la carrera con quien la anota.
+        if (activeCartState != null && alcance != null) {
+            alcance.launch {
+                activeCartState.itemCount.collect { n ->
+                    if (n == 0) synchronized(ticketLock) { navegacionEnEsperaDe }?.let { refreshSettingsForVenue(it) }
+                }
+            }
+        }
+    }
+
     fun getCurrentSettings(): TpvSettings = _settings.value
 
     /**
@@ -553,7 +582,9 @@ class TpvSettingsRepository internal constructor(
                     val denied = whileCurrent {
                         _settings.value = applyIncludeTaxOverride(TpvSettings.DEFAULT, localIncludeTaxOverride)
                         // ec5b28: con venta a medias la navegación espera (la huella ya queda sin aplicar: el sondeo reintenta).
-                        _terminalNavigation.value = conservarLaLlaveConVentaAMedias(TerminalNavigationSettings.DEFAULT)
+                        val navegacion = conservarLaLlaveConVentaAMedias(TerminalNavigationSettings.DEFAULT)
+                        _terminalNavigation.value = navegacion
+                        navegacionEnEsperaDe = venueId.takeIf { navegacion != TerminalNavigationSettings.DEFAULT }
                         appliedFingerprints.remove(venueId)
                     }
                     if (denied) clearPersistedSettings(venueId)
@@ -602,11 +633,12 @@ class TpvSettingsRepository internal constructor(
             if (!whileCurrent {
                     navegacionAplicada = conservarLaLlaveConVentaAMedias(terminalNavigation)
                     navegacionEnEspera = navegacionAplicada != terminalNavigation
+                    navegacionEnEsperaDe = venueId.takeIf { navegacionEnEspera }
                     _terminalNavigation.value = navegacionAplicada
                     _generacionDelFiltro.update { it + 1 }
                 }
             ) return
-            persistTerminalNavigation(venueId, navegacionAplicada)
+            persistTerminalNavigation(venueId, navegacionAplicada) { stillCurrent() }
             if (!stillCurrent()) return
 
             // Un journal legible O ilegible es una barrera: el settings legacy
@@ -725,7 +757,7 @@ class TpvSettingsRepository internal constructor(
      * Sin venta a medias, [nueva] tal cual. Se llama bajo [ticketLock].
      */
     private fun conservarLaLlaveConVentaAMedias(nueva: TerminalNavigationSettings): TerminalNavigationSettings {
-        if (activeCartState?.hasItems != true) return nueva
+        if (activeCartState?.hasItems != true && !cobroDeTarjetaEnVuelo()) return nueva
         val actual = _terminalNavigation.value
         val conservada = if (nueva.terminalId != actual.terminalId) {
             actual
@@ -814,7 +846,8 @@ class TpvSettingsRepository internal constructor(
                     // de otra sucursal no sobrevive al cambio; lo GUARDADO (una llave para todo el aparato) lo sigue escribiendo
                     // sólo el refresco completo, para que un proceso que muere a media mudanza no arranque B con el PIN de A.
                     fila.pin?.let { _managerPinOverrideEnabled.value = it }
-                    terminal?.let {
+                    // Codex r1 #2: con la navegación de OTRA terminal en espera (re-ligado a media venta), su menú no se le pega.
+                    terminal?.takeUnless { navegacionEnEsperaDe == venueId && it.id != _terminalNavigation.value.terminalId }?.let {
                         _terminalNavigation.value.copy(
                             visibleCategoryIds = it.visibleCategoryIds,
                             visibleMenuIds = it.visibleMenuIds,
@@ -962,6 +995,7 @@ class TpvSettingsRepository internal constructor(
             _isLoading.value = false
             loadedVenueId = null
             appliedFingerprints.clear()
+            navegacionEnEsperaDe = null
             _settings.value = TpvSettings.DEFAULT
             _terminalNavigation.value = TerminalNavigationSettings.DEFAULT
             // El switch es por venue: al soltar el cache no puede quedarse encendido el de la sucursal anterior. Tampoco
@@ -1006,16 +1040,21 @@ class TpvSettingsRepository internal constructor(
         }.onFailure { Log.w("📦", "No se pudo guardar cache de TPV settings: ${it.message}") }
     }
 
+    /** [vigente] se comprueba bajo [navegacionEnDisco], justo antes de escribir (Codex r1 #5). */
     private suspend fun persistTerminalNavigation(
         venueId: String,
         terminalNavigation: TerminalNavigationSettings,
+        vigente: () -> Boolean = { true },
     ) {
-        runCatching {
-            preferencesDataStore.setString(
-                terminalNavigationKey(venueId),
-                json.encodeToString(TerminalNavigationSettings.serializer(), terminalNavigation),
-            )
-        }.onFailure { Log.w("📦", "No se pudo guardar cache de terminal: ${it.message}") }
+        navegacionEnDisco.withLock {
+            if (!vigente()) return
+            runCatching {
+                preferencesDataStore.setString(
+                    terminalNavigationKey(venueId),
+                    json.encodeToString(TerminalNavigationSettings.serializer(), terminalNavigation),
+                )
+            }.onFailure { Log.w("📦", "No se pudo guardar cache de terminal: ${it.message}") }
+        }
     }
 
     private suspend fun clearPersistedSettings(venueId: String) {
