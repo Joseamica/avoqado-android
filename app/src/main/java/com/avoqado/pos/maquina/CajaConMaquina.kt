@@ -63,6 +63,8 @@ class CajaConMaquina(
         val miFolio: String? = null,
         val miCotizada: Boolean = false,
         val ventaEnDuda: Boolean = false,
+        /** Codex código r1 #1: tocó «Efectivo en la máquina» y todavía cotiza: la venta ya no sale con tarjeta. */
+        val apartada: Boolean = false,
         val aviso: String? = null,
         val resolviendo: Boolean = false,
         val avisoDeResolver: String? = null,
@@ -82,9 +84,9 @@ class CajaConMaquina(
             val v = l.venta ?: return@combine null
             val mio = estado.takeIf { folioDe(it) != null && folioDe(it) == l.miFolio }
             VistaDeLaMaquina(
-                fila = filaDeLaMaquina(ahora, v.conProductos, v.ventaNueva, l.ventaEnDuda, cobroVivo = vivo(estado)),
+                fila = filaDeLaMaquina(ahora, v.conProductos, v.ventaNueva, l.ventaEnDuda, cobroVivo = vivo(estado) || l.apartada),
                 cobro = mio,
-                ventaEnDuda = l.ventaEnDuda || mio != null,
+                ventaEnDuda = l.ventaEnDuda || l.apartada || mio != null,
                 aviso = l.aviso,
                 avisoDeSubida = avisoDeSubida,
                 puedeResolver = maquina.puedeResolver(),
@@ -136,12 +138,25 @@ class CajaConMaquina(
         return local.value.ventaEnDuda || maquina.ventaBloqueada(v.llaveDeVenta)
     }
 
-    /** «Efectivo en la máquina». Devuelve si salió el `paycash`. */
-    suspend fun cobrar(v: VentaPorCobrar): Boolean {
+    /** Codex código r1 #1: síncrono. La tarjeta lo vuelve a preguntar justo antes de salir (tras leer el disco). */
+    fun apartadaAhora(): Boolean = local.value.venta?.let { local.value.apartada || maquina.apartada(it.llaveDeVenta) } == true
+
+    /**
+     * Codex código r1 #1: «Efectivo en la máquina» aparta la venta en el MISMO toque, antes de cualquier red (turno, cotización). false =
+     * no hay venta, ya está apartada o ya tiene su cobro en pantalla.
+     */
+    fun apartar(): Boolean {
         val l = local.value
-        if (enVuelo || l.venta == null || l.miFolio != null) return false
+        val v = l.venta ?: return false
+        if (enVuelo || l.miFolio != null || !maquina.apartar(v.llaveDeVenta)) return false
         enVuelo = true
-        local.value = l.copy(aviso = null)
+        local.value = l.copy(aviso = null, apartada = true)
+        return true
+    }
+
+    /** «Efectivo en la máquina» (tras [apartar]). Devuelve si salió el `paycash`. */
+    suspend fun cobrar(v: VentaPorCobrar): Boolean {
+        if (!enVuelo && !apartar()) return false
         try {
             return when (val r = maquina.cobrar(v)) {
                 is InicioEnLaMaquina.Iniciado -> {
@@ -157,6 +172,7 @@ class CajaConMaquina(
             }
         } finally {
             enVuelo = false
+            local.value = local.value.copy(apartada = false)
         }
     }
 

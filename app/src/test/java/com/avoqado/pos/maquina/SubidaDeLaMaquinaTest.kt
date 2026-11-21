@@ -342,7 +342,7 @@ class SubidaDeLaMaquinaTest {
         assertEquals(listOf(18_750, 18_000, 750), listOf("dueCents", "saleCents", "tipCents").map(b::getInt))
         assertEquals(JSONObject(pedido).toString(), b.getJSONObject("pedido").toString())
         assertEquals("2025-11-20T11:43:20Z", b.getString("startedAt"))
-        assertEquals("""{"comando":"sockets","cobrando":true}""", b.getString("lastSeen"))
+        assertEquals("Entró \$0.00\n" + """{"comando":"sockets","cobrando":true}""", b.getString("lastSeen"))
         assertEquals("turno-1", b.getString("saleShiftId"))
         assertTrue(dao.fila(REF_1)!!.dudaSubida)
         assertEquals(EstadoDelIntento.ESPERANDO, dao.fila(REF_1)!!.estado)
@@ -374,6 +374,61 @@ class SubidaDeLaMaquinaTest {
         assertFalse(dao.fila(REF_1)!!.dudaSubida)
         subida.subir()
         assertEquals(1, servidor.requestCount)
+    }
+
+    @Test
+    fun `P1 Codex r1 #6 la duda sube lo ultimo que quedo en disco, con lo que entro`() = runBlocking {
+        insertar(duda(REF_1).copy(creditCents = 5_000, ultimoCreditoEn = 1_763_639_050_000))
+        cuando("POST", ".*/cash-machine/doubts", ok(JSONObject().put("status", "ABIERTO").put("referenceCC", REF_1)))
+
+        subida.subir()
+
+        val lastSeen = cuerpo(pedido()).getString("lastSeen")
+        assertTrue(lastSeen, lastSeen.startsWith("Entró \$50.00 (2025-11-20T11:44:10Z)\n"))
+        assertTrue(lastSeen.endsWith("""{"comando":"sockets","cobrando":true}"""))
+    }
+
+    @Test
+    fun `P1 Codex r1 #6 el cierre tardio sube como cierre despues de la duda y la duda queda resuelta con lo que dice el servidor`() = runBlocking {
+        val tardia = duda(REF_1).copy(
+            cierreTardio = EstadoDelIntento.CANCELADO, cancelPedido = "1", creditCents = 5_000, changeDispensedCents = 5_000,
+            cierreEn = 1_763_640_000_000, cierreConocido = true,
+        )
+        insertar(tardia)
+        val eco = evidencia(tardia, outcome = "CANCELADO", credit = 5_000, change = 5_000)
+        cuando("POST", ".*/cash-machine/doubts", ok(JSONObject().put("status", "ABIERTO").put("referenceCC", REF_1)))
+        cuando("POST", ".*/cash-machine/sales", ok(eco))
+
+        subida.subir()
+
+        assertEquals("primero la duda (congela el carrito)", "/api/v1/mobile/venues/venue-1/cash-machine/doubts", pedido().path)
+        val cierre = cuerpo(pedido())
+        assertEquals("CANCELADO" to "1", cierre.getJSONObject("cierre").let { it.getString("outcome") to it.getString("cancelMode") })
+        assertEquals(5_000 to 5_000, cierre.getJSONObject("cierre").let { it.getInt("creditCents") to it.getInt("changeDispensedCents") })
+        assertFalse(cierre.has("pedido"))
+        val fila = dao.fila(REF_1)!!
+        assertEquals(EstadoDelIntento.RESUELTO, fila.estado)
+        assertEquals("CANCELADO", fila.desenlaceDelServidor)
+        assertEquals(Desenlace.CANCELADO, fila.desenlace)
+    }
+
+    @Test
+    fun `Codex r1 #6 un cierre tardio con su incidencia en el servidor no se reenvia y la duda sigue`() = runBlocking {
+        insertar(duda(REF_1).copy(cierreTardio = EstadoDelIntento.PAGADO, creditCents = 18_750, dudaSubida = true, cierreEn = 1, cierreConocido = true))
+        cuando(
+            "POST", ".*/cash-machine/sales",
+            MockResponse().setResponseCode(409).setBody(
+                JSONObject().put("message", "Este folio ya tiene otro desenlace").put("code", "CASH_MACHINE_CLOSE_CONFLICT")
+                    .put("details", JSONObject().put("motivo", "OTRA_EVIDENCIA").put("incidentId", "cinc000000000000000000003")).toString(),
+            ),
+        )
+
+        subida.subir()
+
+        val fila = dao.fila(REF_1)!!
+        assertEquals(EstadoDelIntento.ESPERANDO, fila.estado)
+        assertTrue(fila.subido)
+        assertTrue(dao.tardiosParaSubir("venue-1").isEmpty())
     }
 
     // MARK: - Disparadores (R3#12, R5#6)

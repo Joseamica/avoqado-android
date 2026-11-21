@@ -325,6 +325,17 @@ object AvoqadoDatabaseMigrations {
         }
     }
 
+    /**
+     * v22 — máquina de efectivo (Codex código r1 y la adaptación al rediseño del SERVIDOR): seis columnas en `cobros_en_maquina`
+     * (emparejamiento del intento, renglones congelados, desenlace del SERVIDOR, cierre tardío, lo que se le debe al cliente y la
+     * versión de la duda). El SQL sale de [CobroEnMaquinaSql.MIGRAR_21_22]; `CobroEnMaquinaMigracionTest` lo corre sobre SQLite.
+     */
+    val MIGRATION_21_22 = object : Migration(21, 22) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            CobroEnMaquinaSql.MIGRAR_21_22.forEach(db::execSQL)
+        }
+    }
+
     /** Identity-only legacy link, inside the migration transaction. Evidence and monetary fields stay NULL. */
     fun restaurarReferenciasQ15(db: SupportSQLiteDatabase) {
         fun tabla(nombre: String, venueCol: String, originalCol: String, payload: Boolean) {

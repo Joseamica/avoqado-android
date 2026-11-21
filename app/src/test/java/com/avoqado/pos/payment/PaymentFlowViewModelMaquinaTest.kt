@@ -254,6 +254,51 @@ class PaymentFlowViewModelMaquinaTest {
     }
 
     @Test
+    fun `P1 Codex r1 #1 mientras la maquina cotiza, F4 no saca la tarjeta aunque la fila todavia no exista`() = runTest {
+        val vm = vm()
+        val respuesta = kotlinx.coroutines.CompletableDeferred<RespuestaDelServidor>()
+        coEvery { api.cotizar("venue-1", any()) } coAnswers { respuesta.await() }
+        vm.startPaymentFlow(CartState(items = listOf(cafe)))
+        runCurrent()
+
+        vm.cobrarConMaquina()
+        vm.selectPaymentMethod(PaymentMethod.CARD)   // F4 en el mismo instante
+        runCurrent()
+
+        assertTrue(vm.state.value is PaymentFlowState.SelectingPaymentMethod)
+        assertTrue(dao.todas().isEmpty())
+        assertTrue(vm.maquina!!.vista.value!!.ventaEnDuda)
+        respuesta.complete(
+            RespuestaDelServidor(200, JSONObject().put("quoteId", "q-1").put("saleCents", 18_000).put("tipCents", 0)
+                .put("totalCents", 18_000).put("cobrableEnMaquina", true).toString()),
+        )
+        runCurrent()
+        assertTrue("el primer toque sigue y manda el cobro a la máquina", canal.paycash() != null)
+        vm.selectPaymentMethod(PaymentMethod.CARD)
+        runCurrent()
+        assertTrue(vm.state.value is PaymentFlowState.SelectingPaymentMethod)
+    }
+
+    @Test
+    fun `Codex r1 #1 si la cotizacion no deja cobrar en la maquina, la venta se suelta y la tarjeta vuelve`() = runTest {
+        val vm = vm()
+        coEvery { api.cotizar("venue-1", any()) } returns RespuestaDelServidor(
+            200, JSONObject().put("cobrableEnMaquina", false).put("motivo", "CENTAVOS").toString(),
+        )
+        vm.startPaymentFlow(CartState(items = listOf(cafe)))
+        runCurrent()
+
+        vm.cobrarConMaquina()
+        runCurrent()
+
+        assertNull(canal.paycash())
+        assertFalse(vm.maquina!!.vista.value!!.ventaEnDuda)
+        vm.selectPaymentMethod(PaymentMethod.CARD)
+        runCurrent()
+        assertTrue(vm.state.value is PaymentFlowState.SelectingTerminal)
+    }
+
+    @Test
     fun `R4-4 el gerente resuelve con su sesion que la maquina cobro y la venta queda cobrada`() = runTest {
         val vm = vm()
         every { secureStorage.venuePermissions } returns listOf("payments:create", "cash-machine:resolve")

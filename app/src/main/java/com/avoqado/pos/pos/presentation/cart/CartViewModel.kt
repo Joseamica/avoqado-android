@@ -147,6 +147,8 @@ data class CartState(
     val creacionIncierta: String? = null,
     /** Identidad de la venta en memoria; guardar una copia no la cambia. */
     val identidadDeVenta: String = UUID.randomUUID().toString(),
+    /** Máquina de efectivo (Codex código r1 #2): la de la copia restaurada ([SavedCart.llaveDeLaMaquina]); null = [identidadDeVenta]. */
+    val llaveDeLaMaquina: String? = null,
     /**
      * 🔴 DINERO. «Se cobra el precio que vio el cliente» (17-oct): el descuento de CUENTA que viajó en la orden cuyo servidor
      * corrigió precios. Mientras el carrito siga siendo esa venta ([DescuentoCongelado.vigentePara]), [orderDiscountCents] usa
@@ -173,6 +175,9 @@ data class CartState(
     /** D2: clientes (por id) a los que en ESTA venta se les quitó su descuento («Quitar» u otro descuento encima): no vuelve solo. */
     val descuentosDeClienteQuitados: Set<String> = emptySet(),
 ) {
+    /** La venta para la máquina de efectivo (Codex código r1 #2): sobrevive a «Restaurar» la copia guardada. */
+    val llaveParaLaMaquina: String get() = llaveDeLaMaquina ?: identidadDeVenta
+
     /** D2: el descuento de cuenta es el que el negocio le asignó al cliente ([DESCUENTO_DEL_CLIENTE_SOURCE]). */
     val descuentoEsDelCliente: Boolean get() = orderDiscount?.source == DESCUENTO_DEL_CLIENTE_SOURCE
 
@@ -1244,7 +1249,8 @@ class CartViewModel @Inject constructor(
         // copia no se retiraba y se podía restaurar y cobrar otra vez).
         _cartState.update {
             it.copy(identidadDeVenta = actual.identidadDeVenta, creacionIncierta = actual.creacionIncierta,
-                vinoDeCarritoGuardado = actual.vinoDeCarritoGuardado, carritoGuardadoId = actual.carritoGuardadoId)
+                vinoDeCarritoGuardado = actual.vinoDeCarritoGuardado, carritoGuardadoId = actual.carritoGuardadoId,
+                llaveDeLaMaquina = actual.llaveDeLaMaquina)
         }
         addCustomAmount(name = "Saldo pendiente", amountCents = saldo)
         markPendingSplitOrder(orden)
@@ -2385,6 +2391,7 @@ class CartViewModel @Inject constructor(
             llavePagarDespues = state.llavePagarDespues,
             // D8: el carrito se enseña sólo en su sucursal.
             venueId = venueId,
+            llaveDeLaMaquina = state.llaveParaLaMaquina,
         )
 
     fun clearCart() = vaciarCarrito(soltarApartado = true)
@@ -3606,6 +3613,8 @@ class CartViewModel @Inject constructor(
             llavePagarDespues = savedCart.llavePagarDespues,
             autorizacionDelDescuento = savedCart.autorizacionDelDescuento,
             descuentosDeClienteQuitados = savedCart.descuentosDeClienteQuitados,
+            // Codex código r1 #2: la misma venta para la máquina en cada restauración (un cobro en duda sigue frenando la tarjeta).
+            llaveDeLaMaquina = savedCart.llaveDeLaMaquina ?: "carrito:${savedCart.id}",
         )
         // D13 (IVA por producto, plan 7a): «Agregar impuesto» ya no existe — en México el precio ya trae el IVA (LFPC 7 Bis).
         // Un carrito guardado con impuesto aparte se restaura SIN él, y se dice; uno sin impuesto limpia el aviso anterior

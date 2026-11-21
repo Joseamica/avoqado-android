@@ -41,7 +41,7 @@ interface CobroEnMaquinaDao {
     suspend fun ganarPropiedad(referenceCC: String, generacion: Int, crudos: String): Int
 
     @Query(CobroEnMaquinaSql.ANOTAR_CREDITO)
-    suspend fun anotarCredito(referenceCC: String, creditCents: Int, ahora: Long): Int
+    suspend fun anotarCredito(referenceCC: String, creditCents: Int, ahora: Long, crudos: String): Int
 
     @Query(CobroEnMaquinaSql.PEDIR_CANCEL)
     suspend fun pedirCancel(referenceCC: String, cancelvalue: String, ahora: Long): Int
@@ -58,6 +58,17 @@ interface CobroEnMaquinaDao {
     @Query(CobroEnMaquinaSql.ANOTAR_EVIDENCIA)
     suspend fun anotarEvidencia(referenceCC: String, crudos: String): Int
 
+    @Query(CobroEnMaquinaSql.ANOTAR_CIERRE_TARDIO)
+    suspend fun anotarCierreTardio(
+        referenceCC: String,
+        desenlace: String,
+        creditCents: Int,
+        changeDispensedCents: Int,
+        cierreEn: Long,
+        conocido: Boolean,
+        crudos: String,
+    ): Int
+
     /** R5#2: cuántos frenan ([CobroEnMaquinaSql.PENDIENTES]) en [venueId], o en todas con null. */
     @Query(CobroEnMaquinaSql.PENDIENTES)
     suspend fun pendientes(venueId: String?): Int
@@ -70,6 +81,12 @@ interface CobroEnMaquinaDao {
 
     @Query(CobroEnMaquinaSql.PARA_SUBIR)
     suspend fun paraSubir(venueId: String): List<CobroEnMaquinaEntity>
+
+    @Query(CobroEnMaquinaSql.TARDIOS_PARA_SUBIR)
+    suspend fun tardiosParaSubir(venueId: String): List<CobroEnMaquinaEntity>
+
+    @Query(CobroEnMaquinaSql.MARCAR_TARDIO_SUBIDO)
+    suspend fun marcarTardioSubido(referenceCC: String, conflicto: String?, respuesta: String?): Int
 
     @Query(CobroEnMaquinaSql.ESPERAN_AL_GERENTE)
     suspend fun esperanAlGerente(venueId: String): List<CobroEnMaquinaEntity>
@@ -91,6 +108,7 @@ interface CobroEnMaquinaDao {
         changeDispensedCents: Int,
         conflicto: String?,
         respuesta: String?,
+        desenlace: String?,
     ): Int
 
     @Query(CobroEnMaquinaSql.CON_COMPROBANTE)

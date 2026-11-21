@@ -2983,7 +2983,8 @@ class PaymentFlowViewModel @Inject constructor(
         val venue = secureStorage.venueId?.takeIf { it.isNotBlank() } ?: return null
         return com.avoqado.pos.maquina.VentaEnPantalla(
             venueId = venue,
-            llaveDeVenta = cart.identidadDeVenta,
+            // Codex código r1 #2: la de la copia guardada si de ahí vino: «Restaurar» no abre una venta nueva para la máquina.
+            llaveDeVenta = cart.llaveParaLaMaquina,
             conProductos = hasProductItems(cart),
             ventaNueva = createdOrderId == null && mesaDelCobro == null && esPagoCompleto() && sesionDelCobro == null &&
                 origenDelCobro == com.avoqado.pos.payment.domain.OrigenDelCobro.NORMAL && !cuentaDeTarjetas.value,
@@ -3001,9 +3002,6 @@ class PaymentFlowViewModel @Inject constructor(
         val cart = cartState ?: return
         if (_state.value !is PaymentFlowState.SelectingPaymentMethod || isProcessingPayment || !vista.fila.habilitada) return
         val venueId = secureStorage.venueId?.takeIf { it.isNotBlank() } ?: return
-        selectedMethod = PaymentMethod.CASH
-        manualMethod = null
-        selectedTender = null
         val pedido = buildOrderRequest(cart).let { r ->
             OrderRepository.buildCreateOrderPayload(
                 request = r,
@@ -3014,7 +3012,12 @@ class PaymentFlowViewModel @Inject constructor(
                 stampRewardId = cart.pendingStampRewardId,
             )
         }
-        val venta = com.avoqado.pos.maquina.VentaPorCobrar(venueId, cart.identidadDeVenta, pedido, currentBaseAmount(), currentTipCents)
+        val venta = com.avoqado.pos.maquina.VentaPorCobrar(venueId, cart.llaveParaLaMaquina, pedido, currentBaseAmount(), currentTipCents)
+        // Codex código r1 #1: la venta queda apartada en ESTE toque, antes de pedir el turno o cotizar: la tarjeta (F4) ya no sale.
+        if (!caja.apartar()) return
+        selectedMethod = PaymentMethod.CASH
+        manualMethod = null
+        selectedTender = null
         viewModelScope.launch { caja.cobrar(venta) }
     }
 
@@ -3075,7 +3078,8 @@ class PaymentFlowViewModel @Inject constructor(
             // R4-5: el efectivo de esta PC es sólo el de la máquina. R2#1: con un intento de ESTA venta en la máquina (abierto, en
             // duda o terminado), tampoco tarjeta: se lee el disco, no la pantalla.
             if (method == PaymentMethod.CASH) return
-            viewModelScope.launch { if (!caja.bloqueaLaTarjeta()) elegirMetodo(method) }
+            // Codex código r1 #1: tras leer el disco se vuelve a preguntar, síncrono, si la máquina la apartó mientras tanto.
+            viewModelScope.launch { if (!caja.bloqueaLaTarjeta() && !caja.apartadaAhora()) elegirMetodo(method) }
             return
         }
         elegirMetodo(method)

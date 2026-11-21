@@ -40,6 +40,12 @@ data class SavedCart(
     val attachedCustomerDescuento: com.avoqado.pos.customers.data.model.DescuentoDelCliente? = null,
     val autorizacionDelDescuento: AutorizacionDelDescuento? = null,
     val descuentosDeClienteQuitados: Set<String> = emptySet(),
+    /**
+     * Máquina de efectivo (Codex código r1 #2): la identidad de la venta para la máquina. Viaja con la copia para que «Restaurar» la
+     * reuse: un cobro de la máquina en duda de esta mercancía sigue frenando la tarjeta aunque la PC se haya reiniciado. Nula en
+     * copias viejas: se usa `carrito:<id>`, que tampoco cambia de una restauración a otra.
+     */
+    val llaveDeLaMaquina: String? = null,
 ) {
     val itemCount: Int get() = items.sumOf { it.quantity }
 }

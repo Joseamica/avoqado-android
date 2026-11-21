@@ -289,14 +289,37 @@ class MaquinaDeEfectivo internal constructor(
 
     suspend fun fila(referenceCC: String): CobroEnMaquinaEntity? = dao.porReferencia(referenceCC)
 
-    /** R2#1: mientras esta venta tenga un intento abierto, en duda, pagado o resuelto, no se cobra por otro medio. */
-    suspend fun ventaBloqueada(llaveDeVenta: String): Boolean = dao.bloqueanLaVenta(llaveDeVenta) > 0
+    /** Las ventas apartadas para la máquina que todavía no tienen su fila (se cotizan o piden el turno). */
+    private val apartadas: MutableSet<String> = java.util.Collections.synchronizedSet(mutableSetOf())
+
+    /**
+     * Codex código r1 #1: «Efectivo en la máquina» APARTA la venta en el mismo toque, antes de pedir el turno o cotizar (la red tarda):
+     * desde aquí la tarjeta no sale para esta venta. Se suelta en [cobrar]: si el `paycash` salió ya frena su fila; si la cotización
+     * (o lo de antes del `paycash`) no pasó, nada quedó en la máquina. false = ya estaba apartada.
+     */
+    fun apartar(llaveDeVenta: String): Boolean = apartadas.add(llaveDeVenta)
+
+    /** Síncrono: lo revisa la tarjeta DESPUÉS de leer el disco, en el mismo paso en que sale. */
+    fun apartada(llaveDeVenta: String): Boolean = llaveDeVenta in apartadas
+
+    /** R2#1: mientras esta venta esté apartada o tenga un intento abierto, en duda, pagado o resuelto, no se cobra por otro medio. */
+    suspend fun ventaBloqueada(llaveDeVenta: String): Boolean = apartada(llaveDeVenta) || dao.bloqueanLaVenta(llaveDeVenta) > 0
 
     /**
      * Cotiza y, si se puede, guarda el intento y manda el `paycash` ([CobroConMaquina.cobrar]: la fila ANTES de la red). Lo que
      * no se puede cobrar en la máquina se dice y no deja nada en disco ni en la máquina.
      */
     suspend fun cobrar(v: VentaPorCobrar): InicioEnLaMaquina {
+        apartar(v.llaveDeVenta)
+        // Iniciado: su fila ya frena la venta. Cualquier otro final: no quedó nada en la máquina y la tarjeta vuelve a poder.
+        try {
+            return cotizarYCobrar(v)
+        } finally {
+            apartadas.remove(v.llaveDeVenta)
+        }
+    }
+
+    private suspend fun cotizarYCobrar(v: VentaPorCobrar): InicioEnLaMaquina {
         val pedido = runCatching { JSONObject(v.pedidoJson) }.getOrNull() ?: return InicioEnLaMaquina.NoSeCobra(TEXTO_NO_COBRABLE)
         motivoSinMaquinaDelPedido(pedido)?.let { return InicioEnLaMaquina.NoSeCobra(it) }
         try {

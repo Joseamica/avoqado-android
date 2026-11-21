@@ -40,6 +40,13 @@ interface CanalDeLaMaquina {
     /** Manda [json] sólo si la conexión abierta es la de [generacion]. false = no salió nada. */
     fun enviar(json: String, generacion: Int): Boolean
 
+    /**
+     * R4-6 (Codex código r1 #3): manda [json] (un `cancel`, que no lleva folio) sólo si, ATÓMICAMENTE con lo que llega, la conexión
+     * abierta es la de [generacion] y el ÚLTIMO `status` que llegó por ella es de [referenceCC] y [dueCents] y sigue cobrando. Un
+     * `status` de otra operación (o el cierre del nuestro) que llegó mientras la PC guardaba el modo ya no deja salir nada.
+     */
+    fun enviarSiSigueSiendoNuestro(json: String, generacion: Int, referenceCC: String, dueCents: Int): Boolean
+
     /** C5: conectar a la máquina de [ip] (o reconectar a otra). Un canal de pruebas no hace nada. */
     fun conectar(ip: String) {}
 
@@ -79,6 +86,7 @@ class ClienteDeLaMaquina(
     private var intento: WebSocket? = null          // la conexión vigente, abierta o abriéndose
     private var socketAbierto: WebSocket? = null    // la vigente ya abierta…
     private var generacionAbierta = 0               // …y su generación
+    private var ultimoStatus: Recibido? = null      // el último `status` que llegó (de cualquier generación)
 
     override fun conectar(ip: String) = conectar(ip, PUERTO)
 
@@ -106,6 +114,14 @@ class ClienteDeLaMaquina(
         val socket = socketAbierto
         socket != null && generacionAbierta == generacion && socket.send(json)
     }
+
+    override fun enviarSiSigueSiendoNuestro(json: String, generacion: Int, referenceCC: String, dueCents: Int): Boolean =
+        synchronized(candado) {
+            val ultimo = ultimoStatus
+            val m = ultimo?.mensaje as? MensajeDeLaMaquina.Status
+            ultimo?.generacion == generacion && m != null && m.cobrando && m.referenceCC == referenceCC && m.dueCents == dueCents &&
+                enviar(json, generacion)
+        }
 
     private suspend fun mantener(url: HttpUrl) {
         while (true) {
@@ -167,7 +183,10 @@ class ClienteDeLaMaquina(
 
         override fun onMessage(webSocket: WebSocket, text: String) {
             oyo.set(true)
-            leerMensaje(text)?.let { _recibidos.tryEmit(Recibido(generacion, it, text)) }
+            val r = leerMensaje(text)?.let { Recibido(generacion, it, text) } ?: return
+            // Con el candado y ANTES de avisar: `enviarSiSigueSiendoNuestro` ve este `status` aunque nadie lo haya procesado.
+            if (r.mensaje is MensajeDeLaMaquina.Status) synchronized(candado) { ultimoStatus = r }
+            _recibidos.tryEmit(r)
         }
 
         override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {

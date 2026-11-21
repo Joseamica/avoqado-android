@@ -156,6 +156,17 @@ class SubidaDeLaMaquina @Inject constructor(
             }
             if (!aplicar(fila, r, esDuda)) return@withContext true
         }
+        // Codex código r1 #6: el cierre tardío de una duda que el SERVIDOR ya tiene sube como cierre (después de la duda: ella congela
+        // el carrito). La fila sigue en duda hasta su TERMINADO.
+        for (fila in dao.tardiosParaSubir(venueId)) {
+            val cuerpo = runCatching { cuerpoDelCierre(fila) }.getOrNull() ?: continue
+            val r = try {
+                api.subirCierre(venueId, credencial, cuerpo)
+            } catch (e: IOException) {
+                return@withContext true
+            }
+            if (!aplicar(fila, r, esDuda = false)) return@withContext true
+        }
         for (fila in esperan) {
             val r = try {
                 api.consultarDuda(venueId, credencial, fila.referenceCC)
@@ -168,7 +179,8 @@ class SubidaDeLaMaquina @Inject constructor(
         hayTrabajo(venueId)
     }
 
-    private suspend fun hayTrabajo(venueId: String) = dao.paraSubir(venueId).isNotEmpty() || dao.esperanAlGerente(venueId).isNotEmpty()
+    private suspend fun hayTrabajo(venueId: String) =
+        dao.paraSubir(venueId).isNotEmpty() || dao.tardiosParaSubir(venueId).isNotEmpty() || dao.esperanAlGerente(venueId).isNotEmpty()
 
     /** Aplica una respuesta. false = la pasada se corta (sesión vencida, sin emparejar o sin permiso: lo demás fallaría igual). */
     private suspend fun aplicar(fila: CobroEnMaquinaEntity, r: RespuestaDelServidor, esDuda: Boolean): Boolean {
@@ -187,8 +199,11 @@ class SubidaDeLaMaquina @Inject constructor(
                 val texto = ServerErrorText.fromResponseBody(r.cuerpo, "El servidor rechazó este cobro (${r.codigo})")
                 // Un cierre con su incidencia DURABLE en el SERVIDOR (409/422) ya no es de la PC: queda visible y deja de frenar
                 // cerrar sesión. Sin incidencia (un 400) el dinero sólo está aquí: visible y sin acuse.
-                if (!esDuda && incidenciaDe(r.cuerpo) != null) dao.marcarSubido(fila.referenceCC, texto, r.cuerpo)
-                else dao.anotarConflicto(fila.referenceCC, texto)
+                when {
+                    esDuda || incidenciaDe(r.cuerpo) == null -> dao.anotarConflicto(fila.referenceCC, texto)
+                    fila.estado == EstadoDelIntento.ESPERANDO -> dao.marcarTardioSubido(fila.referenceCC, texto, r.cuerpo)
+                    else -> dao.marcarSubido(fila.referenceCC, texto, r.cuerpo)
+                }
             }
             r.codigo == 200 || r.codigo == 202 -> {
                 val json = runCatching { JSONObject(r.cuerpo) }.getOrNull() ?: return true   // ilegible: se reintenta (es idempotente)
@@ -202,12 +217,20 @@ class SubidaDeLaMaquina @Inject constructor(
     private suspend fun aplicarCierre(fila: CobroEnMaquinaEntity, json: JSONObject, codigo: Int, cuerpo: String) {
         // Un 202 sólo libera la fila con su incidencia DURABLE (`incidentId`, contrato del SERVIDOR); sin ella se repite el folio.
         if (codigo == 202 && incidenciaDe(cuerpo) == null) return
-        if (repite(fila, json, fila.estado, conLoQueEntro = true)) {
-            dao.marcarSubido(fila.referenceCC, if (codigo == 202) textoDeIncidencia(json.optString("motivo")) else null, cuerpo)
-        } else {
-            dao.anotarConflicto(fila.referenceCC, TEXTO_RESPUESTA_DISTINTA)
+        val incidencia = if (codigo == 202) textoDeIncidencia(json.optString("motivo")) else null
+        val tardio = fila.estado == EstadoDelIntento.ESPERANDO
+        when {
+            !repite(fila, json, desenlaceQueSube(fila), conLoQueEntro = true) -> dao.anotarConflicto(fila.referenceCC, TEXTO_RESPUESTA_DISTINTA)
+            // El cierre tardío terminó el folio en el SERVIDOR: la duda queda resuelta con lo que él dice.
+            tardio -> dao.resolver(fila.referenceCC, json.optString("resolvedBy").ifBlank { "MAQUINA" }, fila.creditCents,
+                fila.changeDispensedCents, incidencia, cuerpo, json.optString("outcome"))
+            else -> dao.marcarSubido(fila.referenceCC, incidencia, cuerpo)
         }
     }
+
+    /** El desenlace que sube esta fila: el suyo, o el de su cierre tardío (Codex código r1 #6). */
+    private fun desenlaceQueSube(fila: CobroEnMaquinaEntity): String =
+        if (fila.estado == EstadoDelIntento.ESPERANDO) fila.cierreTardio.orEmpty() else fila.estado
 
     /** `ABIERTO`: el SERVIDOR ya la tiene. `RESUELTO`: la decisión del gerente (o su incidencia) con lo que tecleó. */
     private suspend fun aplicarDuda(fila: CobroEnMaquinaEntity, json: JSONObject, cuerpo: String) {
@@ -228,6 +251,7 @@ class SubidaDeLaMaquina @Inject constructor(
                 conflicto = json.optString("incident").takeIf { it.isNotBlank() }?.let { textoDeIncidencia(json.optString("motivo")) },
                 // El desenlace del gerente vive aquí ([desenlace]); `cancelPedido` sigue siendo lo que pidió la PC.
                 respuesta = cuerpo,
+                desenlace = outcome,
             )
         }
     }
@@ -241,15 +265,16 @@ class SubidaDeLaMaquina @Inject constructor(
                 json.centavos("changeDispensedCents") == fila.changeDispensedCents))
 
     private fun cuerpoDelCierre(fila: CobroEnMaquinaEntity): JSONObject {
+        val outcome = desenlaceQueSube(fila)
         val cierre = JSONObject()
-            .put("outcome", fila.estado)
+            .put("outcome", outcome)
             .put("dueCents", fila.dueCents).put("saleCents", fila.saleCents).put("tipCents", fila.tipCents)
             .put("creditCents", fila.creditCents).put("changeDispensedCents", fila.changeDispensedCents)
             .put("occurredAtKnown", fila.cierreConocido && fila.cierreEn != null)
             .put("occurredAt", fila.cierreEn?.let(::iso) ?: JSONObject.NULL)
             .put("saleShiftId", fila.saleShiftId ?: JSONObject.NULL)
         val cuerpo = JSONObject().put("referenceCC", fila.referenceCC).put("cierre", cierre)
-        if (fila.estado == EstadoDelIntento.PAGADO) cuerpo.put("pedido", JSONObject(fila.pedidoJson))
+        if (outcome == EstadoDelIntento.PAGADO) cuerpo.put("pedido", JSONObject(fila.pedidoJson))
         else cierre.put("cancelMode", fila.cancelPedido ?: JSONObject.NULL)
         return cuerpo
     }
@@ -260,7 +285,15 @@ class SubidaDeLaMaquina @Inject constructor(
         .put("pedido", JSONObject(fila.pedidoJson))
         .put("startedAt", iso(fila.creadoEn))
         .put("saleShiftId", fila.saleShiftId ?: JSONObject.NULL)
-        .apply { if (fila.mensajesCrudos.isNotBlank()) put("lastSeen", fila.mensajesCrudos) }
+        .put("lastSeen", loUltimoQueVio(fila))
+
+    /**
+     * Codex código r1 #6: lo ÚLTIMO que quedó en disco de este folio (lo que entró, cuándo, y los mensajes de la máquina tal cual). Una
+     * observación nueva del mismo folio cambia este texto y el SERVIDOR la agrega a la duda; una retransmisión idéntica no.
+     */
+    private fun loUltimoQueVio(fila: CobroEnMaquinaEntity): String =
+        "Entró ${com.avoqado.pos.core.util.formatMoneyFromCents(fila.creditCents)}" +
+            (fila.ultimoCreditoEn?.let { " (${iso(it)})" } ?: "") + "\n" + fila.mensajesCrudos
 
     private fun iso(ms: Long) = Instant.ofEpochMilli(ms).toString()
 

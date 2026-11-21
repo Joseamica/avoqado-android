@@ -129,6 +129,8 @@ class CobroConMaquina(
         var change = 0
         var cancelPedido: String? = null
         var desenlace: Desenlace? = null
+        /** Codex código r1 #4: desde cuándo no hay enlace con la máquina (null = hay, o ya se oyó nuestro folio en la nueva). */
+        var sinEnlaceDesde: Long? = null
         val crudos = ArrayDeque<String>()
         val vivo get() = fase != Fase.CERRADO && fase != Fase.ESPERANDO
     }
@@ -138,6 +140,8 @@ class CobroConMaquina(
     private var activo: Intento? = null
     private var temporizador: Job? = null
     private var turno = 0L
+    /** El reloj armado es el de «sin enlace» (#4): no se vuelve a armar en cada revisión, o nunca dispararía. */
+    private var relojSinEnlace = false
 
     init {
         // UNDISPATCHED: la suscripción queda hecha al construir (`recibidos` no repite lo pasado).
@@ -217,7 +221,16 @@ class CobroConMaquina(
         if (a.fase == Fase.ESPERANDO) {
             if (m is MensajeDeLaMaquina.Status && m.referenceCC == a.ref) {
                 anotar(a, r)
-                dao.anotarEvidencia(a.ref, crudos(a))
+                // Codex código r1 #6: el cierre de NUESTRO folio y `Due` por la conexión de la propiedad llegó tarde: sube como cierre
+                // (decide el SERVIDOR; la fila sigue en duda). Cualquier otro mensaje del folio es una observación nueva de la duda.
+                val tardio = m.cierre()?.takeIf { m.dueCents == a.due && a.generacionPropia != null && r.generacion == a.generacionPropia }
+                    ?.let { desenlaceDelCierre(it, a.cancelPedido, a.due, m.creditCents, m.changeDispensedCents) }
+                if (tardio != null) {
+                    dao.anotarCierreTardio(a.ref, tardio.name, m.creditCents, m.changeDispensedCents, reloj(), true, crudos(a))
+                } else {
+                    dao.anotarEvidencia(a.ref, crudos(a))
+                }
+                alTerminar()
             }
             return
         }
@@ -233,7 +246,9 @@ class CobroConMaquina(
 
     private suspend fun alStatus(a: Intento, m: MensajeDeLaMaquina.Status) {
         if (m.referenceCC != a.ref || m.dueCents != a.due) return aEsperando(a)   // otra operación: la nuestra ya no se sabe
-        m.cierre()?.let { return cerrar(a, m, it) }
+        // Codex código r1 #5: un cierre es nuestro sólo por la conexión en que se ganó la propiedad (`propio` lo dice: se pierde al
+        // caerse y no regresa). El de otra conexión deja la duda, con su texto como evidencia.
+        m.cierre()?.let { return if (a.propio) cerrar(a, m, it) else aEsperando(a) }
         when (a.fase) {
             Fase.INICIANDO -> {   // el acuse: la máquina aceptó nuestro folio y Due en esta conexión
                 a.propio = true
@@ -244,6 +259,7 @@ class CobroConMaquina(
             }
             Fase.RECONECTANDO -> {   // nuestro folio sigue vivo, pero no se adopta: sin abandono ni cancel
                 a.fase = Fase.COBRANDO
+                a.sinEnlaceDesde = null
                 cancelarTemporizador()
             }
             Fase.CANCELANDO -> armar(ESPERA_DEL_CIERRE_MS, ::aEsperando)   // sigue trabajando (p. ej. entregando cambio)
@@ -257,7 +273,7 @@ class CobroConMaquina(
         if (creditCents <= a.credit) return
         a.credit = creditCents
         if (a.propio) {
-            dao.anotarCredito(a.ref, creditCents, reloj())
+            dao.anotarCredito(a.ref, creditCents, reloj(), crudos(a))
             if (a.fase == Fase.COBRANDO || a.fase == Fase.SIGUES_AHI) {   // dinero nuevo: el cliente sigue ahí
                 a.fase = Fase.COBRANDO
                 armar(ABANDONO_MS, ::preguntarSiSigue)
@@ -306,12 +322,19 @@ class CobroConMaquina(
             a.vigilada = null
             a.propio = false
             a.fase = Fase.RECONECTANDO
+            if (a.sinEnlaceDesde == null) a.sinEnlaceDesde = reloj()
             cancelarTemporizador()
             publicar()
         }
         if (a.vigilada == null && conectada) {
             a.vigilada = generacion
             armar(ESPERA_DEL_STATUS_MS, ::aEsperando)
+        } else if (a.vigilada == null && !relojSinEnlace) {
+            // Codex código r1 #4: sin enlace, la duda no espera a que vuelva. Con un plazo contado desde la primera caída (un enlace
+            // que parpadea no lo alarga), el intento queda «Esperando» y la duda sube mientras haya internet.
+            val desde = a.sinEnlaceDesde ?: reloj().also { a.sinEnlaceDesde = it }
+            armar((desde + ESPERA_SIN_ENLACE_MS - reloj()).coerceAtLeast(0), ::aEsperando)
+            relojSinEnlace = true
         }
     }
 
@@ -333,8 +356,10 @@ class CobroConMaquina(
         dao.pedirCancel(a.ref, cancelvalue, reloj())
         revisarConexion()
         val propia = a.generacionPropia
+        // Codex código r1 #3: la relectura del último `status` y el envío van juntos en el cliente (con lo que llega): si mientras se
+        // guardaba el modo llegó otro folio (o el cierre del nuestro), el `cancel` sin folio no sale.
         val salio = a.propio && propia != null && a.vigilada == propia &&
-            cliente.enviar(cancelar(devolver = cancelvalue == CANCEL_DEVOLVER, fecha = fecha(reloj())), propia)
+            cliente.enviarSiSigueSiendoNuestro(cancelar(devolver = cancelvalue == CANCEL_DEVOLVER, fecha = fecha(reloj())), propia, a.ref, a.due)
         if (!salio) return aEsperando(a)
         a.fase = Fase.CANCELANDO
         publicar()
@@ -360,6 +385,7 @@ class CobroConMaquina(
     }
 
     private fun cancelarTemporizador() {
+        relojSinEnlace = false
         turno++
         temporizador?.cancel()
         temporizador = null
@@ -399,6 +425,8 @@ class CobroConMaquina(
         const val SIGUES_AHI_MS = 30_000L
         /** ponytail: plazo propio, no del manual; 30 s cubren entregar cambio. Si la máquina tarda más, ajustar aquí. */
         const val ESPERA_DEL_CIERRE_MS = 30_000L
+        /** Codex código r1 #4. ponytail: plazo propio; diez reconexiones de 3 s. Si la red local del negocio tarda más, ajustar aquí. */
+        const val ESPERA_SIN_ENLACE_MS = 30_000L
         const val MAX_CRUDOS = 8_192
     }
 }

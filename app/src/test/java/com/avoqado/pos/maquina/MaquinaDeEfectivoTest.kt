@@ -14,6 +14,7 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.async
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
@@ -45,6 +46,8 @@ class MaquinaDeEfectivoTest {
         var alEnviar: (String) -> Unit = {}
         var conectadaA: String? = null
 
+        var ultimoStatus: Recibido? = null
+
         override fun enviar(json: String, generacion: Int): Boolean {
             if (conexion.value != Conexion.CONECTADA || generacion != this.generacion.value) return false
             alEnviar(json)
@@ -52,10 +55,20 @@ class MaquinaDeEfectivoTest {
             return true
         }
 
+        override fun enviarSiSigueSiendoNuestro(json: String, generacion: Int, referenceCC: String, dueCents: Int): Boolean {
+            val m = ultimoStatus?.mensaje as? MensajeDeLaMaquina.Status
+            return ultimoStatus?.generacion == generacion && m != null && m.cobrando && m.referenceCC == referenceCC &&
+                m.dueCents == dueCents && enviar(json, generacion)
+        }
+
         override fun conectar(ip: String) { conectadaA = ip }
         override fun desconectar() { conectadaA = null }
 
-        fun llega(json: String) = check(recibidos.tryEmit(Recibido(generacion.value, leerMensaje(json)!!, json)))
+        fun llega(json: String) {
+            val r = Recibido(generacion.value, leerMensaje(json)!!, json)
+            if (r.mensaje is MensajeDeLaMaquina.Status) ultimoStatus = r
+            check(recibidos.tryEmit(r))
+        }
         fun paycash(): JSONObject? = enviados.map(::JSONObject).lastOrNull { it.getString("comando") == "paycash" }
     }
 
@@ -244,6 +257,33 @@ class MaquinaDeEfectivoTest {
 
         assertTrue(maquina().cobrar(venta()) is InicioEnLaMaquina.Iniciado)
         assertNull(dao.todas().single().quoteId)
+    }
+
+    @Test
+    fun `P1 Codex r1 #1 mientras cotiza la venta ya esta apartada, y si la cotizacion no deja cobrar se suelta`() = runTest {
+        val respuesta = kotlinx.coroutines.CompletableDeferred<RespuestaDelServidor>()
+        coEvery { api.cotizar(any(), any()) } coAnswers { respuesta.await() }
+        val m = maquina()
+
+        val inicio = async { m.cobrar(venta()) }
+        runCurrent()
+
+        assertTrue("todavía no hay fila, pero la venta ya no sale con tarjeta", m.ventaBloqueada("venta-1"))
+        assertTrue(dao.todas().isEmpty())
+        respuesta.complete(cotizacion(18_035, 0, quoteId = null, cobrable = false, motivo = "CENTAVOS"))
+        assertEquals(InicioEnLaMaquina.NoSeCobra(TEXTO_SIN_CENTAVOS), inicio.await())
+        assertFalse("no quedó nada en la máquina: la tarjeta vuelve", m.ventaBloqueada("venta-1"))
+    }
+
+    @Test
+    fun `Codex r1 #1 al salir el paycash la fila toma el lugar del apartado`() = runTest {
+        coEvery { api.cotizar(any(), any()) } returns cotizacion(18_000, 750)
+        val m = maquina()
+
+        assertTrue(m.cobrar(venta()) is InicioEnLaMaquina.Iniciado)
+
+        assertFalse(m.apartada("venta-1"))
+        assertTrue(m.ventaBloqueada("venta-1"))
     }
 
     @Test

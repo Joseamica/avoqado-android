@@ -70,6 +70,22 @@ data class CobroEnMaquinaEntity(
      * incidencia. De aquí sale el desenlace de un `RESUELTO` ([desenlace]) y el comprobante de diferencia (C7).
      */
     val respuestaServidor: String? = null,
+    /** v22 (adaptación al rediseño del SERVIDOR, r6-6): el emparejamiento con el que ESTA PC empezó el cobro; viaja con su cierre y su duda. */
+    val bindingId: String? = null,
+    /** v22 (Codex código r1 #14): los renglones congelados al empezar (los de la cotización, o los del carrito sin red): el ticket sale de aquí. */
+    val renglonesJson: String? = null,
+    /** v22 (Codex código r1 #8): el desenlace que decidió el SERVIDOR de un `RESUELTO`. Sólo `PAGADO` (o desconocido) sigue frenando la tarjeta. */
+    val desenlaceDelServidor: String? = null,
+    /**
+     * v22 (Codex código r1 #6): el cierre de NUESTRO folio y `Due` que llegó por la conexión de la propiedad DESPUÉS de que el intento
+     * quedó «Esperando»: sube como cierre (la fila sigue en duda hasta que el SERVIDOR conteste TERMINADO). Sus importes van en
+     * `creditCents`/`changeDispensedCents`/`cierreEn`, y `subido` dice si ya llegó.
+     */
+    val cierreTardio: String? = null,
+    /** v22 (Codex código r1 #13): lo que la máquina le debe al cliente (lo físico al cerrar; lo del SERVIDOR al subir). */
+    val aDeberCents: Int = 0,
+    /** v22 (adaptación, r6-4): la `version` de la duda que contestó el SERVIDOR; el gerente la manda al resolver. */
+    val versionDeLaDuda: Int? = null,
 )
 
 /**
@@ -89,8 +105,8 @@ internal object CobroEnMaquinaSql {
             "`resueltoPor` TEXT, `subido` INTEGER NOT NULL, `dudaSubida` INTEGER NOT NULL, `conflicto` TEXT, " +
             "`ticketImpreso` INTEGER NOT NULL, `mensajesCrudos` TEXT NOT NULL, PRIMARY KEY(`referenceCC`))"
 
-    /** 🔴 En el formato EXACTO que Room genera HOY para [CobroEnMaquinaEntity] (lo vigila `CobroEnMaquinaMigracionTest`). */
-    const val CREAR_TABLA: String =
+    /** 🔴 La tabla como la dejó la v21 (`MIGRATION_20_21`), congelada: la v22 le agrega [MIGRAR_21_22]. */
+    const val CREAR_TABLA_V21: String =
         "CREATE TABLE IF NOT EXISTS `cobros_en_maquina` (" +
             "`referenceCC` TEXT NOT NULL, `venueId` TEXT NOT NULL, `llaveDeVenta` TEXT NOT NULL, `pedidoJson` TEXT NOT NULL, " +
             "`saleCents` INTEGER NOT NULL, `tipCents` INTEGER NOT NULL, `dueCents` INTEGER NOT NULL, `saleShiftId` TEXT, " +
@@ -100,8 +116,38 @@ internal object CobroEnMaquinaSql {
             "`resueltoPor` TEXT, `subido` INTEGER NOT NULL, `dudaSubida` INTEGER NOT NULL, `conflicto` TEXT, " +
             "`ticketImpreso` INTEGER NOT NULL, `mensajesCrudos` TEXT NOT NULL, `respuestaServidor` TEXT, PRIMARY KEY(`referenceCC`))"
 
+    /** 🔴 En el formato EXACTO que Room genera HOY para [CobroEnMaquinaEntity] (lo vigila `CobroEnMaquinaMigracionTest`). */
+    const val CREAR_TABLA: String =
+        "CREATE TABLE IF NOT EXISTS `cobros_en_maquina` (" +
+            "`referenceCC` TEXT NOT NULL, `venueId` TEXT NOT NULL, `llaveDeVenta` TEXT NOT NULL, `pedidoJson` TEXT NOT NULL, " +
+            "`saleCents` INTEGER NOT NULL, `tipCents` INTEGER NOT NULL, `dueCents` INTEGER NOT NULL, `saleShiftId` TEXT, " +
+            "`quoteId` TEXT, `creadoEn` INTEGER NOT NULL, `estado` TEXT NOT NULL, `generacionPropia` INTEGER, " +
+            "`ultimoCreditoEn` INTEGER, `creditCents` INTEGER NOT NULL, `changeDispensedCents` INTEGER NOT NULL, " +
+            "`cancelPedido` TEXT, `cancelPedidoEn` INTEGER, `cierreEn` INTEGER, `cierreConocido` INTEGER NOT NULL, " +
+            "`resueltoPor` TEXT, `subido` INTEGER NOT NULL, `dudaSubida` INTEGER NOT NULL, `conflicto` TEXT, " +
+            "`ticketImpreso` INTEGER NOT NULL, `mensajesCrudos` TEXT NOT NULL, `respuestaServidor` TEXT, `bindingId` TEXT, " +
+            "`renglonesJson` TEXT, `desenlaceDelServidor` TEXT, `cierreTardio` TEXT, `aDeberCents` INTEGER NOT NULL, " +
+            "`versionDeLaDuda` INTEGER, PRIMARY KEY(`referenceCC`))"
+
     /** v21 (C4): la respuesta final del SERVIDOR, en columna propia y nula. Nada que migrar: una fila vieja no la tiene. */
     const val MIGRAR_20_21: String = "ALTER TABLE cobros_en_maquina ADD COLUMN respuestaServidor TEXT"
+
+    /**
+     * v22 (Codex código r1 y la adaptación al rediseño del SERVIDOR): seis columnas. Las nulas no migran nada. `aDeberCents` nace con lo
+     * físico de lo que ya cerró (PAGADO: lo que entró − el adeudo − el cambio; CANCELADO: lo que no devolvió); el excedente de precio de
+     * una fila vieja ya subida no se reconstruye (sigue en `respuestaServidor`).
+     */
+    val MIGRAR_21_22: List<String> = listOf(
+        "ALTER TABLE cobros_en_maquina ADD COLUMN bindingId TEXT",
+        "ALTER TABLE cobros_en_maquina ADD COLUMN renglonesJson TEXT",
+        "ALTER TABLE cobros_en_maquina ADD COLUMN desenlaceDelServidor TEXT",
+        "ALTER TABLE cobros_en_maquina ADD COLUMN cierreTardio TEXT",
+        "ALTER TABLE cobros_en_maquina ADD COLUMN aDeberCents INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE cobros_en_maquina ADD COLUMN versionDeLaDuda INTEGER",
+        "UPDATE cobros_en_maquina SET aDeberCents = CASE " +
+            "WHEN estado = 'PAGADO' AND creditCents > dueCents + changeDispensedCents THEN creditCents - dueCents - changeDispensedCents " +
+            "WHEN estado = 'CANCELADO' AND creditCents > changeDispensedCents THEN creditCents - changeDispensedCents ELSE 0 END",
+    )
 
     const val POR_REFERENCIA: String = "SELECT * FROM cobros_en_maquina WHERE referenceCC = :referenceCC"
 
@@ -121,8 +167,9 @@ internal object CobroEnMaquinaSql {
         "UPDATE cobros_en_maquina SET generacionPropia = :generacion, mensajesCrudos = :crudos " +
             "WHERE referenceCC = :referenceCC AND estado = 'EN_CURSO'"
 
+    /** Codex código r1 #6: el crédito y lo que vio la PC, juntos: la duda sube siempre lo último que quedó en disco. */
     const val ANOTAR_CREDITO: String =
-        "UPDATE cobros_en_maquina SET creditCents = :creditCents, ultimoCreditoEn = :ahora " +
+        "UPDATE cobros_en_maquina SET creditCents = :creditCents, ultimoCreditoEn = :ahora, mensajesCrudos = :crudos " +
             "WHERE referenceCC = :referenceCC AND estado = 'EN_CURSO'"
 
     const val PEDIR_CANCEL: String =
@@ -145,9 +192,21 @@ internal object CobroEnMaquinaSql {
         "UPDATE cobros_en_maquina SET estado = 'ESPERANDO', dudaSubida = 0 " +
             "WHERE estado = 'EN_CURSO' AND referenceCC != :salvo"
 
-    /** Lo que la máquina dice de un folio en duda se guarda; el estado no cambia (lo resuelve un gerente). */
+    /**
+     * Lo que la máquina dice de un folio en duda se guarda; el estado no cambia (lo resuelve un gerente). Codex código r1 #6: es una
+     * observación nueva y vuelve a subir (`dudaSubida = 0`): el SERVIDOR la agrega a la duda.
+     */
     const val ANOTAR_EVIDENCIA: String =
-        "UPDATE cobros_en_maquina SET mensajesCrudos = :crudos WHERE referenceCC = :referenceCC AND estado = 'ESPERANDO'"
+        "UPDATE cobros_en_maquina SET mensajesCrudos = :crudos, dudaSubida = 0 WHERE referenceCC = :referenceCC AND estado = 'ESPERANDO'"
+
+    /**
+     * Codex código r1 #6: el cierre tardío de NUESTRO folio (por la conexión de la propiedad) en una fila que ya está en duda. Sólo el
+     * primero; la fila sigue `ESPERANDO` (la tarjeta sigue frenada) hasta que el SERVIDOR conteste TERMINADO.
+     */
+    const val ANOTAR_CIERRE_TARDIO: String =
+        "UPDATE cobros_en_maquina SET cierreTardio = :desenlace, creditCents = :creditCents, changeDispensedCents = :changeDispensedCents, " +
+            "cierreEn = :cierreEn, cierreConocido = :conocido, subido = 0, mensajesCrudos = :crudos " +
+            "WHERE referenceCC = :referenceCC AND estado = 'ESPERANDO' AND cierreTardio IS NULL"
 
     /**
      * R5#2: lo que frena cerrar sesión, cambiar de sucursal y cambiar la IP o desemparejar la máquina: un intento abierto, una
@@ -160,6 +219,7 @@ internal object CobroEnMaquinaSql {
     const val POR_SUBIR: String =
         "SELECT * FROM cobros_en_maquina " +
             "WHERE (estado IN ('PAGADO', 'CANCELADO', 'GUARDADO') AND subido = 0) OR (estado = 'ESPERANDO' AND dudaSubida = 0) " +
+            "OR (estado = 'ESPERANDO' AND cierreTardio IS NOT NULL AND subido = 0) " +
             "ORDER BY creadoEn ASC, referenceCC ASC"
 
     // MARK: - La subida (C4)
@@ -172,6 +232,16 @@ internal object CobroEnMaquinaSql {
         "SELECT * FROM cobros_en_maquina WHERE venueId = :venueId AND conflicto IS NULL " +
             "AND ((estado IN ('PAGADO', 'CANCELADO', 'GUARDADO') AND subido = 0) OR (estado = 'ESPERANDO' AND dudaSubida = 0)) " +
             "ORDER BY creadoEn ASC, referenceCC ASC"
+
+    /** Codex código r1 #6: los cierres tardíos de dudas que el SERVIDOR ya tiene (la duda va primero: congela el carrito). */
+    const val TARDIOS_PARA_SUBIR: String =
+        "SELECT * FROM cobros_en_maquina WHERE venueId = :venueId AND estado = 'ESPERANDO' AND dudaSubida = 1 " +
+            "AND cierreTardio IS NOT NULL AND subido = 0 AND conflicto IS NULL ORDER BY creadoEn ASC, referenceCC ASC"
+
+    /** El SERVIDOR ya guardó el cierre tardío (o su incidencia): no se reenvía; la duda sigue consultándose. */
+    const val MARCAR_TARDIO_SUBIDO: String =
+        "UPDATE cobros_en_maquina SET subido = 1, conflicto = :conflicto, respuestaServidor = :respuesta " +
+            "WHERE referenceCC = :referenceCC AND estado = 'ESPERANDO' AND cierreTardio IS NOT NULL"
 
     /** Las dudas ya subidas que esperan la decisión del gerente (R5#6): se consultan cada 60 s. */
     const val ESPERAN_AL_GERENTE: String =
@@ -203,7 +273,7 @@ internal object CobroEnMaquinaSql {
     const val RESOLVER: String =
         "UPDATE cobros_en_maquina SET estado = 'RESUELTO', resueltoPor = :resueltoPor, creditCents = :creditCents, " +
             "changeDispensedCents = :changeDispensedCents, subido = 1, dudaSubida = 1, conflicto = :conflicto, " +
-            "respuestaServidor = :respuesta WHERE referenceCC = :referenceCC AND estado = 'ESPERANDO'"
+            "respuestaServidor = :respuesta, desenlaceDelServidor = :desenlace WHERE referenceCC = :referenceCC AND estado = 'ESPERANDO'"
 
     /**
      * C7: los cobros de [venueId] que pueden deber algo al cliente (un PAGADO con su respuesta, un CANCELADO), los más nuevos

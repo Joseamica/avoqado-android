@@ -52,6 +52,24 @@ class CobrosEnMaquinaRoomTest {
         } finally { carpeta.toFile().deleteRecursively() }
     }
 
+    @Test fun `una base v21 con un cobro pagado llega a v22 con lo que se debe calculado y el cobro intacto`() {
+        val carpeta = Files.createTempDirectory("migraciones")
+        try {
+            val ayudante = ayudanteDeMigraciones(carpeta.resolve("base"))
+            ayudante.createDatabase(21).use { v21 ->
+                v21.execSQL(
+                    "INSERT INTO cobros_en_maquina (referenceCC, venueId, llaveDeVenta, pedidoJson, saleCents, tipCents, dueCents, " +
+                        "creadoEn, estado, creditCents, changeDispensedCents, cierreConocido, subido, dudaSubida, ticketImpreso, " +
+                        "mensajesCrudos) VALUES ('AQ000000000001', 'venue-1', 'venta-1', '{}', 8000, 0, 8000, 1, " +
+                        "'PAGADO', 10000, 1500, 1, 0, 0, 0, 'crudo')",
+                )
+            }
+            ayudante.runMigrationsAndValidate(22, migracionesDeAndroid().map { it.paraRoom() }).use { v22 ->
+                assertEquals(500L, v22.leerLargo("SELECT aDeberCents FROM cobros_en_maquina WHERE estado = 'PAGADO' AND bindingId IS NULL"))
+            }
+        } finally { carpeta.toFile().deleteRecursively() }
+    }
+
     @Test fun `el DAO real deja un solo intento abierto por venta y el cierre se escribe una sola vez`() = runBlocking {
         val carpeta = Files.createTempDirectory("cobros-en-maquina")
         val base = DatabaseModule.provideDatabase(ContextoDeEscritorio(carpeta))
