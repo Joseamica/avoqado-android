@@ -147,8 +147,11 @@ fun OnlineOrdersScreen(
     // La sección sale si el servidor la tiene (aunque haya algo guardado, un «no disponible» la esconde) y hay algo que decir.
     // D661: también mientras haya pagados en línea por abrir, aunque el negocio haya cambiado de modo (`seccionDeFoliosVisible`).
     val seccionFolios = folios?.takeIf { seccionDeFoliosVisible(it) }
-    val foliosEnPantalla = remember(seccionFolios, cobradosEnElAparato, cobradosConTarjeta, ocultos) {
+    // R2-6: un pagado en línea con el «confirmando» del SERVIDOR sigue «Cobrándose en otra caja…» hasta que una lectura buena diga dónde quedó.
+    val cobrandoEnOtraCaja by viewModel.cobrandoEnOtraCaja.collectAsState()
+    val foliosEnPantalla = remember(seccionFolios, cobradosEnElAparato, cobradosConTarjeta, ocultos, cobrandoEnOtraCaja) {
         seccionFolios?.let { conLoCobradoEnElAparato(sinLosYaAtendidos(it, ocultos), cobradosEnElAparato.keys + cobradosConTarjeta.keys) }
+            ?.let { l -> l.copy(tarjetasPorAbrir = l.tarjetasPorAbrir.map { conCobrandoEnOtraCaja(it, cobrandoEnOtraCaja) }) }
     }
 
     Box(Modifier.fillMaxSize()) {

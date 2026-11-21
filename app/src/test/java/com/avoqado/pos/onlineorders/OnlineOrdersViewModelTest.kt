@@ -12,6 +12,7 @@ import com.avoqado.pos.onlineorders.domain.ListaPorPagar
 import com.avoqado.pos.onlineorders.domain.ConteosPorPagar
 import com.avoqado.pos.onlineorders.domain.CursoresPorPagar
 import com.avoqado.pos.onlineorders.presentation.textoDeAbrir
+import com.avoqado.pos.onlineorders.presentation.conCobrandoEnOtraCaja
 import com.avoqado.pos.onlineorders.presentation.sePuedeAbrir
 import com.avoqado.pos.onlineorders.presentation.EntradaPedidosEnLinea
 import com.avoqado.pos.onlineorders.presentation.OnlineOrdersViewModel
@@ -707,6 +708,8 @@ class OnlineOrdersViewModelTest {
     )
 
     private var foliosDelServidor: ListaPorPagar = listaD661()
+    /** R2-6: cuando no es null, la lectura de «Por pagar» falla con esto (p. ej. un 5xx del SERVIDOR). */
+    private var falloDeFolios: Exception? = null
     private val lecturasDeFolios = mutableListOf<Pair<String?, String?>>()
     private var sondeosDeFolios = 0
 
@@ -719,7 +722,10 @@ class OnlineOrdersViewModelTest {
         ventanaALaVista = MutableStateFlow(true),
         sondearVigilante = { sondeosYa++ },
         sondearFoliosDelVigilante = { sondeosDeFolios++ },
-        leerPorPagar = { _, seccion, cursor -> lecturasDeFolios += seccion to cursor; Result.success(foliosDelServidor) },
+        leerPorPagar = { _, seccion, cursor ->
+            lecturasDeFolios += seccion to cursor
+            falloDeFolios?.let { Result.failure(it) } ?: Result.success(foliosDelServidor)
+        },
     )
 
     @Test
@@ -805,6 +811,30 @@ class OnlineOrdersViewModelTest {
         coEvery { repo.ready("e1") } returns AccionResultado.YaNoDisponible(OnlineOrderStatus.COMPLETED)
         vm.marcarListo("e1"); runCurrent()
         assertEquals(TextosPedidosEnLinea.YA_NO_DISPONIBLE, vm.aviso.value)
+    }
+
+    /** R2-6 (Codex «Resto del recorrido»): tras un 409 «Confirmando» y una relectura con 5xx, el botón viejo no vuelve. */
+    @Test
+    fun `R2-6 after Confirmando and a failed re-read the order keeps waiting until a good read says where it is`() = runTest(dispatcher) {
+        coEvery { repo.inbox("all", any(), any()) } returns Result.success(bandeja())
+        foliosDelServidor = listaD661(listOf(tarjeta("t1")))
+        val vm = armarD661()
+        vm.refrescar()
+        // Otra caja lo está cobrando (409 «Confirmando»), y la relectura falla con un 5xx: la lista vieja lo trae sin `cobrando`.
+        coEvery { repo.abrirPagadoEnLinea("t1") } returns AccionResultado.ConfirmandoPago("Se está confirmando el pago")
+        falloDeFolios = RuntimeException("Error del servidor (503)")
+        vm.abrirYCobrar("t1"); runCurrent()
+        assertFalse("la lista de la pantalla es la vieja", vm.porPagar.value!!.tarjetasPorAbrir.single().cobrando)
+        assertEquals("pero el pedido sigue esperando", setOf("t1"), vm.cobrandoEnOtraCaja.value)
+        assertEquals(TextosPedidosEnLinea.COBRANDO_EN_OTRA_CAJA,
+            textoDeAbrir(conCobrandoEnOtraCaja(vm.porPagar.value!!.tarjetasPorAbrir.single(), vm.cobrandoEnOtraCaja.value), sinConexion = false, ocupado = false))
+        vm.abrirYCobrar("t1"); runCurrent()
+        coVerify(exactly = 1) { repo.abrirPagadoEnLinea("t1") }
+        // Una lectura buena posterior dice dónde quedó (ya no está por abrir): se suelta la marca.
+        falloDeFolios = null
+        foliosDelServidor = listaD661()
+        vm.refrescar(); runCurrent()
+        assertTrue(vm.cobrandoEnOtraCaja.value.isEmpty())
     }
 
     @Test

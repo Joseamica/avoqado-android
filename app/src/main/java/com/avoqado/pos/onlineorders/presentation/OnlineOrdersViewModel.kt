@@ -79,6 +79,13 @@ fun entradaDePedidosEnLinea(
 fun debeAbrirBandeja(solicitada: Boolean, entrada: EntradaPedidosEnLinea): Boolean =
     solicitada && entrada != EntradaPedidosEnLinea.OCULTA
 
+/**
+ * D661 · R2-6: un pagado en línea al que el SERVIDOR contestó «confirmando el pago» ([marcas]) se pinta «Cobrándose en otra caja…» aunque la
+ * lista de la pantalla sea la de antes del 409 (la relectura falló). PURA.
+ */
+fun conCobrandoEnOtraCaja(tarjeta: com.avoqado.pos.onlineorders.domain.TarjetaPorAbrir, marcas: Set<String>) =
+    if (tarjeta.orderId in marcas && !tarjeta.cobrando) tarjeta.copy(cobrando = true) else tarjeta
+
 /** Dinero para pintar: `$185.50`, siempre con el formato del negocio (no el del idioma del aparato). */
 fun formatoPesos(centavos: Long): String = formatMoney(BigDecimal.valueOf(centavos, 2).toDouble())
 
@@ -213,6 +220,17 @@ class OnlineOrdersViewModel internal constructor(
 
     /** Pedidos con una acción en vuelo: sus botones se apagan y un segundo toque no hace nada. */
     val ocupados: StateFlow<Set<String>> = _ocupados.asStateFlow()
+
+    private val _cobrandoEnOtraCaja = MutableStateFlow<Set<String>>(emptySet())
+
+    /**
+     * D661 · R2-6: pagados en línea a los que el SERVIDOR dijo «confirmando el pago» (otra caja los cobra) y que ninguna lectura buena
+     * POSTERIOR ha vuelto a ver. Su botón dice «Cobrándose en otra caja…» ([conCobrandoEnOtraCaja]) y «Abrir y cobrar» no los abre.
+     */
+    val cobrandoEnOtraCaja: StateFlow<Set<String>> = _cobrandoEnOtraCaja.asStateFlow()
+
+    /** R2-6: orderId -> la última lectura de «Por pagar» que ya había salido cuando llegó el 409 (sólo una posterior suelta la marca). */
+    private val confirmandoFolio = mutableMapOf<String, Long>()
 
     private val _hayMas = MutableStateFlow(false)
 
@@ -396,6 +414,8 @@ class OnlineOrdersViewModel internal constructor(
             return
         }
         primera.onSuccess { lista ->
+            // R2-6: esta lectura salió después del «confirmando»: ya dice dónde quedó el pedido.
+            if (confirmandoFolio.entries.removeAll { (_, antes) -> generacion > antes }) _cobrandoEnOtraCaja.value = confirmandoFolio.keys.toSet()
             // R105 (c) (Codex r7 #1): la página 1 se publica YA, sin esperar a las extras (un folio nuevo por cobrar no espera a una
             // página de «Por entregar»). Lo que ya se veía de las extras se conserva mientras se releen aparte (regla A2).
             val previa = _porPagar.value
@@ -859,6 +879,11 @@ class OnlineOrdersViewModel internal constructor(
         confirmando[orderId] = lecturasIniciadas
         val s = _secciones.value
         _secciones.value = s.copy(porAceptar = s.porAceptar.map { if (it.orderId == orderId) it.copy(cardStatus = "CONFIRMING") else it })
+        // R2-6: si es un pagado en línea, también espera; antes el botón viejo volvía si la relectura fallaba.
+        if (_porPagar.value?.tarjetasPorAbrir?.any { it.orderId == orderId } == true) {
+            confirmandoFolio[orderId] = generacionDeFolios
+            _cobrandoEnOtraCaja.value = confirmandoFolio.keys.toSet()
+        }
     }
 
     /**
@@ -871,7 +896,7 @@ class OnlineOrdersViewModel internal constructor(
      */
     fun abrirYCobrar(orderId: String) {
         val tarjeta = _porPagar.value?.takeIf { it.disponible }?.tarjetasPorAbrir?.firstOrNull { it.orderId == orderId } ?: return
-        if (tarjeta.cobrando) return
+        if (tarjeta.cobrando || orderId in _cobrandoEnOtraCaja.value) return
         ejecutar(
             orderId, permisoActualizar(),
             textoExito = TextosPedidosEnLinea.abiertoEnPorEntregar(tarjeta.orderNumber),
