@@ -54,6 +54,8 @@ import android.widget.Toast
 import androidx.compose.ui.platform.LocalContext
 import com.avoqado.pos.articles.data.AVISO_CATALOGO_GUARDADO
 import com.avoqado.pos.articles.presentation.ArticlesViewModel
+import com.avoqado.pos.designsystem.components.BotonDeMasAcciones
+import com.avoqado.pos.designsystem.components.clicDerecho
 import com.avoqado.pos.inventory.presentation.BandaDeAvisoDeConteo
 import com.avoqado.pos.designsystem.components.AvoqadoLoadingState
 import com.avoqado.pos.designsystem.components.AvoqadoSuccessToast
@@ -430,6 +432,7 @@ private fun ProductRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .clicDerecho { showMenu = true }   // mouse: clic derecho = mantener presionado (D9, 20-nov)
             .combinedClickable(
                 onClick = { onTap() },
                 onLongClick = { showMenu = true },
@@ -512,6 +515,8 @@ private fun ProductRow(
                 )
             }
         }
+        // Windows: el mismo menú con un clic, a la vista (D9, 20-nov). En ANDROID no se pinta.
+        BotonDeMasAcciones(onClick = { showMenu = true })
     }
 
     // Divider (full width, no horizontal padding)

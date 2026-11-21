@@ -45,6 +45,8 @@ import androidx.compose.ui.unit.dp
 import com.avoqado.pos.articles.data.model.AdminCoupon
 import com.avoqado.pos.articles.presentation.ArticlesViewModel
 import com.avoqado.pos.designsystem.components.AvoqadoLoadingState
+import com.avoqado.pos.designsystem.components.BotonDeMasAcciones
+import com.avoqado.pos.designsystem.components.clicDerecho
 import com.avoqado.pos.designsystem.theme.AvoqadoAdaptiveSizeClass
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.designsystem.theme.Error
@@ -227,6 +229,7 @@ private fun CouponRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .clicDerecho { showMenu = true }   // mouse: clic derecho = mantener presionado (D9, 20-nov)
             .combinedClickable(
                 onClick = { onTap() },
                 onLongClick = { showMenu = true },
@@ -347,6 +350,8 @@ private fun CouponRow(
                 )
             }
         }
+        // Windows: el mismo menú con un clic, a la vista (D9, 20-nov). En ANDROID no se pinta.
+        BotonDeMasAcciones(onClick = { showMenu = true })
     }
 
     // Divider

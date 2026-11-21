@@ -51,6 +51,7 @@ class CandadoEnMesasTest(private val action:String,private val mode:String) {
         coEvery {repo.getOrderDetail(any(),any())} returns Result.success(detalle)
         coEvery {repo.getCustomerLoyalty(any(),any(),any())} returns Result.failure(IllegalStateException("sin lealtad en esta prueba"))
         coEvery {repo.compItem(any(),any(),any(),any())} answers {writes++;Result.success(Unit)}
+        coEvery {repo.voidItem(any(),any(),any(),any())} answers {writes++;Result.success(2)}
         coEvery {repo.compWholeOrder(any(),any(),any())} answers {writes++;Result.success(Unit)}
         coEvery {repo.cancelOrder(any(),any(),any())} answers {writes++;Result.success(Unit)}
         coEvery {repo.clearTable(any(),any(),any())} answers {writes++;Result.success(Unit)}
@@ -81,6 +82,7 @@ class CandadoEnMesasTest(private val action:String,private val mode:String) {
             if(mode!="posterior" && mode!="cambioSucursal") pending()
             when(action) {
                 "compSentItem"->order.compSentItem("line","reason")
+                "voidSentItem"->order.voidSentItem("line","reason")
                 "compWholeCheck"->order.compWholeCheck("reason")
                 "splitBySeat"->order.splitBySeat {_,_->}
                 "splitItems"->order.splitItems(listOf("line"))
@@ -113,14 +115,14 @@ class CandadoEnMesasTest(private val action:String,private val mode:String) {
             val ordinary=if(action in setOf("anularCuenta","floor.anularCuenta","bulkAnular")) 2 else 1
             assertEquals("$action/$mode",if(blocked) 0 else ordinary,writes)
             if(action!="sendRound") assertEquals("no intent for $action/$mode",0,intents)
-            if(mode=="offline" && action in setOf("compSentItem","removeDiscount","removeServiceCharge","redeemPoints"))
+            if(mode=="offline" && action in setOf("compSentItem","voidSentItem","removeDiscount","removeServiceCharge","redeemPoints"))
                 assertEquals("T8 antes del aviso de red: $action",com.avoqado.pos.giftcards.domain.TextosDeTarjetas.COMPROBANDO_COBRO,
                     order.blockedNotice.value)
         } finally {order.viewModelScope.cancel();floor.viewModelScope.cancel()}
     }
     companion object {
         @JvmStatic @Parameterized.Parameters(name="{0}/{1}") fun cases():List<Array<Any>> =
-            listOf("compSentItem","compWholeCheck","splitBySeat","splitItems","mergeFrom","applyDiscount","removeDiscount",
+            listOf("compSentItem","voidSentItem","compWholeCheck","splitBySeat","splitItems","mergeFrom","applyDiscount","removeDiscount",
                 "applyServiceCharge","removeServiceCharge","redeemPoints","anularCuenta","moveTable","assignWaiter","updateDetails","sendRound",
                 "floor.compItem","floor.anularCuenta","finishTableAfterPayment","bulkAnular","bulkCortesia","bulkUnir","bulkMover","bulkAsignar")
                 .flatMap {action -> listOf("activa","posterior","inerte","porTerminar","otraSucursal","origen","cambioSucursal","offline").map {arrayOf<Any>(action,it)}}
