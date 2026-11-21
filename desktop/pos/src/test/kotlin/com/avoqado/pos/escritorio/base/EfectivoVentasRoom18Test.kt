@@ -43,8 +43,9 @@ class EfectivoVentasRoom18Test {
                     room.salesNoticeDao().page(id(90), "", null, emptySet())
                 } finally { room.close() }
                 BundledSQLiteDriver().open(archivo.toString()).use { db ->
-                    // v19 (D1, 28-oct) sólo agrega la copia del ticket, nula: lo de la v18 llega igual.
-                    assertEquals(19L, db.leerLargo("PRAGMA user_version"), "$variante debe actualizar a la versión de la app")
+                    // v19 (D1, 28-oct) sólo agrega la copia del ticket, nula, y v20–v23 (máquina de efectivo) sólo su tabla
+                    // `cobros_en_maquina`: lo de la v18 llega igual.
+                    assertEquals(23L, db.leerLargo("PRAGMA user_version"), "$variante debe actualizar a la versión de la app")
                     antes.forEach { (tabla, foto) ->
                         assertEquals(foto, fotografiar(db, tabla, foto.columnas), "$variante perdió datos de $tabla")
                     }
