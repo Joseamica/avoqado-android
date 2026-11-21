@@ -475,6 +475,39 @@ class ImpresionDePedidoEnLineaTest {
         coVerify(exactly = 1) { repo.confirmPrint("p1", "dev-1") }
     }
 
+    /**
+     * Ronda 4 · menor 2: A se descargó del SERVIDOR (sin cocina); la caja cambia a B sin red y sin copia, y regresa a A sin red y sin la
+     * copia de A. Lo que hay en memoria es la nada de la rama sin copia: no es la descarga de A, así que su «no hay cocina» se vuelve a
+     * preguntar.
+     */
+    @Test
+    fun `R4 Minor 2 back at a venue without its device copy the empty configuration is not trusted and the refresh runs`() = kotlinx.coroutines.runBlocking {
+        val api = mockk<com.avoqado.pos.core.data.network.ApiService>()
+        val cache = mockk<com.avoqado.pos.core.data.local.PayloadCache>(relaxed = true)
+        coEvery { cache.load(any(), any()) } returns null
+        var descargasDeA = 0
+        coEvery { api.getPrintConfig("v1") } answers {
+            if (++descargasDeA == 1) com.avoqado.pos.printing.routing.PrintConfigResponse(true, PrintConfig()) else throw java.io.IOException("sin red")
+        }
+        coEvery { api.getPrintConfig("v2") } throws java.io.IOException("sin red")
+        val configRepo = com.avoqado.pos.printing.routing.PrintConfigRepository(api, cache)
+        var sucursal = "v1"
+        val storage = mockk<com.avoqado.pos.core.data.local.SecureStorage>()
+        every { storage.venueId } answers { sucursal }
+        val printers = mockk<com.avoqado.pos.printing.data.PrinterService>()
+        every { printers.savedPrinters } returns kotlinx.coroutines.flow.MutableStateFlow(emptyList())
+        configRepo.refresh("v1")
+        sucursal = "v2"
+        configRepo.refresh("v2")
+        sucursal = "v1"
+        configRepo.refresh("v1")
+        assertFalse("la memoria vacía no es la descarga de A", configRepo.descargadaDelServidor("v1"))
+        val dispatcher = mockk<com.avoqado.pos.core.domain.printing.ComandaDispatcher>(relaxed = true)
+        val impresion = ImpresionDePedidoEnLinea(repo, dispatcher, printers, configRepo, storage)
+        assertFalse("sigue sin red: no hay cocina", impresion.puedeIntentar("p1"))
+        assertEquals("antes de saltarse el papel se volvió a pedir la configuración de A", 3, descargasDeA)
+    }
+
     @Test
     fun `a business printer that is only the receipt printer gives no claim`() {
         val recibo = PrinterInfo("pr_caja", "Caja", "NETWORK", "192.168.1.9:9100")

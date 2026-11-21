@@ -71,8 +71,8 @@ class PrintConfigRepository @Inject constructor(
 
     /**
      * Ruling 49: la sucursal cuya configuración en memoria se DESCARGÓ bien del SERVIDOR en este proceso (no la copia del aparato). Volver a
-     * hidratar la MISMA sucursal encima (la copia que esa descarga acaba de guardar) no la invalida; volver a ella desde otra sucursal sí:
-     * hasta la siguiente descarga buena, su «no» se vuelve a preguntar. Bajo [candado].
+     * hidratar la MISMA sucursal encima (la copia que esa descarga acaba de guardar) no la invalida; volver a ella desde otra sucursal sí,
+     * con copia del aparato o sin ella: hasta la siguiente descarga buena, su «no» se vuelve a preguntar. Bajo [candado].
      */
     private var venueDescargada: String? = null
 
@@ -179,8 +179,9 @@ class PrintConfigRepository @Inject constructor(
             // (A → B → A rápido), la copia de la anterior ya no se publica: pisaría la config de la vigente y sus comandas
             // saldrían por las estaciones e impresoras de la otra. Mismo CAS que la respuesta tardía de [refresh].
             if (ultimoVenuePedido != venueId) return@synchronized false
+            // Ruling 49 (menor 2 de la ronda 4): si la memoria era de otra sucursal, lo que quede —su copia o la nada— no es una descarga.
+            if (venueDeLaConfig != venueId) venueDescargada = null
             if (blob != null) {
-                if (venueDeLaConfig != venueId) venueDescargada = null
                 _config.value = blob
                 venueDeLaConfig = venueId
             } else if (venueDeLaConfig != venueId) {
