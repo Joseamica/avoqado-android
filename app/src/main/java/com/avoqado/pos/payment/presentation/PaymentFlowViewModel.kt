@@ -2524,6 +2524,10 @@ class PaymentFlowViewModel @Inject constructor(
     }
     suspend fun cobrarConSaldo(identificada: TarjetaIdentificada, montoCents: Int): DesenlaceDeCobro {
         if (conMaquina()) return DesenlaceDeCobro.NoSalio(com.avoqado.pos.maquina.TEXTO_SOLO_MAQUINA_O_TARJETA).also { resultadoDeSaldo.value = it }
+        // Codex código r2 H1: con la máquina apagada, la venta con su efectivo en duda tampoco se cobra con saldo.
+        if (maquina?.revisarSinMaquina == true && maquina.ventaBloqueadaEnDisco()) {
+            return DesenlaceDeCobro.NoSalio(com.avoqado.pos.maquina.TEXTO_VENTA_EN_DUDA).also { resultadoDeSaldo.value = it }
+        }
         if (bloqueoDeEntregaDeSaldo()) return DesenlaceDeCobro.NoSalio(TextosDeTarjetas.NO_SE_PUDO_RECUPERAR).also { resultadoDeSaldo.value = it }
         if (!otrosDuenosPermitenCobrar()) return DesenlaceDeCobro.NoSalio(TextosDeTarjetas.COMPROBANDO_COBRO).also { resultadoDeSaldo.value = it }
         if (cobrandoSaldo || llaveDelSaldo != null) return resultadoDeSaldo.value ?: DesenlaceDeCobro.Incierto
@@ -2988,7 +2992,6 @@ class PaymentFlowViewModel @Inject constructor(
             conProductos = hasProductItems(cart),
             ventaNueva = createdOrderId == null && mesaDelCobro == null && esPagoCompleto() && sesionDelCobro == null &&
                 origenDelCobro == com.avoqado.pos.payment.domain.OrigenDelCobro.NORMAL && !cuentaDeTarjetas.value,
-            totalCents = cart.totalCents,
         )
     }
 
@@ -3090,7 +3093,17 @@ class PaymentFlowViewModel @Inject constructor(
             viewModelScope.launch { if (!caja.bloqueaLaTarjeta() && !caja.apartadaAhora()) elegirMetodo(method) }
             return
         }
-        elegirMetodo(method)
+        siLaVentaNoEsperaALaMaquina { elegirMetodo(method) }
+    }
+
+    /**
+     * Codex código r2 H1: con la máquina apagada, desemparejada o en otra sucursal, una venta que tiene en disco un intento abierto, en
+     * duda o pagado NO se cobra por ningún medio (sería cobrarla dos veces): se lee el disco, nunca la casilla. Sin máquina en esta PC
+     * (una tableta) [accion] corre como hoy, sin leer nada.
+     */
+    private fun siLaVentaNoEsperaALaMaquina(accion: () -> Unit) {
+        val caja = maquina?.takeIf { it.revisarSinMaquina } ?: return accion()
+        viewModelScope.launch { if (!caja.ventaBloqueadaEnDisco()) accion() }
     }
 
     private fun elegirMetodo(method: PaymentMethod) {
@@ -3161,6 +3174,10 @@ class PaymentFlowViewModel @Inject constructor(
         // R4-5: con la máquina, «Ya pagó de otra forma» no existe en esta PC (ni su propina en cero).
         if (conMaquina()) return
         if (isProcessingPayment || bloquearCuentaSinRed()) return
+        siLaVentaNoEsperaALaMaquina { confirmarManual(choice) }
+    }
+
+    private fun confirmarManual(choice: com.avoqado.pos.payment.domain.ManualPaymentChoice) {
         when (choice) {
             is com.avoqado.pos.payment.domain.ManualPaymentChoice.Fixed -> {
                 manualMethod = choice.method
@@ -4032,6 +4049,11 @@ class PaymentFlowViewModel @Inject constructor(
         // de esta PC es el de la máquina.
         if (conMaquina()) return
         if (isProcessingPayment) return
+        // Codex código r2 H1: una venta con su efectivo en duda en la máquina tampoco se cobra en efectivo a mano.
+        siLaVentaNoEsperaALaMaquina { processCashPaymentRevisado(cashReceivedCents) }
+    }
+
+    private fun processCashPaymentRevisado(cashReceivedCents: Int) {
         if (descartandoApartados) return
         if (bloquearCuentaSinRed()) return
         if (primeroDescartarLosPendientes { processCashPayment(cashReceivedCents) }) return

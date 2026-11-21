@@ -58,6 +58,9 @@ internal fun horaDelComprobante(texto: String, inicio: ZonedDateTime): Instant? 
     return (if (ese.isBefore(inicio.withSecond(0).withNano(0))) ese.plusDays(1) else ese).toInstant()
 }
 
+/** ponytail: lo último del diario cabe en el diálogo; el completo lo tiene el SERVIDOR (y el DASHBOARD). */
+private const val EVIDENCIA_VISIBLE = 800
+
 private enum class Opcion(val etiqueta: String, val desenlace: Desenlace) {
     COBRO("Cobró", Desenlace.PAGADO),
     CANCELO("Canceló", Desenlace.CANCELADO),
@@ -72,7 +75,7 @@ private enum class Modo(val etiqueta: String, val valor: String?) { DEVOLVIO("Lo
  */
 @Composable
 internal fun ResolverAMano(vista: VistaDeLaMaquina, onResolver: (ResolucionDelGerente) -> Unit, onCerrar: () -> Unit) =
-    ResolverAMano(vista.puedeResolver, vista.resolviendo, vista.avisoDeResolver, vista.inicioDelCobro, onResolver, onCerrar)
+    ResolverAMano(vista.puedeResolver, vista.resolviendo, vista.avisoDeResolver, vista.inicioDelCobro, onResolver, onCerrar, vista.duda)
 
 /** Codex código r1 #7: el mismo formulario para la duda de esta venta, para las otras dudas de Cobrar y para Ajustes. */
 @Composable
@@ -84,6 +87,11 @@ internal fun ResolverAMano(
     inicio: Long?,
     onResolver: (ResolucionDelGerente) -> Unit,
     onCerrar: () -> Unit,
+    /**
+     * Codex código r2 H7: la evidencia que el gerente tiene en pantalla y su versión: la que se manda es ESTA. Cambia sólo cuando el
+     * SERVIDOR dice que llegó otra (409), y entonces se vuelve a confirmar.
+     */
+    duda: com.avoqado.pos.maquina.CobroEnEspera? = null,
 ) {
     var opcion by remember { mutableStateOf<Opcion?>(null) }
     var modo by remember { mutableStateOf<Modo?>(null) }
@@ -118,6 +126,7 @@ internal fun ResolverAMano(
                             ),
                             cancelMode = modo?.valor.takeIf { o != Opcion.COBRO },
                             evidencia = vio,
+                            version = duda?.version,
                         ),
                     )
                 },
@@ -128,6 +137,12 @@ internal fun ResolverAMano(
             if (!puedeResolver) {
                 Text(TEXTO_SIN_PERMISO_RESOLVER, color = MaterialTheme.colorScheme.error)
                 return@Column
+            }
+            duda?.let { d ->
+                d.evidencia?.let { e ->
+                    Text("Lo que vio la PC (versión ${d.version})", style = MaterialTheme.typography.titleSmall)
+                    Text(e.takeLast(EVIDENCIA_VISIBLE), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
             }
             Text("¿Cómo terminó?", style = MaterialTheme.typography.titleSmall)
             Row(horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {

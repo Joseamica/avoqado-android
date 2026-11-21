@@ -145,6 +145,8 @@ fun PaymentFlowScreen(
         }
     }
     val metodosHabilitados by viewModel.metodosHabilitados.collectAsState()
+    // Codex código r2 H1: con la máquina apagada o desemparejada, una venta con su efectivo en duda se ve en gris y dice por qué.
+    val enDudaSinMaquina = viewModel.maquina?.bloqueadaSinMaquina?.collectAsState()?.value == true
     // Doble pantalla: cambia QUIÉN captura propina y calificación.
     val customerDisplayActive by viewModel.customerDisplayActive.collectAsState()
     // D68 #12: el gris «No hay terminales conectadas» sólo con red; sin red la fila lleva al aviso «Sin conexión».
@@ -326,8 +328,9 @@ fun PaymentFlowScreen(
                     // Sin pantalla de cliente: método de pago con la hoja de
                     // propina encima, como siempre.
                     PaymentMethodSelectionScreen(
-                        metodosHabilitados = metodosHabilitados,
-                        motivoDeshabilitado = if (!metodosHabilitados) com.avoqado.pos.giftcards.domain.TextosDeTarjetas.CUENTA_SIN_RED else null,
+                        metodosHabilitados = metodosHabilitados && !enDudaSinMaquina,
+                        motivoDeshabilitado = if (enDudaSinMaquina) com.avoqado.pos.maquina.TEXTO_VENTA_EN_DUDA
+                        else if (!metodosHabilitados) com.avoqado.pos.giftcards.domain.TextosDeTarjetas.CUENTA_SIN_RED else null,
                         paymentContext = paymentContext.copy(totalCents = currentState.amount),
                         onMethodSelected = { viewModel.selectPaymentMethod(it) },
                         onCashPresetSelected = { viewModel.confirmCashPreset(it) },
@@ -369,8 +372,9 @@ fun PaymentFlowScreen(
                     // C5: el cobro de ESTA venta en la máquina (o lo que decidió el gerente).
                     com.avoqado.pos.maquina.ui.PantallaDeLaMaquina(vista = vistaDeLaMaquina, caja = caja, onSalir = cancelarElCobro)
                 } else PaymentMethodSelectionScreen(
-                    metodosHabilitados = metodosHabilitados,
-                    motivoDeshabilitado = if (!metodosHabilitados) com.avoqado.pos.giftcards.domain.TextosDeTarjetas.CUENTA_SIN_RED else null,
+                    metodosHabilitados = metodosHabilitados && !enDudaSinMaquina,
+                    motivoDeshabilitado = if (enDudaSinMaquina) com.avoqado.pos.maquina.TEXTO_VENTA_EN_DUDA
+                    else if (!metodosHabilitados) com.avoqado.pos.giftcards.domain.TextosDeTarjetas.CUENTA_SIN_RED else null,
                     paymentContext = paymentContext.copy(totalCents = currentState.amount),
                     onMethodSelected = { viewModel.selectPaymentMethod(it) },
                     onCashPresetSelected = { viewModel.confirmCashPreset(it) },

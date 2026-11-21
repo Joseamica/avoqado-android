@@ -14,6 +14,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
@@ -54,11 +55,11 @@ const val TEXTO_ES_LA_DE_ESTA_VENTA = "Ese cobro es el de esta venta: resuélvel
 const val TEXTO_COBROS_EN_ESPERA = "Cobros esperando a la máquina"
 const val TEXTO_COTIZACION_VENCIDA = "No se pudo confirmar el precio a tiempo: inténtalo otra vez"
 const val TEXTO_RESOLUCION_RECIBIDA = "Quedó registrado: el servidor termina este cobro en un momento"
+const val TEXTO_COBRO_ABANDONADO = "Se salió de este cobro antes de mandarlo a la máquina: no se cobró nada"
 
-/** r6-4: «Llegó evidencia nueva» con lo último que vio la PC; hay que revisar y volver a confirmar. */
-fun textoDeEvidenciaNueva(fila: CobroEnMaquinaEntity): String =
-    "Llegó evidencia nueva de este cobro (la PC vio entrar ${com.avoqado.pos.core.util.formatMoneyFromCents(fila.creditCents)}): " +
-        "revísala en la máquina y vuelve a tocar «Resolver»"
+/** r6-4 y Codex código r2 H7: llegó evidencia nueva mientras el gerente tecleaba; se enseña la nueva y se vuelve a confirmar. */
+const val TEXTO_EVIDENCIA_NUEVA = "Llegó evidencia nueva de este cobro: revísala abajo y en la máquina, y vuelve a tocar «Resolver»"
+const val TEXTO_EVIDENCIA_NUEVA_SIN_LEER = "Llegó evidencia nueva de este cobro y no se pudo leer: revisa la conexión y vuelve a tocar «Resolver»"
 
 /** Codex código r1 #12: «Hay N tickets sin imprimir». */
 fun textoDeTicketsSinImprimir(n: Int): String = if (n == 1) "Hay 1 ticket sin imprimir" else "Hay $n tickets sin imprimir"
@@ -75,7 +76,7 @@ data class LaMaquinaAhora(
     /** Su último `sockets`/`status` dijo `cobrando:true` (alguien la usa, también desde su pantalla). */
     val ocupada: Boolean = false,
     val cambio: NivelDeCambio = NivelDeCambio.DESCONOCIDO,
-    /** La última `changeBar` (Codex código r1 #16: el aviso de los 50 centavos la lee). */
+    /** La última `changeBar` (el aviso de poco cambio la lee). */
     val changeBar: String? = null,
 )
 
@@ -93,8 +94,6 @@ fun filaDeLaMaquina(
     ventaNueva: Boolean,
     ventaEnDuda: Boolean,
     cobroVivo: Boolean,
-    /** El total local de la venta (sin cotizar): el aviso de los 50 centavos. */
-    dueCents: Int = 0,
 ): FilaDeLaMaquina {
     val motivo = when {
         ventaEnDuda -> TEXTO_VENTA_EN_DUDA
@@ -107,7 +106,7 @@ fun filaDeLaMaquina(
         visible = conProductos,
         habilitada = conProductos && motivo == null,
         motivo = motivo,
-        avisoDeCambio = avisoDeCambio(ahora.changeBar, dueCents),
+        avisoDeCambio = avisoDeCambio(ahora.changeBar),
     )
 }
 
@@ -206,19 +205,30 @@ fun ticketDeLaFila(fila: CobroEnMaquinaEntity, negocio: String): com.avoqado.pos
 /** C7: el comprobante de [fila] (mismo folio que la venta), o null si no debe nada. */
 fun comprobanteDeLaMaquina(fila: CobroEnMaquinaEntity, negocio: String): com.avoqado.pos.printing.data.model.ReceiptData? {
     val (titulo, debe) = deudaDelComprobante(fila) ?: return null
-    return com.avoqado.pos.printing.data.model.ReceiptData(
+    return comprobante(fila, negocio, titulo, debe)
+}
+
+private fun comprobante(fila: CobroEnMaquinaEntity, negocio: String, titulo: String, debe: Int?) =
+    com.avoqado.pos.printing.data.model.ReceiptData(
         orderNumber = fila.referenceCC,
         orderType = "",
         items = emptyList(),
         subtotal = 0,
         taxAmount = 0,
-        total = debe,
+        total = debe ?: 0,
         venueName = negocio,
         date = Date(fila.cierreEn ?: fila.creadoEn),
         kind = com.avoqado.pos.printing.receiptlayout.KIND_COMPROBANTE_DE_LA_MAQUINA,
-        cashMachine = com.avoqado.pos.printing.receiptlayout.ReceiptCashMachine(fila.referenceCC, debe.toLong(), title = titulo),
+        cashMachine = com.avoqado.pos.printing.receiptlayout.ReceiptCashMachine(fila.referenceCC, debe?.toLong(), title = titulo),
     )
-}
+
+/**
+ * Codex código r2 H10: el papel que se le debe a un cobro pagado. Si el SERVIDOR lo dejó como incidencia (o lo rechazó: `conflicto`), NO
+ * hay venta y no sale un ticket de venta: sale el comprobante del dinero con su folio, con lo que se le debe si se le debe algo.
+ */
+fun papelDeLaFila(fila: CobroEnMaquinaEntity, negocio: String): com.avoqado.pos.printing.data.model.ReceiptData =
+    if (fila.conflicto == null) ticketDeLaFila(fila, negocio)
+    else comprobanteDeLaMaquina(fila, negocio) ?: comprobante(fila, negocio, "COMPROBANTE DE LA MÁQUINA", null)
 
 /** La venta que la caja manda a la máquina. Los importes son los LOCALES: sin red se cobran ésos (R4-2). */
 data class VentaPorCobrar(
@@ -249,6 +259,11 @@ data class ResolucionDelGerente(
     /** Con CANCELADO o GUARDADO: `"1"` la máquina devolvió, `"2"` guardó. null («No sé») = el cobro sigue esperando. */
     val cancelMode: String?,
     val evidencia: String,
+    /**
+     * Codex código r2 H7: la `version` de la evidencia que el gerente TENÍA EN PANTALLA al teclear. Se manda ésa, nunca la que haya en
+     * disco al tocar. null = la que tenga esta PC (sólo para llamadas sin pantalla).
+     */
+    val version: Int? = null,
 )
 
 sealed interface ResultadoDeResolver {
@@ -259,6 +274,12 @@ sealed interface ResultadoDeResolver {
      * motivo; [debeCents], lo que se le debe al cliente (su comprobante con folio).
      */
     data class Incidencia(val texto: String, val debeCents: Int) : ResultadoDeResolver
+
+    /**
+     * Codex código r2 H7: mientras el gerente tecleaba llegó evidencia nueva (409 de versión). No se escribió nada: [duda] es la evidencia
+     * AL DÍA que manda el SERVIDOR, para enseñarla y volver a confirmar con SU versión.
+     */
+    data class EvidenciaNueva(val texto: String, val duda: CobroEnEspera) : ResultadoDeResolver
 }
 
 /**
@@ -283,6 +304,8 @@ class MaquinaDeEfectivo internal constructor(
     private val scope: CoroutineScope,
     private val reloj: () -> Long,
     aleatorio: Random = SecureRandom(),
+    /** Codex código r2 H3 y H11: el reloj monótono (ms) de los plazos y de la vigencia de la cotización; la hora de Windows se mueve. */
+    private val monotonico: () -> Long = { System.nanoTime() / 1_000_000 },
 ) {
     /** El enlace a la red local NO usa el cliente de la API: a la máquina no se le manda la sesión. */
     @Inject constructor(
@@ -303,9 +326,10 @@ class MaquinaDeEfectivo internal constructor(
     )
 
     /** Tras cada cierre o duda, la subida los manda sin esperar a su reloj. La `fecha` de la máquina es hora del negocio (#15). */
-    val cobro = CobroConMaquina(cliente, dao, reloj, scope, aleatorio, alTerminar = subida::disparar) {
-        com.avoqado.pos.core.util.VenueTimeZone.zoneIdFor(secureStorage.venueTimezone)
-    }
+    val cobro = CobroConMaquina(
+        cliente, dao, reloj, scope, aleatorio, alTerminar = subida::disparar,
+        zona = { com.avoqado.pos.core.util.VenueTimeZone.zoneIdFor(secureStorage.venueTimezone) }, monotonico = monotonico,
+    )
 
     private val _ahora = MutableStateFlow(LaMaquinaAhora())
     val ahora: StateFlow<LaMaquinaAhora> = _ahora.asStateFlow()
@@ -338,6 +362,9 @@ class MaquinaDeEfectivo internal constructor(
      * la sucursal con que se emparejó (Codex código r1 #10): en otra, la fila no aparece y Ajustes dice con cuál está emparejada.
      */
     fun activa(): Boolean = prefs.activaEn(secureStorage.venueId) && runCatching { boveda.leer() }.getOrNull() != null
+
+    /** Codex código r2 H1: esta PC tuvo una máquina (la IP se queda al desemparejar): sus ventas se revisan en disco aunque esté apagada. */
+    fun tuvoMaquina(): Boolean = prefs.activa || prefs.ip != null
 
     private var ipConectada: String? = null
     private var recuperada = false
@@ -378,6 +405,27 @@ class MaquinaDeEfectivo internal constructor(
     /** Lo mismo, una lectura (Ajustes › Máquina de efectivo). */
     suspend fun dudasEnEspera(): List<CobroEnMaquinaEntity> = secureStorage.venueId?.let { dao.enEspera(it) }.orEmpty()
 
+    /**
+     * Codex código r2 H6: las dudas del NEGOCIO (de cualquier PC) que guarda el SERVIDOR, por páginas, para la bandeja del gerente.
+     * null = no se pudo leer (sin red, sin permiso): la bandeja enseña sólo las de esta PC.
+     */
+    suspend fun dudasDelNegocio(cursor: String? = null): PaginaDeDudas? {
+        val venueId = secureStorage.venueId ?: return null
+        val r = try {
+            api.listarDudas(venueId, cursor)
+        } catch (e: IOException) {
+            return null
+        }
+        return leerPaginaDeDudas(r)
+    }
+
+    /** Codex código r2 H7: la evidencia AL DÍA de [referenceCC] en el SERVIDOR; null si no se pudo leer. */
+    private suspend fun dudaAlDia(venueId: String, referenceCC: String): CobroEnEspera? = try {
+        leerPaginaDeDudas(api.listarDudas(venueId, folio = referenceCC))?.dudas?.firstOrNull { it.referenceCC == referenceCC }
+    } catch (e: IOException) {
+        null
+    }
+
     /** Las ventas apartadas para la máquina que todavía no tienen su fila (se cotizan o piden el turno). */
     private val apartadas: MutableSet<String> = java.util.Collections.synchronizedSet(mutableSetOf())
 
@@ -398,17 +446,21 @@ class MaquinaDeEfectivo internal constructor(
      * Cotiza y, si se puede, guarda el intento y manda el `paycash` ([CobroConMaquina.cobrar]: la fila ANTES de la red). Lo que
      * no se puede cobrar en la máquina se dice y no deja nada en disco ni en la máquina.
      */
-    suspend fun cobrar(v: VentaPorCobrar): InicioEnLaMaquina {
+    suspend fun cobrar(v: VentaPorCobrar, sigueEnPantalla: () -> Boolean = { true }): InicioEnLaMaquina {
         apartar(v.llaveDeVenta)
         // Iniciado: su fila ya frena la venta. Cualquier otro final: no quedó nada en la máquina y la tarjeta vuelve a poder.
         try {
-            return cotizarYCobrar(v)
+            return cotizarYCobrar(v, sigueEnPantalla)
         } finally {
             apartadas.remove(v.llaveDeVenta)
         }
     }
 
-    private suspend fun cotizarYCobrar(v: VentaPorCobrar): InicioEnLaMaquina {
+    /**
+     * [sigueEnPantalla] (Codex código r2 H5): si mientras se cotizaba la caja salió de este cobro, el `paycash` ya no sale: nadie está
+     * viendo esta venta.
+     */
+    private suspend fun cotizarYCobrar(v: VentaPorCobrar, sigueEnPantalla: () -> Boolean): InicioEnLaMaquina {
         val pedido = runCatching { JSONObject(v.pedidoJson) }.getOrNull() ?: return InicioEnLaMaquina.NoSeCobra(TEXTO_NO_COBRABLE)
         motivoSinMaquinaDelPedido(pedido)?.let { return InicioEnLaMaquina.NoSeCobra(it) }
         try {
@@ -434,6 +486,7 @@ class MaquinaDeEfectivo internal constructor(
                 Cotizacion.SinRed -> Unit
             }
             if (!cobrableEnMaquina(sale + tip)) return InicioEnLaMaquina.NoSeCobra(TEXTO_SIN_CENTAVOS)
+            if (!sigueEnPantalla()) return InicioEnLaMaquina.NoSeCobra(TEXTO_COBRO_ABANDONADO)
             val venta = VentaParaLaMaquina(
                 v.venueId, v.llaveDeVenta, v.pedidoJson, sale, tip, turno.turnoActual(), quoteId, renglones, vigenteHasta, prefs.bindingId,
             )
@@ -450,7 +503,7 @@ class MaquinaDeEfectivo internal constructor(
     }
 
     private sealed interface Cotizacion {
-        /** [renglones]: los que confirmó el SERVIDOR (#14). [vigenteHasta]: hasta cuándo EMPIEZA un cobro (reloj de la PC). */
+        /** [renglones]: los que confirmó el SERVIDOR (#14). [vigenteHasta]: hasta cuándo EMPIEZA un cobro (reloj MONÓTONO de la PC). */
         data class Lista(val saleCents: Int, val tipCents: Int, val quoteId: String?, val renglones: String?, val vigenteHasta: Long?) : Cotizacion
         data class NoSe(val texto: String) : Cotizacion
         /** Sin respuesta útil: se cobra el total local y el excedente cubre un precio que baje (R4-2). */
@@ -458,9 +511,10 @@ class MaquinaDeEfectivo internal constructor(
     }
 
     private suspend fun cotizar(venueId: String, pedido: JSONObject): Cotizacion {
-        // Codex código r1 #14: la vigencia se cuenta con el reloj de la PC desde ANTES de pedirla (un reloj adelantado o atrasado no la
-        // alarga). ponytail: los 10 min del SERVIDOR menos un margen; si cambia allá, cambiar aquí.
-        val pedidaEn = reloj()
+        // Codex código r1 #14 y r2 H11: la vigencia se cuenta con el reloj MONÓTONO desde ANTES de pedirla. El SERVIDOR firma su `expiresAt`
+        // DESPUÉS de recibir la petición, así que este plazo nunca pasa del suyo, y mover la hora de Windows no lo alarga. ponytail: los
+        // 10 min del SERVIDOR menos un margen; si cambia allá, cambiar aquí.
+        val pedidaEn = monotonico()
         val r = try {
             api.cotizar(venueId, pedido)
         } catch (e: IOException) {
@@ -488,7 +542,9 @@ class MaquinaDeEfectivo internal constructor(
         if (!roles.canResolveCashMachine) return ResultadoDeResolver.NoSe(TEXTO_SIN_PERMISO_RESOLVER)
         if (r.desenlace != Desenlace.PAGADO && r.cancelMode !in MODOS) return ResultadoDeResolver.NoSe(TEXTO_NO_SE_SABE_EL_MODO)
         if (r.evidencia.isBlank()) return ResultadoDeResolver.NoSe(TEXTO_ESCRIBE_LO_QUE_VISTE)
-        val fila = dao.porReferencia(referenceCC) ?: return ResultadoDeResolver.NoSe(TEXTO_DUDA_SIN_SUBIR)
+        // Codex código r2 H6: el gerente resuelve por folio desde su caja: la fila puede no estar en esta PC (es de otra).
+        val fila = dao.porReferencia(referenceCC)
+        val venueId = fila?.venueId ?: secureStorage.venueId ?: return ResultadoDeResolver.NoSe(TEXTO_DUDA_SIN_SUBIR)
         val cuerpo = JSONObject()
             .put("outcome", r.desenlace.name)
             .put("creditCents", r.creditCents)
@@ -496,17 +552,17 @@ class MaquinaDeEfectivo internal constructor(
             .put("occurredAt", r.horaDelComprobante?.toString() ?: JSONObject.NULL)
             .put("evidence", r.evidencia.trim())
             .put("cancelMode", if (r.desenlace == Desenlace.PAGADO) JSONObject.NULL else r.cancelMode)
-            // r6-4: la versión de la evidencia que tenía la PC al resolver; si llegó otra, el SERVIDOR no escribe nada.
-            .put("version", fila.versionDeLaDuda ?: 1)
+            // r6-4 y Codex código r2 H7: la versión de la evidencia que el gerente VIO; si llegó otra, el SERVIDOR no escribe nada.
+            .put("version", r.version ?: fila?.versionDeLaDuda ?: 1)
         val respuesta = try {
-            api.resolverDuda(fila.venueId, referenceCC, cuerpo)
+            api.resolverDuda(venueId, referenceCC, cuerpo)
         } catch (e: IOException) {
             return ResultadoDeResolver.NoSe(TEXTO_SIN_RED_RESOLVER)
         }
         // Lo que contestó se lee con [leerAcuse] y se aplica a la fila con la MISMA lectura que la subida (un solo lugar).
         return when (val acuse = leerAcuse(respuesta)) {
             is Acuse.Terminado -> {
-                if (!dao.resolverConElEco(fila, acuse.json, acuse.cuerpo)) return ResultadoDeResolver.NoSe(TEXTO_RESPUESTA_DISTINTA)
+                if (fila != null && !dao.resolverConElEco(fila, acuse.json, acuse.cuerpo)) return ResultadoDeResolver.NoSe(TEXTO_RESPUESTA_DISTINTA)
                 subida.disparar()
                 // Codex código r1 #11: un 202 con incidencia no es venta (sin ticket ni comanda): sólo el comprobante de lo que se debe.
                 acuse.incidencia?.let { ResultadoDeResolver.Incidencia(it, acuse.json.optInt("owedCents", 0)) }
@@ -517,11 +573,11 @@ class MaquinaDeEfectivo internal constructor(
                 subida.disparar()
                 ResultadoDeResolver.NoSe(TEXTO_RESOLUCION_RECIBIDA)
             }
-            // r6-4: llegó evidencia nueva: se dice, con lo último que vio la PC, y hay que volver a confirmar (ya con la versión nueva).
-            is Acuse.OtraVersion -> {
-                acuse.version?.let { dao.anotarVersionDeLaDuda(referenceCC, it) }
-                ResultadoDeResolver.NoSe(textoDeEvidenciaNueva(dao.porReferencia(referenceCC) ?: fila))
-            }
+            // r6-4 y Codex código r2 H7: llegó evidencia nueva. No se escribió nada: se trae la evidencia AL DÍA del SERVIDOR (nunca la de
+            // disco) para enseñarla, y el gerente vuelve a confirmar con ESA versión. Si no se pudo leer, se dice y se vuelve a intentar.
+            is Acuse.OtraVersion -> dudaAlDia(venueId, referenceCC)
+                ?.let { ResultadoDeResolver.EvidenciaNueva(TEXTO_EVIDENCIA_NUEVA, it) }
+                ?: ResultadoDeResolver.NoSe(TEXTO_EVIDENCIA_NUEVA_SIN_LEER)
             Acuse.NoExiste -> {
                 subida.disparar()
                 ResultadoDeResolver.NoSe(TEXTO_DUDA_SIN_SUBIR)
@@ -535,16 +591,54 @@ class MaquinaDeEfectivo internal constructor(
 
     // MARK: - Ticket y comprobantes (C7)
 
+    /** Codex código r2 H9: los folios que ESTE proceso imprime ahora. Un «imprimiéndose» que no está aquí lo dejó una PC que murió. */
+    private val imprimiendo = MutableStateFlow<Set<String>>(emptySet())
+
+    /**
+     * Codex código r2 H9: el papel de [referenceCC], una sola vez. Se reclama ANTES de imprimir (`ticketImpreso` 0 → 2, un solo
+     * ganador) y la marca es el resultado REAL de la impresora. Un 2 que dejó una PC que murió imprimiéndolo sale como COPIA
+     * («REIMPRESIÓN»), nunca como otro original. null = ya salió, otro lo está imprimiendo o no hay papel que dar.
+     */
+    private suspend fun imprimirPapel(
+        referenceCC: String,
+        papel: (CobroEnMaquinaEntity) -> com.avoqado.pos.printing.data.model.ReceiptData?,
+    ): PrinterService.PrintOutcome? {
+        var ya = false
+        imprimiendo.update { if (referenceCC in it) { ya = true; it } else it + referenceCC }
+        if (ya) return null
+        try {
+            val fila = dao.porReferencia(referenceCC) ?: return null
+            val copia = when {
+                dao.reclamarTicket(referenceCC) == 1 -> false
+                fila.ticketImpreso == TicketDelCobro.IMPRIMIENDO -> true
+                else -> return null
+            }
+            val recibo = papel(fila)?.let { if (copia) it.copy(reprintedAt = Date(reloj())) else it }
+            if (recibo == null) {
+                if (!copia) dao.terminarTicket(referenceCC, TicketDelCobro.PENDIENTE)
+                return null
+            }
+            val r = printerService.manualPrintReceipt(recibo)
+            dao.terminarTicket(
+                referenceCC,
+                when {
+                    r is PrinterService.PrintOutcome.Printed -> TicketDelCobro.IMPRESO
+                    copia -> TicketDelCobro.IMPRIMIENDO   // pudo haber salido antes: se sigue ofreciendo como copia
+                    else -> TicketDelCobro.PENDIENTE
+                },
+            )
+            return r
+        } finally {
+            imprimiendo.update { it - referenceCC }
+        }
+    }
+
     /**
      * El ticket de una venta de la máquina, UNA vez por folio: sale aunque la impresora no tenga la impresión automática (es la
      * prueba del cliente, sobre todo con deuda) y `ticketImpreso` se marca sólo con el resultado REAL de la impresora.
      */
-    suspend fun imprimirTicketUnaVez(referenceCC: String, ticket: com.avoqado.pos.printing.data.model.ReceiptData): PrinterService.PrintOutcome? {
-        if (dao.porReferencia(referenceCC)?.ticketImpreso != false) return null
-        val r = printerService.manualPrintReceipt(ticket)
-        if (r is PrinterService.PrintOutcome.Printed) dao.marcarTicketImpreso(referenceCC)
-        return r
-    }
+    suspend fun imprimirTicketUnaVez(referenceCC: String, ticket: com.avoqado.pos.printing.data.model.ReceiptData): PrinterService.PrintOutcome? =
+        imprimirPapel(referenceCC) { ticket }
 
     /** El comprobante de [referenceCC] (reimprimible). null = esa fila no le debe nada al cliente. */
     suspend fun imprimirComprobante(referenceCC: String): PrinterService.PrintOutcome? {
@@ -555,8 +649,8 @@ class MaquinaDeEfectivo internal constructor(
 
     /** El de un CANCELADO que no devolvió todo, UNA vez al cerrarse (después se reimprime desde Ajustes de la máquina). */
     suspend fun imprimirComprobanteUnaVez(referenceCC: String) {
-        if (dao.porReferencia(referenceCC)?.ticketImpreso != false) return
-        if (imprimirComprobante(referenceCC) is PrinterService.PrintOutcome.Printed) dao.marcarTicketImpreso(referenceCC)
+        val negocio = secureStorage.venueName ?: "Avoqado"
+        imprimirPapel(referenceCC) { comprobanteDeLaMaquina(it, negocio) }
     }
 
     /**
@@ -570,20 +664,25 @@ class MaquinaDeEfectivo internal constructor(
 
     suspend fun cuantosComprobantes(): Int = secureStorage.venueId?.let { dao.contarComprobantes(it) } ?: 0
 
-    /** Codex código r1 #12: las ventas pagadas de la sucursal cuyo ticket no salió, en vivo. */
+    /** Codex código r1 #12: los cobros pagados de la sucursal cuyo papel no salió, en vivo (sin los que este proceso imprime ahora). */
     fun ticketsSinImprimir(): Flow<Int> =
-        (secureStorage.venueId?.let(dao::observarTicketsSinImprimir) ?: kotlinx.coroutines.flow.flowOf(emptyList())).map { it.size }
+        (secureStorage.venueId?.let(dao::observarTicketsSinImprimir) ?: kotlinx.coroutines.flow.flowOf(emptyList()))
+            .combine(imprimiendo) { filas, enCurso -> filas.count { it.referenceCC !in enCurso } }
+
+    /** Lo mismo, una lectura (Ajustes › Máquina de efectivo: se llega con la máquina apagada, Codex código r2 #12). */
+    suspend fun cuantosTicketsSinImprimir(): Int =
+        secureStorage.venueId?.let { v -> dao.ticketsSinImprimir(v).count { it.referenceCC !in imprimiendo.value } } ?: 0
 
     /**
-     * Codex código r1 #12: imprime (con el botón, nunca solo) los tickets pendientes; cada uno se marca con el resultado REAL de la
-     * impresora, y el que no sale sigue pendiente. Devuelve cuántos salieron.
+     * Codex código r1 #12 y r2 H9/H10: imprime (con el botón, nunca solo) los papeles pendientes, cada uno reclamado y marcado con el
+     * resultado REAL de la impresora ([imprimirPapel]); con incidencia sale el comprobante del dinero ([papelDeLaFila]). Devuelve
+     * cuántos salieron.
      */
     suspend fun imprimirTicketsPendientes(): Int {
         val venueId = secureStorage.venueId ?: return 0
         val negocio = secureStorage.venueName ?: "Avoqado"
         return dao.ticketsSinImprimir(venueId).count { fila ->
-            val r = printerService.manualPrintReceipt(ticketDeLaFila(fila, negocio))
-            (r is PrinterService.PrintOutcome.Printed).also { if (it) dao.marcarTicketImpreso(fila.referenceCC) }
+            imprimirPapel(fila.referenceCC) { papelDeLaFila(it, negocio) } is PrinterService.PrintOutcome.Printed
         }
     }
 

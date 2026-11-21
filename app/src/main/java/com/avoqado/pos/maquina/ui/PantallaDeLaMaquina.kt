@@ -94,6 +94,8 @@ internal fun CobrosEnEsperaDeLaMaquina(
     var abierta by remember { mutableStateOf<String?>(null) }
     var resolviendo by remember { mutableStateOf(false) }
     var aviso by remember { mutableStateOf<String?>(null) }
+    // Codex código r2 H7: lo que el gerente tiene en pantalla se congela al abrir; sólo un 409 de versión lo cambia (por la del SERVIDOR).
+    var enPantalla by remember { mutableStateOf<com.avoqado.pos.maquina.CobroEnEspera?>(null) }
     Column(Modifier.fillMaxWidth().padding(vertical = AvoqadoTheme.spacing.sm)) {
         Text(
             "${com.avoqado.pos.maquina.TEXTO_COBROS_EN_ESPERA} (${enEspera.size})",
@@ -104,7 +106,7 @@ internal fun CobrosEnEsperaDeLaMaquina(
         enEspera.forEach { c ->
             Row(Modifier.fillMaxWidth().padding(top = AvoqadoTheme.spacing.xs), verticalAlignment = Alignment.CenterVertically) {
                 Text("Folio ${c.referenceCC} · ${formatMoneyFromCents(c.dueCents)}", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
-                OutlinedButton(onClick = { abierta = c.referenceCC; aviso = null }) { Text("Resolver con gerente") }
+                OutlinedButton(onClick = { abierta = c.referenceCC; enPantalla = c; aviso = null }) { Text("Resolver con gerente") }
             }
         }
     }
@@ -114,6 +116,7 @@ internal fun CobrosEnEsperaDeLaMaquina(
             resolviendo = resolviendo,
             aviso = aviso,
             inicio = enEspera.firstOrNull { it.referenceCC == ref }?.creadoEn,
+            duda = enPantalla,
             onResolver = { r ->
                 scope.launch {
                     resolviendo = true
@@ -121,6 +124,10 @@ internal fun CobrosEnEsperaDeLaMaquina(
                     resolviendo = false
                     when (resultado) {
                         is com.avoqado.pos.maquina.ResultadoDeResolver.NoSe -> aviso = resultado.texto
+                        is com.avoqado.pos.maquina.ResultadoDeResolver.EvidenciaNueva -> {
+                            aviso = resultado.texto
+                            enPantalla = resultado.duda
+                        }
                         // Codex código r1 #11: sin venta; se dice el motivo y el diálogo se queda para leerlo.
                         is com.avoqado.pos.maquina.ResultadoDeResolver.Incidencia -> aviso = resultado.texto
                         is com.avoqado.pos.maquina.ResultadoDeResolver.Resuelto -> abierta = null
@@ -215,7 +222,12 @@ fun PantallaDeLaMaquina(vista: VistaDeLaMaquina, caja: CajaConMaquina, onSalir: 
                     Nota("La máquina no confirmó cómo terminó este cobro. No lo cobres otra vez: pide a un gerente que lo revise en la máquina.")
                     Monto("Por pagar", c.dueCents)
                     Spacer(Modifier.height(AvoqadoTheme.spacing.xl))
-                    PrimaryButton(text = "Resolver con gerente", onClick = { resolviendo = true }, fullWidth = true, enabled = vista.puedeResolver)
+                    PrimaryButton(
+                        text = "Resolver con gerente",
+                        onClick = { scope.launch { caja.abrirResolucion(); resolviendo = true } },
+                        fullWidth = true,
+                        enabled = vista.puedeResolver,
+                    )
                     if (!vista.puedeResolver) Nota(TEXTO_SIN_PERMISO_RESOLVER)
                     Spacer(Modifier.height(AvoqadoTheme.spacing.md))
                     OutlinedButton(onClick = onSalir) { Text("Salir") }

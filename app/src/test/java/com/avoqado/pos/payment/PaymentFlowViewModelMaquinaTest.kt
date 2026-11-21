@@ -20,6 +20,7 @@ import com.avoqado.pos.maquina.MaquinaDeEfectivoPrefs
 import com.avoqado.pos.maquina.MaquinaDeEfectivoTest
 import com.avoqado.pos.maquina.RespuestaDelServidor
 import com.avoqado.pos.maquina.SubidaDeLaMaquina
+import com.avoqado.pos.maquina.TicketDelCobro
 import com.avoqado.pos.maquina.TEXTO_CON_PREMIO
 import com.avoqado.pos.maquina.TEXTO_SOLO_VENTA_COMPLETA
 import com.avoqado.pos.maquina.TurnoDelNegocio
@@ -139,7 +140,7 @@ class PaymentFlowViewModelMaquinaTest {
         }
         val maquina = MaquinaDeEfectivo(
             prefs, boveda, dao, api, mockk<SubidaDeLaMaquina>(relaxed = true) { every { aviso } returns kotlinx.coroutines.flow.MutableStateFlow(null) }, turno, RoleManager(secureStorage), printerService,
-            secureStorage, canal, backgroundScope, { testScheduler.currentTime }, Random(7),
+            secureStorage, canal, backgroundScope, { testScheduler.currentTime }, Random(7), monotonico = { testScheduler.currentTime },
         )
         return PaymentFlowViewModel(
             orderRepository = orderRepository,
@@ -291,6 +292,90 @@ class PaymentFlowViewModelMaquinaTest {
     }
 
     @Test
+    fun `P1 Codex r2 H1 con la maquina desemparejada, la venta con su efectivo en duda no se cobra con tarjeta ni a mano`() = runTest {
+        val vm = vm(activa = false)   // la PC tuvo máquina (su IP se queda) y el gerente la desemparejó
+        val cart = CartState(items = listOf(cafe))
+        dao.insertar(
+            com.avoqado.pos.maquina.CobroEnMaquinaEntity(
+                "AQ000000000007", "venue-1", cart.llaveParaLaMaquina, "{}", 18_000, 0, 18_000, null, "q-1", 1, EstadoDelIntento.ESPERANDO,
+                dudaSubida = true, versionDeLaDuda = 1,
+            ),
+        )
+        vm.startPaymentFlow(cart)
+        runCurrent()
+        assertNull("sin la máquina activa no hay su pantalla…", vm.maquina!!.vista.value)
+        assertTrue("…pero Cobrar dice que la venta espera a la máquina", vm.maquina!!.bloqueadaSinMaquina.value)
+
+        vm.selectPaymentMethod(PaymentMethod.CARD)   // F4
+        runCurrent()
+        assertTrue("la tarjeta no sale", vm.state.value is PaymentFlowState.SelectingPaymentMethod)
+
+        vm.selectPaymentMethod(PaymentMethod.CASH)
+        runCurrent()
+        assertTrue("el efectivo a mano tampoco", vm.state.value is PaymentFlowState.SelectingPaymentMethod)
+        vm.processCashPayment(20_000)   // «Personalizado» o un billete sugerido
+        runCurrent()
+        assertTrue("ni con el monto a mano", vm.state.value is PaymentFlowState.SelectingPaymentMethod)
+        verify(exactly = 0) { cashPaymentRepository.processCashPayment(any(), any()) }
+    }
+
+    @Test
+    fun `Codex r2 H1 con la maquina desemparejada, una venta sin nada en la maquina se cobra como siempre`() = runTest {
+        val vm = vm(activa = false)
+        vm.startPaymentFlow(CartState(items = listOf(cafe)))
+        runCurrent()
+        assertFalse(vm.maquina!!.bloqueadaSinMaquina.value)
+
+        vm.selectPaymentMethod(PaymentMethod.CASH)
+        runCurrent()
+
+        assertTrue(vm.state.value is PaymentFlowState.CollectingCashAmount)
+    }
+
+    @Test
+    fun `P1 Codex r2 H5 la cotizacion de A que regresa con B en pantalla no manda el cobro ni escribe en B`() = runTest {
+        val vm = vm()
+        val respuesta = kotlinx.coroutines.CompletableDeferred<RespuestaDelServidor>()
+        coEvery { api.cotizar("venue-1", any()) } coAnswers { respuesta.await() }
+        vm.startPaymentFlow(CartState(items = listOf(cafe)))   // A
+        runCurrent()
+        vm.cobrarConMaquina(); runCurrent()
+
+        vm.startPaymentFlow(CartState(items = listOf(cafe.copy(id = "te", name = "Té"))))   // Esc, y la cajera abre B
+        runCurrent()
+        respuesta.complete(
+            RespuestaDelServidor(200, JSONObject().put("quoteId", "q-1").put("saleCents", 18_000).put("tipCents", 0)
+                .put("totalCents", 18_000).put("cobrableEnMaquina", true).toString()),
+        )
+        runCurrent()
+
+        assertNull("nadie ve ya la venta A: su paycash no sale", canal.paycash())
+        assertTrue(dao.todas().isEmpty())
+        val b = vm.maquina!!.vista.value!!
+        assertNull(b.cobro)
+        assertNull("lo de A no se escribe en B", b.aviso)
+        assertFalse(b.ventaEnDuda)
+    }
+
+    @Test
+    fun `P1 Codex r2 H5 el PAGADO de A que llega con B en pantalla no cobra B, y A queda con su ticket pendiente`() = runTest {
+        val vm = vm()
+        val refA = mandarALaMaquina(vm)
+        vm.startPaymentFlow(CartState(items = listOf(cafe.copy(id = "te", name = "Té"))))   // B
+        runCurrent()
+
+        canal.llega(status(refA, 18_000)); runCurrent()
+        canal.llega(status(refA, 18_000, credit = 20_000, change = 2_000, cobrando = false, estado = "Pago Completado")); runCurrent()
+
+        assertTrue("B sigue eligiendo método", vm.state.value is PaymentFlowState.SelectingPaymentMethod)
+        assertEquals(EstadoDelIntento.PAGADO, dao.fila(refA)!!.estado)
+        val b = vm.maquina!!.vista.value!!
+        assertNull(b.cobro)
+        assertEquals("el ticket de A se ofrece con su botón", 1, b.ticketsSinImprimir)
+        coVerify(exactly = 0) { printerService.manualPrintReceipt(any()) }
+    }
+
+    @Test
     fun `Codex r1 #1 si la cotizacion no deja cobrar en la maquina, la venta se suelta y la tarjeta vuelve`() = runTest {
         val vm = vm()
         coEvery { api.cotizar("venue-1", any()) } returns RespuestaDelServidor(
@@ -434,7 +519,7 @@ class PaymentFlowViewModelMaquinaTest {
         assertEquals(20_000 to 2_000, r.cashTendered to r.changeAmount)
         assertEquals(18_000, r.total)
         assertEquals(ReceiptCashMachine(ref, owedCents = null, priceToConfirm = false), r.cashMachine)
-        assertTrue(dao.fila(ref)!!.ticketImpreso)
+        assertEquals(TicketDelCobro.IMPRESO, dao.fila(ref)!!.ticketImpreso)
         coVerify(exactly = 0) { printerService.autoPrintReceipt(any()) }
 
         vm.reprintReceipt()
@@ -458,7 +543,7 @@ class PaymentFlowViewModelMaquinaTest {
 
         val ref = pagar(vm())
 
-        assertFalse(dao.fila(ref)!!.ticketImpreso)
+        assertEquals(TicketDelCobro.PENDIENTE, dao.fila(ref)!!.ticketImpreso)
     }
 
     @Test
@@ -532,7 +617,7 @@ class PaymentFlowViewModelMaquinaTest {
         assertEquals(KIND_COMPROBANTE_DE_LA_MAQUINA, c.kind)
         assertEquals(ref, c.orderNumber)
         assertEquals(2_000L, c.cashMachine!!.owedCents)
-        assertTrue(dao.fila(ref)!!.ticketImpreso)
+        assertEquals(TicketDelCobro.IMPRESO, dao.fila(ref)!!.ticketImpreso)
     }
 
     @Test
@@ -602,13 +687,13 @@ class PaymentFlowViewModelMaquinaTest {
         coEvery { printerService.manualPrintReceipt(any()) } returns PrinterService.PrintOutcome.NoPrinter andThen PrinterService.PrintOutcome.Printed(1)
         val vm = vm()
         pagar(vm)
-        assertFalse(dao.todas().single().ticketImpreso)
+        assertEquals(TicketDelCobro.PENDIENTE, dao.todas().single().ticketImpreso)
 
         assertEquals(1, vm.maquina!!.vista.value!!.ticketsSinImprimir)
         vm.maquina!!.imprimirTicketsPendientes()
         runCurrent()
 
-        assertTrue(dao.todas().single().ticketImpreso)
+        assertEquals(TicketDelCobro.IMPRESO, dao.todas().single().ticketImpreso)
         assertEquals(0, vm.maquina!!.vista.value!!.ticketsSinImprimir)
     }
 

@@ -46,7 +46,7 @@ class MaquinaDeEfectivoTest {
         var alEnviar: (String) -> Unit = {}
         var conectadaA: String? = null
 
-        var ultimoStatus: Recibido? = null
+        val ultimaSenal = UltimaSenal()
 
         override fun enviar(json: String, generacion: Int): Boolean {
             if (conexion.value != Conexion.CONECTADA || generacion != this.generacion.value) return false
@@ -55,18 +55,15 @@ class MaquinaDeEfectivoTest {
             return true
         }
 
-        override fun enviarSiSigueSiendoNuestro(json: String, generacion: Int, referenceCC: String, dueCents: Int): Boolean {
-            val m = ultimoStatus?.mensaje as? MensajeDeLaMaquina.Status
-            return ultimoStatus?.generacion == generacion && m != null && m.cobrando && m.referenceCC == referenceCC &&
-                m.dueCents == dueCents && enviar(json, generacion)
-        }
+        override fun enviarSiSigueSiendoNuestro(json: String, generacion: Int, referenceCC: String, dueCents: Int): Boolean =
+            ultimaSenal.esNuestra(generacion, referenceCC, dueCents) && enviar(json, generacion)
 
         override fun conectar(ip: String) { conectadaA = ip }
         override fun desconectar() { conectadaA = null }
 
         fun llega(json: String) {
             val r = Recibido(generacion.value, leerMensaje(json)!!, json)
-            if (r.mensaje is MensajeDeLaMaquina.Status) ultimoStatus = r
+            ultimaSenal.anotar(r)
             check(recibidos.tryEmit(r))
         }
         fun paycash(): JSONObject? = enviados.map(::JSONObject).lastOrNull { it.getString("comando") == "paycash" }
@@ -99,7 +96,7 @@ class MaquinaDeEfectivoTest {
 
     private fun TestScope.maquina() = MaquinaDeEfectivo(
         prefs, boveda, dao, api, subida, turno, RoleManager(sesion), impresora, sesion, canal, backgroundScope,
-        { testScheduler.currentTime }, Random(7),
+        { testScheduler.currentTime }, Random(7), monotonico = { testScheduler.currentTime },
     )
 
     private val pedido = JSONObject().put("items", org.json.JSONArray().put(JSONObject().put("productId", "p1").put("quantity", 1)))
@@ -359,7 +356,8 @@ class MaquinaDeEfectivoTest {
         runCurrent()
         assertEquals(LaMaquinaAhora(Conexion.CONECTADA, ocupada = true, cambio = NivelDeCambio.POCO, changeBar = "012220222000"), m.ahora.value)
 
-        canal.llega("""{"comando":"sockets","cobrando":false,"Due":0,"Credit":0,"changeBar":"022220222000"}""")
+        // Codex código r2 H12: con TODAS las monedas en 2 (la regla del plan) hay cambio suficiente.
+        canal.llega("""{"comando":"sockets","cobrando":false,"Due":0,"Credit":0,"changeBar":"222222222000"}""")
         canal.conexion.value = Conexion.DESCONECTADA
         runCurrent()
         assertEquals(Conexion.DESCONECTADA, m.ahora.value.conexion)
@@ -368,19 +366,17 @@ class MaquinaDeEfectivoTest {
 
     @Test
     fun `la fila de la maquina`() {
-        val bien = LaMaquinaAhora(Conexion.CONECTADA, ocupada = false, cambio = NivelDeCambio.SUFICIENTE, changeBar = "022220222000")
+        val bien = LaMaquinaAhora(Conexion.CONECTADA, ocupada = false, cambio = NivelDeCambio.SUFICIENTE, changeBar = "222222222000")
         assertEquals(FilaDeLaMaquina(visible = true, habilitada = true, motivo = null, avisoDeCambio = null),
-            filaDeLaMaquina(bien, conProductos = true, ventaNueva = true, ventaEnDuda = false, cobroVivo = false, dueCents = 18_000))
-        assertEquals("Codex r1 #16: un total que termina en .50", TEXTO_PODRIA_DEBER_50,
-            filaDeLaMaquina(bien, true, true, false, false, dueCents = 18_750).avisoDeCambio)
+            filaDeLaMaquina(bien, conProductos = true, ventaNueva = true, ventaEnDuda = false, cobroVivo = false))
         assertFalse("sin productos no aparece", filaDeLaMaquina(bien, false, true, false, false).visible)
         assertEquals(TEXTO_NO_RESPONDE, filaDeLaMaquina(bien.copy(conexion = Conexion.CONECTANDO), true, true, false, false).motivo)
         assertEquals(TEXTO_OCUPADA, filaDeLaMaquina(bien.copy(ocupada = true), true, true, false, false).motivo)
         assertEquals(TEXTO_OCUPADA, filaDeLaMaquina(bien, true, true, false, cobroVivo = true).motivo)
         assertEquals(TEXTO_VENTA_EN_DUDA, filaDeLaMaquina(bien, true, true, ventaEnDuda = true, cobroVivo = false).motivo)
         assertEquals(TEXTO_SOLO_VENTA_COMPLETA, filaDeLaMaquina(bien, true, ventaNueva = false, false, false).motivo)
-        listOf("021220222000", null).forEach { barra ->
-            val fila = filaDeLaMaquina(bien.copy(changeBar = barra), true, true, false, false, dueCents = 18_000)
+        listOf("021220222000", "122222222000", null).forEach { barra ->
+            val fila = filaDeLaMaquina(bien.copy(changeBar = barra), true, true, false, false)
             assertEquals("$barra avisa", TEXTO_POCO_CAMBIO, fila.avisoDeCambio)
             assertTrue("$barra deja seguir", fila.habilitada)
         }
@@ -557,10 +553,12 @@ class MaquinaDeEfectivoTest {
             .put("creditCents", credit).put("changeDispensedCents", change).put("owedCents", 0).apply(extra).toString()
 
     @Test
-    fun `P1 r6-4 resolver manda la version que tiene la PC y si llego evidencia nueva lo dice y pide confirmar otra vez`() = runTest {
+    fun `P1 Codex r2 H7 resolver manda la version que VIO el gerente, no la de disco, y un 409 trae la evidencia al dia del servidor`() = runTest {
         val m = maquina()
         val ref = dudaDe(m)
-        dao.marcarDudaAbierta(ref, 3)
+        dao.marcarDudaAbierta(ref, 2, "", 0)
+        // Mientras el gerente teclea, llega evidencia nueva a disco y la subida la deja en la versión 3.
+        dao.marcarDudaAbierta(ref, 3, "", 0)
         val cuerpos = mutableListOf<JSONObject>()
         coEvery { api.resolverDuda("venue-1", ref, capture(cuerpos)) } returns
             RespuestaDelServidor(
@@ -568,17 +566,58 @@ class MaquinaDeEfectivoTest {
                 JSONObject().put("message", "Llegó evidencia nueva").put("code", "CASH_MACHINE_DOUBT_CHANGED")
                     .put("details", JSONObject().put("version", 4)).toString(),
             ) andThen RespuestaDelServidor(200, ecoDelGerente(ref, "PAGADO", 20_000, 1_250))
-        val resolucion = ResolucionDelGerente(Desenlace.PAGADO, 20_000, 1_250, null, null, "Ticket 0042")
+        coEvery { api.listarDudas("venue-1", null, ref) } returns RespuestaDelServidor(
+            200,
+            JSONObject().put("total", 1).put("nextCursor", JSONObject.NULL).put(
+                "data",
+                org.json.JSONArray().put(
+                    JSONObject().put("referenceCC", ref).put("kind", "ESPERANDO").put("dueCents", 18_750).put("version", 4)
+                        .put("lastSeen", "Entró \$200.00\ng2 {\"comando\":\"status\"}").put("startedAt", "2026-11-18T21:48:20Z"),
+                ),
+            ).toString(),
+        )
+        val vio = ResolucionDelGerente(Desenlace.PAGADO, 20_000, 1_250, null, null, "Ticket 0042", version = 2)
 
-        val primera = m.resolver(ref, resolucion)
+        val primera = m.resolver(ref, vio)
 
-        assertTrue(primera is ResultadoDeResolver.NoSe && primera.texto.startsWith("Llegó evidencia nueva de este cobro"))
-        assertEquals(3, cuerpos[0].getInt("version"))
+        assertEquals("la que estaba en pantalla, no la de disco", 2, cuerpos[0].getInt("version"))
+        assertTrue(primera is ResultadoDeResolver.EvidenciaNueva)
+        val nueva = (primera as ResultadoDeResolver.EvidenciaNueva).duda
+        assertEquals(4, nueva.version)
+        assertTrue("la evidencia AL DÍA del servidor, no la de disco", nueva.evidencia!!.startsWith("Entró \$200.00"))
         assertEquals("no se escribió nada", EstadoDelIntento.ESPERANDO, dao.fila(ref)!!.estado)
-        assertEquals(4, dao.fila(ref)!!.versionDeLaDuda)
 
-        assertEquals(ResultadoDeResolver.Resuelto(Desenlace.PAGADO, 20_000, 1_250), m.resolver(ref, resolucion))
-        assertEquals("confirmó otra vez, ya con la versión nueva", 4, cuerpos[1].getInt("version"))
+        assertEquals(ResultadoDeResolver.Resuelto(Desenlace.PAGADO, 20_000, 1_250), m.resolver(ref, vio.copy(version = nueva.version)))
+        assertEquals("confirmó otra vez, con la versión que vio", 4, cuerpos[1].getInt("version"))
+    }
+
+    @Test
+    fun `P1 Codex r2 H6 el gerente resuelve por folio una duda de OTRA PC, sin fila en la suya, y la lista viene del servidor por paginas`() = runTest {
+        val m = maquina()
+        coEvery { api.listarDudas("venue-1", null, null) } returns RespuestaDelServidor(
+            200,
+            JSONObject().put("total", 103).put("nextCursor", "c-2").put(
+                "data",
+                org.json.JSONArray().put(
+                    JSONObject().put("referenceCC", "AQ00000000KIOS").put("kind", "ESPERANDO").put("dueCents", 9_000).put("version", 2)
+                        .put("lastSeen", "Entró \$100.00").put("startedAt", "2026-11-18T21:48:20Z").put("deviceId", "otra-pc"),
+                ),
+            ).toString(),
+        )
+        val pagina = m.dudasDelNegocio()!!
+        assertEquals(103, pagina.total)
+        assertEquals("c-2", pagina.siguiente)
+        assertEquals(listOf(CobroEnEspera("AQ00000000KIOS", 9_000, 1_795_038_500_000, 2, "Entró \$100.00")), pagina.dudas)
+
+        val cuerpo = slot<JSONObject>()
+        coEvery { api.resolverDuda("venue-1", "AQ00000000KIOS", capture(cuerpo)) } returns
+            RespuestaDelServidor(200, ecoDelGerente("AQ00000000KIOS", "CANCELADO", 10_000, 10_000))
+
+        val r = m.resolver("AQ00000000KIOS", ResolucionDelGerente(Desenlace.CANCELADO, 10_000, 10_000, null, "1", "devolvió", version = 2))
+
+        assertEquals(ResultadoDeResolver.Resuelto(Desenlace.CANCELADO, 10_000, 10_000), r)
+        assertEquals(2, cuerpo.captured.getInt("version"))
+        assertNull("la fila es de la otra PC: aquí no se inventa nada", dao.fila("AQ00000000KIOS"))
     }
 
     @Test
@@ -625,7 +664,69 @@ class MaquinaDeEfectivoTest {
         assertEquals(EstadoDelIntento.RESUELTO, fila.estado)
         assertEquals("Registrado como incidencia: la venta ya no se pudo armar", fila.conflicto)
         assertEquals("su comprobante con folio", 1_250, fila.aDeberCents)
-        assertTrue("no es una venta: sin ticket pendiente", dao.ticketsSinImprimir("venue-1").isEmpty())
+        val papel = papelDeLaFila(dao.ticketsSinImprimir("venue-1").single(), "La Galeterie")
+        assertEquals("no es una venta: su papel pendiente es el comprobante del dinero",
+            com.avoqado.pos.printing.receiptlayout.KIND_COMPROBANTE_DE_LA_MAQUINA, papel.kind)
+        assertEquals(1_250L, papel.cashMachine!!.owedCents)
+    }
+
+    @Test
+    fun `P1 Codex r2 H9 la impresion automatica y dos toques del boton al mismo tiempo sacan UN solo original`() = runTest {
+        dao.insertar(pagadoSubido.copy(subido = false))
+        val papel = kotlinx.coroutines.CompletableDeferred<PrinterService.PrintOutcome>()
+        coEvery { impresora.manualPrintReceipt(any()) } coAnswers { papel.await() }
+        val m = maquina()
+        val ticket = ticketDeLaFila(dao.fila("AQ000000000001")!!, "La Galeterie")
+
+        val automatica = async { m.imprimirTicketUnaVez("AQ000000000001", ticket) }
+        val boton = async { m.imprimirTicketsPendientes() }
+        val otraVez = async { m.imprimirTicketsPendientes() }
+        runCurrent()
+        assertEquals("mientras imprime, no se ofrece", 0, m.ticketsSinImprimir().first())
+        papel.complete(PrinterService.PrintOutcome.Printed(1))
+        automatica.await(); boton.await(); otraVez.await()
+
+        coVerify(exactly = 1) { impresora.manualPrintReceipt(any()) }
+        assertEquals(TicketDelCobro.IMPRESO, dao.fila("AQ000000000001")!!.ticketImpreso)
+        assertNull("ya salió: no hay otro original", m.imprimirTicketUnaVez("AQ000000000001", ticket))
+    }
+
+    @Test
+    fun `P1 Codex r2 H9 si la PC murio imprimiendo, el ticket se ofrece como REIMPRESION, nunca como otro original`() = runTest {
+        dao.insertar(pagadoSubido.copy(ticketImpreso = TicketDelCobro.IMPRIMIENDO))
+        val impresos = mutableListOf<com.avoqado.pos.printing.data.model.ReceiptData>()
+        coEvery { impresora.manualPrintReceipt(capture(impresos)) } returns PrinterService.PrintOutcome.OutOfPaper andThen PrinterService.PrintOutcome.Printed(1)
+        val m = maquina()
+        assertEquals(1, m.ticketsSinImprimir().first())
+
+        assertEquals(0, m.imprimirTicketsPendientes())
+        assertEquals("sin papel: la copia se sigue ofreciendo", TicketDelCobro.IMPRIMIENDO, dao.fila("AQ000000000001")!!.ticketImpreso)
+        assertEquals(1, m.imprimirTicketsPendientes())
+
+        assertTrue("las dos salieron marcadas como copia", impresos.all { it.reprintedAt != null })
+        assertEquals(TicketDelCobro.IMPRESO, dao.fila("AQ000000000001")!!.ticketImpreso)
+        assertEquals(0, m.ticketsSinImprimir().first())
+    }
+
+    @Test
+    fun `P1 Codex r2 H10 un PAGADO que el servidor dejo como incidencia no ofrece ticket de venta sino el comprobante del dinero`() = runTest {
+        dao.insertar(
+            pagadoSubido.copy(
+                conflicto = "Registrado como incidencia: la venta ya no se pudo armar", aDeberCents = 500,
+                respuestaServidor = """{"ack":"TERMINADO","incident":"NO_SE_PUDO_REGISTRAR","owedCents":500}""",
+            ),
+        )
+        val impresos = mutableListOf<com.avoqado.pos.printing.data.model.ReceiptData>()
+        coEvery { impresora.manualPrintReceipt(capture(impresos)) } returns PrinterService.PrintOutcome.Printed(1)
+        val m = maquina()
+
+        assertEquals(1, m.imprimirTicketsPendientes())
+
+        val papel = impresos.single()
+        assertEquals(com.avoqado.pos.printing.receiptlayout.KIND_COMPROBANTE_DE_LA_MAQUINA, papel.kind)
+        assertTrue("sin renglones de venta", papel.items.isEmpty())
+        assertEquals(500L, papel.cashMachine!!.owedCents)
+        assertEquals(TicketDelCobro.IMPRESO, dao.fila("AQ000000000001")!!.ticketImpreso)
     }
 
     @Test
@@ -635,7 +736,7 @@ class MaquinaDeEfectivoTest {
             renglonesJson = """[{"name":"Café","quantity":2,"unitCents":9000,"totalCents":18000}]""",
         )
         dao.insertar(pagado)
-        dao.insertar(pagado.copy(referenceCC = "AQ000000000002", ticketImpreso = true))
+        dao.insertar(pagado.copy(referenceCC = "AQ000000000002", ticketImpreso = TicketDelCobro.IMPRESO))
         val impresos = mutableListOf<com.avoqado.pos.printing.data.model.ReceiptData>()
         coEvery { impresora.manualPrintReceipt(capture(impresos)) } returns PrinterService.PrintOutcome.OutOfPaper andThen PrinterService.PrintOutcome.Printed(1)
         val m = maquina()
@@ -668,6 +769,7 @@ class MaquinaDeEfectivoTest {
         coEvery { turno.turnoActual() } answers { if (saltos++ == 0) ahora += 11 * 60_000L; "turno-1" }
         val m = MaquinaDeEfectivo(
             prefs, boveda, dao, api, subida, turno, RoleManager(sesion), impresora, sesion, canal, backgroundScope, { ahora }, Random(7),
+            monotonico = { ahora },
         )
 
         val r = m.cobrar(venta().copy(renglonesLocales = """[{"name":"Café local","quantity":1,"unitCents":17000,"totalCents":17000}]"""))
@@ -675,6 +777,28 @@ class MaquinaDeEfectivoTest {
         assertTrue(r is InicioEnLaMaquina.Iniciado)
         assertEquals("se volvió a cotizar", 2, pedidas)
         assertEquals(listOf("Café del servidor"), renglonesDelTicket(dao.todas().single().renglonesJson)!!.map { it.name })
+    }
+
+    @Test
+    fun `P1 Codex r2 H11 la vigencia se vuelve a ver DESPUES de escribir en disco, justo antes del paycash`() = runTest {
+        var pedidas = 0
+        coEvery { api.cotizar(any(), any()) } answers { pedidas++; cotizacion(18_000, 750) }
+        var monotono = 0L
+        var pausas = 0
+        // La PC se pausa entre guardar el intento y mandar el `paycash` (sólo la primera vez): la cotización venció.
+        dao.alInsertar = { if (pausas++ == 0) monotono += 10 * 60_000L }
+        val m = MaquinaDeEfectivo(
+            prefs, boveda, dao, api, subida, turno, RoleManager(sesion), impresora, sesion, canal, backgroundScope,
+            // La hora de Windows se atrasa una hora: no alarga nada (la vigencia es del reloj monótono).
+            { 1_000_000_000L - monotono * 6 }, Random(7), monotonico = { monotono },
+        )
+
+        val r = m.cobrar(venta())
+
+        assertTrue(r is InicioEnLaMaquina.Iniciado)
+        assertEquals("se volvió a cotizar", 2, pedidas)
+        assertEquals("el intento vencido no deja fila", 1, dao.todas().size)
+        assertEquals("y un solo paycash, el de la cotización vigente", 1, canal.enviados.count { JSONObject(it).getString("comando") == "paycash" })
     }
 
     @Test
