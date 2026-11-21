@@ -240,3 +240,17 @@ fun textoDeVencimiento(pedido: OnlineOrder, ahora: Instant, sinConexion: Boolean
     val minutos = restante.toMinutes() + if (restante.toMillis() % 60_000 > 0) 1 else 0
     return VencimientoFolio(TextosPedidosEnLinea.venceEn(minutos.toInt()), pronto = minutos <= 5)
 }
+
+/**
+ * D661 · R2-2 (Ruling 36): el cierre de un pedido que ya no se entrega, con la precedencia del SERVIDOR: «Devuelto» > «Devolviendo…» >
+ * «No lo recogió». null = sin marca (o un SERVIDOR viejo): todo como antes. PURA.
+ */
+fun marcaDelPedido(pedido: OnlineOrder): String? = when {
+    pedido.refundedAt != null -> TextosPedidosEnLinea.DEVUELTO
+    pedido.refundRequestedAt != null -> TextosPedidosEnLinea.DEVOLVIENDO
+    pedido.notPickedUpAt != null -> TextosPedidosEnLinea.NO_LO_RECOGIO
+    else -> null
+}
+
+/** R2-2: «Entregado» (y «Listo») sólo sin marca: un pedido devuelto, devolviéndose o no recogido no se entrega desde la caja. PURA. */
+fun sePuedeEntregar(pedido: OnlineOrder): Boolean = marcaDelPedido(pedido) == null

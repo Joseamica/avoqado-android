@@ -46,8 +46,16 @@ import javax.inject.Singleton
 
 private const val TAG = "🛎 PedidosEnLinea-Repo"
 
-/** Un «no» del servidor ya leído: [status] HTTP, [codigo] del cuerpo y, si es un 409 de estado, el estado en que quedó el pedido. */
-private class Rechazo(val status: Int, val codigo: String?, val mensaje: String, val estadoActual: OnlineOrderStatus?)
+/**
+ * Un «no» del servidor ya leído: [status] HTTP, [codigo] del cuerpo y, si es un 409 de estado, el estado en que quedó el pedido.
+ * [marcado] (D661 · R2-2): ese 409 trae una marca de cierre (`notPickedUpAt`, `refundRequestedAt` o `refundedAt`, task-4-report).
+ */
+private class Rechazo(
+    val status: Int, val codigo: String?, val mensaje: String, val estadoActual: OnlineOrderStatus?, val marcado: Boolean = false,
+)
+
+/** D661 · R2-2: las marcas de cierre de un pedido en línea (task-4-report, «Contract»): ISO o null; un SERVIDOR viejo no las manda. */
+private val MARCAS_DE_CIERRE = listOf("notPickedUpAt", "refundRequestedAt", "refundedAt")
 
 /**
  * Pedidos en línea (la tienda web del negocio) contra `/mobile/venues/:v/online-orders`. Mismo molde que `KDSRepository`.
@@ -131,8 +139,10 @@ class OnlineOrdersRepository @Inject constructor(
         val json = runCatching { JSONObject(body) }.getOrNull()
         val codigo = json?.textoONulo("code")
         val mensaje = json?.textoONulo("error") ?: json?.textoONulo("message") ?: "Error del servidor ($code)"
-        val estado = if (code == 409 && codigo == "ORDER_STATE_CHANGED") OnlineOrderStatus.from(json.textoONulo("status")) else null
-        return Rechazo(code, codigo, mensaje, estado)
+        val deEstado = code == 409 && codigo == "ORDER_STATE_CHANGED"
+        val estado = if (deEstado) OnlineOrderStatus.from(json.textoONulo("status")) else null
+        val marcado = deEstado && MARCAS_DE_CIERRE.any { json.textoONulo(it) != null }
+        return Rechazo(code, codigo, mensaje, estado, marcado)
     }
 
     private fun JSONObject.textoONulo(k: String): String? =
@@ -151,11 +161,15 @@ class OnlineOrdersRepository @Inject constructor(
             if (rapida) header(ForbiddenInterceptor.FAIL_FAST_HEADER, "1")
         }.get().build()
 
-    private fun post(url: String, token: String, cuerpo: JSONObject? = null, deviceId: String? = null, errorLocal: Boolean = true): Request =
+    private fun post(
+        url: String, token: String, cuerpo: JSONObject? = null, deviceId: String? = null, errorLocal: Boolean = true,
+        avisaTarjetas: Boolean = false,
+    ): Request =
         Request.Builder().url(url).header("Authorization", "Bearer $token").apply {
             // La pantalla explica su propio error; sólo «pausar» deja pasar el 403 `overridable` para pedir el PIN del gerente.
             if (errorLocal) header(ForbiddenInterceptor.LOCAL_ERROR_HEADER, "1")
             if (deviceId != null) header(DEVICE_HEADER, deviceId)
+            if (avisaTarjetas) header(CARD_ALERT_HEADER, "1")
         }.post((cuerpo ?: JSONObject()).toString().toRequestBody("application/json".toMediaType())).build()
 
     // MARK: - Bandeja
@@ -238,8 +252,14 @@ class OnlineOrdersRepository @Inject constructor(
                 }
             }.orEmpty(),
             beneficiosTotal = o.optInt("beneficiosTotal", 0),
+            // D661 · R2-2, opcionales: una fecha rota se lee como ausente (como con un SERVIDOR viejo).
+            notPickedUpAt = instanteONulo(o, "notPickedUpAt"),
+            refundRequestedAt = instanteONulo(o, "refundRequestedAt"),
+            refundedAt = instanteONulo(o, "refundedAt"),
         )
     }
+
+    private fun instanteONulo(o: JSONObject, k: String): Instant? = o.textoONulo(k)?.let { runCatching { Instant.parse(it) }.getOrNull() }
 
     private fun parseItem(i: JSONObject): OnlineOrderItem {
         val mods = i.optJSONArray("modifiers")
@@ -300,6 +320,9 @@ class OnlineOrdersRepository @Inject constructor(
             val estado = e.rechazo.estadoActual
             return when {
                 e.rechazo.status == 409 && e.rechazo.codigo == "ONLINE_ORDER_CONFIRMING_PAYMENT" -> AccionResultado.ConfirmandoPago(e.rechazo.mensaje)
+                // D661 · R2-2 (Ruling 36): devuelto, devolviéndose o «No lo recogió»: nunca es «hecho» aunque diga COMPLETED (no se entrega).
+                // Se dice lo del SERVIDOR y la pantalla relee.
+                e.rechazo.marcado -> AccionResultado.Error(e.rechazo.mensaje)
                 estado == null -> AccionResultado.Error(e.rechazo.mensaje)
                 estado == quiso -> AccionResultado.Hecho
                 else -> AccionResultado.YaNoDisponible(estado)
@@ -317,7 +340,9 @@ class OnlineOrdersRepository @Inject constructor(
      */
     suspend fun reclamarComanda(orderId: String, deviceId: String): ReclamoDeImpresion {
         val (venueId, token) = sesion() ?: return ReclamoDeImpresion(false)
-        return ejecutar(post(ruta(venueId, "online-orders/$orderId/print/claim"), token, deviceId = deviceId))
+        // D661 · R2-3 (Ruling 37): «esta caja imprime la marca POSIBLE REPETIDA»: el SERVIDOR sólo le da un reclamo REPETIDO de un pedido
+        // pagado en línea a quien la imprime. Un SERVIDOR viejo ignora la cabecera.
+        return ejecutar(post(ruta(venueId, "online-orders/$orderId/print/claim"), token, deviceId = deviceId, avisaTarjetas = true))
             .mapCatching { cuerpo ->
                 val data = JSONObject(cuerpo).optJSONObject("data")
                 ReclamoDeImpresion(
@@ -677,7 +702,10 @@ class OnlineOrdersRepository @Inject constructor(
         const val TRAY_HEADER = "x-online-orders-tray"
         const val DEVICE_HEADER = "x-device-id"
         const val TO_PAY_HEADER = "x-online-orders-to-pay"
-        /** D661: la caja suena y abre los pagados en línea (el SERVIDOR la cuenta como «caja que avisa» sólo con `orders:update`). */
+        /**
+         * D661: en `to-pay`, la caja suena y abre los pagados en línea (el SERVIDOR la cuenta como «caja que avisa» sólo con `orders:update`);
+         * en el reclamo de la comanda (R2-3), imprime la marca «POSIBLE REPETIDA».
+         */
         const val CARD_ALERT_HEADER = "x-online-orders-card-alert"
         const val CACHE_POR_PAGAR = "to_pay"
         /** R101: llaves que el aparato agrega a su copia de «Por pagar» (el SERVIDOR nunca las manda). */

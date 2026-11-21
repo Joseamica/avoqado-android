@@ -52,8 +52,11 @@ private val CERRADOS_SIN_COMPLETAR = setOf(
     OnlineOrderStatus.REJECTED, OnlineOrderStatus.EXPIRED, OnlineOrderStatus.CANCELLED_BY_CUSTOMER, OnlineOrderStatus.CANCELLED_BY_STAFF,
 )
 
-/** Lo que dice el renglón de dinero de la tarjeta: «Pagado», «Cobrar al recoger $X» o, en tarjeta en línea, su propio texto. */
-internal fun textoDeDinero(pedido: OnlineOrder): String = when {
+/**
+ * Lo que dice el renglón de dinero de la tarjeta: «Pagado», «Cobrar al recoger $X» o, en tarjeta en línea, su propio texto. R2-2: un pedido
+ * devuelto, devolviéndose o no recogido dice eso, nunca «Pagado».
+ */
+internal fun textoDeDinero(pedido: OnlineOrder): String = marcaDelPedido(pedido) ?: when {
     !esTarjetaEnLinea(pedido) -> textoDeDineroEnLocal(pedido)
     pedido.status in CERRADOS_SIN_COMPLETAR ->
         when (pedido.cardChargeStatus) {
@@ -179,8 +182,11 @@ fun OnlineOrderCard(
                             OutlinedButton(onClick = onReimprimir, enabled = !ocupado, modifier = Modifier.testTag("reimprimir-${pedido.orderId}")) {
                                 Text(TextosPedidosEnLinea.REIMPRIMIR)
                             }
-                            OutlinedButton(onClick = onEntregado, enabled = enLinea, modifier = Modifier.testTag("entregado-${pedido.orderId}")) {
-                                Text(TextosPedidosEnLinea.ENTREGADO)
+                            // R2-2: un pedido devuelto, devolviéndose o no recogido no se entrega.
+                            if (sePuedeEntregar(pedido)) {
+                                OutlinedButton(onClick = onEntregado, enabled = enLinea, modifier = Modifier.testTag("entregado-${pedido.orderId}")) {
+                                    Text(TextosPedidosEnLinea.ENTREGADO)
+                                }
                             }
                             if (puedeCancelar && sinDinero(pedido)) {
                                 TextButton(onClick = { onPedirDialogo(TipoDeDialogo.CANCELAR) }, enabled = enLinea, modifier = Modifier.testTag("cancelar-${pedido.orderId}")) {

@@ -206,4 +206,8 @@ object TextosPedidosEnLinea {
     /** La banda: el texto oficial y, con más de uno, cuántos hay por abrir. */
     fun avisoDePagadosEnLinea(n: Int) = if (n > 1) "$PAGADO_EN_LINEA_POR_ABRIR ($n por abrir)" else PAGADO_EN_LINEA_POR_ABRIR
     const val VER = "Ver"
+    // Ronda 2 (R2-2): los cierres de un pedido pagado en línea (los mismos nombres del SERVIDOR y del DASHBOARD). iOS los copia igual.
+    const val DEVOLVIENDO = "Devolviendo…"
+    const val DEVUELTO = "Devuelto"
+    const val NO_LO_RECOGIO = "No lo recogió"
 }

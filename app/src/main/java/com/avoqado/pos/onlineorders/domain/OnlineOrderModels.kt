@@ -59,6 +59,12 @@ data class OnlineOrder(
     val beneficios: List<BeneficioDelFolio> = emptyList(),
     /** Parte 2 (S14): cuántos trae la cuenta en total; si pasa de [beneficios], la tarjeta dice «y N más». */
     val beneficiosTotal: Int = 0,
+    /** D661 · R2-2 (task-4-report, «Contract»): el cierre del día lo marcó «No lo recogió»; null = no, o SERVIDOR viejo. */
+    val notPickedUpAt: java.time.Instant? = null,
+    /** D661 · R2-2: «Devolviendo…» (la devolución está apartada; no se entrega). */
+    val refundRequestedAt: java.time.Instant? = null,
+    /** D661 · R2-2: «Devuelto». */
+    val refundedAt: java.time.Instant? = null,
 )
 
 /** Parte 2 (S14): la clienta de la cuenta, con su nombre corto del SERVIDOR («Ana L.»). */

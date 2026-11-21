@@ -142,7 +142,8 @@ fun FolioPorPagarCard(
             if (porEntregar) {
                 Text(
                     // Lo cobrado aquí sin red: lo que guardó la cola (no el total ni el saldo de la lista); con tarjeta, lo que cobró la terminal.
-                    when {
+                    // R2-2: devuelto, devolviéndose o no recogido lo dice en vez de «Pagado».
+                    marcaDelPedido(pedido) ?: when {
                         cobradoEnElAparatoCents != null -> TextosPedidosEnLinea.pagadoEnEfectivo(formatoPesos(cobradoEnElAparatoCents))
                         cobradoConTarjetaCents != null -> TextosPedidosEnLinea.pagadoConTarjeta(formatoPesos(cobradoConTarjetaCents))
                         else -> TextosPedidosEnLinea.pagado(formatoPesos(pedido.totalCents))
@@ -167,7 +168,8 @@ fun FolioPorPagarCard(
                         Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
-                if (puedeActualizar) {
+                // R2-2: sin «Listo» ni «Entregado» en un pedido devuelto, devolviéndose o no recogido.
+                if (puedeActualizar && sePuedeEntregar(pedido)) {
                     // Los dos pesan igual en la TPV y en el panel: «Listo» con borde y «Entregado» relleno, en ese orden.
                     // Lo cobrado aquí que el servidor todavía no cuenta (efectivo sin subir, tarjeta sin releer): esperan a que lo cuente.
                     val enLinea = !sinConexion && !ocupado && cobradoEnElAparatoCents == null && cobradoConTarjetaCents == null
