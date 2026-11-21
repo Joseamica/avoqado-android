@@ -395,18 +395,22 @@ class AppStateVenueRecoveryTest {
 
     @Test
     fun `D17 un plan que llego por otro camino antes de settings si rehace la pantalla`() = runTest {
-        // Codex r2 #1: el sondeo de la pantalla del cliente guarda el plan sin rehacer nada. La comparación es contra lo que
-        // tenía la pantalla al montarse, no contra lo guardado justo antes de pedir `/settings`.
+        // Codex r2 #1 y r3: al arrancar, el sondeo de la pantalla del cliente puede guardar el plan nuevo MIENTRAS el arranque
+        // renueva el token, antes de pedir `/settings`. La comparación es contra lo que tenía la pantalla al montarse, no contra
+        // lo guardado justo antes de pedir (con eso, B contra B, no se rehacía y las pestañas atrasadas cambiaban la de inicio).
         val ajustes = AjustesQueTardan().apply { plan = plan?.copy(grantedFeatureCodes = listOf("GIFT_CARDS")) }
+        val reparacion = kotlinx.coroutines.CompletableDeferred<Unit>()
         val appState = createAppState(
             true, {}, {}, {}, onOutboxStart = {}, tpvSettingsRepository = ajustes.repo, planManager = ajustes.planManager,
-            configurarSesion = { ajustes.sesion(this); every { reservationsEnabled } returns true },
+            configurarSesion = { ajustes.sesion(this); every { reservationsEnabled } returns true }, reparacion = reparacion,
         )
-        runCurrent()
+        runCurrent() // la pantalla ya se montó con el plan A; el arranque espera la renovación del token
         val antes = appState.mainNavigation.value.contentKey
-        ajustes.plan = ajustes.plan?.copy(grantedFeatureCodes = listOf("GIFT_CARDS", "RESERVATIONS")) // el sondeo
+        ajustes.plan = ajustes.plan?.copy(grantedFeatureCodes = listOf("GIFT_CARDS", "RESERVATIONS")) // el sondeo guarda B
+        reparacion.complete(Unit)
+        runCurrent() // ahora sí sale `/settings`, con B ya guardado
 
-        ajustes.contesta() // `/settings` contesta lo mismo que ya estaba guardado
+        ajustes.contesta() // contesta B, lo mismo que ya estaba guardado
         advanceUntilIdle()
 
         assertTrue(antes != appState.mainNavigation.value.contentKey)
@@ -960,6 +964,8 @@ class AppStateVenueRecoveryTest {
         pagosReales: PaymentSyncService? = null,
         colaReal: SyncOutbox? = null,
         serviceCoursesRepository: com.avoqado.pos.tables.data.ServiceCoursesRepository? = null,
+        /** D17: si viene, el arranque espera aquí (renovación del token) antes de pedir `/settings`. */
+        reparacion: kotlinx.coroutines.CompletableDeferred<Unit>? = null,
     ): AppState {
         val secureStorage = storageReal ?: mockk<SecureStorage>(relaxed = true) {
             every { isLoggedIn } returns true
@@ -973,6 +979,7 @@ class AppStateVenueRecoveryTest {
         }
         val authRepository = mockk<AuthRepository>(relaxed = true) {
             coEvery { repairCurrentVenueBinding() } coAnswers {
+                reparacion?.await()
                 onRepair()
                 repairResult
             }
