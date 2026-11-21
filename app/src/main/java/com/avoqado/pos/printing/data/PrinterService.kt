@@ -1366,7 +1366,15 @@ class PrinterService @Inject constructor(
     suspend fun hayImpresoraDeRecibos(): Boolean =
         getPrinters(PrinterRole.RECEIPT).isNotEmpty() || getDefaultPrinterWithHardwareFallback(PrinterRole.RECEIPT) != null
 
-    suspend fun manualPrintReceipt(receipt: ReceiptData): PrintOutcome {
+    suspend fun manualPrintReceipt(receipt: ReceiptData): PrintOutcome = imprimirEnLasDeRecibos(receipt, unSoloOriginal = false)
+
+    /**
+     * Codex código r3 #11 (máquina de efectivo): el papel ORIGINAL sale en UNA sola impresora de recibos —la primera que lo imprime—;
+     * las demás lo reciben como COPIA («REIMPRESIÓN»). Dos originales del mismo folio serían dos comprobantes de un mismo dinero.
+     */
+    suspend fun imprimirOriginal(receipt: ReceiptData): PrintOutcome = imprimirEnLasDeRecibos(receipt, unSoloOriginal = true)
+
+    private suspend fun imprimirEnLasDeRecibos(receipt: ReceiptData, unSoloOriginal: Boolean): PrintOutcome {
         val configured = getPrinters(PrinterRole.RECEIPT)
         val eligible = if (configured.isNotEmpty()) {
             configured
@@ -1380,7 +1388,8 @@ class PrinterService @Inject constructor(
         var lastError: String? = null
         eligible.forEach { printer ->
             try {
-                printReceipt(receipt, printer)
+                val papel = if (unSoloOriginal && successCount > 0) receipt.copy(reprintedAt = receipt.reprintedAt ?: java.util.Date()) else receipt
+                printReceipt(papel, printer)
                 successCount++
                 Log.d(TAG, "Manual reprint succeeded on ${printer.name}")
             } catch (e: PrinterException.OutOfPaper) {

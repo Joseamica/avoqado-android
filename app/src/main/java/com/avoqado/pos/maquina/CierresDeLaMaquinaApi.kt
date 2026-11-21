@@ -53,13 +53,13 @@ class CierresDeLaMaquinaApi @Inject constructor(private val client: OkHttpClient
         llamar(Request.Builder().post(pedido.toString().toRequestBody(JSON)), "/mobile/venues/$venueId/cash-machine/quote", null, rapido)
 
     /**
-     * `GET …/cash-machine/doubts?status=ABIERTO&kind=ESPERANDO` (R4-4, Codex código r2 H6): las dudas del NEGOCIO para la bandeja del
-     * gerente, con SU sesión (`cash-machine:resolve`), por páginas: `{ data, total, nextCursor }`. [folio]: sólo ése (la evidencia al día
-     * tras un 409 de versión, H7).
+     * `GET …/cash-machine/doubts?status=ABIERTO&kind=<kind>` (R4-4, Codex código r2 H6 y r3 #8): los cobros del NEGOCIO para la bandeja
+     * del gerente, con SU sesión (`cash-machine:resolve`), por páginas: `{ data, total, nextCursor }`. [kind]: `ESPERANDO` (dudas) o
+     * `POR_TERMINAR` (desenlace guardado, PC relevada). [folio]: sólo ése (la evidencia al día tras un 409 de versión, H7).
      */
-    suspend fun listarDudas(venueId: String, cursor: String? = null, folio: String? = null): RespuestaDelServidor {
+    suspend fun listarDudas(venueId: String, cursor: String? = null, folio: String? = null, kind: String = "ESPERANDO"): RespuestaDelServidor {
         val url = (baseUrl + "/mobile/venues/$venueId/cash-machine/doubts").toHttpUrl().newBuilder()
-            .addQueryParameter("status", "ABIERTO").addQueryParameter("kind", "ESPERANDO").addQueryParameter("limit", DUDAS_POR_PAGINA.toString())
+            .addQueryParameter("status", "ABIERTO").addQueryParameter("kind", kind).addQueryParameter("limit", DUDAS_POR_PAGINA.toString())
             .apply { cursor?.let { addQueryParameter("cursor", it) }; folio?.let { addQueryParameter("folio", it) } }
             .build()
         return llamar(Request.Builder().get(), url.toString().removePrefix(baseUrl), null)

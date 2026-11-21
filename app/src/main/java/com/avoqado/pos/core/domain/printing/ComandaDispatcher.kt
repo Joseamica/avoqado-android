@@ -710,3 +710,84 @@ class ComandaDispatcher @Inject constructor(
         return if (moment == ComandaMoment.AREA_TICKET_PAID) "$area · PAGADO" else area
     }
 }
+
+/**
+ * La comanda de una venta de MOSTRADOR: los renglones de producto de [items] (sin los bloqueados), por tiempos si los llevan o al ruteo
+ * de siempre (el ticket único legado si el negocio no tiene estaciones). La comparten la caja (`PaymentFlowViewModel`) y la máquina de
+ * efectivo, que la despacha de SU fila (Codex código r3 #6), para que las dos manden EXACTAMENTE la misma comanda.
+ *
+ * 🔴 Corre DESPUÉS de cobrar y nunca lanza: lo que reviente (lectura de disco, la impresora) se dice como «No salió la comanda» por
+ * [alCambiarEstado], sin botón (no hay trabajo que reenviar); sólo la cancelación se propaga.
+ */
+suspend fun ComandaDispatcher.despacharDeMostrador(
+    items: List<com.avoqado.pos.pos.data.model.CartItem>,
+    venueId: String?,
+    orderNumber: String,
+    orderId: String?,
+    servidorLaTiene: Boolean,
+    origenDelFolio: String?,
+    alCambiarEstado: (EstadoDeComanda) -> Unit,
+) {
+    val realItems = items.filter { it.type is com.avoqado.pos.pos.data.model.CartItemType.ProductItem && !it.locked }
+    // Sin productos reales (venta de importe libre) no hay comanda que mandar.
+    if (realItems.isEmpty()) return
+    try {
+        val coursePedidos = com.avoqado.pos.payment.domain.buildCounterCoursePedidos(realItems)
+        if (coursePedidos != null) {
+            despacharEnFondo(
+                venueId = venueId, orderNumber = orderNumber, pedidos = coursePedidos,
+                orderId = orderId, servidorLaTiene = servidorLaTiene, origenDelFolio = origenDelFolio,
+                alCambiarEstado = alCambiarEstado,
+            ).join()
+            return
+        }
+        dispatch(
+            venueId = venueId,
+            lines = realItems.map { item ->
+                RoutableItem(
+                    orderItemId = item.id,
+                    productId = (item.type as? com.avoqado.pos.pos.data.model.CartItemType.ProductItem)?.productId,
+                    categoryId = item.categoryId,
+                    productName = item.nombreEnCocina,
+                    quantity = item.quantity,
+                    modifiers = item.selectedModifiers.map { it.modifierName },
+                    notes = item.itemNote,
+                    // COMBOS — el nombre viaja con la línea para que cada estación pueda encabezar SUS productos con su combo.
+                    comboName = item.promotionInstanceId?.let { item.promotionName ?: "Combo" },
+                )
+            },
+            orderNumber = orderNumber,
+            orderType = "En tienda",
+            // «La libreta» (Task 16): el id REAL de la orden, para que el reporte al servidor no dependa del `orderNumber`.
+            orderId = orderId,
+            // Sin estaciones configuradas: EXACTAMENTE lo de antes — un solo ticket de cocina abanicado a las impresoras KITCHEN.
+            noStationsFallback = NoStationsFallback.LegacySingleTicket(
+                // COMBOS — en la comanda la llave es el NOMBRE (ver ComboPrintLines): los productos del mismo combo van juntos.
+                com.avoqado.pos.printing.data.model.ComboPrintLines.kitchen(
+                    realItems.map { item ->
+                        val comboName = item.promotionInstanceId?.let { item.promotionName ?: "Combo" }
+                        val tag = comboName?.let { com.avoqado.pos.printing.data.model.ComboPrintLines.Tag(key = it, name = it) }
+                        tag to KitchenItem(
+                            name = item.nombreEnCocina,
+                            quantity = item.quantity,
+                            modifiers = item.selectedModifiers.map { it.modifierName }.ifEmpty { null },
+                            note = item.itemNote,
+                            category = item.subtitle,
+                        )
+                    },
+                ),
+            ),
+            // Etapa 3 del KDS (3.4): la caja decide por estación — ver `KitchenDeliveryPolicy`.
+            servidorLaTiene = servidorLaTiene,
+            origenDelFolio = origenDelFolio,
+            alCambiarEstado = alCambiarEstado,
+            // «No lleva comanda»: el cobro de mostrador es una venta del POS.
+            omitirSinComanda = true,
+        )
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        Log.e("🍳", "❌ La comanda del pedido $orderNumber reventó al despacharse: ${e.message}", e)
+        alCambiarEstado(EstadoDeComanda.NoSalio(listOf("Cocina"), e.message, orderNumber, trabajo = null))
+    }
+}

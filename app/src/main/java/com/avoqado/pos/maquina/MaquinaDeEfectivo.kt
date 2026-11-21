@@ -3,6 +3,7 @@ package com.avoqado.pos.maquina
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.data.network.ServerErrorText
 import com.avoqado.pos.core.domain.RoleManager
+import com.avoqado.pos.core.domain.printing.despacharDeMostrador
 import com.avoqado.pos.payment.data.model.SincronizacionDelCobro
 import com.avoqado.pos.printing.data.PrinterService
 import kotlinx.coroutines.CancellationException
@@ -223,12 +224,20 @@ private fun comprobante(fila: CobroEnMaquinaEntity, negocio: String, titulo: Str
     )
 
 /**
- * Codex código r2 H10: el papel que se le debe a un cobro pagado. Si el SERVIDOR lo dejó como incidencia (o lo rechazó: `conflicto`), NO
- * hay venta y no sale un ticket de venta: sale el comprobante del dinero con su folio, con lo que se le debe si se le debe algo.
+ * Codex código r2 H10 y r3 #11, #12: EL papel de un folio, leído de SU fila en el momento de imprimir (nunca de la pantalla). Una venta
+ * pagada sin incidencia lleva su ticket ([ticketDeVenta], el que armó la caja, o el de la fila). Si el SERVIDOR la dejó como incidencia
+ * (o la rechazó: `conflicto`), NO hay venta: sale el comprobante del dinero con su folio. Un CANCELADO que no devolvió todo, su
+ * comprobante. null = no hay papel que dar (un GUARDADO, un CANCELADO sin deuda).
  */
-fun papelDeLaFila(fila: CobroEnMaquinaEntity, negocio: String): com.avoqado.pos.printing.data.model.ReceiptData =
-    if (fila.conflicto == null) ticketDeLaFila(fila, negocio)
-    else comprobanteDeLaMaquina(fila, negocio) ?: comprobante(fila, negocio, "COMPROBANTE DE LA MÁQUINA", null)
+fun papelDeLaFila(
+    fila: CobroEnMaquinaEntity,
+    negocio: String,
+    ticketDeVenta: com.avoqado.pos.printing.data.model.ReceiptData? = null,
+): com.avoqado.pos.printing.data.model.ReceiptData? = when {
+    fila.desenlace == Desenlace.PAGADO && fila.conflicto == null -> ticketDeVenta ?: ticketDeLaFila(fila, negocio)
+    fila.desenlace == Desenlace.PAGADO -> comprobanteDeLaMaquina(fila, negocio) ?: comprobante(fila, negocio, "COMPROBANTE DE LA MÁQUINA", null)
+    else -> comprobanteDeLaMaquina(fila, negocio)
+}
 
 /** La venta que la caja manda a la máquina. Los importes son los LOCALES: sin red se cobran ésos (R4-2). */
 data class VentaPorCobrar(
@@ -241,7 +250,22 @@ data class VentaPorCobrar(
     val tipCents: Int,
     /** Codex código r1 #14: los renglones del carrito ([renglonesParaCongelar]); sin red, el ticket sale de éstos. */
     val renglonesLocales: String? = null,
+    /** Codex código r3 #6: la comanda de cocina congelada ([comandaParaCongelar]); sale de la fila cuando la máquina dice PAGADO. */
+    val comandaJson: String? = null,
 )
+
+private val JSON_DE_LA_COMANDA = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
+
+/** Codex código r3 #6: los renglones del carrito, tal cual, para despachar su comanda desde la fila (aunque la pantalla ya sea otra). */
+fun comandaParaCongelar(items: List<com.avoqado.pos.pos.data.model.CartItem>): String =
+    JSON_DE_LA_COMANDA.encodeToString(
+        kotlinx.serialization.builtins.ListSerializer(com.avoqado.pos.pos.data.model.CartItem.serializer()),
+        items.map { it.copy(selectedModifiers = it.selectedModifiers.toList()) },
+    )
+
+internal fun comandaCongelada(json: String): List<com.avoqado.pos.pos.data.model.CartItem>? = runCatching {
+    JSON_DE_LA_COMANDA.decodeFromString(kotlinx.serialization.builtins.ListSerializer(com.avoqado.pos.pos.data.model.CartItem.serializer()), json)
+}.getOrNull()
 
 sealed interface InicioEnLaMaquina {
     data class Iniciado(val referenceCC: String) : InicioEnLaMaquina
@@ -264,6 +288,11 @@ data class ResolucionDelGerente(
      * disco al tocar. null = la que tenga esta PC (sólo para llamadas sin pantalla).
      */
     val version: Int? = null,
+    /**
+     * Codex código r3 #8: un folio POR_TERMINAR (relevaron su PC con el desenlace ya guardado): se termina SÓLO con [version], sin
+     * teclear importes: el SERVIDOR arma la venta con lo congelado.
+     */
+    val porTerminar: Boolean = false,
 )
 
 sealed interface ResultadoDeResolver {
@@ -306,6 +335,8 @@ class MaquinaDeEfectivo internal constructor(
     aleatorio: Random = SecureRandom(),
     /** Codex código r2 H3 y H11: el reloj monótono (ms) de los plazos y de la vigencia de la cotización; la hora de Windows se mueve. */
     private val monotonico: () -> Long = { System.nanoTime() / 1_000_000 },
+    /** Codex código r3 #6: la comanda de cocina de una venta de la máquina sale de aquí, de su fila. */
+    private val comandaDispatcher: com.avoqado.pos.core.domain.printing.ComandaDispatcher? = null,
 ) {
     /** El enlace a la red local NO usa el cliente de la API: a la máquina no se le manda la sesión. */
     @Inject constructor(
@@ -318,18 +349,66 @@ class MaquinaDeEfectivo internal constructor(
         roles: RoleManager,
         printerService: PrinterService,
         secureStorage: SecureStorage,
+        comandaDispatcher: com.avoqado.pos.core.domain.printing.ComandaDispatcher,
     ) : this(
         prefs, boveda, dao, api, subida, turno, roles, printerService, secureStorage,
         ClienteDeLaMaquina(OkHttpClient(), CoroutineScope(SupervisorJob() + Dispatchers.IO), System::currentTimeMillis),
         CoroutineScope(SupervisorJob() + Dispatchers.Default),
         System::currentTimeMillis,
+        comandaDispatcher = comandaDispatcher,
     )
+
+    /**
+     * Codex código r3 #6 y #11: los folios que una pantalla de «Cobrar» tiene a la vista. Su ticket lo arma ella (con más datos); el de
+     * los demás sale de la fila. Va antes de [cobro]: su PAGADO lo lee.
+     */
+    private val aLaVista: MutableSet<String> = java.util.Collections.synchronizedSet(mutableSetOf())
 
     /** Tras cada cierre o duda, la subida los manda sin esperar a su reloj. La `fecha` de la máquina es hora del negocio (#15). */
     val cobro = CobroConMaquina(
         cliente, dao, reloj, scope, aleatorio, alTerminar = subida::disparar,
         zona = { com.avoqado.pos.core.util.VenueTimeZone.zoneIdFor(secureStorage.venueTimezone) }, monotonico = monotonico,
+        alCerrar = ::alCerrarEnLaMaquina,
     )
+
+    /** Codex código r3 #6, #11: CajaConMaquina dice qué folio tiene a la vista (y lo suelta al salir de él). */
+    fun aLaVista(referenceCC: String, si: Boolean) {
+        if (si) aLaVista.add(referenceCC) else aLaVista.remove(referenceCC)
+    }
+
+    /**
+     * Codex código r3 #6 y #11: el cierre en vivo de la máquina, ya en disco. La comanda de un PAGADO sale SIEMPRE de la fila, una vez por
+     * folio, aunque la pantalla ya sea otra venta. El papel (el ticket, o el comprobante de un CANCELADO que no devolvió todo): si ninguna
+     * pantalla tiene el folio a la vista, el de la fila, por el mismo reclamo.
+     */
+    private fun alCerrarEnLaMaquina(referenceCC: String, desenlace: Desenlace) {
+        scope.launch {
+            if (desenlace == Desenlace.PAGADO) despacharComanda(referenceCC)
+            if (referenceCC !in aLaVista) imprimirPapelDelFolio(referenceCC)
+        }
+    }
+
+    /**
+     * Codex código r3 #6: LA comanda de una venta de la máquina, de su fila (el carrito congelado al empezar), una sola vez por folio: se
+     * reclama vaciándola antes de despachar. Sale cuando la máquina dice PAGADO en vivo o cuando un gerente lo confirma en ESTA PC; un
+     * PAGADO que un gerente resolvió en otra parte (la subida lo trae después) no la manda: nadie aquí está atendiendo a ese cliente.
+     */
+    suspend fun despacharComanda(referenceCC: String) {
+        val dispatcher = comandaDispatcher ?: return
+        val fila = dao.porReferencia(referenceCC) ?: return
+        val comanda = fila.comandaJson ?: return
+        // ponytail: se reclama ANTES de despachar; si la PC muere entre el reclamo y la libreta del despachador (que reintenta sola),
+        // esa comanda no sale: mejor que salir dos veces. Si pasa en la tienda, una marca «despachándose» como la del papel.
+        if (dao.reclamarComanda(referenceCC, comanda) != 1) return
+        val items = comandaCongelada(comanda) ?: return Unit.also {
+            android.util.Log.e("💵Maquina", "La comanda congelada del folio $referenceCC no se pudo leer")
+        }
+        dispatcher.despacharDeMostrador(
+            items, venueId = fila.venueId, orderNumber = referenceCC.takeLast(4), orderId = null,
+            // La orden nace con el cierre (`maquina-<folio>`, como la arma el SERVIDOR, Codex código r1 #17).
+            servidorLaTiene = false, origenDelFolio = "sale:maquina-$referenceCC",
+        ) { estado -> android.util.Log.i("💵Maquina", "Comanda del folio $referenceCC: $estado") }
+    }
 
     private val _ahora = MutableStateFlow(LaMaquinaAhora())
     val ahora: StateFlow<LaMaquinaAhora> = _ahora.asStateFlow()
@@ -402,17 +481,24 @@ class MaquinaDeEfectivo internal constructor(
     fun enEspera(): Flow<List<CobroEnMaquinaEntity>> =
         secureStorage.venueId?.let(dao::observarEnEspera) ?: kotlinx.coroutines.flow.flowOf(emptyList())
 
-    /** Lo mismo, una lectura (Ajustes › Máquina de efectivo). */
-    suspend fun dudasEnEspera(): List<CobroEnMaquinaEntity> = secureStorage.venueId?.let { dao.enEspera(it) }.orEmpty()
+    /**
+     * Codex código r3 #8: las dudas de ESTA PC para la bandeja, por páginas, con su total. [soloSinSubir]: sólo las que el SERVIDOR nunca
+     * acusó (las demás ya vienen en su lista, de-duplicadas por folio).
+     */
+    suspend fun dudasDeEstaPc(soloSinSubir: Boolean, limite: Int): Pair<List<CobroEnMaquinaEntity>, Int> {
+        val venueId = secureStorage.venueId ?: return emptyList<CobroEnMaquinaEntity>() to 0
+        return dao.dudasDeEstaPc(venueId, soloSinSubir, limite) to dao.contarDudas(venueId, soloSinSubir)
+    }
 
     /**
-     * Codex código r2 H6: las dudas del NEGOCIO (de cualquier PC) que guarda el SERVIDOR, por páginas, para la bandeja del gerente.
-     * null = no se pudo leer (sin red, sin permiso): la bandeja enseña sólo las de esta PC.
+     * Codex código r2 H6 y r3 #8: los cobros del NEGOCIO (de cualquier PC) que guarda el SERVIDOR para la bandeja del gerente, por
+     * páginas: los `ESPERANDO` (se resuelven tecleando) y los `POR_TERMINAR` (se terminan con su versión). null = no se pudo leer (sin
+     * red, sin permiso): la bandeja enseña las de esta PC.
      */
-    suspend fun dudasDelNegocio(cursor: String? = null): PaginaDeDudas? {
+    suspend fun dudasDelNegocio(cursor: String? = null, kind: String = KIND_ESPERANDO): PaginaDeDudas? {
         val venueId = secureStorage.venueId ?: return null
         val r = try {
-            api.listarDudas(venueId, cursor)
+            api.listarDudas(venueId, cursor, kind = kind)
         } catch (e: IOException) {
             return null
         }
@@ -420,47 +506,54 @@ class MaquinaDeEfectivo internal constructor(
     }
 
     /** Codex código r2 H7: la evidencia AL DÍA de [referenceCC] en el SERVIDOR; null si no se pudo leer. */
-    private suspend fun dudaAlDia(venueId: String, referenceCC: String): CobroEnEspera? = try {
-        leerPaginaDeDudas(api.listarDudas(venueId, folio = referenceCC))?.dudas?.firstOrNull { it.referenceCC == referenceCC }
+    private suspend fun dudaAlDia(venueId: String, referenceCC: String, kind: String): CobroEnEspera? = try {
+        leerPaginaDeDudas(api.listarDudas(venueId, folio = referenceCC, kind = kind))?.dudas?.firstOrNull { it.referenceCC == referenceCC }
     } catch (e: IOException) {
         null
     }
 
-    /** Las ventas apartadas para la máquina que todavía no tienen su fila (se cotizan o piden el turno). */
-    private val apartadas: MutableSet<String> = java.util.Collections.synchronizedSet(mutableSetOf())
+    /** Las ventas apartadas para la máquina que todavía no tienen su fila (se cotizan o piden el turno), con la ficha de quien las apartó. */
+    private val apartadas = java.util.concurrent.ConcurrentHashMap<String, Any>()
 
     /**
      * Codex código r1 #1: «Efectivo en la máquina» APARTA la venta en el mismo toque, antes de pedir el turno o cotizar (la red tarda):
-     * desde aquí la tarjeta no sale para esta venta. Se suelta en [cobrar]: si el `paycash` salió ya frena su fila; si la cotización
-     * (o lo de antes del `paycash`) no pasó, nada quedó en la máquina. false = ya estaba apartada.
+     * desde aquí la tarjeta no sale para esta venta. Se suelta en [cobrar] o al salir de la apertura (Codex código r3 #5): si el
+     * `paycash` salió ya frena su fila; si no, nada quedó en la máquina. Devuelve la ficha del apartado (con ella se suelta, para que
+     * soltar uno viejo nunca suelte el de otra apertura), o null si ya estaba apartada.
      */
-    fun apartar(llaveDeVenta: String): Boolean = apartadas.add(llaveDeVenta)
+    fun apartar(llaveDeVenta: String): Any? = Any().takeIf { apartadas.putIfAbsent(llaveDeVenta, it) == null }
+
+    /** Suelta el apartado [ficha] de [llaveDeVenta] (sólo si sigue siendo ése). */
+    fun soltar(llaveDeVenta: String, ficha: Any) {
+        apartadas.remove(llaveDeVenta, ficha)
+    }
 
     /** Síncrono: lo revisa la tarjeta DESPUÉS de leer el disco, en el mismo paso en que sale. */
-    fun apartada(llaveDeVenta: String): Boolean = llaveDeVenta in apartadas
+    fun apartada(llaveDeVenta: String): Boolean = apartadas.containsKey(llaveDeVenta)
 
     /** R2#1: mientras esta venta esté apartada o tenga un intento abierto, en duda, pagado o resuelto, no se cobra por otro medio. */
     suspend fun ventaBloqueada(llaveDeVenta: String): Boolean = apartada(llaveDeVenta) || dao.bloqueanLaVenta(llaveDeVenta) > 0
 
     /**
      * Cotiza y, si se puede, guarda el intento y manda el `paycash` ([CobroConMaquina.cobrar]: la fila ANTES de la red). Lo que
-     * no se puede cobrar en la máquina se dice y no deja nada en disco ni en la máquina.
+     * no se puede cobrar en la máquina se dice y no deja nada en disco ni en la máquina. [apartado]: la ficha con que la caja ya apartó
+     * la venta (si no, se aparta aquí).
      */
-    suspend fun cobrar(v: VentaPorCobrar, sigueEnPantalla: () -> Boolean = { true }): InicioEnLaMaquina {
-        apartar(v.llaveDeVenta)
+    suspend fun cobrar(v: VentaPorCobrar, puerta: PuertaDelCobro = PuertaDelCobro.SIEMPRE, apartado: Any? = null): InicioEnLaMaquina {
+        val ficha = apartado ?: apartar(v.llaveDeVenta)
         // Iniciado: su fila ya frena la venta. Cualquier otro final: no quedó nada en la máquina y la tarjeta vuelve a poder.
         try {
-            return cotizarYCobrar(v, sigueEnPantalla)
+            return cotizarYCobrar(v, puerta)
         } finally {
-            apartadas.remove(v.llaveDeVenta)
+            ficha?.let { soltar(v.llaveDeVenta, it) }
         }
     }
 
     /**
-     * [sigueEnPantalla] (Codex código r2 H5): si mientras se cotizaba la caja salió de este cobro, el `paycash` ya no sale: nadie está
-     * viendo esta venta.
+     * [puerta] (Codex código r2 H5 y r3 #5): si mientras se cotizaba la caja salió de este cobro, el `paycash` ya no sale: nadie está
+     * viendo esta venta. La comprobación definitiva va junto con el envío, bajo el candado con que la caja cierra la apertura.
      */
-    private suspend fun cotizarYCobrar(v: VentaPorCobrar, sigueEnPantalla: () -> Boolean): InicioEnLaMaquina {
+    private suspend fun cotizarYCobrar(v: VentaPorCobrar, puerta: PuertaDelCobro): InicioEnLaMaquina {
         val pedido = runCatching { JSONObject(v.pedidoJson) }.getOrNull() ?: return InicioEnLaMaquina.NoSeCobra(TEXTO_NO_COBRABLE)
         motivoSinMaquinaDelPedido(pedido)?.let { return InicioEnLaMaquina.NoSeCobra(it) }
         try {
@@ -486,16 +579,19 @@ class MaquinaDeEfectivo internal constructor(
                 Cotizacion.SinRed -> Unit
             }
             if (!cobrableEnMaquina(sale + tip)) return InicioEnLaMaquina.NoSeCobra(TEXTO_SIN_CENTAVOS)
-            if (!sigueEnPantalla()) return InicioEnLaMaquina.NoSeCobra(TEXTO_COBRO_ABANDONADO)
+            // Antes de escribir en disco: si ya se salió de este cobro, ni se guarda.
+            if (puerta.siSigueAbierta { true } == null) return InicioEnLaMaquina.NoSeCobra(TEXTO_COBRO_ABANDONADO)
             val venta = VentaParaLaMaquina(
                 v.venueId, v.llaveDeVenta, v.pedidoJson, sale, tip, turno.turnoActual(), quoteId, renglones, vigenteHasta, prefs.bindingId,
+                comandaJson = v.comandaJson,
             )
-            return when (val r = cobro.cobrar(venta)) {
+            return when (val r = cobro.cobrar(venta, puerta)) {
                 is ResultadoDeInicio.Iniciado -> InicioEnLaMaquina.Iniciado(r.referenceCC)
                 ResultadoDeInicio.NoCobrable -> InicioEnLaMaquina.NoSeCobra(TEXTO_SIN_CENTAVOS)
                 ResultadoDeInicio.VentaConIntento -> InicioEnLaMaquina.NoSeCobra(TEXTO_VENTA_CON_INTENTO)
                 ResultadoDeInicio.Ocupado -> InicioEnLaMaquina.NoSeCobra(TEXTO_OCUPADA)
                 ResultadoDeInicio.SinConexion -> InicioEnLaMaquina.NoSeCobra(TEXTO_NO_RESPONDE)
+                ResultadoDeInicio.Abandonado -> InicioEnLaMaquina.NoSeCobra(TEXTO_COBRO_ABANDONADO)
                 ResultadoDeInicio.CotizacionVencida -> return@repeat
             }
         }
@@ -540,20 +636,22 @@ class MaquinaDeEfectivo internal constructor(
      */
     suspend fun resolver(referenceCC: String, r: ResolucionDelGerente): ResultadoDeResolver {
         if (!roles.canResolveCashMachine) return ResultadoDeResolver.NoSe(TEXTO_SIN_PERMISO_RESOLVER)
-        if (r.desenlace != Desenlace.PAGADO && r.cancelMode !in MODOS) return ResultadoDeResolver.NoSe(TEXTO_NO_SE_SABE_EL_MODO)
-        if (r.evidencia.isBlank()) return ResultadoDeResolver.NoSe(TEXTO_ESCRIBE_LO_QUE_VISTE)
+        if (!r.porTerminar && r.desenlace != Desenlace.PAGADO && r.cancelMode !in MODOS) return ResultadoDeResolver.NoSe(TEXTO_NO_SE_SABE_EL_MODO)
+        if (!r.porTerminar && r.evidencia.isBlank()) return ResultadoDeResolver.NoSe(TEXTO_ESCRIBE_LO_QUE_VISTE)
         // Codex código r2 H6: el gerente resuelve por folio desde su caja: la fila puede no estar en esta PC (es de otra).
         val fila = dao.porReferencia(referenceCC)
         val venueId = fila?.venueId ?: secureStorage.venueId ?: return ResultadoDeResolver.NoSe(TEXTO_DUDA_SIN_SUBIR)
-        val cuerpo = JSONObject()
+        // r6-4 y Codex código r2 H7: la versión de la evidencia que el gerente VIO; si llegó otra, el SERVIDOR no escribe nada.
+        val version = r.version ?: fila?.versionDeLaDuda ?: 1
+        // Codex código r3 #8: un POR_TERMINAR se termina sólo con la versión, desde lo congelado (sin importes que teclear).
+        val cuerpo = if (r.porTerminar) JSONObject().put("version", version) else JSONObject()
             .put("outcome", r.desenlace.name)
             .put("creditCents", r.creditCents)
             .put("changeDispensedCents", r.changeDispensedCents)
             .put("occurredAt", r.horaDelComprobante?.toString() ?: JSONObject.NULL)
             .put("evidence", r.evidencia.trim())
             .put("cancelMode", if (r.desenlace == Desenlace.PAGADO) JSONObject.NULL else r.cancelMode)
-            // r6-4 y Codex código r2 H7: la versión de la evidencia que el gerente VIO; si llegó otra, el SERVIDOR no escribe nada.
-            .put("version", r.version ?: fila?.versionDeLaDuda ?: 1)
+            .put("version", version)
         val respuesta = try {
             api.resolverDuda(venueId, referenceCC, cuerpo)
         } catch (e: IOException) {
@@ -562,11 +660,22 @@ class MaquinaDeEfectivo internal constructor(
         // Lo que contestó se lee con [leerAcuse] y se aplica a la fila con la MISMA lectura que la subida (un solo lugar).
         return when (val acuse = leerAcuse(respuesta)) {
             is Acuse.Terminado -> {
-                if (fila != null && !dao.resolverConElEco(fila, acuse.json, acuse.cuerpo)) return ResultadoDeResolver.NoSe(TEXTO_RESPUESTA_DISTINTA)
+                // Codex código r3 #10: la fila de ESTA PC se toca sólo si el SERVIDOR dice que el folio es de esta PC (la misma
+                // comprobación que la subida): un folio igual de otra PC nunca libera la venta de aquí.
+                val deEstaPc = fila?.takeIf { prefs.esDeEstaPc(acuse.deviceId) }
+                if (deEstaPc != null && !dao.resolverConElEco(deEstaPc, acuse.json, acuse.cuerpo)) {
+                    return ResultadoDeResolver.NoSe(TEXTO_RESPUESTA_DISTINTA)
+                }
                 subida.disparar()
+                val desenlace = Desenlace.entries.firstOrNull { it.name == acuse.json.optString("outcome") } ?: r.desenlace
+                val credit = acuse.json.optInt("creditCents", r.creditCents)
+                val change = acuse.json.optInt("changeDispensedCents", r.changeDispensedCents)
                 // Codex código r1 #11: un 202 con incidencia no es venta (sin ticket ni comanda): sólo el comprobante de lo que se debe.
                 acuse.incidencia?.let { ResultadoDeResolver.Incidencia(it, acuse.json.optInt("owedCents", 0)) }
-                    ?: ResultadoDeResolver.Resuelto(r.desenlace, r.creditCents, r.changeDispensedCents)
+                    ?: ResultadoDeResolver.Resuelto(desenlace, credit, change).also {
+                        // Codex código r3 #6: un gerente confirmó en ESTA PC que la máquina cobró: su comanda sale de la fila.
+                        if (desenlace == Desenlace.PAGADO && deEstaPc != null) scope.launch { despacharComanda(referenceCC) }
+                    }
             }
             // La decisión quedó; la venta la termina la siguiente subida de la duda (la reanuda).
             is Acuse.Recibido -> {
@@ -575,7 +684,7 @@ class MaquinaDeEfectivo internal constructor(
             }
             // r6-4 y Codex código r2 H7: llegó evidencia nueva. No se escribió nada: se trae la evidencia AL DÍA del SERVIDOR (nunca la de
             // disco) para enseñarla, y el gerente vuelve a confirmar con ESA versión. Si no se pudo leer, se dice y se vuelve a intentar.
-            is Acuse.OtraVersion -> dudaAlDia(venueId, referenceCC)
+            is Acuse.OtraVersion -> dudaAlDia(venueId, referenceCC, if (r.porTerminar) KIND_POR_TERMINAR else KIND_ESPERANDO)
                 ?.let { ResultadoDeResolver.EvidenciaNueva(TEXTO_EVIDENCIA_NUEVA, it) }
                 ?: ResultadoDeResolver.NoSe(TEXTO_EVIDENCIA_NUEVA_SIN_LEER)
             Acuse.NoExiste -> {
@@ -595,30 +704,43 @@ class MaquinaDeEfectivo internal constructor(
     private val imprimiendo = MutableStateFlow<Set<String>>(emptySet())
 
     /**
-     * Codex código r2 H9: el papel de [referenceCC], una sola vez. Se reclama ANTES de imprimir (`ticketImpreso` 0 → 2, un solo
-     * ganador) y la marca es el resultado REAL de la impresora. Un 2 que dejó una PC que murió imprimiéndolo sale como COPIA
-     * («REIMPRESIÓN»), nunca como otro original. null = ya salió, otro lo está imprimiendo o no hay papel que dar.
+     * Codex código r2 H9 y r3 #11, #12: EL camino del papel de un folio. La impresión automática, «Imprimir recibo» de la pantalla de
+     * éxito, «Tickets sin imprimir» y el comprobante pasan TODOS por aquí:
+     * - el ORIGINAL se reclama en la fila (`ticketImpreso` 0 → 2, un solo ganador) y sale en UNA impresora de recibos
+     *   ([PrinterService.imprimirOriginal]); la marca es el resultado REAL de la impresora;
+     * - el papel se decide al imprimir, con lo último que dijo el SERVIDOR en la fila ([papelDeLaFila]): con incidencia, el comprobante
+     *   del dinero aunque la pantalla haya armado un ticket de venta;
+     * - lo demás es COPIA («REIMPRESIÓN»): el 2 que dejó una PC que murió imprimiendo, o lo que se pide ([aPedido]) cuando el original
+     *   ya salió.
+     * null = otro lo está imprimiendo ahora, ya salió y nadie pidió copia, o no hay papel que dar.
      */
-    private suspend fun imprimirPapel(
+    suspend fun imprimirPapelDelFolio(
         referenceCC: String,
-        papel: (CobroEnMaquinaEntity) -> com.avoqado.pos.printing.data.model.ReceiptData?,
+        ticketDeVenta: com.avoqado.pos.printing.data.model.ReceiptData? = null,
+        aPedido: Boolean = false,
     ): PrinterService.PrintOutcome? {
+        val negocio = secureStorage.venueName ?: "Avoqado"
         var ya = false
         imprimiendo.update { if (referenceCC in it) { ya = true; it } else it + referenceCC }
         if (ya) return null
         try {
+            val gano = dao.reclamarTicket(referenceCC) == 1
+            // Se lee DESPUÉS de reclamar: el acuse del SERVIDOR que llegó hasta este instante decide el papel (Codex código r3 #12).
             val fila = dao.porReferencia(referenceCC) ?: return null
             val copia = when {
-                dao.reclamarTicket(referenceCC) == 1 -> false
-                fila.ticketImpreso == TicketDelCobro.IMPRIMIENDO -> true
+                gano -> false
+                fila.ticketImpreso == TicketDelCobro.IMPRIMIENDO -> true   // lo dejó una PC que murió imprimiéndolo
+                aPedido && fila.ticketImpreso == TicketDelCobro.IMPRESO -> true
                 else -> return null
             }
-            val recibo = papel(fila)?.let { if (copia) it.copy(reprintedAt = Date(reloj())) else it }
-            if (recibo == null) {
-                if (!copia) dao.terminarTicket(referenceCC, TicketDelCobro.PENDIENTE)
+            val papel = papelDeLaFila(fila, negocio, ticketDeVenta)
+            if (papel == null) {
+                if (gano) dao.terminarTicket(referenceCC, TicketDelCobro.PENDIENTE)
                 return null
             }
-            val r = printerService.manualPrintReceipt(recibo)
+            val r = if (copia) printerService.manualPrintReceipt(papel.copy(reprintedAt = Date(reloj())))
+            else printerService.imprimirOriginal(papel)
+            // Sólo cambia un reclamado (2): el original que salió (1), el que no (0, otra vez pendiente) o la copia de una PC muerta.
             dao.terminarTicket(
                 referenceCC,
                 when {
@@ -634,23 +756,15 @@ class MaquinaDeEfectivo internal constructor(
     }
 
     /**
-     * El ticket de una venta de la máquina, UNA vez por folio: sale aunque la impresora no tenga la impresión automática (es la
-     * prueba del cliente, sobre todo con deuda) y `ticketImpreso` se marca sólo con el resultado REAL de la impresora.
+     * El comprobante de [referenceCC] desde la lista de lo que se debe (Ajustes). Si ese comprobante ES el papel del folio (un CANCELADO,
+     * o una venta que quedó como incidencia), pasa por [imprimirPapelDelFolio]: el original una vez, después copias. El comprobante de
+     * diferencia de una venta (el precio bajó al subir) es otro papel: sale aparte, reimprimible. null = esa fila no le debe nada.
      */
-    suspend fun imprimirTicketUnaVez(referenceCC: String, ticket: com.avoqado.pos.printing.data.model.ReceiptData): PrinterService.PrintOutcome? =
-        imprimirPapel(referenceCC) { ticket }
-
-    /** El comprobante de [referenceCC] (reimprimible). null = esa fila no le debe nada al cliente. */
     suspend fun imprimirComprobante(referenceCC: String): PrinterService.PrintOutcome? {
         val fila = dao.porReferencia(referenceCC) ?: return null
+        if (fila.desenlace != Desenlace.PAGADO || fila.conflicto != null) return imprimirPapelDelFolio(referenceCC, aPedido = true)
         val c = comprobanteDeLaMaquina(fila, secureStorage.venueName ?: "Avoqado") ?: return null
-        return printerService.manualPrintReceipt(c)
-    }
-
-    /** El de un CANCELADO que no devolvió todo, UNA vez al cerrarse (después se reimprime desde Ajustes de la máquina). */
-    suspend fun imprimirComprobanteUnaVez(referenceCC: String) {
-        val negocio = secureStorage.venueName ?: "Avoqado"
-        imprimirPapel(referenceCC) { comprobanteDeLaMaquina(it, negocio) }
+        return printerService.imprimirOriginal(c)
     }
 
     /**
@@ -680,14 +794,16 @@ class MaquinaDeEfectivo internal constructor(
      */
     suspend fun imprimirTicketsPendientes(): Int {
         val venueId = secureStorage.venueId ?: return 0
-        val negocio = secureStorage.venueName ?: "Avoqado"
         return dao.ticketsSinImprimir(venueId).count { fila ->
-            imprimirPapel(fila.referenceCC) { papelDeLaFila(it, negocio) } is PrinterService.PrintOutcome.Printed
+            imprimirPapelDelFolio(fila.referenceCC) is PrinterService.PrintOutcome.Printed
         }
     }
 
     /** ¿El permiso de resolver está en la sesión? (la pantalla lo explica sin mandar nada). */
     fun puedeResolver(): Boolean = roles.canResolveCashMachine
+
+    /** Codex código r3 #7: ¿el permiso de configurar la máquina está en la sesión? (sólo la parte de IP y emparejar lo pide). */
+    fun puedeConfigurar(): Boolean = roles.canConfigureCashMachine
 
     /** Lo que la pantalla de resultado dice de un cobro de la máquina: su fila, en vivo (Room avisa cuando cambia). */
     fun sincronizacion(referenceCC: String): Flow<SincronizacionDelCobro> = dao.observar(referenceCC).map { f ->
@@ -699,10 +815,12 @@ class MaquinaDeEfectivo internal constructor(
         }
     }.distinctUntilChanged()
 
-    private companion object {
-        val MODOS = setOf("1", "2")
-        const val COMPROBANTES_POR_PAGINA = 50
+    companion object {
+        const val KIND_ESPERANDO = "ESPERANDO"
+        const val KIND_POR_TERMINAR = "POR_TERMINAR"
+        private val MODOS = setOf("1", "2")
+        private const val COMPROBANTES_POR_PAGINA = 50
         /** ponytail: la vigencia del SERVIDOR (`VIGENCIA_DE_LA_COTIZACION_MS`, 10 min) menos 30 s de margen. */
-        const val VIGENCIA_DE_LA_COTIZACION_MS = 10 * 60_000L - 30_000L
+        private const val VIGENCIA_DE_LA_COTIZACION_MS = 10 * 60_000L - 30_000L
     }
 }

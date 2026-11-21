@@ -73,16 +73,14 @@ import com.avoqado.pos.pos.presentation.cart.motivoDeCuentaQueViaja
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.util.formatMoney
 import com.avoqado.pos.core.domain.printing.ComandaDispatcher
-import com.avoqado.pos.core.domain.printing.NoStationsFallback
+import com.avoqado.pos.core.domain.printing.despacharDeMostrador
 import com.avoqado.pos.printing.data.ComandasPendientesStore
 import com.avoqado.pos.printing.data.EstadoDeComanda
 import com.avoqado.pos.printing.data.ReplayDeComandasPendientes
 import com.avoqado.pos.printing.data.PrinterService
 import com.avoqado.pos.printing.data.model.ComboPrintLines
-import com.avoqado.pos.printing.data.model.KitchenItem
 import com.avoqado.pos.printing.data.model.ReceiptData
 import com.avoqado.pos.printing.data.model.ReceiptItem
-import com.avoqado.pos.printing.routing.RoutableItem
 import com.avoqado.pos.tpvsettings.data.TpvSettings
 import com.avoqado.pos.tpvsettings.data.TpvSettingsRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -1500,6 +1498,7 @@ class PaymentFlowViewModel @Inject constructor(
     }
 
     override fun onCleared() {
+        maquina?.cerrar()
         terminarPermiso(cobrado = false)
         desvincularRecuperacionDeFoto?.invoke()
         desvincularRecuperacionDeFoto = null
@@ -2223,6 +2222,9 @@ class PaymentFlowViewModel @Inject constructor(
 
     fun reprintReceipt() {
         val receipt = lastReceipt ?: buildReceiptSnapshot()?.also { lastReceipt = it }
+        // Codex código r3 #11: el papel de una venta de la máquina pasa por EL camino de su folio: si el original no salió, sale el
+        // original (una vez); si ya salió, una COPIA marcada.
+        cierreDeLaMaquina?.let { c -> return reimprimirDeLaMaquina(c.referenceCC, receipt) }
         if (receipt == null) {
             if (!selectedTerminalId.isNullOrBlank()) {
                 _printResult.value = LOCAL_PRINTER_UNAVAILABLE
@@ -2257,6 +2259,32 @@ class PaymentFlowViewModel @Inject constructor(
                 if (!otraVenta(venta)) _printResult.value = "Error al imprimir: ${e.message ?: "desconocido"}"
             } finally {
                 if (!otraVenta(venta)) _printSending.value = false
+            }
+        }
+    }
+
+    private fun reimprimirDeLaMaquina(referenceCC: String, receipt: ReceiptData?) {
+        val maquina = maquinaDeEfectivo ?: return
+        val venta = ventaEnCurso
+        viewModelScope.launch {
+            _printSending.value = true
+            _printResult.value = null
+            val resultado = try {
+                when (val outcome = maquina.imprimirPapelDelFolio(referenceCC, receipt, aPedido = true)) {
+                    is PrinterService.PrintOutcome.Printed -> "Recibo impreso"
+                    is PrinterService.PrintOutcome.OutOfPaper -> "La impresora no tiene papel"
+                    is PrinterService.PrintOutcome.Failed -> "No se pudo imprimir: ${outcome.reason}"
+                    is PrinterService.PrintOutcome.NoPrinter -> "No hay impresora de recibos en esta caja. Agrégala en Más › Impresoras y cajón."
+                    null -> "El recibo de este cobro se está imprimiendo"
+                }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                "Error al imprimir: ${e.message ?: "desconocido"}"
+            }
+            if (!otraVenta(venta)) {
+                _printResult.value = resultado
+                _printSending.value = false
             }
         }
     }
@@ -3020,6 +3048,8 @@ class PaymentFlowViewModel @Inject constructor(
         val renglones = com.avoqado.pos.maquina.renglonesParaCongelar(papelDelCobro(currentBaseAmount(), cobrado = currentBaseAmount()).renglones)
         val venta = com.avoqado.pos.maquina.VentaPorCobrar(
             venueId, cart.llaveParaLaMaquina, pedido, currentBaseAmount(), currentTipCents, renglonesLocales = renglones,
+            // Codex código r3 #6: la comanda se congela con el intento; sale de la fila con el PAGADO, esté o no esta venta en pantalla.
+            comandaJson = com.avoqado.pos.maquina.comandaParaCongelar(cart.items),
         )
         // Codex código r1 #1: la venta queda apartada en ESTE toque, antes de pedir el turno o cotizar: la tarjeta (F4) ya no sale.
         if (!caja.apartar()) return
@@ -6156,6 +6186,8 @@ class PaymentFlowViewModel @Inject constructor(
     }
 
     private fun salirDelFlujo() {
+        // Codex código r3 #5: salir de este cobro cierra su apertura en la máquina: lo que regrese tarde ya no la enciende.
+        maquina?.cerrar()
         terminarPermiso(cobrado = false)
         _state.value = PaymentFlowState.Loading
         _debeSalir.value = true
@@ -6282,8 +6314,10 @@ class PaymentFlowViewModel @Inject constructor(
         viewModelScope.launch {
             if (maquinaDelTicket != null) {
                 // C7: el ticket de la máquina es la prueba del cliente (con deuda, su único papel): sale aunque la impresora no tenga
-                // la impresión automática, UNA vez por folio y marcado con el resultado real de la impresora.
-                recibo?.let { maquinaDeEfectivo?.imprimirTicketUnaVez(maquinaDelTicket.referenceCC, it) }
+                // la impresión automática. Codex código r3 #11, #12: por EL camino del papel del folio (un original, decidido por lo que
+                // la fila dice al imprimir). Su comanda la despacha la máquina, de la fila (Codex código r3 #6): aquí no.
+                maquinaDeEfectivo?.imprimirPapelDelFolio(maquinaDelTicket.referenceCC, recibo)
+                return@launch
             } else {
                 recibo?.let { printerService.autoPrintReceipt(it) }
             }
@@ -6320,95 +6354,16 @@ class PaymentFlowViewModel @Inject constructor(
         venueId: String?,
         venta: Int,
     ) {
-        val realItems = cart.items.filter {
-            it.type is CartItemType.ProductItem && !it.locked
-        }
-        // Sin productos reales (venta de importe libre) no hay comanda que mandar.
-        if (realItems.isEmpty()) return
         val orderNumber = orderId?.takeLast(4) ?: "Q-${(1000..9999).random()}"
-
-        // PRINT_STATIONS — el disparo POST-PAGO del mostrador. La secuencia (refrescar config →
-        // rutear → imprimir CON REINTENTO, o el ticket legado si el venue no tiene estaciones)
-        // vive en [ComandaDispatcher], que es la MISMA pieza que usa el disparo PRE-PAGO del
-        // vale de área (§5.6). Mover el mecanismo no cambió ni una llamada de este camino:
-        // mismos argumentos, mismo orden, mismo ticket legado (con su `category`) — lo fijan
-        // PaymentFlowViewModelTest y ComandaDispatcherTest.
-        // 🔴 Esto corre en un `viewModelScope.launch` suelto, DESPUÉS de cobrar: una excepción aquí
-        // (lectura de disco, bind de la impresora) no tenía quién la atrapara y cerraba la app con el
-        // cliente enfrente. Se dice como «No salió la comanda» —sin botón: no hay trabajo que reenviar—
-        // y sólo la cancelación se propaga.
-        try {
-            val coursePedidos = com.avoqado.pos.payment.domain.buildCounterCoursePedidos(realItems)
-            if (coursePedidos != null) {
-                comandaDispatcher.despacharEnFondo(
-                    venueId = venueId, orderNumber = orderNumber, pedidos = coursePedidos,
-                    orderId = orderId, servidorLaTiene = servidorLaTiene, origenDelFolio = origenDelFolio,
-                    alCambiarEstado = { estado -> aplicarEstadoDeComanda(estado, orderNumber, venta) },
-                ).join()
-                return
-            }
-            comandaDispatcher.dispatch(
-                venueId = venueId,
-                lines = realItems.map { item ->
-                    RoutableItem(
-                        orderItemId = item.id,
-                        productId = (item.type as? CartItemType.ProductItem)?.productId,
-                        categoryId = item.categoryId,
-                        productName = item.nombreEnCocina,
-                        quantity = item.quantity,
-                        modifiers = item.selectedModifiers.map { it.modifierName },
-                        notes = item.itemNote,
-                        // COMBOS — el nombre viaja con la línea para que cada estación
-                        // pueda encabezar SUS productos con el combo al que pertenecen.
-                        comboName = item.promotionInstanceId?.let { item.promotionName ?: "Combo" },
-                    )
-                },
-                orderNumber = orderNumber,
-                orderType = "En tienda",
-                // «La libreta» (Task 16) — el id REAL de la orden, para que el reporte al servidor
-                // no dependa del `orderNumber` truncado/aleatorio de arriba.
-                orderId = orderId,
-                // Sin estaciones configuradas: EXACTAMENTE lo de antes — un solo ticket de cocina
-                // abanicado a todas las impresoras con rol KITCHEN.
-                noStationsFallback = NoStationsFallback.LegacySingleTicket(
-                    // COMBOS — en la comanda la llave es el NOMBRE (ver ComboPrintLines):
-                    // los productos del mismo combo van juntos bajo un encabezado.
-                    ComboPrintLines.kitchen(
-                        realItems.map { item ->
-                            val comboName = item.promotionInstanceId?.let { item.promotionName ?: "Combo" }
-                            val tag = comboName?.let { ComboPrintLines.Tag(key = it, name = it) }
-                            tag to KitchenItem(
-                                name = item.nombreEnCocina,
-                                quantity = item.quantity,
-                                modifiers = item.selectedModifiers.map { it.modifierName }.ifEmpty { null },
-                                note = item.itemNote,
-                                category = item.subtitle,
-                            )
-                        },
-                    ),
-                ),
-                // Una comanda que sigue reintentando o que se rindió se DICE, con la estación por
-                // nombre y la CAUSA REAL que reportó la impresora — nunca un texto genérico.
-                // Una comanda que sigue reintentando o que se rindió se DICE, con la estación por
-                // nombre y la CAUSA REAL que reportó la impresora — nunca un texto genérico. La regla
-                // de "de qué venta habla este aviso" vive en UN solo sitio: [aplicarEstadoDeComanda].
-                // Etapa 3 del KDS (3.4): la caja decide por estación — ver `KitchenDeliveryPolicy`.
-                servidorLaTiene = servidorLaTiene,
-                origenDelFolio = origenDelFolio,
-                alCambiarEstado = { estado -> aplicarEstadoDeComanda(estado, orderNumber, venta) },
-                // «No lleva comanda»: el cobro de mostrador es una venta del POS.
-                omitirSinComanda = true,
-            )
-        } catch (e: kotlinx.coroutines.CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            Log.e("🍳", "❌ La comanda del pedido $orderNumber reventó al despacharse: ${e.message}", e)
-            aplicarEstadoDeComanda(
-                EstadoDeComanda.NoSalio(listOf("Cocina"), e.message, orderNumber, trabajo = null),
-                orderNumber,
-                venta,
-            )
-        }
+        // PRINT_STATIONS — el disparo POST-PAGO del mostrador. La secuencia (refrescar config → rutear → imprimir CON REINTENTO, o el
+        // ticket legado si el venue no tiene estaciones) vive en [ComandaDispatcher]; los renglones, en [despacharDeMostrador], el
+        // MISMO que usa la máquina de efectivo (Codex código r3 #6). La regla de «de qué venta habla este aviso» vive en UN solo
+        // sitio: [aplicarEstadoDeComanda].
+        comandaDispatcher.despacharDeMostrador(
+            items = cart.items, venueId = venueId, orderNumber = orderNumber, orderId = orderId,
+            servidorLaTiene = servidorLaTiene, origenDelFolio = origenDelFolio,
+            alCambiarEstado = { estado -> aplicarEstadoDeComanda(estado, orderNumber, venta) },
+        )
     }
 
     private val _reintentandoComandaManualmente = MutableStateFlow(false)

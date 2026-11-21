@@ -38,6 +38,11 @@ import java.util.Random
 @OptIn(ExperimentalCoroutinesApi::class)
 class MaquinaDeEfectivoTest {
 
+    private companion object {
+        /** El `deviceId` de esta PC para el SERVIDOR. */
+        const val ESTA_PC = "cterm00000000000000esta1"
+    }
+
     internal class CanalFalso : CanalDeLaMaquina {
         override val conexion = MutableStateFlow(Conexion.CONECTADA)
         override val generacion = MutableStateFlow(1)
@@ -72,7 +77,10 @@ class MaquinaDeEfectivoTest {
     private val canal = CanalFalso()
     private val dao = CobroEnMaquinaSobreSqlite()
     private val contexto = AjustesDeLaMaquinaTest.contextoConPreferencias()
-    private val prefs = MaquinaDeEfectivoPrefs(contexto).apply { guardar("192.168.1.50", activa = true, venueId = "venue-1") }
+    private val prefs = MaquinaDeEfectivoPrefs(contexto).apply {
+        guardar("192.168.1.50", activa = true, venueId = "venue-1")
+        recordarDispositivo(ESTA_PC)   // lo aprendió el primer POST de esta PC (r3 #7)
+    }
     private val boveda = object : BovedaDeLaMaquina {
         var credencial: String? = "cred-1"
         override fun guardar(credencial: String) { this.credencial = credencial }
@@ -148,7 +156,7 @@ class MaquinaDeEfectivoTest {
         dao.insertar(base.copy(referenceCC = "AQ000000000004", llaveDeVenta = "venta-4", estado = EstadoDelIntento.PAGADO))
         val m = maquina()
 
-        assertEquals(listOf("AQ000000000002", "AQ000000000001"), m.dudasEnEspera().map { it.referenceCC })
+        assertEquals(listOf("AQ000000000002", "AQ000000000001"), m.dudasDeEstaPc(soloSinSubir = false, limite = 100).first.map { it.referenceCC })
         assertEquals(listOf("AQ000000000002", "AQ000000000001"), m.enEspera().first().map { it.referenceCC })
         assertEquals("AQ000000000001", m.intentoDeLaVenta("venta-1")?.referenceCC)
         assertNull(m.intentoDeLaVenta("venta-4"))
@@ -156,7 +164,10 @@ class MaquinaDeEfectivoTest {
 
     @Test
     fun `P1 Codex r1 #8 un CANCELADO o GUARDADO que resolvio el gerente libera la venta, un PAGADO o uno sin saber no`() = runTest {
-        val base = CobroEnMaquinaEntity("AQ000000000001", "venue-1", "venta-1", "{}", 1_000, 0, 1_000, null, null, 1, EstadoDelIntento.RESUELTO)
+        // Resueltas sin evidencia pendiente (`dudaSubida`): lo último que vio la PC ya está en el SERVIDOR (Codex código r3 #1).
+        val base = CobroEnMaquinaEntity(
+            "AQ000000000001", "venue-1", "venta-1", "{}", 1_000, 0, 1_000, null, null, 1, EstadoDelIntento.RESUELTO, dudaSubida = true,
+        )
         dao.insertar(base.copy(desenlaceDelServidor = "CANCELADO"))
         dao.insertar(base.copy(referenceCC = "AQ000000000002", llaveDeVenta = "venta-2", desenlaceDelServidor = "GUARDADO"))
         dao.insertar(base.copy(referenceCC = "AQ000000000003", llaveDeVenta = "venta-3", desenlaceDelServidor = "PAGADO"))
@@ -167,6 +178,9 @@ class MaquinaDeEfectivoTest {
         assertFalse(m.ventaBloqueada("venta-2"))
         assertTrue(m.ventaBloqueada("venta-3"))
         assertTrue("sin saber cómo terminó, sigue frenada", m.ventaBloqueada("venta-4"))
+        // Codex código r3 #1: un CANCELADO con evidencia posterior que el SERVIDOR todavía no tiene sigue frenado.
+        dao.insertar(base.copy(referenceCC = "AQ000000000005", llaveDeVenta = "venta-5", desenlaceDelServidor = "CANCELADO", dudaSubida = false))
+        assertTrue(m.ventaBloqueada("venta-5"))
     }
 
     @Test
@@ -445,14 +459,21 @@ class MaquinaDeEfectivoTest {
         dao.insertar(pagadoSubido.copy(referenceCC = "AQ000000000002", respuestaServidor = """{"outcome":"PAGADO","excedenteCents":0}"""))
         dao.insertar(pagadoSubido.copy(referenceCC = "AQ000000000003", estado = EstadoDelIntento.CANCELADO, creditCents = 5_000, changeDispensedCents = 0, creadoEn = 2, aDeberCents = 5_000))
         dao.insertar(pagadoSubido.copy(referenceCC = "AQ000000000004", venueId = "venue-2", respuestaServidor = """{"outcome":"PAGADO","excedenteCents":900}""", aDeberCents = 900))
+        coEvery { impresora.imprimirOriginal(any()) } returns PrinterService.PrintOutcome.Printed(1)
         coEvery { impresora.manualPrintReceipt(any()) } returns PrinterService.PrintOutcome.Printed(1)
         val m = maquina()
 
         assertEquals(listOf("AQ000000000003" to 5_000, "AQ000000000001" to 500), m.comprobantes().map { it.first.referenceCC to it.second })
+        // El de diferencia de una venta es su propio papel, reimprimible (en UNA impresora de recibos).
         assertEquals(PrinterService.PrintOutcome.Printed(1), m.imprimirComprobante("AQ000000000001"))
         assertEquals(PrinterService.PrintOutcome.Printed(1), m.imprimirComprobante("AQ000000000001"))
         assertNull("no debe nada", m.imprimirComprobante("AQ000000000002"))
-        coVerify(exactly = 2) { impresora.manualPrintReceipt(any()) }
+        coVerify(exactly = 2) { impresora.imprimirOriginal(match { it.orderNumber == "AQ000000000001" }) }
+        // Codex código r3 #11: el de un CANCELADO ES el papel de su folio: el original una vez, después copias marcadas.
+        assertEquals(PrinterService.PrintOutcome.Printed(1), m.imprimirComprobante("AQ000000000003"))
+        assertEquals(PrinterService.PrintOutcome.Printed(1), m.imprimirComprobante("AQ000000000003"))
+        coVerify(exactly = 1) { impresora.imprimirOriginal(match { it.orderNumber == "AQ000000000003" }) }
+        coVerify(exactly = 1) { impresora.manualPrintReceipt(match { it.orderNumber == "AQ000000000003" && it.reprintedAt != null }) }
     }
 
     // MARK: - El gerente resuelve (R4-4, R5#8)
@@ -548,7 +569,7 @@ class MaquinaDeEfectivoTest {
     }
 
     private fun ecoDelGerente(ref: String, outcome: String, credit: Int, change: Int, extra: JSONObject.() -> Unit = {}) =
-        JSONObject().put("success", true).put("ack", "TERMINADO").put("referenceCC", ref).put("outcome", outcome)
+        JSONObject().put("success", true).put("ack", "TERMINADO").put("deviceId", ESTA_PC).put("referenceCC", ref).put("outcome", outcome)
             .put("resolvedBy", "GERENTE").put("dueCents", 18_750).put("saleCents", 18_000).put("tipCents", 750)
             .put("creditCents", credit).put("changeDispensedCents", change).put("owedCents", 0).apply(extra).toString()
 
@@ -664,7 +685,7 @@ class MaquinaDeEfectivoTest {
         assertEquals(EstadoDelIntento.RESUELTO, fila.estado)
         assertEquals("Registrado como incidencia: la venta ya no se pudo armar", fila.conflicto)
         assertEquals("su comprobante con folio", 1_250, fila.aDeberCents)
-        val papel = papelDeLaFila(dao.ticketsSinImprimir("venue-1").single(), "La Galeterie")
+        val papel = papelDeLaFila(dao.ticketsSinImprimir("venue-1").single(), "La Galeterie")!!
         assertEquals("no es una venta: su papel pendiente es el comprobante del dinero",
             com.avoqado.pos.printing.receiptlayout.KIND_COMPROBANTE_DE_LA_MAQUINA, papel.kind)
         assertEquals(1_250L, papel.cashMachine!!.owedCents)
@@ -674,11 +695,11 @@ class MaquinaDeEfectivoTest {
     fun `P1 Codex r2 H9 la impresion automatica y dos toques del boton al mismo tiempo sacan UN solo original`() = runTest {
         dao.insertar(pagadoSubido.copy(subido = false))
         val papel = kotlinx.coroutines.CompletableDeferred<PrinterService.PrintOutcome>()
-        coEvery { impresora.manualPrintReceipt(any()) } coAnswers { papel.await() }
+        coEvery { impresora.imprimirOriginal(any()) } coAnswers { papel.await() }
         val m = maquina()
         val ticket = ticketDeLaFila(dao.fila("AQ000000000001")!!, "La Galeterie")
 
-        val automatica = async { m.imprimirTicketUnaVez("AQ000000000001", ticket) }
+        val automatica = async { m.imprimirPapelDelFolio("AQ000000000001", ticket) }
         val boton = async { m.imprimirTicketsPendientes() }
         val otraVez = async { m.imprimirTicketsPendientes() }
         runCurrent()
@@ -686,9 +707,9 @@ class MaquinaDeEfectivoTest {
         papel.complete(PrinterService.PrintOutcome.Printed(1))
         automatica.await(); boton.await(); otraVez.await()
 
-        coVerify(exactly = 1) { impresora.manualPrintReceipt(any()) }
+        coVerify(exactly = 1) { impresora.imprimirOriginal(any()) }
         assertEquals(TicketDelCobro.IMPRESO, dao.fila("AQ000000000001")!!.ticketImpreso)
-        assertNull("ya salió: no hay otro original", m.imprimirTicketUnaVez("AQ000000000001", ticket))
+        assertNull("ya salió: no hay otro original", m.imprimirPapelDelFolio("AQ000000000001", ticket))
     }
 
     @Test
@@ -717,7 +738,7 @@ class MaquinaDeEfectivoTest {
             ),
         )
         val impresos = mutableListOf<com.avoqado.pos.printing.data.model.ReceiptData>()
-        coEvery { impresora.manualPrintReceipt(capture(impresos)) } returns PrinterService.PrintOutcome.Printed(1)
+        coEvery { impresora.imprimirOriginal(capture(impresos)) } returns PrinterService.PrintOutcome.Printed(1)
         val m = maquina()
 
         assertEquals(1, m.imprimirTicketsPendientes())
@@ -738,7 +759,7 @@ class MaquinaDeEfectivoTest {
         dao.insertar(pagado)
         dao.insertar(pagado.copy(referenceCC = "AQ000000000002", ticketImpreso = TicketDelCobro.IMPRESO))
         val impresos = mutableListOf<com.avoqado.pos.printing.data.model.ReceiptData>()
-        coEvery { impresora.manualPrintReceipt(capture(impresos)) } returns PrinterService.PrintOutcome.OutOfPaper andThen PrinterService.PrintOutcome.Printed(1)
+        coEvery { impresora.imprimirOriginal(capture(impresos)) } returns PrinterService.PrintOutcome.OutOfPaper andThen PrinterService.PrintOutcome.Printed(1)
         val m = maquina()
         assertEquals(1, m.ticketsSinImprimir().first())
 
@@ -827,5 +848,86 @@ class MaquinaDeEfectivoTest {
 
         assertEquals(ResultadoDeResolver.NoSe("Los importes de este cierre de la máquina no son posibles."), r)
         assertEquals(EstadoDelIntento.ESPERANDO, dao.fila(ref)!!.estado)
+    }
+
+    // MARK: - Codex código r3
+
+    @Test
+    fun `P1 Codex r3 #10 resolver un folio que el servidor dice de OTRA PC no libera la venta de esta`() = runTest {
+        val m = maquina()
+        val ref = dudaDe(m)
+        coEvery { api.resolverDuda("venue-1", ref, any()) } returns
+            RespuestaDelServidor(200, ecoDelGerente(ref, "CANCELADO", 0, 0) { put("deviceId", "cterm000000000000la-otra1") })
+
+        val r = m.resolver(ref, ResolucionDelGerente(Desenlace.CANCELADO, 0, 0, null, "1", "devolvió todo", version = 1))
+
+        assertEquals(ResultadoDeResolver.Resuelto(Desenlace.CANCELADO, 0, 0), r)
+        val fila = dao.fila(ref)!!
+        assertEquals("la fila de esta PC sigue esperando", EstadoDelIntento.ESPERANDO, fila.estado)
+        assertTrue("y su venta sigue frenada", m.ventaBloqueada(fila.llaveDeVenta))
+    }
+
+    @Test
+    fun `P1 Codex r3 #12 con el 202 definitivo ya en la fila, el primer papel es el comprobante del dinero aunque la caja traiga un ticket`() = runTest {
+        dao.insertar(
+            pagadoSubido.copy(
+                conflicto = "Registrado como incidencia: la venta ya no se pudo armar",
+                respuestaServidor = """{"ack":"TERMINADO","incident":"NO_SE_PUDO_REGISTRAR"}""",
+            ),
+        )
+        val impresos = mutableListOf<com.avoqado.pos.printing.data.model.ReceiptData>()
+        coEvery { impresora.imprimirOriginal(capture(impresos)) } returns PrinterService.PrintOutcome.Printed(1)
+        val m = maquina()
+        val ticketDeLaCaja = ticketDeLaFila(dao.fila("AQ000000000001")!!, "La Galeterie")
+
+        m.imprimirPapelDelFolio("AQ000000000001", ticketDeLaCaja)
+
+        assertEquals(com.avoqado.pos.printing.receiptlayout.KIND_COMPROBANTE_DE_LA_MAQUINA, impresos.single().kind)
+    }
+
+    @Test
+    fun `P1 Codex r3 #8 un folio POR_TERMINAR se lista aparte y se termina SOLO con su version`() = runTest {
+        val m = maquina()
+        coEvery { api.listarDudas("venue-1", null, null, "POR_TERMINAR") } returns RespuestaDelServidor(
+            200,
+            JSONObject().put("total", 1).put("nextCursor", JSONObject.NULL).put(
+                "data",
+                org.json.JSONArray().put(
+                    JSONObject().put("referenceCC", "AQ00000000RELE").put("kind", "POR_TERMINAR").put("dueCents", 18_000).put("version", 3)
+                        .put("outcome", "PAGADO").put("creditCents", 20_000).put("changeDispensedCents", 2_000)
+                        .put("createdAt", "2026-11-18T21:48:20Z"),
+                ),
+            ).toString(),
+        )
+        val duda = m.dudasDelNegocio(kind = MaquinaDeEfectivo.KIND_POR_TERMINAR)!!.dudas.single()
+        assertTrue(duda.porTerminar)
+        assertEquals(Triple("PAGADO", 20_000, 2_000), Triple(duda.outcome, duda.creditCents, duda.changeDispensedCents))
+        val cuerpo = slot<JSONObject>()
+        coEvery { api.resolverDuda("venue-1", "AQ00000000RELE", capture(cuerpo)) } returns
+            RespuestaDelServidor(200, ecoDelGerente("AQ00000000RELE", "PAGADO", 20_000, 2_000) { put("deviceId", "cterm000000000000la-otra1") })
+
+        val r = m.resolver(
+            "AQ00000000RELE",
+            ResolucionDelGerente(Desenlace.PAGADO, 20_000, 2_000, null, null, "", version = duda.version, porTerminar = true),
+        )
+
+        assertEquals(ResultadoDeResolver.Resuelto(Desenlace.PAGADO, 20_000, 2_000), r)
+        assertEquals("sólo la versión: los importes ya están congelados", listOf("version"), cuerpo.captured.keys().asSequence().toList())
+        assertEquals(3, cuerpo.captured.getInt("version"))
+    }
+
+    @Test
+    fun `P1 Codex r3 #8 las dudas de esta PC se cuentan todas y por paginas, y las que el servidor ya acuso no se repiten`() = runTest {
+        val base = CobroEnMaquinaEntity("AQ000000000001", "venue-1", "venta-1", "{}", 1_000, 0, 1_000, null, null, 1, EstadoDelIntento.ESPERANDO)
+        (1..103).forEach { dao.insertar(base.copy(referenceCC = "AQ%012d".format(it), llaveDeVenta = "venta-$it", creadoEn = it.toLong())) }
+        dao.marcarDudaAbierta("AQ000000000103", 2, "", 0)   // el SERVIDOR ya la tiene (sale en su lista)
+        val m = maquina()
+
+        val (pagina, total) = m.dudasDeEstaPc(soloSinSubir = false, limite = 50)
+        assertEquals(50 to 103, pagina.size to total)
+        assertEquals("AQ000000000103", pagina.first().referenceCC)
+        val (sinSubir, totalSinSubir) = m.dudasDeEstaPc(soloSinSubir = true, limite = 200)
+        assertEquals(102, totalSinSubir)
+        assertTrue(sinSubir.none { it.referenceCC == "AQ000000000103" })
     }
 }
