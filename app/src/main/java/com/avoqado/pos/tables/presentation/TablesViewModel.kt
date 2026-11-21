@@ -948,10 +948,11 @@ class TablesViewModel @Inject constructor(
 
     /**
      * D25 (Flautas, 20-nov): con un abono de $10, la hoja decía «Cobrar cuenta • $60.00» y la cuenta «Por pagar $50.00». El plano no
-     * trae pagos, así que la hoja lee el MISMO saldo que pinta la cuenta (`preBillBalance` del detalle): primero la última lectura
-     * guardada en el aparato (la que la cuenta enseña sin red) y luego la del servidor, que manda (como en la cuenta). Sin la del
-     * servidor y con un cobro o cambio de esta cuenta sin subir desde este aparato, lo que falta lo arma la cuenta: la hoja no
-     * afirma un importe. Sólo cambia el texto: el botón sigue abriendo la cuenta, cuyo «Pagar» cobra lo que falta.
+     * trae pagos, así que la hoja lee la cuenta del servidor y la convierte con [saldoDelCheque], lo mismo que la cuenta. Y con la
+     * MISMA condición: la cuenta de una mesa del servidor sólo da un número con una lectura al día (si no, «Saldo por confirmar» y
+     * «Pagar» sin importe), así que la hoja sólo lo da con SU lectura al día y confirmada. Sin red, leyendo o sin confirmar: sin
+     * importe (QA en la SAMSUNG, 21-nov: la hoja prometía $50 con lo guardado y la cuenta decía «Saldo por confirmar»). Sólo cambia
+     * el texto: el botón sigue abriendo la cuenta, cuyo «Pagar» cobra lo que falta.
      */
     fun leerSaldoDeLaHoja(table: DiningTable) {
         lecturaDeLaHoja?.cancel()
@@ -959,20 +960,10 @@ class TablesViewModel @Inject constructor(
         val check = table.primaryCheck?.takeIf { !it.isProvisional } ?: return
         val vId = venueId ?: return
         val totalCents = round(check.total * 100).toInt()
-        fun publicar(pagado: Int, falta: Int, sinSubir: Boolean) {
-            if (venueId == vId) _saldoDeLaHoja.value = SaldoDeLaHoja(check.id, totalCents, pagado, falta, sinSubir)
-        }
         lecturaDeLaHoja = viewModelScope.launch {
-            val sinSubir = (try { syncOutbox.trabajoSinResolverDeLaOrden(vId, tableSession.idsParaPreCuenta(vId, check.id)).intents > 0 }
-                catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (_: Exception) { true }) ||
-                !todoPorLaColaDeMesas(vId, check.id)
-            val guardado = try {
-                kotlinx.coroutines.withContext(discoParaFusionar) { draftStore?.loadResolved(vId, check.id) }
-                    ?.takeIf { it.first == check.id }?.second?.cachedCheck?.takeIf { it.id == check.id }?.preBillBalance
-            } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (_: Exception) { null }
-            if (guardado != null || sinSubir) publicar(guardado?.totalPaidCents ?: 0, guardado?.remainingBalanceCents ?: 0, sinSubir)
-            repository.getOrderDetail(vId, check.id).getOrNull()?.takeIf { it.id == check.id }?.preBillBalance
-                ?.let { publicar(it.totalPaidCents, it.remainingBalanceCents, sinSubir = false) }
+            val saldo = repository.getOrderDetail(vId, check.id).getOrNull()?.takeIf { it.id == check.id }?.let(::saldoDelCheque)
+                ?.takeIf { it.confirmado } ?: return@launch
+            if (venueId == vId) _saldoDeLaHoja.value = SaldoDeLaHoja(check.id, totalCents, saldo.pagadoCents, saldo.porPagarCents)
         }
     }
 

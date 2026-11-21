@@ -9,6 +9,7 @@ import com.avoqado.pos.payment.data.CashPaymentRepository
 import com.avoqado.pos.payment.data.EfectivoDelPedido
 import com.avoqado.pos.tables.data.*
 import io.mockk.*
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -22,7 +23,8 @@ import java.nio.file.Files
 
 /**
  * D25 (Flautas, 20-nov): la hoja de una mesa con un abono de $10 decía «Cobrar cuenta • $60.00» y la cuenta «Por pagar $50.00».
- * Con abonos, el botón dice lo que FALTA, del mismo saldo del servidor (`preBillBalance`) que la cuenta pinta en «Por pagar».
+ * La hoja dice lo mismo que la cuenta: con su saldo al día, lo que FALTA (o el total sin abonos); sin él (sin red, leyendo, sin
+ * confirmar), la cuenta dice «Saldo por confirmar» y el botón va sin importe (QA en la SAMSUNG, 21-nov).
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class HojaDeLaMesaConAbonosTest {
@@ -57,58 +59,68 @@ class HojaDeLaMesaConAbonosTest {
         return textoCobrarCuenta(check, subject.saldoDeLaHoja.value)
     }
 
-    @Test fun `D25 con un abono el boton dice lo que falta, no el total`() = runTest {
+    @Test fun `D25 con red y un abono el boton dice lo que falta, no el total`() = runTest {
         coEvery { repository.getOrderDetail(venue, "o1") } returns Result.success(detalle(pagado = 1000, falta = 5000))
         val subject = vm()
         try { assertEquals("Cobrar lo que falta • $50.00", textoDeLaHoja(subject)) } finally { subject.viewModelScope.cancel() }
     }
 
-    @Test fun `D25 sin abonos el boton no cambia`() = runTest {
+    @Test fun `D25 con red y sin abonos el boton no cambia`() = runTest {
         coEvery { repository.getOrderDetail(venue, "o1") } returns Result.success(detalle(pagado = 0, falta = 6000))
         val subject = vm()
         try { assertEquals("Cobrar cuenta • $60.00", textoDeLaHoja(subject)) } finally { subject.viewModelScope.cancel() }
     }
 
-    @Test fun `D25 sin red usa la ultima lectura guardada de la cuenta, la misma que la cuenta pinta`() = runTest {
+    // QA SAMSUNG 21-nov (M4): la cuenta ya abierta con red, guardada en el aparato; sin red la cuenta dice «Saldo por confirmar».
+    @Test fun `D25 sin red la hoja no promete el importe guardado que la cuenta no confirma`() = runTest {
         drafts.save(venue, "o1", emptyList(), emptyMap(), cachedCheck = detalle(pagado = 1000, falta = 5000))
         coEvery { repository.getOrderDetail(venue, "o1") } returns Result.failure(IOException("sin red"))
         val subject = vm()
-        try { assertEquals("Cobrar lo que falta • $50.00", textoDeLaHoja(subject)) } finally { subject.viewModelScope.cancel() }
+        try { assertEquals("Cobrar cuenta", textoDeLaHoja(subject)) } finally { subject.viewModelScope.cancel() }
     }
 
-    @Test fun `D25 sin red y con un abono de este aparato sin subir no se afirma un importe`() = runTest {
-        drafts.save(venue, "o1", emptyList(), emptyMap(), cachedCheck = detalle(pagado = 0, falta = 6000))
+    // Mesa que este aparato nunca abrió: sin red decía «Cobrar cuenta • $25.00» (el total del plano) y la cuenta «Saldo por confirmar».
+    @Test fun `D25 sin red y sin nada guardado tampoco dice el total del plano`() = runTest {
         coEvery { repository.getOrderDetail(venue, "o1") } returns Result.failure(IOException("sin red"))
         val subject = vm()
+        try { assertEquals("Cobrar cuenta", textoDeLaHoja(subject)) } finally { subject.viewModelScope.cancel() }
+    }
+
+    @Test fun `D25 mientras se lee la cuenta no hay importe, y al llegar si`() = runTest {
+        val respuesta = CompletableDeferred<Result<OrderDetail>>()
+        coEvery { repository.getOrderDetail(venue, "o1") } coAnswers { respuesta.await() }
+        val subject = vm()
         try {
-            coEvery { cola.efectivoDelPedido("o1") } returns EfectivoDelPedido.EN_COLA
             assertEquals("Cobrar cuenta", textoDeLaHoja(subject))
-            coEvery { cola.efectivoDelPedido("o1") } returns EfectivoDelPedido.NINGUNO
-            coEvery { outbox.trabajoSinResolverDeLaOrden(any(), any()) } returns TrabajoSinResolver(1, 0, setOf("PAY_CASH"), 0)
-            assertEquals("Cobrar cuenta", textoDeLaHoja(subject))
+            respuesta.complete(Result.success(detalle(pagado = 1000, falta = 5000))); advanceUntilIdle()
+            assertEquals("Cobrar lo que falta • $50.00", textoCobrarCuenta(cuenta, subject.saldoDeLaHoja.value))
         } finally { subject.viewModelScope.cancel() }
     }
 
-    @Test fun `D25 sin red y sin nada guardado ni en cola sigue el total del plano`() = runTest {
-        coEvery { repository.getOrderDetail(venue, "o1") } returns Result.failure(IOException("sin red"))
+    // Servidor viejo sin `preBillBalance` y con un pago: la cuenta dice «Saldo por confirmar» (la suma a mano se equivoca).
+    @Test fun `D25 con un saldo sin confirmar la hoja tampoco da importe`() = runTest {
+        coEvery { repository.getOrderDetail(venue, "o1") } returns Result.success(OrderDetail(id = "o1", total = 60.0,
+            payments = listOf(OrderDetailPayment(id = "p1", amount = 10.0, status = "COMPLETED"))))
         val subject = vm()
-        try { assertEquals("Cobrar cuenta • $60.00", textoDeLaHoja(subject)) } finally { subject.viewModelScope.cancel() }
-    }
-
-    @Test fun `D25 con red la lectura del servidor manda aunque haya algo en cola, como en la cuenta`() = runTest {
-        coEvery { repository.getOrderDetail(venue, "o1") } returns Result.success(detalle(pagado = 1000, falta = 5000))
-        coEvery { cola.efectivoDelPedido("o1") } returns EfectivoDelPedido.EN_COLA
-        val subject = vm()
-        try { assertEquals("Cobrar lo que falta • $50.00", textoDeLaHoja(subject)) } finally { subject.viewModelScope.cancel() }
+        try { assertEquals("Cobrar cuenta", textoDeLaHoja(subject)) } finally { subject.viewModelScope.cancel() }
     }
 
     @Test fun `D25 el saldo de otra cuenta o de un total que ya cambio no se usa`() {
         val saldo = SaldoDeLaHoja("o1", totalDelPlanoCents = 6000, pagadoCents = 1000, porPagarCents = 5000)
         assertEquals("Cobrar lo que falta • $50.00", textoCobrarCuenta(cuenta, saldo))
-        // Otra tablet agregó una ronda: el plano ya dice $80 y lo leído ($50) quedó viejo hasta releer.
-        assertEquals("Cobrar cuenta • $80.00", textoCobrarCuenta(cuenta.copy(total = 80.0), saldo))
-        assertEquals("Cobrar cuenta • $60.00", textoCobrarCuenta(cuenta.copy(id = "o2"), saldo))
+        // Otra caja agregó una ronda: el plano ya dice $80 y lo leído ($50) quedó viejo hasta releer.
+        assertEquals("Cobrar cuenta", textoCobrarCuenta(cuenta.copy(total = 80.0), saldo))
+        assertEquals("Cobrar cuenta", textoCobrarCuenta(cuenta.copy(id = "o2"), saldo))
         assertEquals("Cobrar cuenta • Por sincronizar", textoCobrarCuenta(cuenta.copy(isProvisional = true), null))
+    }
+
+    @Test fun `D25 la hoja y la cuenta sacan el saldo de la misma funcion`() {
+        fun fuente(nombre: String): String {
+            val path = "src/main/java/com/avoqado/pos/tables/presentation/$nombre"
+            return listOf(File(path), File("app/$path")).first { it.exists() }.readText()
+        }
+        assertTrue(fuente("TableOrderViewModel.kt").contains("?.let(::saldoDelCheque) ?: SaldoDeMesa.soloSaldo(0)"))
+        assertTrue(fuente("TablesViewModel.kt").contains("?.let(::saldoDelCheque)"))
     }
 
     @Test fun `D25 el boton abre la cuenta (su Pagar cobra lo que falta), nunca un cobro por el total`() = runTest {

@@ -1163,22 +1163,20 @@ private fun StatusLine(message: String, color: Color) {
 
 internal fun textoCuentaEnPlano(check:com.avoqado.pos.tables.data.OpenCheckSummary):String = if(check.isProvisional) "Por sincronizar" else check.totalDisplay
 
-/** D25: el saldo de la cuenta de la hoja, leído con el total que el plano tenía en ese momento ([TablesViewModel.leerSaldoDeLaHoja]). */
-data class SaldoDeLaHoja(val orderId: String, val totalDelPlanoCents: Int, val pagadoCents: Int, val porPagarCents: Int, val sinSubirAqui: Boolean = false)
+/** D25: el saldo confirmado de la cuenta de la hoja, leído al día con el total que el plano tenía entonces ([TablesViewModel.leerSaldoDeLaHoja]). */
+data class SaldoDeLaHoja(val orderId: String, val totalDelPlanoCents: Int, val pagadoCents: Int, val porPagarCents: Int)
 
 /**
- * D25: el botón de la hoja. Sin abonos, como siempre; con abonos, lo que FALTA, del mismo `preBillBalance` que la cuenta pinta en «Por
- * pagar» (mismo criterio: «Ya pagado» > 0). Lo leído de otra cuenta o con otro total del plano (otra caja agregó una ronda) no se usa
- * hasta releer. Con algo de esta cuenta sin subir desde este aparato y sin lectura del servidor, sin importe: lo arma la cuenta.
+ * D25: el botón de la hoja dice lo mismo que la cuenta. Con su saldo leído al día: sin abonos, el total; con abonos («Ya pagado» > 0,
+ * el criterio de la cuenta), lo que FALTA. Sin saldo al día (sin red, leyendo, sin confirmar, o leído de otra cuenta o con otro total
+ * del plano), la cuenta diría «Saldo por confirmar»: el botón va sin importe. La mesa abierta sin red aquí sigue «Por sincronizar».
  */
 internal fun textoCobrarCuenta(check: com.avoqado.pos.tables.data.OpenCheckSummary, saldo: SaldoDeLaHoja?): String {
-    val vigente = saldo?.takeIf { !check.isProvisional && it.orderId == check.id && it.totalDelPlanoCents == Math.round(check.total * 100).toInt() }
-    return when {
-        vigente?.sinSubirAqui == true -> "Cobrar cuenta"
-        vigente != null && vigente.pagadoCents > 0 ->
-            "Cobrar lo que falta • $${String.format(Locale.US, "%.2f", vigente.porPagarCents / 100.0)}"
-        else -> "Cobrar cuenta • ${textoCuentaEnPlano(check)}"
-    }
+    if (check.isProvisional) return "Cobrar cuenta • ${textoCuentaEnPlano(check)}"
+    val alDia = saldo?.takeIf { it.orderId == check.id && it.totalDelPlanoCents == Math.round(check.total * 100).toInt() }
+        ?: return "Cobrar cuenta"
+    return if (alDia.pagadoCents > 0) "Cobrar lo que falta • $${String.format(Locale.US, "%.2f", alDia.porPagarCents / 100.0)}"
+    else "Cobrar cuenta • ${textoCuentaEnPlano(check)}"
 }
 
 /**
