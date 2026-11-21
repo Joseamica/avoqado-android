@@ -36,4 +36,23 @@ class ConnectivityBannerTextoTest {
             textoDeLaBanda(visible = true, pendingSync = 0, avisoDeLaCaja = null, avisoDeCocina = papel, avisoDeRacha = null),
         )
     }
+
+    /**
+     * D6 de Flautas (opción B): «… no está conectada a internet» sólo se dice con red y nunca lo tapa otro aviso (la caja ya no
+     * avisa «No salió» orden por orden). Sin red no se afirma nada del servidor: la banda queda como hoy (Codex r7 #3).
+     */
+    @Test
+    fun `D6 la pantalla sin internet se dice con red junto a la caja retenida o a la racha, y sin red no se dice`() {
+        val papel = "Las comandas de Barra salen en papel si la pantalla no contesta"
+        val racha = "La pantalla de Postres no se alcanza por el WiFi"
+        val pantalla = "La pantalla de cocina de Barra no está conectada a internet"
+        fun banda(visible: Boolean, caja: String? = null, racha: String? = null, pantallas: String? = pantalla) =
+            textoDeLaBanda(visible, pendingSync = 0, avisoDeLaCaja = caja, avisoDeCocina = papel, avisoDeRacha = racha, avisoDePantallas = pantallas)
+
+        assertEquals(pantalla, banda(visible = false))
+        assertEquals("$pantalla · $racha", banda(visible = false, racha = racha))
+        assertEquals("caja retenida · $pantalla", banda(visible = false, caja = "caja retenida", racha = racha))
+        assertEquals("Sin conexión — las ventas se guardan en el dispositivo · $papel", banda(visible = true))
+        assertEquals("Sin conexión — las ventas se guardan en el dispositivo · $racha", banda(visible = true, racha = racha))
+    }
 }
