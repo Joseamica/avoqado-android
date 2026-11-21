@@ -306,6 +306,9 @@ class KDSViewModel @Inject constructor(
     fun alOcultarse() {
         aperturas++
         pantallaVisible = false
+        // D17 (Codex r20 y r21): al ocultarse (Inicio, pantalla apagada, minimizar en WINDOWS, salir de la cocina) se cierra
+        // «Recientes»: al volver no reaparece sola con lo de antes.
+        cerrarRecientes()
         preparationDelivery?.setDisplayedKeys(null, emptySet())
         sincronizarReceptor()
     }

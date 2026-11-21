@@ -1,6 +1,7 @@
 package com.avoqado.pos.escritorio
 
 import android.util.Log
+import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -16,6 +17,7 @@ import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.WindowExceptionHandler
 import androidx.compose.ui.window.WindowExceptionHandlerFactory
 import androidx.compose.ui.window.WindowPlacement
+import androidx.compose.ui.window.WindowState
 import androidx.compose.ui.window.application
 import androidx.compose.ui.window.rememberWindowState
 import com.avoqado.escritorio.Bitacora
@@ -96,14 +98,7 @@ fun main() {
                 // Atajos de teclado del cobro (F12, F5, F4, Esc…): sólo lo que la pantalla no usó, una vez por apretón.
                 val atajos = remember { AtajosDeLaVentana(AtajosDeTeclado::atender) }
                 val estadoDeLaVentana = rememberWindowState(placement = WindowPlacement.Maximized, size = Arranque.TAMANO_INICIAL)
-                // «Pedidos en línea»: el ciclo de vida de RaizDeEscritorio se queda en RESUMED aunque la ventana se minimice, así que
-                // aquí se publica si la ventana se ve. Minimizada, la bandeja deja de mandar su cabecera de latido (Codex plan r2 #5).
-                DisposableEffect(estadoDeLaVentana) {
-                    onDispose { VentanaALaVista.publicar(true) }
-                }
-                LaunchedEffect(estadoDeLaVentana) {
-                    snapshotFlow { !estadoDeLaVentana.isMinimized }.collect { VentanaALaVista.publicar(it) }
-                }
+                PublicarSiLaVentanaSeVe(estadoDeLaVentana)
                 Window(
                     onCloseRequest = ::exitApplication,
                     title = "Avoqado POS",
@@ -161,6 +156,21 @@ fun main() {
     } catch (e: Throwable) {
         Log.e("Ventana", "La ventana no llegó a abrir", e)
         salir(4, mensajeDeArranqueFallido(e, carpeta, alAbrir = true), JOptionPane.ERROR_MESSAGE)
+    }
+}
+
+/**
+ * El ciclo de vida de [RaizDeEscritorio] se queda en RESUMED aunque la ventana se minimice, así que aquí se publica si la
+ * ventana se ve. Minimizada, la bandeja de «Pedidos en línea» deja de mandar su cabecera de latido (Codex plan r2 #5) y la
+ * pantalla de cocina se oculta como con `ON_STOP`: ni lee ni acusa por WiFi (D14). Al cerrarse, vuelve al `true` de Android.
+ */
+@Composable
+internal fun PublicarSiLaVentanaSeVe(estado: WindowState) {
+    DisposableEffect(estado) {
+        onDispose { VentanaALaVista.publicar(true) }
+    }
+    LaunchedEffect(estado) {
+        snapshotFlow { !estado.isMinimized }.collect { VentanaALaVista.publicar(it) }
     }
 }
 
