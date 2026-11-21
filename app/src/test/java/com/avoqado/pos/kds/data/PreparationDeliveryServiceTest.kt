@@ -644,4 +644,35 @@ class PreparationDeliveryServiceTest {
             coVerify(exactly = 0) { f.printer.reintentar(any(), any(), any()) }
         } finally { again.stop() }
     }
+    // Prueba del conjunto (20-nov, punto 1): el texto del servidor ya trae su punto final.
+    @Test fun `D16 el rechazo no repite el punto final del servidor`() = runTest {
+        val f = fixture(backgroundScope, phase = "REJECTED")
+        f.origins["a"] = f.origins.getValue("a").copy(message = "Otro compañero cambió este producto. Revisa su estado.")
+        try {
+            f.service.start("v1"); f.service.pass("v1")
+            assertEquals("La preparación no fue aceptada: Otro compañero cambió este producto. Revisa su estado. Avisa a cocina.",
+                f.service.notice.value)
+        } finally { f.service.stop() }
+    }
+    // Prueba del conjunto (punto 2): el aviso de un rechazo salía en cada pasada y reaparecía en la hoja de OTRA mesa.
+    @Test fun `D16 el aviso de un rechazo sale una vez, se quita solo y vuelve a salir al reabrir la app`() = runTest {
+        val f = fixture(backgroundScope, phase = "REJECTED")
+        coEvery { f.client.enviar(any(), any(), any()) } returns null // la pantalla no acusa: la tarea no termina
+        var now = 0L; f.service.nanoTime = { now }
+        try {
+            f.service.start("v1"); f.service.pass("v1")
+            assertTrue(f.service.notice.value!!.startsWith("La preparación no fue aceptada"))
+            assertFalse(f.job().done)
+            now = (PreparationDeliveryService.VIGENCIA_DEL_AVISO_MS + 1_000) * 1_000_000
+            f.service.pass("v1")
+            assertNull("ni se vuelve a publicar ni se queda para otra mesa", f.service.notice.value)
+            f.service.pass("v1")
+            assertNull(f.service.notice.value)
+        } finally { f.service.stop() }
+        val again = f.restart()
+        try {
+            again.start("v1"); again.pass("v1")
+            assertTrue("sobrevive a cerrar la app", again.notice.value!!.startsWith("La preparación no fue aceptada"))
+        } finally { again.stop() }
+    }
 }

@@ -67,6 +67,18 @@ class PreparationDeliveryService @Inject constructor(
     val changes = _changes.asSharedFlow()
     private val _notice = MutableStateFlow<String?>(null)
     val notice = _notice.asStateFlow()
+    /**
+     * D16 (prueba del conjunto, 20-nov): cada aviso de una tarea o de un avance recibido sale UNA vez por sesión del servicio
+     * (se olvida en `stop()`: al volver a abrir la app sale otra vez una vez) y, si nadie lo cambió, se quita solo a los
+     * [VIGENCIA_DEL_AVISO_MS]. Antes cada pasada lo volvía a publicar y la hoja de OTRA mesa lo enseñaba minutos después.
+     */
+    private val avisados = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    @Volatile private var publicado: Pair<String, Long>? = null
+    private fun avisar(llave: String, texto: String) {
+        if (!avisados.add("$llave|$texto")) return
+        _notice.value = texto
+        publicado = texto to nanoTime()
+    }
 
     @Synchronized fun start(venueId: String) {
         if (storage.venueId != venueId || storage.userId.isNullOrBlank()) return
@@ -87,7 +99,7 @@ class PreparationDeliveryService @Inject constructor(
         }
     }
     @Synchronized fun stop() {
-        clock?.cancel(); clock = null; venue = null; cursor = ""; receiverVenue = null; enEspera.clear()
+        clock?.cancel(); clock = null; venue = null; cursor = ""; receiverVenue = null; enEspera.clear(); avisados.clear(); publicado = null
         transport.desactivarPreparacion(); _notice.value = null
         display = Display(null, emptySet())
     }
@@ -154,13 +166,16 @@ class PreparationDeliveryService @Inject constructor(
                 if (!current(v) || command.venueId != v || command.version == 2 && cap.urgencyVersion != 1) false else try {
                     val accepted = persistence.receive(command)
                     if (accepted && command.phase == "REJECTED") {
-                        _notice.value = "Una acción de otro aparato no fue aceptada. Revisa el producto con cocina antes de continuar."
+                        avisar("recibo:${command.deliveryId}", "Una acción de otro aparato no fue aceptada. Revisa el producto con cocina antes de continuar.")
                     }
                     if (accepted) _changes.tryEmit(v)
                     accepted && current(v)
                 } catch (e: CancellationException) { throw e }
-                catch (_: Exception) {
-                    _notice.value = "Un avance de otro aparato no coincide. Actualiza los productos de cocina."
+                catch (e: Exception) {
+                    // D16 (conjunto, punto 3): la causa no se veía en ningún lado; queda en el log del aparato.
+                    android.util.Log.w("PreparacionPorWifi", "No se aplicó ${command.action} ${command.phase} ${command.deliveryId} " +
+                        "de ${command.deviceId}: ${e.message}")
+                    avisar("recibo:${command.deliveryId}:${command.phase}", "Un avance de otro aparato no coincide. Actualiza los productos de cocina.")
                     false
                 }
             }, display = { command ->
@@ -177,6 +192,9 @@ class PreparationDeliveryService @Inject constructor(
     suspend fun pass(v: String) {
         if (!mutex.tryLock()) return
         try {
+            publicado?.let { (texto, desde) ->
+                if (_notice.value == texto && (nanoTime() - desde) / 1_000_000 >= VIGENCIA_DEL_AVISO_MS) { _notice.value = null; publicado = null }
+            }
             wakeRequested = false
             if (!attach(v)) return
             val prefix = "preparation:$v:delivery:"
@@ -203,14 +221,14 @@ class PreparationDeliveryService @Inject constructor(
                     // Codex r4 #4: ya cancelada así; cada pasada vuelve a decir su aviso (sobrevive a un cierre de la app), como las
                     // tareas sin intent de siempre.
                     if (origin == null && job.paperState == "CANCELLED" && job.message == AVISO_LIBERACION_SIN_CONFIRMAR) {
-                        _notice.value = AVISO_LIBERACION_SIN_CONFIRMAR; return
+                        avisar(job.intentId, AVISO_LIBERACION_SIN_CONFIRMAR); return
                     }
                     check(orphan || origin != null && origin.type == "KDS_ITEM_PROGRESS" && origin.staffId == job.staffId) {
                         "No se pudo confirmar la acción original. Lo guardado se conserva."
                     }
                     deliver(row, job, origin)
                 } catch (e: CancellationException) { throw e }
-                catch (e: Exception) { _notice.value = e.message ?: "Hay un avance de cocina que necesita revisión." }
+                catch (e: Exception) { avisar(row.cacheKey, e.message ?: "Hay un avance de cocina que necesita revisión.") }
             }
             for (row in waiting) { if (!current(v)) return; one(row) }
             val seen = waiting.map { it.cacheKey }.toSet()
@@ -245,7 +263,8 @@ class PreparationDeliveryService @Inject constructor(
             message = "La app se cerró durante la impresión. Revisa el ticket antes de repetirlo.")
         if (job.phase == "REJECTED") job = job.copy(
             paperState = if (job.paperState == "QUEUED") "CANCELLED" else job.paperState,
-            message = "La preparación no fue aceptada: ${origin?.message ?: "revisa la cola"}. Avisa a cocina.")
+            // Conjunto, punto 1: el texto del servidor ya trae su punto final («…Revisa su estado.»): sin «..».
+            message = "La preparación no fue aceptada: ${origin?.message?.trim()?.trimEnd('.')?.takeIf { it.isNotBlank() } ?: "revisa la cola"}. Avisa a cocina.")
         save(row, job)
         val peers = transport.peers.value.filter { it.preparationVersion == 1 }.sortedBy { it.deviceId }
         val sends = job.commands.flatMap { command -> peers.filter { command.version == 1 || it.urgencyVersion == 1 }.map { command to it } }
@@ -333,7 +352,7 @@ class PreparationDeliveryService @Inject constructor(
             sends.any { (command, peer) -> job.receipts["${peer.deviceId}|${command.deliveryId}"] != job.phase }
         job = job.copy(done = job.phase != "ACTION" && !pendingReceipts && job.paperState in setOf("NONE", "DONE", "CANCELLED", "CONFIRMED"))
         save(row, job)
-        if (job.message != null) _notice.value = job.message
+        if (job.message != null) avisar(job.intentId, job.message!!)
         else if (_notice.value == original.message) _notice.value = null
         if (!waitingNow) enEspera.remove(job.intentId)
     }
@@ -346,7 +365,7 @@ class PreparationDeliveryService @Inject constructor(
     private suspend fun cancelWithoutIntent(row: CachedPayloadEntity, job: PreparationDeliveryJob) {
         save(row, job.copy(paperState = "CANCELLED", message = AVISO_LIBERACION_SIN_CONFIRMAR))
         enEspera.remove(job.intentId)
-        _notice.value = AVISO_LIBERACION_SIN_CONFIRMAR
+        avisar(job.intentId, AVISO_LIBERACION_SIN_CONFIRMAR)
     }
 
     /**
@@ -374,5 +393,7 @@ class PreparationDeliveryService @Inject constructor(
         const val TOPE_DE_LA_ESPERA_MS = com.avoqado.pos.tables.presentation.TableOrderViewModel.PRESUPUESTO_RONDA_MS
         /** D16 (Codex r3 #1): la liberación en cola cuyo intent desapareció sin haberse confirmado. Texto fijo. */
         const val AVISO_LIBERACION_SIN_CONFIRMAR = "No se pudo confirmar la liberación: avisa a cocina"
+        /** Conjunto, punto 2: cuánto se queda un aviso publicado antes de quitarse solo (si nadie lo cambió). */
+        const val VIGENCIA_DEL_AVISO_MS = 60_000L
     }
 }
