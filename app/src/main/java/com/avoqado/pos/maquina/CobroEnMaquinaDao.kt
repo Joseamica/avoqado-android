@@ -124,28 +124,39 @@ interface CobroEnMaquinaDao {
     @Query(CobroEnMaquinaSql.PARA_SUBIR)
     suspend fun paraSubir(venueId: String): List<CobroEnMaquinaEntity>
 
+    /** Codex código POS r9 #1 (F5): la lectura con que se arma el envío de [referenceCC], justo antes de mandarlo. */
+    @Query(CobroEnMaquinaSql.PARA_SUBIR_EL_FOLIO)
+    suspend fun paraSubirElFolio(venueId: String, referenceCC: String): CobroEnMaquinaEntity?
+
     @Query(CobroEnMaquinaSql.ESPERAN_AL_GERENTE)
     suspend fun esperanAlGerente(venueId: String): List<CobroEnMaquinaEntity>
 
+    /** Codex código POS r9 (F5): la lectura con que se consulta [referenceCC], justo antes de preguntar. */
+    @Query(CobroEnMaquinaSql.ESPERA_AL_GERENTE_EL_FOLIO)
+    suspend fun esperaAlGerenteElFolio(venueId: String, referenceCC: String): CobroEnMaquinaEntity?
+
+    // Codex código r2 H1 y POS r9 (F5): en TODO escritor de una respuesta del SERVIDOR, [crudos] y [creditoEnviado] son la evidencia de la
+    // lectura con que se armó la petición; si la fila ya trae otra, 0 filas.
+
     @Query(CobroEnMaquinaSql.MARCAR_SUBIDO)
-    suspend fun marcarSubido(referenceCC: String, conflicto: String?, respuesta: String?, aDeber: Int? = null): Int
+    suspend fun marcarSubido(
+        referenceCC: String, conflicto: String?, respuesta: String?, crudos: String, creditoEnviado: Int, aDeber: Int? = null,
+    ): Int
 
     @Query(CobroEnMaquinaSql.ANOTAR_CONFLICTO)
-    suspend fun anotarConflicto(referenceCC: String, conflicto: String): Int
+    suspend fun anotarConflicto(referenceCC: String, conflicto: String, crudos: String, creditoEnviado: Int): Int
 
-    /** [crudos] y [creditCents]: la evidencia que se MANDÓ (Codex código r2 H1). */
     @Query(CobroEnMaquinaSql.MARCAR_DUDA_EN_CONFLICTO)
-    suspend fun marcarDudaEnConflicto(referenceCC: String, conflicto: String, respuesta: String, crudos: String, creditCents: Int): Int
+    suspend fun marcarDudaEnConflicto(referenceCC: String, conflicto: String, respuesta: String, crudos: String, creditoEnviado: Int): Int
 
-    /** [crudos] y [creditCents]: la evidencia que se MANDÓ (Codex código r2 H1). */
     @Query(CobroEnMaquinaSql.MARCAR_DUDA_ABIERTA)
-    suspend fun marcarDudaAbierta(referenceCC: String, version: Int?, crudos: String, creditCents: Int): Int
+    suspend fun marcarDudaAbierta(referenceCC: String, version: Int?, crudos: String, creditoEnviado: Int): Int
 
     @Query(CobroEnMaquinaSql.MARCAR_DE_OTRA_PC)
-    suspend fun marcarDeOtraPc(referenceCC: String, conflicto: String, respuesta: String): Int
+    suspend fun marcarDeOtraPc(referenceCC: String, conflicto: String, respuesta: String, crudos: String, creditoEnviado: Int): Int
 
     @Query(CobroEnMaquinaSql.MARCAR_EVIDENCIA_ENTREGADA)
-    suspend fun marcarEvidenciaEntregada(referenceCC: String, crudos: String, creditCents: Int): Int
+    suspend fun marcarEvidenciaEntregada(referenceCC: String, crudos: String, creditoEnviado: Int): Int
 
     @Query(CobroEnMaquinaSql.MARCAR_DUDA_SUBIDA)
     suspend fun marcarDudaSubida(referenceCC: String, subida: Boolean): Int
@@ -159,6 +170,8 @@ interface CobroEnMaquinaDao {
         conflicto: String?,
         respuesta: String?,
         desenlace: String?,
+        crudos: String,
+        creditoEnviado: Int,
         aDeber: Int? = null,
     ): Int
 

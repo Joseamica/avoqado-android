@@ -1138,6 +1138,156 @@ class SubidaDeLaMaquinaTest {
         for (f in filas) assertEquals("${f.referenceCC} sin vueltas", 1, porFolio[f.referenceCC]!!.size)
     }
 
+    // MARK: - Codex código POS r9 (F5: el envío y su respuesta se aplican al conteo que les corresponde)
+
+    /** Una venta de $80 que la máquina cerró con $80 recibidos y $0 de cambio, por subir (como la deja el motor). */
+    private suspend fun ventaDe80PorSubir(ref: String, creadoEn: Long): CobroEnMaquinaEntity {
+        dao.insertar(CobroEnMaquinaEntity(ref, "venue-1", "venta-$ref", pedido, 8_000, 0, 8_000, "turno-1", null, creadoEn, EstadoDelIntento.EN_CURSO))
+        assertTrue(dao.anotarMensaje(ref, 1, statusDeLaMaquina(ref, 8_000, 8_000, 0, "Pago Completado"), 8_000, 8_000))
+        assertEquals(1, dao.cerrar(ref, EstadoDelIntento.PAGADO, 8_000, 0, 1_763_640_000_000, aDeber = 0))
+        return dao.fila(ref)!!
+    }
+
+    /**
+     * Codex código POS r9 #1 (F5): al volver internet la PC lee DOS ventas por subir. Mientras espera la respuesta de la primera, la QuickPay
+     * corrige la segunda ($80 → $100 recibidos, $0 de cambio) y la PC la pasa a duda. El envío de la segunda usaba la lectura del lote: el
+     * SERVIDOR registraba $80 y $0 de adeudo (faltaban $20). Cada folio se relee justo antes de armar su envío.
+     */
+    @Test
+    fun `P1 Codex POS r9 #1 la correccion que llega mientras sube otro folio se manda con lo que conto la maquina, nunca con la lectura del lote`() = runBlocking {
+        insertar(pagado)
+        val segunda = ventaDe80PorSubir(REF_2, creadoEn = 2_000)
+        val envios = mutableListOf<String>()
+        servidor.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val ruta = request.path!!.substringAfterLast('/')
+                val b = JSONObject(request.body.readUtf8())
+                val ref = b.getString("referenceCC")
+                synchronized(envios) { envios += "$ruta:$ref:" + (b.optJSONObject("cierre") ?: b).getInt("creditCents") }
+                return when {
+                    ref == REF_1 -> {
+                        // Mientras el SERVIDOR contesta la primera, la máquina corrige la segunda.
+                        runBlocking { dao.anotarMensaje(REF_2, 1, statusDeLaMaquina(REF_2, 8_000, 10_000, 0, "Pago Completado"), 10_000, 8_000) }
+                        ok(evidencia(pagado))
+                    }
+                    ruta == "sales" -> ok(evidencia(segunda))
+                    else -> ok(abierta(1, REF_2))
+                }
+            }
+        }
+
+        subida.subir()
+
+        assertEquals("la segunda sube como duda con los \$100", listOf("sales:$REF_1:20000", "doubts:$REF_2:10000"), envios)
+        assertEquals(EstadoDelIntento.ESPERANDO, dao.fila(REF_2)!!.estado)
+        assertTrue(dao.fila(REF_2)!!.dudaSubida)
+    }
+
+    /**
+     * Codex código POS r9 #2 (F5): la PC manda una duda por $0. Antes de la respuesta la QuickPay informa $50 de ese folio. Llega el 400 (sin
+     * incidencia) del envío de $0 y la PC lo aplicaba a la fila que ya tenía $50: quedaba fuera de los reintentos y de las consultas, y el
+     * gerente nunca veía esos $50. Una respuesta sólo se aplica a la evidencia que se mandó: los $50 suben en la pasada siguiente.
+     */
+    @Test
+    fun `P1 Codex POS r9 #2 un 400 que llega despues de 50 nuevos no saca al folio de la cola - los 50 suben`() = runBlocking {
+        insertar(duda(REF_1))
+        val envios = mutableListOf<Int>()
+        servidor.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val credito = JSONObject(request.body.readUtf8()).getInt("creditCents")
+                val primera = synchronized(envios) { envios += credito; envios.size == 1 }
+                if (!primera) return ok(abierta(1))
+                runBlocking { dao.anotarMensaje(REF_1, 1, statusDeLaMaquina(REF_1, 18_750, 5_000), 5_000, 18_750) }
+                return error(400, "El pedido debe ser un objeto", "VALIDATION_ERROR")
+            }
+        }
+
+        subida.subir()
+
+        val f = dao.fila(REF_1)!!
+        assertNull("el 400 era del envío de \$0", f.conflicto)
+        assertEquals("los \$50 siguen por subir", listOf(REF_1), dao.paraSubir("venue-1").map { it.referenceCC })
+        assertEquals(1, dao.pendientes("venue-1"))
+        subida.subir()
+        assertEquals(listOf(0, 5_000), envios)
+        assertTrue("ya están en el SERVIDOR", dao.fila(REF_1)!!.dudaSubida)
+    }
+
+    /**
+     * Codex código POS r9 (F5, la familia completa): TODO escritor que aplica una respuesta del SERVIDOR a una fila no la toca si su evidencia
+     * ya no es la que se mandó (0 filas, la fila igual), y sí la aplica con la evidencia que se mandó.
+     */
+    @Test
+    fun `P1 Codex POS r9 F5 ningun escritor de una respuesta toca una fila cuya evidencia cambio despues del envio`() = runBlocking {
+        val cierre = pagado
+        val duda = duda(REF_2)
+        insertar(cierre, duda)
+        val enviadoCierre = dao.fila(REF_1)!!
+        val enviadaDuda = dao.fila(REF_2)!!
+        // Después del envío, la máquina dice algo nuevo de cada folio (el cierre lo contradice: pasa a duda).
+        assertTrue(dao.anotarMensaje(REF_1, 1, statusDeLaMaquina(REF_1, 18_750, 25_000), 25_000, 18_750))
+        assertTrue(dao.anotarMensaje(REF_2, 1, statusDeLaMaquina(REF_2, 18_750, 5_000), 5_000, 18_750))
+        val antes = dao.todas()
+        val eco = """{"outcome":"CANCELADO","creditCents":0,"changeDispensedCents":0}"""
+
+        val escritores: List<Pair<String, suspend () -> Int>> = listOf(
+            "marcarSubido" to { dao.marcarSubido(REF_1, null, "{}", enviadoCierre.mensajesCrudos, enviadoCierre.creditCents) },
+            "marcarDeOtraPc" to { dao.marcarDeOtraPc(REF_1, "otra PC", "{}", enviadoCierre.mensajesCrudos, enviadoCierre.creditCents) },
+            "anotarConflicto (cierre)" to { dao.anotarConflicto(REF_1, "400", enviadoCierre.mensajesCrudos, enviadoCierre.creditCents) },
+            "anotarConflicto (duda)" to { dao.anotarConflicto(REF_2, "400", enviadaDuda.mensajesCrudos, enviadaDuda.creditCents) },
+            "marcarDudaEnConflicto" to { dao.marcarDudaEnConflicto(REF_2, "409", "{}", enviadaDuda.mensajesCrudos, enviadaDuda.creditCents) },
+            "marcarDudaAbierta" to { dao.marcarDudaAbierta(REF_2, 3, enviadaDuda.mensajesCrudos, enviadaDuda.creditCents) },
+            "resolver" to { dao.resolver(REF_2, "GERENTE", 0, 0, null, eco, "CANCELADO", enviadaDuda.mensajesCrudos, enviadaDuda.creditCents) },
+            "marcarEvidenciaEntregada" to { dao.marcarEvidenciaEntregada(REF_2, enviadaDuda.mensajesCrudos, enviadaDuda.creditCents) },
+        )
+        for ((nombre, escribir) in escritores) assertEquals("$nombre con la evidencia vieja", 0, escribir())
+        assertEquals("ninguna fila cambió", antes, dao.todas())
+        assertEquals("y lo nuevo de las dos sigue por subir", listOf(REF_1, REF_2), dao.paraSubir("venue-1").map { it.referenceCC })
+
+        // Con la evidencia que sí se mandó, la respuesta se aplica.
+        val ahora = dao.fila(REF_2)!!
+        assertEquals(1, dao.marcarDudaAbierta(REF_2, 3, ahora.mensajesCrudos, ahora.creditCents))
+        assertTrue(dao.fila(REF_2)!!.dudaSubida)
+    }
+
+    /**
+     * Codex código POS r9 #1, el hueco que queda (LÍMITE): la máquina corrige el folio DESPUÉS de releerlo y antes de que el SERVIDOR conteste
+     * su cierre de $80. Ese cierre ya salió; su acuse no marca la fila (ya es duda) y los $100 suben como duda en la pasada siguiente: el
+     * SERVIDOR los anota para el gerente («TRAS_RESOLVER») y la PC queda con lo que él resolvió, sin deuda en papel.
+     */
+    @Test
+    fun `P1 Codex POS r9 #1 la correccion que llega con el cierre en camino sube despues como duda y nunca queda como subida`() = runBlocking {
+        val venta = ventaDe80PorSubir(REF_1, creadoEn = 1_000)
+        val envios = mutableListOf<String>()
+        val ecoDelCierre = evidencia(venta)
+        servidor.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val ruta = request.path!!.substringAfterLast('/')
+                val b = JSONObject(request.body.readUtf8())
+                synchronized(envios) { envios += "$ruta:" + (b.optJSONObject("cierre") ?: b).getInt("creditCents") }
+                if (ruta == "sales") {
+                    runBlocking { dao.anotarMensaje(REF_1, 1, statusDeLaMaquina(REF_1, 8_000, 10_000, 0, "Pago Completado"), 10_000, 8_000) }
+                    return ok(ecoDelCierre)
+                }
+                // El folio ya tiene su cierre de $80: contesta ése (TERMINADO) y anota los $100 para el gerente.
+                return ok(JSONObject(ecoDelCierre.toString()).put("status", "RESUELTO"))
+            }
+        }
+
+        subida.subir()
+        val tras = dao.fila(REF_1)!!
+        assertEquals(EstadoDelIntento.ESPERANDO, tras.estado)
+        assertFalse("el acuse del cierre de \$80 no la marca", tras.subido)
+        assertEquals("los \$100 sólo están aquí: frenan salir", 1, dao.pendientes("venue-1"))
+
+        subida.subir()
+        assertEquals(listOf("sales:8000", "doubts:10000"), envios)
+        val f = dao.fila(REF_1)!!
+        assertEquals(EstadoDelIntento.RESUELTO, f.estado)
+        assertTrue("entregada", f.dudaSubida)
+        assertTrue("ni comprobante ni «Te debemos» en papel", f.porRevisarEnElPanel())
+    }
+
     /** Codex código POS r8 (F1): el SQL que vuelve duda un cierre sin cierre físico confiable dice lo mismo que [loQueContoLaMaquina]. */
     @Test
     fun `Codex POS r8 la regla del cierre confiable es la misma en SQL y en Kotlin`() = runBlocking {

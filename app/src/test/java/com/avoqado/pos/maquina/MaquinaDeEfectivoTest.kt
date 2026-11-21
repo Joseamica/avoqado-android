@@ -1088,7 +1088,7 @@ class MaquinaDeEfectivoTest {
         assertFalse("el mismo cierre con otra barra no contradice nada", f.porRevisarEnElPanel())
 
         // Ya PAGADO (y subido): la máquina dice que contó más. Se guarda, se contradice, y no vuelve atrás.
-        dao.marcarSubido(ref, null, null)
+        dao.fila(ref)!!.let { dao.marcarSubido(ref, null, null, it.mensajesCrudos, it.creditCents) }
         canal.llega(status(ref, 8_000, credit = 12_000))
         runCurrent()
         assertTrue(dao.fila(ref)!!.maquinaSeContradijo)
@@ -1118,7 +1118,8 @@ class MaquinaDeEfectivoTest {
             override suspend fun reclamarTicket(referenceCC: String): Int = super.reclamarTicket(referenceCC).also {
                 if (!llego) {
                     llego = true
-                    marcarSubido(ref, null, """{"outcome":"PAGADO","excedenteCents":1000,"owedCents":3000}""", 3_000)
+                    val f = fila(ref)!!
+                    marcarSubido(ref, null, """{"outcome":"PAGADO","excedenteCents":1000,"owedCents":3000}""", f.mensajesCrudos, f.creditCents, 3_000)
                 }
             }
         }

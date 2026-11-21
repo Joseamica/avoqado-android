@@ -127,8 +127,12 @@ data class CobroEnMaquinaEntity(
  * escritura de un desenlace sólo toca una fila `EN_CURSO`: un cierre repetido o tardío no reescribe lo que ya terminó.
  */
 internal object CobroEnMaquinaSql {
-    /** Codex código r2 H1: la evidencia de la fila es la que se mandó (el diario sólo crece: otro texto = otra observación). */
-    private const val LA_MISMA_EVIDENCIA = "mensajesCrudos = :crudos AND creditCents = :creditCents"
+    /**
+     * Codex código r2 H1 y POS r9 (F5): la evidencia de la fila sigue siendo la que se MANDÓ (su diario y lo que entró, de la lectura con que
+     * se armó el envío). TODO escritor que aplica una respuesta del SERVIDOR a una fila la lleva: si mientras tanto la máquina dijo algo nuevo
+     * (el diario sólo crece: otro texto = otra observación), la respuesta no toca la fila (0 filas) y lo nuevo sube en la pasada siguiente.
+     */
+    private const val LA_MISMA_EVIDENCIA = "mensajesCrudos = :crudos AND creditCents = :creditoEnviado"
 
     /** 🔴 La tabla como la creó la v20 (`MIGRATION_19_20`), congelada: la v21 le agrega [MIGRAR_20_21]. */
     const val CREAR_TABLA_V20: String =
@@ -355,15 +359,23 @@ internal object CobroEnMaquinaSql {
      * Lo que la subida manda de [venueId]: [POR_SUBIR] sin lo que ya tiene `conflicto` (409, 422 o una respuesta con otros
      * importes): eso espera a un gerente y no se reintenta. Sigue contando en [PENDIENTES].
      */
-    const val PARA_SUBIR: String =
-        "SELECT * FROM cobros_en_maquina WHERE venueId = :venueId " +
-            "AND ((estado IN ('PAGADO', 'CANCELADO', 'GUARDADO') AND subido = 0 AND conflicto IS NULL) " +
+    private const val SE_SUBE: String =
+        "((estado IN ('PAGADO', 'CANCELADO', 'GUARDADO') AND subido = 0 AND conflicto IS NULL) " +
             // Codex código r1 #9: una duda en conflicto CON su incidencia (respuesta guardada) sí sube su observación nueva.
             "OR (estado = 'ESPERANDO' AND dudaSubida = 0 AND (conflicto IS NULL OR respuestaServidor IS NOT NULL)) " +
             // Codex código r3 #1: lo que la máquina dijo DESPUÉS de que un gerente lo resolviera sube como duda (el SERVIDOR abre la
             // revisión «TRAS_RESOLVER»).
-            "OR (estado = 'RESUELTO' AND dudaSubida = 0) OR $EVIDENCIA_TARDIA) " +
-            "ORDER BY creadoEn ASC, referenceCC ASC"
+            "OR (estado = 'RESUELTO' AND dudaSubida = 0) OR $EVIDENCIA_TARDIA)"
+
+    const val PARA_SUBIR: String =
+        "SELECT * FROM cobros_en_maquina WHERE venueId = :venueId AND $SE_SUBE ORDER BY creadoEn ASC, referenceCC ASC"
+
+    /**
+     * Codex código POS r9 #1 (F5): el folio [referenceCC] tal como está AHORA, si todavía es de los que suben ([PARA_SUBIR]). Cada envío se
+     * arma de esta lectura, justo antes de mandarlo, nunca de la foto del lote (la máquina pudo corregirlo mientras subía otro).
+     */
+    const val PARA_SUBIR_EL_FOLIO: String =
+        "SELECT * FROM cobros_en_maquina WHERE venueId = :venueId AND referenceCC = :referenceCC AND $SE_SUBE"
 
     /**
      * Las dudas ya subidas que esperan la decisión del gerente (R5#6): se consultan cada 60 s. Codex código r1 #9: también las que el
@@ -373,19 +385,24 @@ internal object CobroEnMaquinaSql {
         "SELECT * FROM cobros_en_maquina WHERE venueId = :venueId AND estado = 'ESPERANDO' AND dudaSubida = 1 " +
             "ORDER BY creadoEn ASC, referenceCC ASC"
 
+    /** Codex código POS r9 (F5): la duda [referenceCC] tal como está AHORA, si todavía espera al gerente ([ESPERAN_AL_GERENTE]). */
+    const val ESPERA_AL_GERENTE_EL_FOLIO: String =
+        "SELECT * FROM cobros_en_maquina WHERE venueId = :venueId AND referenceCC = :referenceCC AND estado = 'ESPERANDO' AND dudaSubida = 1"
+
     /**
      * Codex código r1 #9: el SERVIDOR guardó la duda en conflicto con su incidencia: ya la tiene (no frena), se ve. Codex código r2 H1: el
-     * acuse es de la evidencia que SE MANDÓ: si mientras tanto llegó otra al diario, ésa sigue por subir.
+     * acuse es de la evidencia que SE MANDÓ: si mientras tanto llegó otra al diario, ésa sigue por subir. Codex código POS r9 (F5): y entonces
+     * la respuesta no toca nada (tampoco el conflicto): la evidencia nueva sube y trae su propia respuesta.
      */
     const val MARCAR_DUDA_EN_CONFLICTO: String =
-        "UPDATE cobros_en_maquina SET dudaSubida = CASE WHEN $LA_MISMA_EVIDENCIA THEN 1 ELSE dudaSubida END, " +
-            "conflicto = :conflicto, respuestaServidor = :respuesta WHERE referenceCC = :referenceCC AND estado = 'ESPERANDO'"
+        "UPDATE cobros_en_maquina SET dudaSubida = 1, conflicto = :conflicto, respuestaServidor = :respuesta " +
+            "WHERE referenceCC = :referenceCC AND estado = 'ESPERANDO' AND $LA_MISMA_EVIDENCIA"
 
 
     /** Codex código r2 H8: el SERVIDOR atribuye este folio a OTRA PC: su incidencia queda visible y no se reintenta; NO es subido. */
     const val MARCAR_DE_OTRA_PC: String =
         "UPDATE cobros_en_maquina SET conflicto = :conflicto, respuestaServidor = :respuesta " +
-            "WHERE referenceCC = :referenceCC AND estado IN ('PAGADO', 'CANCELADO', 'GUARDADO') AND subido = 0"
+            "WHERE referenceCC = :referenceCC AND estado IN ('PAGADO', 'CANCELADO', 'GUARDADO') AND subido = 0 AND $LA_MISMA_EVIDENCIA"
 
     /**
      * El SERVIDOR repitió el folio y los importes (200), guardó el dinero como incidencia (202) o rechazó el cierre DEJANDO su
@@ -396,12 +413,15 @@ internal object CobroEnMaquinaSql {
         "UPDATE cobros_en_maquina SET subido = 1, conflicto = :conflicto, respuestaServidor = :respuesta, " +
             // Codex código r1 #13: lo que dice el SERVIDOR que se debe (cambio físico + diferencia de precio) manda sobre lo físico.
             "aDeberCents = COALESCE(:aDeber, aDeberCents) " +
-            "WHERE referenceCC = :referenceCC AND estado IN ('PAGADO', 'CANCELADO', 'GUARDADO') AND subido = 0"
+            "WHERE referenceCC = :referenceCC AND estado IN ('PAGADO', 'CANCELADO', 'GUARDADO') AND subido = 0 AND $LA_MISMA_EVIDENCIA"
 
-    /** Un rechazo SIN incidencia en el SERVIDOR (400) o una respuesta con otros importes: visible, y deja de reintentarse. */
+    /**
+     * Un rechazo SIN incidencia en el SERVIDOR (400) o una respuesta con otros importes: visible, y deja de reintentarse. Codex código POS r9
+     * #2: sólo de la evidencia que se mandó; un 400 del envío de $0 nunca saca de la cola la fila que ya trae $50.
+     */
     const val ANOTAR_CONFLICTO: String =
         "UPDATE cobros_en_maquina SET conflicto = :conflicto WHERE referenceCC = :referenceCC " +
-            "AND ((estado IN ('PAGADO', 'CANCELADO', 'GUARDADO') AND subido = 0) OR estado = 'ESPERANDO')"
+            "AND ((estado IN ('PAGADO', 'CANCELADO', 'GUARDADO') AND subido = 0) OR estado = 'ESPERANDO') AND $LA_MISMA_EVIDENCIA"
 
     /**
      * Rediseño del SERVIDOR (r6-4): la duda ABIERTA, con la `version` de su evidencia. Codex código r2 H1: sólo si en la fila sigue la
@@ -427,13 +447,15 @@ internal object CobroEnMaquinaSql {
      * La decisión del gerente llegó del SERVIDOR (R4-4). `cancelPedido` NO se toca: sigue siendo sólo lo que pidió la PC. El
      * desenlace que decidió el gerente queda en `respuestaServidor` ([desenlace]). Codex código r3 #1: si la fila tiene evidencia que el
      * SERVIDOR todavía no recibió (`dudaSubida = 0`), la resolución NO la borra: lo que entró nunca baja y la evidencia sigue por subir.
+     * Codex código POS r9 (F5): sólo si la fila sigue con la evidencia de la petición que trajo esta respuesta; si no, la duda sigue y lo nuevo
+     * sube (el SERVIDOR vuelve a contestar la resolución, ya con eso).
      */
     const val RESOLVER: String =
         "UPDATE cobros_en_maquina SET estado = 'RESUELTO', resueltoPor = :resueltoPor, " +
             "creditCents = CASE WHEN dudaSubida = 0 THEN MAX(creditCents, :creditCents) ELSE :creditCents END, " +
             "changeDispensedCents = :changeDispensedCents, subido = 1, conflicto = :conflicto, " +
             "respuestaServidor = :respuesta, desenlaceDelServidor = :desenlace, aDeberCents = COALESCE(:aDeber, aDeberCents) " +
-            "WHERE referenceCC = :referenceCC AND estado = 'ESPERANDO'"
+            "WHERE referenceCC = :referenceCC AND estado = 'ESPERANDO' AND $LA_MISMA_EVIDENCIA"
 
     /**
      * C7 y Codex código r1 #13: los cobros de [venueId] que le deben algo al cliente (cambio que no dio, dinero que no devolvió o la

@@ -774,7 +774,11 @@ class PaymentFlowViewModelMaquinaTest {
         // La subida guardó el 202 definitivo (incidencia) en cuanto se cerró, ANTES de que saliera el primer papel.
         dao.alCerrar = { r ->
             kotlinx.coroutines.runBlocking {
-                dao.marcarSubido(r, "Registrado como incidencia: la venta ya no se pudo armar", """{"ack":"TERMINADO","incident":"NO_SE_PUDO_REGISTRAR"}""")
+                val f = dao.fila(r)!!
+                dao.marcarSubido(
+                    r, "Registrado como incidencia: la venta ya no se pudo armar", """{"ack":"TERMINADO","incident":"NO_SE_PUDO_REGISTRAR"}""",
+                    f.mensajesCrudos, f.creditCents,
+                )
             }
         }
         canal.llega(status(ref, 18_000, credit = 20_000, change = 2_000, cobrando = false, estado = "Pago Completado")); runCurrent()

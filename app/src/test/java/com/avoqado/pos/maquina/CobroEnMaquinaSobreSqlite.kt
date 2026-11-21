@@ -88,18 +88,19 @@ internal open class CobroEnMaquinaSobreSqlite : CobroEnMaquinaDao, AutoCloseable
     override suspend fun intentoDeLaVenta(llaveDeVenta: String) =
         filas(CobroEnMaquinaSql.INTENTO_DE_LA_VENTA, "llaveDeVenta" to llaveDeVenta).singleOrNull()
 
-    override suspend fun marcarEvidenciaEntregada(referenceCC: String, crudos: String, creditCents: Int) = actualizar(
-        CobroEnMaquinaSql.MARCAR_EVIDENCIA_ENTREGADA, "referenceCC" to referenceCC, "crudos" to crudos, "creditCents" to creditCents,
+    override suspend fun marcarEvidenciaEntregada(referenceCC: String, crudos: String, creditoEnviado: Int) = actualizar(
+        CobroEnMaquinaSql.MARCAR_EVIDENCIA_ENTREGADA, "referenceCC" to referenceCC, "crudos" to crudos, "creditoEnviado" to creditoEnviado,
     )
 
-    override suspend fun marcarDudaEnConflicto(referenceCC: String, conflicto: String, respuesta: String, crudos: String, creditCents: Int) =
+    override suspend fun marcarDudaEnConflicto(referenceCC: String, conflicto: String, respuesta: String, crudos: String, creditoEnviado: Int) =
         actualizar(
             CobroEnMaquinaSql.MARCAR_DUDA_EN_CONFLICTO, "referenceCC" to referenceCC, "conflicto" to conflicto, "respuesta" to respuesta,
-            "crudos" to crudos, "creditCents" to creditCents,
+            "crudos" to crudos, "creditoEnviado" to creditoEnviado,
         )
 
-    override suspend fun marcarDeOtraPc(referenceCC: String, conflicto: String, respuesta: String) = actualizar(
+    override suspend fun marcarDeOtraPc(referenceCC: String, conflicto: String, respuesta: String, crudos: String, creditoEnviado: Int) = actualizar(
         CobroEnMaquinaSql.MARCAR_DE_OTRA_PC, "referenceCC" to referenceCC, "conflicto" to conflicto, "respuesta" to respuesta,
+        "crudos" to crudos, "creditoEnviado" to creditoEnviado,
     )
 
     /** `pendientes` es el de la interfaz (la regla en Kotlin), heredado sin tocar: corre sobre esta consulta. */
@@ -175,18 +176,28 @@ internal open class CobroEnMaquinaSobreSqlite : CobroEnMaquinaDao, AutoCloseable
 
     override suspend fun paraSubir(venueId: String) = filas(CobroEnMaquinaSql.PARA_SUBIR, "venueId" to venueId)
 
+    override suspend fun paraSubirElFolio(venueId: String, referenceCC: String) =
+        filas(CobroEnMaquinaSql.PARA_SUBIR_EL_FOLIO, "venueId" to venueId, "referenceCC" to referenceCC).singleOrNull()
+
     override suspend fun esperanAlGerente(venueId: String) = filas(CobroEnMaquinaSql.ESPERAN_AL_GERENTE, "venueId" to venueId)
 
-    override suspend fun marcarSubido(referenceCC: String, conflicto: String?, respuesta: String?, aDeber: Int?) = actualizar(
-        CobroEnMaquinaSql.MARCAR_SUBIDO, "referenceCC" to referenceCC, "conflicto" to conflicto, "respuesta" to respuesta, "aDeber" to aDeber,
+    override suspend fun esperaAlGerenteElFolio(venueId: String, referenceCC: String) =
+        filas(CobroEnMaquinaSql.ESPERA_AL_GERENTE_EL_FOLIO, "venueId" to venueId, "referenceCC" to referenceCC).singleOrNull()
+
+    override suspend fun marcarSubido(referenceCC: String, conflicto: String?, respuesta: String?, crudos: String, creditoEnviado: Int, aDeber: Int?) =
+        actualizar(
+            CobroEnMaquinaSql.MARCAR_SUBIDO, "referenceCC" to referenceCC, "conflicto" to conflicto, "respuesta" to respuesta, "aDeber" to aDeber,
+            "crudos" to crudos, "creditoEnviado" to creditoEnviado,
+        )
+
+    override suspend fun anotarConflicto(referenceCC: String, conflicto: String, crudos: String, creditoEnviado: Int) = actualizar(
+        CobroEnMaquinaSql.ANOTAR_CONFLICTO, "referenceCC" to referenceCC, "conflicto" to conflicto, "crudos" to crudos,
+        "creditoEnviado" to creditoEnviado,
     )
 
-    override suspend fun anotarConflicto(referenceCC: String, conflicto: String) =
-        actualizar(CobroEnMaquinaSql.ANOTAR_CONFLICTO, "referenceCC" to referenceCC, "conflicto" to conflicto)
-
-    override suspend fun marcarDudaAbierta(referenceCC: String, version: Int?, crudos: String, creditCents: Int) = actualizar(
+    override suspend fun marcarDudaAbierta(referenceCC: String, version: Int?, crudos: String, creditoEnviado: Int) = actualizar(
         CobroEnMaquinaSql.MARCAR_DUDA_ABIERTA, "referenceCC" to referenceCC, "version" to version, "crudos" to crudos,
-        "creditCents" to creditCents,
+        "creditoEnviado" to creditoEnviado,
     )
 
     override suspend fun marcarDudaSubida(referenceCC: String, subida: Boolean) =
@@ -200,11 +211,13 @@ internal open class CobroEnMaquinaSobreSqlite : CobroEnMaquinaDao, AutoCloseable
         conflicto: String?,
         respuesta: String?,
         desenlace: String?,
+        crudos: String,
+        creditoEnviado: Int,
         aDeber: Int?,
     ) = actualizar(
         CobroEnMaquinaSql.RESOLVER, "referenceCC" to referenceCC, "resueltoPor" to resueltoPor, "creditCents" to creditCents,
         "changeDispensedCents" to changeDispensedCents, "conflicto" to conflicto, "respuesta" to respuesta, "desenlace" to desenlace,
-        "aDeber" to aDeber,
+        "aDeber" to aDeber, "crudos" to crudos, "creditoEnviado" to creditoEnviado,
     )
 
     override suspend fun conComprobante(venueId: String, limite: Int) =

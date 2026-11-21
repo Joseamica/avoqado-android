@@ -141,7 +141,7 @@ class CobrosEnMaquinaRoomTest {
             )
             dao.insertar(duda)
             assertEquals(1, dao.pendientes("venue-1"), "una duda propia ya subida sigue frenando salir (r3 #2)")
-            assertEquals(1, dao.resolver("AQ000000000001", "GERENTE", 0, 0, null, """{"outcome":"CANCELADO","creditCents":0}""", "CANCELADO"))
+            assertEquals(1, dao.resolver("AQ000000000001", "GERENTE", 0, 0, null, """{"outcome":"CANCELADO","creditCents":0}""", "CANCELADO", "", 0))
             assertEquals(0, dao.pendientes(null), "lo que el SERVIDOR resolvió no frena")
             assertEquals(0, dao.bloqueanLaVenta("venta-1"), "«Cancelado, \$0» sin nada que lo contradiga: la tarjeta sí")
             assertTrue(dao.anotarMensaje("AQ000000000001", 1, "tarde", 10_000, 18_750), "lo que llega después de resolver es evidencia (r3 #1)")
@@ -184,7 +184,7 @@ class CobrosEnMaquinaRoomTest {
             assertFalse(dao.abrirIntento(intento("AQ000000000004")), "una venta pagada no se vuelve a cobrar")
             assertEquals(listOf(pagado), dao.porSubir())
 
-            assertEquals(1, dao.marcarSubido("AQ000000000001", null, """{"outcome":"PAGADO","excedenteCents":500}"""))
+            assertEquals(1, dao.marcarSubido("AQ000000000001", null, """{"outcome":"PAGADO","excedenteCents":500}""", pagado.mensajesCrudos, pagado.creditCents))
             assertEquals("""{"outcome":"PAGADO","excedenteCents":500}""", dao.porReferencia("AQ000000000001")!!.respuestaServidor)
             // Codex código r2 H9: el papel se reclama una sola vez (un ganador) y se marca con el resultado real.
             assertEquals(1, dao.reclamarTicket("AQ000000000001"))

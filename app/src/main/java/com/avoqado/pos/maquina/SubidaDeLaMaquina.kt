@@ -142,7 +142,10 @@ class SubidaDeLaMaquina @Inject constructor(
         }
         // Las que ya estaban subidas: la que se sube en esta pasada no se consulta en el mismo instante.
         val esperan = dao.esperanAlGerente(venueId)
-        for (fila in dao.paraSubir(venueId)) {
+        for (delLote in dao.paraSubir(venueId)) {
+            // Codex código POS r9 #1 (F5): el envío se arma de la fila tal como está AHORA, nunca de la foto del lote: mientras subía otro folio
+            // la máquina pudo corregir éste (y la PC pasarlo a duda). Si ya no sube, se queda.
+            val fila = dao.paraSubirElFolio(venueId, delLote.referenceCC) ?: continue
             // Codex código r3 #1 y POS r7: lo que llegó después de la resolución de un gerente, o de un cierre que el SERVIDOR ya tiene, sube
             // como duda (el SERVIDOR abre su revisión).
             val esDuda = fila.estado == EstadoDelIntento.ESPERANDO || fila.subeTrasTerminar()
@@ -156,7 +159,9 @@ class SubidaDeLaMaquina @Inject constructor(
             }
             if (!aplicar(fila, leerAcuse(r), esDuda, porPost = true)) return@withContext true
         }
-        for (fila in esperan.filter(::consultable)) {
+        for (delLote in esperan) {
+            // Codex código POS r9 (F5): igual al consultar: la duda tal como está ahora (si trajo evidencia nueva, ya subió arriba).
+            val fila = dao.esperaAlGerenteElFolio(venueId, delLote.referenceCC)?.takeIf(::consultable) ?: continue
             // Rediseño del SERVIDOR (r6-1): una duda ABIERTA puede tener ya su desenlace sin terminar, y sólo REENVIARLA lo reanuda (y sube
             // lo nuevo que vio la PC, que el SERVIDOR agrega). La que quedó en conflicto ya tiene su incidencia: reenviarla daría el mismo 409,
             // así que sólo se consulta por su folio (Codex código r1 #9).
@@ -214,8 +219,9 @@ class SubidaDeLaMaquina @Inject constructor(
                 return false
             }
             Acuse.Reintentar, Acuse.NoExiste -> Unit
-            // Sin incidencia (un 400) el dinero sólo está aquí: visible y sin acuse.
-            is Acuse.Rechazo -> dao.anotarConflicto(fila.referenceCC, acuse.texto)
+            // Sin incidencia (un 400) el dinero sólo está aquí: visible y sin acuse. Codex código POS r9 #2: sólo si la fila sigue con lo que
+            // se mandó (como TODO escritor de una respuesta, F5).
+            is Acuse.Rechazo -> dao.anotarConflicto(fila.referenceCC, acuse.texto, fila.mensajesCrudos, fila.creditCents)
             // Con su incidencia DURABLE en el SERVIDOR (409/422) ya no es de la PC: queda visible y deja de frenar cerrar sesión.
             is Acuse.ConIncidencia -> when {
                 // Codex código r1 #9: la duda en conflicto no frena (se consulta por su folio salvo que sea de otra PC, H8).
@@ -225,8 +231,8 @@ class SubidaDeLaMaquina @Inject constructor(
                 }
                 // Codex código r2 H8: el folio es de OTRA PC: lo de esta PC nunca queda como subido; su incidencia sí se ve.
                 acuse.motivo == MOTIVO_OTRA_PC && acuse.duenoDelFolio.let { it == null || it != prefs.dispositivo } ->
-                    dao.marcarDeOtraPc(fila.referenceCC, acuse.texto, acuse.cuerpo)
-                else -> dao.marcarSubido(fila.referenceCC, acuse.texto, acuse.cuerpo)
+                    dao.marcarDeOtraPc(fila.referenceCC, acuse.texto, acuse.cuerpo, fila.mensajesCrudos, fila.creditCents)
+                else -> dao.marcarSubido(fila.referenceCC, acuse.texto, acuse.cuerpo, fila.mensajesCrudos, fila.creditCents)
             }
             // La duda ABIERTA: el SERVIDOR ya la tiene; su `version` es la que mandará el gerente al resolverla (r6-4). Codex código r2
             // H1: el acuse es de la evidencia que se mandó; si llegó otra mientras tanto, sigue por subir.
@@ -236,7 +242,7 @@ class SubidaDeLaMaquina @Inject constructor(
             is Acuse.Terminado -> when {
                 !esDeEstaPc(acuse.deviceId, porPost) -> Unit   // el folio es de otra PC (o el acuse no dice de quién): no se retira nada
                 esDuda -> if (!dao.resolverConElEco(fila, acuse.json, acuse.cuerpo)) {
-                    dao.anotarConflicto(fila.referenceCC, TEXTO_RESPUESTA_DISTINTA)
+                    dao.anotarConflicto(fila.referenceCC, TEXTO_RESPUESTA_DISTINTA, fila.mensajesCrudos, fila.creditCents)
                 } else if (porPost) {
                     // Codex código r3 #1: este POST llevó la evidencia de la fila: si quedó pendiente tras la resolución, ya está allá.
                     dao.marcarEvidenciaEntregada(fila.referenceCC, fila.mensajesCrudos, fila.creditCents)
@@ -284,8 +290,11 @@ class SubidaDeLaMaquina @Inject constructor(
 
     private suspend fun aplicarCierre(fila: CobroEnMaquinaEntity, acuse: Acuse.Terminado) {
         val json = acuse.json
-        if (!repite(fila, json, fila.estado, conLoQueEntro = true)) dao.anotarConflicto(fila.referenceCC, TEXTO_RESPUESTA_DISTINTA)
-        else dao.marcarSubido(fila.referenceCC, acuse.incidencia, acuse.cuerpo, json.centavos("owedCents"))
+        if (!repite(fila, json, fila.estado, conLoQueEntro = true)) {
+            dao.anotarConflicto(fila.referenceCC, TEXTO_RESPUESTA_DISTINTA, fila.mensajesCrudos, fila.creditCents)
+        } else {
+            dao.marcarSubido(fila.referenceCC, acuse.incidencia, acuse.cuerpo, fila.mensajesCrudos, fila.creditCents, json.centavos("owedCents"))
+        }
     }
 
     /**
@@ -474,7 +483,8 @@ fun incidenciaDelEco(json: JSONObject): String? =
 
 /**
  * La evidencia TERMINADA de una duda (la decisión del gerente en el panel, o su incidencia) en la fila: UN solo lugar que la lee
- * (Codex código r1 #11). false = no es de este folio o no cuadra.
+ * (Codex código r1 #11). false = no es de este folio o no cuadra. Codex código POS r9 (F5): [fila] es la lectura con que se armó la
+ * petición; si la fila ya trae otra evidencia, no se resuelve (0 filas) y la duda vuelve a subir con lo nuevo.
  */
 internal suspend fun CobroEnMaquinaDao.resolverConElEco(fila: CobroEnMaquinaEntity, json: JSONObject, cuerpo: String): Boolean {
     val outcome = json.optString("outcome")
@@ -491,6 +501,9 @@ internal suspend fun CobroEnMaquinaDao.resolverConElEco(fila: CobroEnMaquinaEnti
         // El desenlace del gerente vive aquí ([desenlace]); `cancelPedido` sigue siendo lo que pidió la PC.
         respuesta = cuerpo,
         desenlace = outcome,
+        // Codex código POS r9 (F5): la evidencia de la lectura con que se pidió esta respuesta; si la fila ya trae otra, no se resuelve aquí.
+        crudos = fila.mensajesCrudos,
+        creditoEnviado = fila.creditCents,
         aDeber = json.centavos("owedCents"),
     )
     return true
