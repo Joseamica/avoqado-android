@@ -31,6 +31,7 @@ import com.avoqado.pos.kds.domain.estacionesParaElegir
 import com.avoqado.pos.kds.domain.estadoDeCasilla
 import com.avoqado.pos.kds.domain.idsParaMarcarTodas
 import com.avoqado.pos.kds.domain.juntarPorFolio
+import com.avoqado.pos.kds.domain.tiempoDe
 import com.avoqado.pos.printing.data.ComandaPrinter
 import com.avoqado.pos.printing.data.EstadoDeComanda
 import com.avoqado.pos.printing.routing.ConsolidatedLine
@@ -625,6 +626,11 @@ class KDSViewModel @Inject constructor(
                     put("stationId", stationId)
                     put("action", KitchenDeliveryPolicy.BUMP)
                     put("label", comanda.orderNumber)
+                    // D13: de una comanda `lan:` (la fila del WiFi), los tiempos que la cocina vio; el SERVIDOR saca lo de los demás a la
+                    // comanda de su tiempo, sin terminarlo. La copia del servidor la vio entera: sin `courses`, como siempre.
+                    if (esLocal(comanda.id)) {
+                        put("courses", kotlinx.serialization.json.JsonArray(comanda.items.map { kotlinx.serialization.json.JsonPrimitive(tiempoDe(it)) }.distinct()))
+                    }
                 },
             )
         }.exceptionOrNull()

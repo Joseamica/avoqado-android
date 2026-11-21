@@ -89,7 +89,7 @@ class KdsTicketsLocalesStoreTest {
     fun `P1 marcarLista delega en UNA transaccion del DAO - el store nunca lee ni escribe por su cuenta`() = runTest {
         val orden = KDSOrder(id = "k1", orderNumber = "1", orderType = "En tienda", items = listOf(KDSOrderItem("i", "Taco", 1)), createdAt = 1, status = KDSOrderStatus.NEW, sourceKey = "sale:x:st-barra", printStationId = "st-barra")
         val sombra = slot<KdsTicketLocalEntity>()
-        coEvery { dao.marcarListaOCrear(capture(sombra), 50) } returns Unit
+        coEvery { dao.marcarListaOCrear(capture(sombra), 50, delServidor = true) } returns Unit
 
         store.marcarLista(orden, "v1", "st-barra", ahora = 50)
 
@@ -111,7 +111,7 @@ class KdsTicketsLocalesStoreTest {
     fun `P1 la marca LISTO creada para una comanda del servidor cuenta su vigencia desde ahora, no desde su creacion`() = runTest {
         val deAyer = KDSOrder(id = "k1", orderNumber = "1", orderType = "En tienda", items = emptyList(), createdAt = 1, status = KDSOrderStatus.NEW, sourceKey = "sale:vieja:st-barra", printStationId = "st-barra")
         val sombra = slot<KdsTicketLocalEntity>()
-        coEvery { dao.marcarListaOCrear(capture(sombra), 90_000_000) } returns Unit
+        coEvery { dao.marcarListaOCrear(capture(sombra), 90_000_000, delServidor = true) } returns Unit
 
         store.marcarLista(deAyer, "v1", "st-barra", ahora = 90_000_000)
 
@@ -137,7 +137,7 @@ class KdsTicketsLocalesStoreTest {
             createdAt = 1, status = KDSOrderStatus.NEW, sourceKey = "round:rk:st-barra", printStationId = "st-barra",
         )
         val sombra = slot<KdsTicketLocalEntity>()
-        coEvery { dao.marcarListaOCrear(capture(sombra), 50) } returns Unit
+        coEvery { dao.marcarListaOCrear(capture(sombra), 50, delServidor = true) } returns Unit
         store.marcarLista(orden, "v1", "st-barra", ahora = 50)
         assertTrue(sombra.captured.itemsJson, sombra.captured.itemsJson.contains("\"course\":\"Principales\""))
     }

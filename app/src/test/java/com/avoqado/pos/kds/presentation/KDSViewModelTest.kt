@@ -642,6 +642,8 @@ class KDSViewModelTest {
         assertEquals("sale:k1:st-barra", marca.captured["sourceKey"]!!.jsonPrimitive.content)
         assertEquals("BUMP", marca.captured["action"]!!.jsonPrimitive.content)
         assertEquals("k1", marca.captured["label"]!!.jsonPrimitive.content)
+        // D13: la cocina vio la copia del SERVIDOR (la ronda entera): la marca va sin tiempos, como siempre.
+        assertNull(marca.captured["courses"])
         // Ronda 1: la marca durable PRIMERO; esconderla después. Al revés, un proceso muerto entre las dos la escondía
         // para siempre sin que el servidor se enterara.
         coVerifyOrder {
@@ -683,6 +685,27 @@ class KDSViewModelTest {
         coVerify(exactly = 0) { repo.bumpOrder(any()) }
         coVerify(exactly = 1) { cola.enqueue("v1", "KDS_TICKET_MARK", any(), any(), false) }
         coVerify(exactly = 1) { ticketsLocales.marcarLista(match { it.sourceKey == "round:rk:st-barra" }, "v1", "st-barra", any()) }
+        job.cancelAndJoin()
+    }
+
+    @Test
+    fun `D13 el LISTO de una comanda que llego por WiFi dice que tiempos vio la cocina`() = runTest {
+        val marca = slot<JsonObject>()
+        coEvery { cola.enqueue("v1", "KDS_TICKET_MARK", capture(marca), any(), false) } returns "m-1"
+        val vm = armar()
+        val job = launch { vm.mientrasSeVe() }
+        runCurrent()
+        locales.value = listOf(
+            local("round:rk:st-barra", 3_000).copy(
+                items = listOf(KDSOrderItem("l-1", "Sopa", 1), KDSOrderItem("l-2", "Arrachera", 1, course = "Fuertes")),
+            ),
+        )
+        runCurrent()
+
+        vm.listo("lan:round:rk:st-barra")
+        runCurrent()
+
+        assertEquals("[\"\",\"Fuertes\"]", marca.captured["courses"].toString())
         job.cancelAndJoin()
     }
 

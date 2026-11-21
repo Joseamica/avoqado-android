@@ -154,17 +154,52 @@ fun KdsTicketLocal.aKDSOrder(): KDSOrder = KDSOrder(
 
 /**
  * `servidor ∪ locales` por folio: la copia del servidor GANA (la local se descarta); las locales sin copia del servidor
- * se muestran con id `lan:<folio>`; los folios marcados LISTO sin red (`listaEnMillis != null`) NO se muestran aunque el
- * servidor los devuelva (hasta que deje de devolverlos o venzan las 12 h). Se llama en cada consulta buena, cuando llega
- * una comanda por WiFi y cuando falla la consulta (sin red se muestra lo guardado). PURA; espejo de `KDSReglas.juntarPorFolio`.
+ * se muestran con id `lan:<folio>`. Un folio marcado LISTO sin red (`listaEnMillis != null`) esconde de la copia del servidor
+ * sólo los TIEMPOS que cubrió (D13); lo de otro tiempo sale como comanda nueva `lan:<folio del tiempo>` (su LISTO va por la
+ * marca de ese folio), salvo que ya exista su fila o su copia del servidor. Se llama en cada consulta buena, cuando llega una
+ * comanda por WiFi y cuando falla la consulta (sin red se muestra lo guardado). PURA; espejo de `KDSReglas.juntarPorFolio`.
  */
 fun juntarPorFolio(servidor: List<KDSOrder>, locales: List<KdsTicketLocal>): List<KDSOrder> {
-    val listas = locales.filter { it.listaEnMillis != null }.map { it.sourceKey }.toSet()
-    val delServidor = servidor.filterNot { it.sourceKey != null && it.sourceKey in listas }
+    val listas = locales.filter { it.listaEnMillis != null }.associateBy { it.sourceKey }
+    val conFila = locales.map { it.sourceKey }.toSet()
     val foliosDelServidor = servidor.mapNotNull { it.sourceKey }.toSet()
+    val delServidor = servidor.flatMap { comanda ->
+        // Codex r1 #6: una comanda con preparación por producto no se esconde con un LISTO de comanda entera (sólo pudo venir de un
+        // mensaje v0 del mismo folio): se enseña como la mandó el servidor.
+        if (comanda.preparationVersion == 1) return@flatMap listOf(comanda)
+        val lista = comanda.sourceKey?.let { listas[it] } ?: return@flatMap listOf(comanda)
+        // La marca se tocó sobre la copia del SERVIDOR (las dos horas iguales): cubre la comanda entera, como siempre.
+        if (lista.listaEnMillis == lista.recibidaEnMillis) return@flatMap emptyList()
+        val cubiertos = lista.items.map(::tiempoDe).toSet()
+        comanda.items.filter { tiempoDe(it) !in cubiertos }.groupBy(::tiempoDe).mapNotNull { (tiempo, items) ->
+            val folio = folioDelTiempo(lista.sourceKey, tiempo)
+            if (folio in conFila || folio in foliosDelServidor) null
+            else comanda.copy(id = ID_LAN + folio, sourceKey = folio, items = items, createdAt = maxOf(comanda.createdAt, lista.listaEnMillis ?: 0))
+        }
+    }
     val soloLocales = locales.filter { it.listaEnMillis == null && it.sourceKey !in foliosDelServidor }.map { it.aKDSOrder() }
     return (delServidor + soloLocales).sortedBy { it.createdAt }
 }
+
+// MARK: - D13 (hz:0555ee15:D13): el tiempo que llega a una comanda que la cocina ya marcó LISTO
+
+/**
+ * La etiqueta del tiempo de un platillo, la MISMA con que la caja parte la ronda en mensajes (`kitchenCourseLabel`): sin tiempo o el
+ * Inmediato llamado «Inmediato» = `""`. Un LISTO de comanda entera cubre tiempos: cada mensaje del WiFi es un tiempo de un folio.
+ */
+fun tiempoDe(serviceCourse: com.avoqado.pos.pos.data.model.ServiceCourseSnapshot?, course: String?): String =
+    com.avoqado.pos.tables.data.kitchenCourseLabel(serviceCourse, course).orEmpty()
+
+fun tiempoDe(item: KDSOrderItem): String = tiempoDe(item.serviceCourse, item.course)
+
+/**
+ * El folio de lo que llegó de un [tiempo] que la marca LISTO de [sourceKey] no cubrió: `<folio>:t:<12 hex del SHA-256 de la
+ * etiqueta>`. El SERVIDOR arma el MISMO al partir la comanda (`folioDelTiempo` de `kitchenTicketPlanning.ts`): si no coincidieran,
+ * la cocina vería el tiempo dos veces.
+ */
+fun folioDelTiempo(sourceKey: String, tiempo: String): String =
+    "$sourceKey:t:" + java.security.MessageDigest.getInstance("SHA-256").digest(tiempo.toByteArray(Charsets.UTF_8))
+        .take(6).joinToString("") { "%02x".format(it) }
 
 // MARK: - Errores: sin red es un ESTADO, no un error rojo
 

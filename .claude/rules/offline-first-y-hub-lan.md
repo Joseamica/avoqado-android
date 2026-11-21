@@ -238,20 +238,28 @@ No depende del hub Premium: viaja por el MISMO transporte. Espejo en iOS con los
   vista (se apaga en `ON_STOP`, al cambiar de estación y si la observación de lo guardado se cae). Guarda en
   `kds_tickets_locales` ANTES de acusar, y acusa sólo si el mismo receptor sigue enganchado con esa estación (la
   GENERACIÓN del transporte sube al soltar el receptor, al cambiar de estación y al reiniciar el transporte). El mismo
-  folio UNE renglones por id; un curso con renglones NUEVOS sobre una fila ya LISTA no se guarda ni se acusa ⇒ papel.
+  folio UNE renglones por id. D13 (hz:0555ee15:D13, 20-nov): un TIEMPO nuevo sobre una fila ya LISTA se guarda en la fila del
+  folio de ese tiempo (`<folio>:t:<12 hex del SHA-256 de la etiqueta>`, `folioDelTiempo`, el MISMO que arma el SERVIDOR),
+  pendiente y a la vista, y se acusa; lo de un tiempo que la LISTA ya cubre se queda con ella. Excepciones: una LISTA tocada
+  sobre la copia del servidor (sus dos horas iguales) cubre todo el folio, y un mensaje con preparación por producto sobre una
+  LISTA sigue sin acuse ⇒ papel.
 - **La mesa y los tiempos (3.6):** una ronda manda a la pantalla `orderType` = «Mesa 8» (no el «Mesa 8 · Aperitivos» del
   papel, que sigue igual) y el tiempo en cada renglón (`course`); el servidor devuelve lo mismo (`tableNumber` y
   `items[].course`, leídos de la cuenta al consultar: si la mueven de mesa, la cocina ve la nueva). La tarjeta agrupa
   por tiempo: «Inmediato» (sin tiempo) primero y los demás en orden de aparición; sin ningún tiempo se ve como siempre.
 - **Mezcla por folio** (`juntarPorFolio`): la copia del servidor gana; una local sin copia se ve como `lan:<folio>`; un
-  folio LISTO local esconde la copia del servidor hasta 12 h (o hasta que el servidor deje de mandarlo).
+  folio LISTO local esconde de la copia del servidor sólo los TIEMPOS que cubrió (D13), hasta 12 h o hasta que el servidor deje
+  de mandarlo; lo de otro tiempo sale como `lan:<folio del tiempo>`. Una LISTA tocada sobre la copia del servidor la esconde
+  entera; una comanda con preparación por producto nunca se esconde con un LISTO de comanda entera.
 - **Foto del servidor al reabrir sin red (Codex 3.6 #2):** cada lectura buena guarda la lista en el aparato (`KdsPrefs`, por
   sucursal + estación, con su hora). Si la lectura falla y este ViewModel aún no tiene nada de la estación (tablet
   reiniciada), el tablero arranca con esa foto si tiene < 12 h: lo que la copia local ya retiró no desaparece de la cocina.
   Lo terminado en línea sale de la foto; el retiro de la copia local no cambió.
 - **LISTO sin red:** `KDS_TICKET_MARK BUMP` por la cola PRIMERO y DESPUÉS `listaEnMillis`, en UNA transacción del DAO
   (`marcarListaOCrear`: marca la fila pendiente o, si no hay ninguna, inserta la sombra LISTA; nunca reemplaza una fila).
-  La sombra va con la estación del TABLERO donde se tocó; el BUMP, con la de la comanda.
+  La sombra va con la estación del TABLERO donde se tocó; el BUMP, con la de la comanda. D13: el BUMP de una comanda `lan:`
+  lleva `courses` (los tiempos que vio la cocina) y el SERVIDOR saca lo de los demás tiempos a la comanda de su tiempo, sin
+  terminarlo; el de la copia del servidor va sin `courses` (la vio entera).
 - **Banda de la caja:** «Las comandas de Barra salen en papel si la pantalla no contesta»; tras 3 entregas seguidas sin
   acuse a la misma estación, fija «La pantalla de Barra no se alcanza por el WiFi» (la limpia el primer acuse). Nada de
   eso en la tablet que ES la pantalla. Pantalla sin internet con receptor vivo: «Sin internet: recibiendo por el WiFi del
@@ -259,9 +267,9 @@ No depende del hub Premium: viaja por el MISMO transporte. Espejo en iOS con los
 
 🔴 **Invariante: la fila local de un folio ⊆ la copia del servidor de ese folio.** El folio (`round:<roundKey>:<estación>`
 o `sale:<externalId>:<estación>`) lo arma el servidor DE UNA VEZ con todos sus renglones, y la caja empuja exactamente los
-renglones que ruteó de esa misma ronda o venta. Por eso marcar LISTO el folio entero es correcto (esconde lo mismo que la
-cocina tocó), y NO hay que comparar renglones entre la copia local y la del servidor (son dos espacios de ids). Sólo una
-config de ruteo distinta en caja y servidor la rompe, y ese renglón aparece en la estación a la que el servidor lo mandó.
+renglones que ruteó de esa misma ronda o venta, UN MENSAJE POR TIEMPO. ⚠️ D13: el ⊆ puede ser estricto cuando un tiempo llega
+después del LISTO, así que marcar LISTO cubre TIEMPOS (las etiquetas, el mismo espacio en los dos lados), nunca ids (son dos
+espacios). Sólo una config de ruteo distinta en caja y servidor bajo el mismo tiempo lo rompe (residual de D13).
 
 🔴 **Regla de los cursos:** las entregas de TODOS los cursos de una ronda quedan en disco ANTES de que el primero toque la
 red (`despacharEnFondo` refresca la config una vez, rutea todos y los guarda; cada curso se despacha sin volver a

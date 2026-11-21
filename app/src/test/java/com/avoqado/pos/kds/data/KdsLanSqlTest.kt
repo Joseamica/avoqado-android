@@ -224,17 +224,122 @@ class KdsLanSqlTest {
     private fun ids(itemsJson: String): List<String> =
         Json.parseToJsonElement(itemsJson).jsonArray.map { it.jsonObject["id"]!!.jsonPrimitive.content }
 
+    // MARK: - D13 (hz:0555ee15:D13): un tiempo NUEVO sobre una comanda ya LISTA nunca se rechaza ni se esconde
+
+    private val sopa = """{"id":"a","productName":"Sopa","quantity":1,"modifiers":[],"notes":null,"course":"Aperitivos"}"""
+    private val sopa2 = """{"id":"a2","productName":"Crema","quantity":1,"modifiers":[],"notes":null,"course":"Aperitivos"}"""
+    private val arrachera = """{"id":"c","productName":"Arrachera","quantity":1,"modifiers":[],"notes":null,"course":"Fuertes"}"""
+    private val arrachera2 = """{"id":"c2","productName":"Rib eye","quantity":1,"modifiers":[],"notes":null,"course":"Fuertes"}"""
+    /** El folio del tiempo «Fuertes» de [folio]: `<folio>:t:` + los 12 primeros hex del SHA-256 de la etiqueta (igual en el SERVIDOR). */
+    private val folioFuertes = "round:r1:st_barra:t:2393677f0adf"
+    /** El de los renglones sin tiempo (etiqueta vacía). */
+    private val folioSinTiempo = "round:r1:st_barra:t:e3b0c44298fc"
+
     @Test
-    fun `P1 unir un curso con un renglon NUEVO sobre una fila YA LISTA devuelve false y la fila queda intacta`() = runBlocking {
+    fun `D13 un tiempo NUEVO sobre una fila YA LISTA se guarda en su propia comanda pendiente y acusa`() = runBlocking {
         val dao = DaoSobreSqlite()
-        val lista = fila("[$renglonA]", lista = 20L)
+        val lista = fila("[$sopa]", lista = 20L)
         dao.guardar(lista)
 
-        val guardada = dao.unir(fila("[$renglonA,$renglonB]", recibida = 99L), idsEntrantes = setOf("a", "b"))
+        assertTrue("con acuse: la cocina lo va a ver", dao.unir(fila("[$arrachera]", recibida = 99L), idsEntrantes = setOf("c")))
 
-        assertFalse("sin acuse: el curso nuevo no se puede esconder detras de la marca LISTO", guardada)
-        // Ni los renglones ni la marca cambian: todo o nada.
+        assertEquals("lo que la cocina ya terminó no se toca", lista, dao.porFolio(folio))
+        val nueva = dao.porFolio(folioFuertes)!!
+        assertEquals(listOf("c"), ids(nueva.itemsJson))
+        assertNull("pendiente: se ve en el tablero", nueva.listaEnMillis)
+        assertEquals("llegó ahora: es trabajo nuevo", 99L, nueva.recibidaEnMillis)
+        assertEquals(listOf("venue-1", "st_barra", "77", "Mesa 8"), listOf(nueva.venueId, nueva.stationId, nueva.orderNumber, nueva.orderType))
+    }
+
+    @Test
+    fun `D13 la ronda entera reenviada sobre la LISTA guarda solo el tiempo nuevo y repetir no lo duplica`() = runBlocking {
+        val dao = DaoSobreSqlite()
+        val lista = fila("[$sopa]", lista = 20L)
+        dao.guardar(lista)
+
+        assertTrue(dao.unir(fila("[$sopa,$arrachera]", recibida = 99L), idsEntrantes = setOf("a", "c")))
+        assertTrue(dao.unir(fila("[$arrachera]", recibida = 120L), idsEntrantes = setOf("c")))
+
         assertEquals(lista, dao.porFolio(folio))
+        val nueva = dao.porFolio(folioFuertes)!!
+        assertEquals(listOf("c"), ids(nueva.itemsJson))
+        assertEquals("la hora de la primera llegada", 99L, nueva.recibidaEnMillis)
+    }
+
+    @Test
+    fun `D13 renglones de un tiempo que la LISTA ya cubre se quedan con ella y acusan`() = runBlocking {
+        val dao = DaoSobreSqlite()
+        dao.guardar(fila("[$sopa]", lista = 20L))
+
+        assertTrue(dao.unir(fila("[$sopa2]", recibida = 99L), idsEntrantes = setOf("a2")))
+
+        val guardada = dao.porFolio(folio)!!
+        assertEquals(listOf("a", "a2"), ids(guardada.itemsJson))
+        assertEquals(20L, guardada.listaEnMillis)
+        assertNull(dao.porFolio("round:r1:st_barra:t:f17dd790bc33"))
+    }
+
+    @Test
+    fun `D13 otro envio del tiempo nuevo cuando su comanda propia ya esta LISTA se queda con ella`() = runBlocking {
+        val dao = DaoSobreSqlite()
+        dao.guardar(fila("[$sopa]", lista = 20L))
+        val fuertesLista = fila("[$arrachera]", lista = 40L, recibida = 30L, folio = folioFuertes)
+        dao.guardar(fuertesLista)
+
+        assertTrue(dao.unir(fila("[$arrachera2]", recibida = 99L), idsEntrantes = setOf("c2")))
+
+        assertEquals(listOf("c", "c2"), ids(dao.porFolio(folioFuertes)!!.itemsJson))
+        assertEquals(40L, dao.porFolio(folioFuertes)!!.listaEnMillis)
+    }
+
+    /** Codex r1 #4: la cocina vio la copia del SERVIDOR (ids y, en cajas viejas, etiquetas de otro espacio): cubre TODO. */
+    @Test
+    fun `D13 marcar LISTO la copia del servidor sobre una fila PENDIENTE del WiFi la cubre entera, sin sacar nada`() = runBlocking {
+        val dao = DaoSobreSqlite()
+        dao.guardar(fila("[$arrachera]")) // llegó por el WiFi después de la última lectura
+        val delServidor = """{"id":"kds-1","productName":"Sopa","quantity":1,"modifiers":[],"notes":null}"""
+        val delServidor2 = """{"id":"kds-2","productName":"Arrachera","quantity":1,"modifiers":[],"notes":null}"""
+
+        dao.marcarListaOCrear(fila("[$delServidor,$delServidor2]", lista = 50L, recibida = 50L), ahora = 50L, delServidor = true)
+
+        val lista = dao.porFolio(folio)!!
+        assertEquals(listOf("c", "kds-1", "kds-2"), ids(lista.itemsJson))
+        assertEquals(listOf(50L, 50L), listOf(lista.recibidaEnMillis, lista.listaEnMillis))
+        assertNull(dao.porFolio(folioFuertes))
+        // Y el mismo tiempo que llegue después por el WiFi ya está cubierto.
+        assertTrue(dao.unir(fila("[$sopa]", recibida = 99L), idsEntrantes = setOf("a")))
+        assertNull(dao.porFolio("round:r1:st_barra:t:f17dd790bc33"))
+    }
+
+    /** Codex r1 #6: un mensaje con preparación por producto no se separa a otro folio (su avance busca el del servidor): como antes. */
+    @Test
+    fun `D13 un tiempo con preparacion por producto sobre una fila LISTA no se acusa - sale en papel como antes`() = runBlocking {
+        val dao = DaoSobreSqlite()
+        val lista = fila("[$sopa]", lista = 20L)
+        dao.guardar(lista)
+        val v1 = """{"id":"p","productName":"Arrachera","quantity":1,"modifiers":[],"notes":null,"course":"Fuertes",""" +
+            """"serviceCourse":{"id":"mains","label":"Fuertes","kind":"STANDARD","preparationVersion":1}}"""
+
+        assertFalse(dao.unir(fila("[$v1]", recibida = 99L), idsEntrantes = setOf("p")))
+
+        assertEquals(lista, dao.porFolio(folio))
+        assertNull(dao.porFolio(folioFuertes))
+    }
+
+    @Test
+    fun `D13 marcar LISTO una fila PENDIENTE que ya trae un tiempo que la cocina no vio lo pasa a su propia comanda`() = runBlocking {
+        val dao = DaoSobreSqlite()
+        // El tiempo «Fuertes» llegó por el WiFi entre lo que la cocina vio (sólo la sopa) y su toque de LISTO.
+        dao.guardar(fila("[$sopa,$arrachera]"))
+
+        dao.marcarListaOCrear(fila("[$sopa]", lista = 50L, recibida = 50L), ahora = 50L, delServidor = false)
+
+        val lista = dao.porFolio(folio)!!
+        assertEquals(listOf("a"), ids(lista.itemsJson))
+        assertEquals(50L, lista.listaEnMillis)
+        val nueva = dao.porFolio(folioFuertes)!!
+        assertEquals(listOf("c"), ids(nueva.itemsJson))
+        assertNull(nueva.listaEnMillis)
     }
 
     @Test
@@ -271,14 +376,18 @@ class KdsLanSqlTest {
         assertEquals(nueva, dao.porFolio(folio))
     }
 
-    /** Lado seguro: si no se puede leer lo que había, TODO lo entrante es «nuevo» y una fila LISTA no acusa. */
+    /**
+     * Lado seguro: si no se puede leer lo que había, la LISTA no cubre ningún tiempo y TODO lo entrante sale en su propia
+     * comanda, a la vista (D13: antes no se acusaba y la caja dependía del papel).
+     */
     @Test
-    fun `P1 un JSON previo ilegible sobre una fila YA LISTA no acusa - y sobre una PENDIENTE sigue mezclando`() = runBlocking {
+    fun `P1 un JSON previo ilegible sobre una fila YA LISTA saca todo en comanda propia - y sobre una PENDIENTE sigue mezclando`() = runBlocking {
         val dao = DaoSobreSqlite()
         val ilegible = fila("no es json", lista = 20L)
         dao.guardar(ilegible)
-        assertFalse(dao.unir(fila("[$renglonA]"), idsEntrantes = setOf("a")))
+        assertTrue(dao.unir(fila("[$renglonA]"), idsEntrantes = setOf("a")))
         assertEquals(ilegible, dao.porFolio(folio))
+        assertEquals(listOf("a"), ids(dao.porFolio(folioSinTiempo)!!.itemsJson))
 
         dao.guardar(fila("no es json"))
         assertTrue(dao.unir(fila("[$renglonA]"), idsEntrantes = setOf("a")))
@@ -297,7 +406,7 @@ class KdsLanSqlTest {
         val dao = DaoSobreSqlite()
         dao.guardar(fila("[$renglonA,$renglonB]"))
 
-        dao.marcarListaOCrear(fila("[$renglonA]", lista = 50L, recibida = 50L), ahora = 50L)
+        dao.marcarListaOCrear(fila("[$renglonA]", lista = 50L, recibida = 50L), ahora = 50L, delServidor = false)
 
         val guardada = dao.porFolio(folio)!!
         assertEquals("los renglones que llegaron por el WiFi no se pisan con los de la sombra", listOf("a", "b"), ids(guardada.itemsJson))
@@ -310,7 +419,7 @@ class KdsLanSqlTest {
         val dao = DaoSobreSqlite()
         val sombra = fila("[$renglonA]", lista = 50L, recibida = 50L)
 
-        dao.marcarListaOCrear(sombra, ahora = 50L)
+        dao.marcarListaOCrear(sombra, ahora = 50L, delServidor = true)
 
         assertEquals(sombra, dao.porFolio(folio))
     }
@@ -321,7 +430,7 @@ class KdsLanSqlTest {
         val lista = fila("[$renglonA,$renglonB]", lista = 20L)
         dao.guardar(lista)
 
-        dao.marcarListaOCrear(fila("[$renglonA]", lista = 50L, recibida = 50L), ahora = 50L)
+        dao.marcarListaOCrear(fila("[$renglonA]", lista = 50L, recibida = 50L), ahora = 50L, delServidor = false)
 
         assertEquals(lista, dao.porFolio(folio))
     }

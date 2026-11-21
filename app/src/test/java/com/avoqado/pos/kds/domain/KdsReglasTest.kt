@@ -205,6 +205,72 @@ class KdsReglasTest {
         assertEquals(emptyList<KDSOrder>(), juntarPorFolio(emptyList(), listOf(local("x", 1, lista = 2))))
     }
 
+    // MARK: - D13 (hz:0555ee15:D13): la marca LISTO sólo esconde los tiempos que cubrió
+
+    private val inmediato = com.avoqado.pos.pos.data.model.ServiceCourseSnapshot("immediate", "Inmediato", "IMMEDIATE")
+    private val fuertes = com.avoqado.pos.pos.data.model.ServiceCourseSnapshot("mains", "Fuertes", "STANDARD")
+    private val folioMesa = "round:r1:st-barra"
+    /** `<folio>:t:` + 12 hex del SHA-256 de «Fuertes»: el MISMO que arma el SERVIDOR al partir la comanda. */
+    private val folioFuertes = "round:r1:st-barra:t:2393677f0adf"
+
+    /** Lo que arma el servidor de la ronda: los dos tiempos en una comanda (el Inmediato llega como «Inmediato»). */
+    private fun servidorConDosTiempos() = KDSOrder(
+        id = "k9", orderId = "o-9", orderNumber = "9", orderType = "Mesa 8",
+        items = listOf(
+            KDSOrderItem("s-1", "Sopa", 1, course = "Inmediato", serviceCourse = inmediato),
+            KDSOrderItem("s-2", "Arrachera", 1, course = "Fuertes", serviceCourse = fuertes),
+        ),
+        createdAt = 1_000, status = KDSOrderStatus.NEW, sourceKey = folioMesa, printStationId = "st-barra",
+    )
+
+    /** La cocina terminó sin internet lo que le llegó por el WiFi: la sopa (sin tiempo en el WiFi, ids de la caja). */
+    private fun listaDeLaSopa(items: List<KDSOrderItem> = listOf(KDSOrderItem("cart-1", "Sopa", 1))) = KdsTicketLocal(
+        sourceKey = folioMesa, venueId = "v1", stationId = "st-barra", orderNumber = "9", orderType = "Mesa 8",
+        items = items, recibidaEnMillis = 900, listaEnMillis = 1_500,
+    )
+
+    @Test
+    fun `D13 la marca LISTO esconde solo el tiempo que cubrio - el tiempo nuevo del servidor sale como comanda nueva`() {
+        val juntas = juntarPorFolio(listOf(servidorConDosTiempos()), listOf(listaDeLaSopa()))
+
+        assertEquals(listOf("lan:$folioFuertes"), juntas.map { it.id })
+        val nueva = juntas.single()
+        assertEquals(folioFuertes, nueva.sourceKey)
+        assertEquals(listOf("s-2"), nueva.items.map { it.id })
+        assertEquals(listOf("st-barra", "9", "Mesa 8"), listOf(nueva.printStationId, nueva.orderNumber, nueva.orderType))
+        assertTrue("su LISTO va por la marca de su propio folio", esLocal(nueva.id))
+    }
+
+    @Test
+    fun `D13 si el tiempo nuevo ya llego por el WiFi a su comanda propia no se repite`() {
+        val porWifi = KdsTicketLocal(
+            folioFuertes, "v1", "st-barra", "9", "Mesa 8",
+            listOf(KDSOrderItem("cart-2", "Arrachera", 1, course = "Fuertes")), recibidaEnMillis = 1_600, listaEnMillis = null,
+        )
+        val juntas = juntarPorFolio(listOf(servidorConDosTiempos()), listOf(listaDeLaSopa(), porWifi))
+
+        assertEquals(listOf("lan:$folioFuertes"), juntas.map { it.id })
+        assertEquals(listOf("cart-2"), juntas.single().items.map { it.id })
+    }
+
+    @Test
+    fun `D13 una marca tocada sobre la copia del servidor (horas iguales) esconde la comanda entera aunque sus tiempos no coincidan`() {
+        val sombra = listaDeLaSopa().copy(recibidaEnMillis = 1_500, listaEnMillis = 1_500)
+        assertEquals(emptyList<KDSOrder>(), juntarPorFolio(listOf(servidorConDosTiempos()), listOf(sombra)))
+    }
+
+    @Test
+    fun `D13 una marca de comanda entera no esconde una comanda del servidor con preparacion por producto`() {
+        val v1 = servidorConDosTiempos().copy(preparationVersion = 1)
+        assertEquals(listOf("k9"), juntarPorFolio(listOf(v1), listOf(listaDeLaSopa())).map { it.id })
+    }
+
+    @Test
+    fun `D13 una marca que cubre todos los tiempos sigue escondiendo la comanda entera`() {
+        val ambas = listaDeLaSopa(listOf(KDSOrderItem("cart-1", "Sopa", 1), KDSOrderItem("cart-2", "Arrachera", 1, course = "Fuertes")))
+        assertEquals(emptyList<KDSOrder>(), juntarPorFolio(listOf(servidorConDosTiempos()), listOf(ambas)))
+    }
+
     @Test
     fun `el texto de la pantalla recibiendo por WiFi es el acordado`() {
         assertEquals("Sin internet: recibiendo por el WiFi del local", TextosDeCocina.SIN_INTERNET_CON_WIFI)

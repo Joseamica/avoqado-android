@@ -8,6 +8,7 @@ import com.avoqado.pos.kds.data.local.KdsTicketsLocalesDao
 import com.avoqado.pos.kds.domain.KDSOrder
 import com.avoqado.pos.kds.domain.KDSOrderItem
 import com.avoqado.pos.kds.domain.KdsTicketLocal
+import com.avoqado.pos.kds.domain.esLocal
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
@@ -32,10 +33,9 @@ class KdsTicketsLocalesStore @Inject constructor(private val dao: KdsTicketsLoca
     /**
      * Commit en disco; `true` SÓLO si quedó guardada — el acuse sale sólo entonces. Nunca lanza.
      *
-     * Task 8b (hallazgo de pérdida): un curso que llega sobre una fila YA LISTA (`listaEnMillis != null`) con
-     * renglones que esa fila no tenía NO se guarda ni se acusa — mezclarlo la dejaría LISTA y oculta, y la cocina
-     * nunca vería el curso nuevo. Sin acuse la caja imprime el papel de respaldo. Un reenvío de LOS MISMOS renglones
-     * (nada nuevo) y cualquier curso sobre una fila PENDIENTE siguen el camino de hoy: se guarda y se acusa.
+     * D13 (hz:0555ee15:D13; antes, Task 8b): un tiempo NUEVO que llega sobre una fila YA LISTA se guarda en la fila del folio
+     * de ese tiempo, pendiente y a la vista, y se acusa. Antes no se guardaba ni se acusaba (la caja dependía del papel de
+     * respaldo, que una estación con impresora y pantalla no saca). Lo de un tiempo que la LISTA ya cubre se queda con ella.
      *
      * Ronda 1 (I1): TODA la regla vive en la transacción del DAO ([KdsTicketsLocalesDao.unir]) — leer la fila, decidir y
      * escribir en un solo paso. Leerla aquí y escribir en otra transacción dejaba una ventana: un LISTO que cayera
@@ -53,7 +53,7 @@ class KdsTicketsLocalesStore @Inject constructor(private val dao: KdsTicketsLoca
             ),
             idsEntrantes = comanda.items.map { it.id }.toSet(),
         )
-        if (!guardada) Log.i(TAG, "${comanda.sourceKey}: curso nuevo sobre una comanda ya LISTA — sin acuse, sale en papel")
+        if (!guardada) Log.i(TAG, "${comanda.sourceKey}: tiempo con preparación por producto sobre una comanda ya LISTA — sin acuse, sale en papel")
         guardada
     } catch (e: CancellationException) {
         throw e
@@ -74,13 +74,18 @@ class KdsTicketsLocalesStore @Inject constructor(private val dao: KdsTicketsLoca
             KdsTicketLocalEntity(
                 sourceKey = sourceKey, venueId = venueId, stationId = stationId, orderNumber = orden.orderNumber,
                 orderType = orden.orderType,
-                itemsJson = json.encodeToString(items, orden.items.map { KdsComandaItem(it.id, it.productName, it.quantity, it.modifiers, it.notes, it.course) }),
+                // D13: con su tiempo congelado, para saber qué tiempos cubre (el «Inmediato» del servidor es el «sin tiempo» del WiFi).
+                itemsJson = json.encodeToString(items, orden.items.map {
+                    KdsComandaItem(it.id, it.productName, it.quantity, it.modifiers, it.notes, it.course, serviceCourse = it.serviceCourse)
+                }),
                 // I2 (revisión T8): la vigencia de 12 h cuenta desde que ESTE aparato guardó la marca. Con el `createdAt`
                 // del servidor, una comanda de ayer marcada sin red nacía vencida: la purga (cada minuto) la borraba y
                 // la comanda volvía al tablero. Una fila LISTA nunca se pinta, así que su orden no importa.
                 recibidaEnMillis = ahora, listaEnMillis = ahora,
             ),
             ahora,
+            // D13: una comanda `lan:` es la fila del WiFi (o lo que el servidor no cubría de una LISTA); la demás, la copia del servidor.
+            delServidor = !esLocal(orden.id),
         )
     }
 

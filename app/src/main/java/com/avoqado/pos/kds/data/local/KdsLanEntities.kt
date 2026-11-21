@@ -57,7 +57,10 @@ data class KdsTicketLocalEntity(
     /** `List<KdsComandaItem>` en JSON. */
     val itemsJson: String,
     val recibidaEnMillis: Long,
-    /** `null` = pendiente; con valor = LISTO (marcado aquí, con o sin red). */
+    /**
+     * `null` = pendiente; con valor = LISTO (marcado aquí, con o sin red). D13: igual a [recibidaEnMillis] = la cocina vio la copia
+     * del SERVIDOR (la sombra se guarda con las dos horas iguales): cubre todo el folio, también lo que llegue después por el WiFi.
+     */
     val listaEnMillis: Long?,
 )
 
@@ -145,9 +148,15 @@ internal fun unirItemsJson(previos: String, nuevos: String): String {
 }
 
 /** Los ids de los renglones de una fila guardada; un JSON ilegible es «sin renglones» (por eso todo lo que llegue es nuevo). */
-internal fun idsDeItemsJson(itemsJson: String): Set<String> =
-    runCatching { jsonDeItems.decodeFromString(ListSerializer(KdsComandaItem.serializer()), itemsJson) }
-        .getOrDefault(emptyList()).map { it.id }.toSet()
+internal fun idsDeItemsJson(itemsJson: String): Set<String> = itemsDeJson(itemsJson).map { it.id }.toSet()
+
+/** Los renglones de una fila; un JSON ilegible es «sin renglones» (D13: una LISTA ilegible no cubre ningún tiempo). */
+internal fun itemsDeJson(itemsJson: String): List<KdsComandaItem> =
+    runCatching { jsonDeItems.decodeFromString(ListSerializer(KdsComandaItem.serializer()), itemsJson) }.getOrDefault(emptyList())
+
+private fun aJson(items: List<KdsComandaItem>): String = jsonDeItems.encodeToString(ListSerializer(KdsComandaItem.serializer()), items)
+
+private fun tiempoDe(item: KdsComandaItem): String = com.avoqado.pos.kds.domain.tiempoDe(item.serviceCourse, item.course)
 
 @Dao
 interface EntregasKdsPendientesDao {
@@ -195,15 +204,18 @@ interface KdsTicketsLocalesDao {
     suspend fun quitarLista(sourceKey: String): Int
 
     /**
-     * Upsert que UNE renglones por `id` y conserva `listaEnMillis` (pegajoso). Devuelve `true` si la fila quedó guardada.
+     * Upsert que UNE renglones por `id` y conserva `listaEnMillis` (pegajoso). Devuelve `true` si quedó guardado: el acuse
+     * sale sólo entonces.
      *
      * Ronda 1 (I1): leer la fila, decidir y escribir van en ESTA transacción — leerla afuera y escribir aquí dejaba una
-     * ventana en la que un LISTO (`marcarLista`) caía entre las dos, el curso se unía a una fila ya oculta y se acusaba
-     * (pérdida). Si la fila previa ya está LISTA y [idsEntrantes] trae algún id que ella no tenía, devuelve `false` SIN
-     * escribir: es un curso nuevo que la cocina nunca vería; sin acuse la caja lo saca en papel. Un reenvío de los mismos
-     * renglones sobre una fila LISTA (nada nuevo) y cualquier curso sobre una PENDIENTE se guardan como siempre. Un JSON
-     * previo ilegible cuenta como «sin renglones»: todo lo entrante es nuevo (el lado seguro). [idsEntrantes] son los ids
-     * de los renglones del dominio — igual que el gemelo de iOS, sin volver a leer el JSON recién codificado.
+     * ventana en la que un LISTO (`marcarLista`) caía entre las dos, el curso se unía a una fila ya oculta y se acusaba.
+     *
+     * D13 (hz:0555ee15:D13): sobre una fila LISTA, los renglones de un TIEMPO que ella ya cubre se quedan con ella (la cocina ya
+     * los vio: es el mismo mensaje, a veces con ids de otro espacio); los de un tiempo nuevo se guardan en la fila del folio de
+     * ese tiempo ([com.avoqado.pos.kds.domain.folioDelTiempo]), PENDIENTE y a la vista, y se acusa. Antes no se guardaban ni
+     * se acusaban y la cocina dependía del papel de respaldo, que una estación con impresora y pantalla no saca. Una LISTA con
+     * JSON ilegible no cubre ningún tiempo: todo sale en su folio de tiempo (el lado seguro). [idsEntrantes] son los ids de
+     * los renglones del dominio: si ninguno es nuevo, nada cambia.
      */
     @Transaction
     suspend fun unir(nueva: KdsTicketLocalEntity, idsEntrantes: Set<String>): Boolean {
@@ -212,8 +224,25 @@ interface KdsTicketsLocalesDao {
             guardar(nueva)
             return true
         }
-        if (previa.listaEnMillis != null && (idsEntrantes - idsDeItemsJson(previa.itemsJson)).isNotEmpty()) return false
-        guardar(previa.copy(itemsJson = unirItemsJson(previa.itemsJson, nueva.itemsJson)))
+        if (previa.listaEnMillis == null) {
+            guardar(previa.copy(itemsJson = unirItemsJson(previa.itemsJson, nueva.itemsJson)))
+            return true
+        }
+        if ((idsEntrantes - idsDeItemsJson(previa.itemsJson)).isEmpty()) return true
+        // Codex r1 #6: un mensaje con preparación por producto no se separa (su avance busca el folio del SERVIDOR): como antes, sin
+        // acuse ⇒ papel de respaldo (todo mensaje v1 lo trae). Sólo pasa si una caja mezcla v0 y v1 en el mismo folio.
+        val entrantes = itemsDeJson(nueva.itemsJson)
+        if (entrantes.any { it.serviceCourse?.preparationVersion == 1 }) return false
+        if (previa.listaEnMillis == previa.recibidaEnMillis) {
+            // La cocina vio la copia del SERVIDOR (la ronda entera de la estación): lo que llegue de este folio ya lo vio.
+            guardar(previa.copy(itemsJson = unirItemsJson(previa.itemsJson, nueva.itemsJson)))
+            return true
+        }
+        val cubiertos = itemsDeJson(previa.itemsJson).map(::tiempoDe).toSet()
+        val (suyos, otros) = entrantes.partition { tiempoDe(it) in cubiertos }
+        val conLosSuyos = unirItemsJson(previa.itemsJson, aJson(suyos))
+        if (conLosSuyos != previa.itemsJson) guardar(previa.copy(itemsJson = conLosSuyos))
+        desviarAlFolioDeSuTiempo(nueva.copy(listaEnMillis = null), otros)
         return true
     }
 
@@ -222,9 +251,43 @@ interface KdsTicketsLocalesDao {
      * NINGUNA, inserta [sombra] (ya LISTA, para que un sondeo no resucite la copia del servidor). Una fila ya LISTA no
      * cambia, y una existente nunca se reemplaza. En tres transacciones, un `unir` que insertaba un curso entre la lectura y
      * el `REPLACE` quedaba pisado por la sombra: el curso ya acusado, escondido 12 h. Espejo de iOS (un solo `writer.write`).
+     *
+     * D13: la LISTA cubre los TIEMPOS que la cocina vio ([sombra]). Si la cocina vio la copia del SERVIDOR ([delServidor]: la
+     * ronda entera de la estación), cubre todo lo que tenía la fila y lo de la sombra (Codex r1 #4: los ids y, en cajas viejas, las
+     * etiquetas de los dos lados no coinciden). Si vio la fila del WiFi y le entró un tiempo que no vio (justo antes del toque), ese
+     * tiempo pasa a la fila de su folio, pendiente y a la vista.
      */
     @Transaction
-    suspend fun marcarListaOCrear(sombra: KdsTicketLocalEntity, ahora: Long) {
-        if (marcarLista(sombra.sourceKey, ahora) == 0 && porFolio(sombra.sourceKey) == null) guardar(sombra)
+    suspend fun marcarListaOCrear(sombra: KdsTicketLocalEntity, ahora: Long, delServidor: Boolean) {
+        val previa = porFolio(sombra.sourceKey)
+        if (previa == null) {
+            guardar(sombra)
+            return
+        }
+        if (previa.listaEnMillis != null) return
+        if (delServidor) {
+            // Las dos horas iguales: «vio la copia del servidor» (ver [KdsTicketLocalEntity.listaEnMillis]); la vigencia cuenta desde aquí.
+            guardar(previa.copy(itemsJson = unirItemsJson(previa.itemsJson, sombra.itemsJson), recibidaEnMillis = ahora, listaEnMillis = ahora))
+            return
+        }
+        val vistos = itemsDeJson(sombra.itemsJson).map(::tiempoDe).toSet()
+        val (suyos, otros) = itemsDeJson(previa.itemsJson).partition { tiempoDe(it) in vistos }
+        if (otros.isEmpty()) {
+            marcarLista(previa.sourceKey, ahora)
+            return
+        }
+        guardar(previa.copy(itemsJson = aJson(suyos), listaEnMillis = ahora))
+        desviarAlFolioDeSuTiempo(previa.copy(recibidaEnMillis = ahora, listaEnMillis = null), otros)
+    }
+}
+
+/**
+ * D13: cada tiempo de [items] se une (con [KdsTicketsLocalesDao.unir], dentro de la transacción de quien llama) a la fila del folio
+ * de su tiempo, con la cabecera de [de]. Fuera de la interfaz: Room no procesa funciones privadas de un DAO.
+ */
+private suspend fun KdsTicketsLocalesDao.desviarAlFolioDeSuTiempo(de: KdsTicketLocalEntity, items: List<KdsComandaItem>) {
+    for ((tiempo, suyos) in items.groupBy(::tiempoDe)) {
+        val folio = com.avoqado.pos.kds.domain.folioDelTiempo(de.sourceKey, tiempo)
+        unir(de.copy(sourceKey = folio, itemsJson = aJson(suyos)), suyos.map { it.id }.toSet())
     }
 }
