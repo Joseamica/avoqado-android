@@ -35,6 +35,8 @@ data class VentaParaLaMaquina(
     val vigenteHasta: Long? = null,
     /** Rediseño del SERVIDOR (r6-6): el emparejamiento vigente al empezar; queda congelado en el intento. */
     val bindingId: String? = null,
+    /** Codex código r3 #6: la comanda de cocina congelada; sale de la fila con el PAGADO. */
+    val comandaJson: String? = null,
 )
 
 sealed interface ResultadoDeInicio {
@@ -49,6 +51,22 @@ sealed interface ResultadoDeInicio {
     data object SinConexion : ResultadoDeInicio
     /** Codex código r1 #14: la cotización venció antes del `paycash`: no se guardó ni se mandó nada; hay que volver a cotizar. */
     data object CotizacionVencida : ResultadoDeInicio
+    /** Codex código r3 #5: la caja salió de este cobro (Esc, otra venta) antes del `paycash`: no salió nada y no quedó fila. */
+    data object Abandonado : ResultadoDeInicio
+}
+
+/**
+ * Codex código r3 #5: LA puerta de una apertura de «Cobrar»: ¿todavía puede encender la máquina? [siSigueAbierta] corre `enviar` (el
+ * `paycash`) BAJO el mismo candado con que la caja cierra la apertura (Esc, salir, otra venta): o sale antes de cerrarla, o no sale.
+ */
+fun interface PuertaDelCobro {
+    /** El resultado de [enviar], o null si la apertura ya se cerró (no se llamó). */
+    fun siSigueAbierta(enviar: () -> Boolean): Boolean?
+
+    companion object {
+        /** Sin pantalla que cerrar (pruebas, llamadas internas). */
+        val SIEMPRE = PuertaDelCobro { it() }
+    }
 }
 
 enum class Desenlace { PAGADO, CANCELADO, GUARDADO }
@@ -150,7 +168,13 @@ internal fun decidir(
     return when (m) {
         is MensajeDeLaMaquina.Pong, is MensajeDeLaMaquina.Otro -> Paso.NADA
         is MensajeDeLaMaquina.Sockets -> if (m.cobrando && m.dueCents != dueCents) Paso.DUDA else Paso.NADA
-        is MensajeDeLaMaquina.UpdateCredit -> if (m.dueCents != null && m.dueCents != dueCents) Paso.DUDA else Paso.NOTICIA
+        // Codex código r3 #4: un `updateCredit` no trae folio. Es de nuestro intento sólo en la conexión de la propiedad (donde un `status`
+        // nuestro lo identificó); antes, o tras reconectar, es dinero de nadie: no se le atribuye ni alarga sus plazos.
+        is MensajeDeLaMaquina.UpdateCredit -> when {
+            m.dueCents != null && m.dueCents != dueCents -> Paso.DUDA
+            propia == generacion -> Paso.NOTICIA
+            else -> Paso.NADA
+        }
         is MensajeDeLaMaquina.Status -> when {
             m.referenceCC != referenceCC || m.dueCents != dueCents -> Paso.DUDA
             m.cierre() != null -> if (propia == generacion) Paso.CERRAR else Paso.DUDA
@@ -188,6 +212,8 @@ class CobroConMaquina(
     private val zona: () -> ZoneId = { ZoneId.systemDefault() },
     /** Codex código r2 H3 y H11: el reloj monótono (ms) de los plazos; la hora de Windows puede moverse. */
     private val monotonico: () -> Long = { System.nanoTime() / 1_000_000 },
+    /** Codex código r3 #6, #11: la máquina cerró en vivo y ya está en disco (la comanda y el papel salen de la fila). */
+    private val alCerrar: (String, Desenlace) -> Unit = { _, _ -> },
 ) {
     private val _estado = MutableStateFlow<EstadoDelCobro>(EstadoDelCobro.Libre)
     val estado: StateFlow<EstadoDelCobro> = _estado.asStateFlow()
@@ -223,8 +249,11 @@ class CobroConMaquina(
         }
     }
 
-    /** Guarda el intento `EN_CURSO` y DESPUÉS manda el `paycash`. */
-    suspend fun cobrar(venta: VentaParaLaMaquina): ResultadoDeInicio = candado.withLock {
+    /**
+     * Guarda el intento `EN_CURSO` y DESPUÉS manda el `paycash`, sólo si [puerta] sigue abierta en ese instante (Codex código r3 #5: la
+     * comprobación y el envío van juntos, bajo el candado que la cierra).
+     */
+    suspend fun cobrar(venta: VentaParaLaMaquina, puerta: PuertaDelCobro = PuertaDelCobro.SIEMPRE): ResultadoDeInicio = candado.withLock {
         revisarConexion()
         if (activo?.vivo == true) return@withLock ResultadoDeInicio.Ocupado
         val due = venta.saleCents + venta.tipCents
@@ -236,7 +265,7 @@ class CobroConMaquina(
             referenceCC = ref, venueId = venta.venueId, llaveDeVenta = venta.llaveDeVenta, pedidoJson = venta.pedidoJson,
             saleCents = venta.saleCents, tipCents = venta.tipCents, dueCents = due, saleShiftId = venta.saleShiftId,
             quoteId = venta.quoteId, creadoEn = ahora, estado = EstadoDelIntento.EN_CURSO, renglonesJson = venta.renglonesJson,
-            bindingId = venta.bindingId,
+            bindingId = venta.bindingId, comandaJson = venta.comandaJson,
         )
         if (!dao.abrirIntento(fila)) return@withLock ResultadoDeInicio.VentaConIntento
         // Codex código r2 H11: la vigencia se vuelve a ver DESPUÉS de escribir en disco, justo antes del `paycash`.
@@ -245,9 +274,11 @@ class CobroConMaquina(
             return@withLock ResultadoDeInicio.CotizacionVencida
         }
         val generacion = cliente.generacion.value
-        if (!cliente.enviar(pedirCobro(due, ref, fecha(ahora)), generacion)) {
-            dao.borrarSinEnviar(ref)   // no salió nada: no hay evidencia que guardar
-            return@withLock ResultadoDeInicio.SinConexion
+        when (puerta.siSigueAbierta { cliente.enviar(pedirCobro(due, ref, fecha(ahora)), generacion) }) {
+            true -> Unit
+            // No salió nada: no hay evidencia que guardar.
+            false -> return@withLock ResultadoDeInicio.SinConexion.also { dao.borrarSinEnviar(ref) }
+            null -> return@withLock ResultadoDeInicio.Abandonado.also { dao.borrarSinEnviar(ref) }
         }
         activo = Intento(ref, due, monotonico()).also { it.vigilada = generacion }
         publicar()
@@ -365,6 +396,7 @@ class CobroConMaquina(
             aDeber = deudaFisica(desenlace, a.due, m.creditCents, m.changeDispensedCents),
         )
         alTerminar()
+        alCerrar(a.ref, desenlace)
         a.fase = FaseDelIntento.CERRADO
         a.desenlace = desenlace
         a.credit = m.creditCents

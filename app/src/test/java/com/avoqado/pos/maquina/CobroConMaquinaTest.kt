@@ -567,8 +567,13 @@ class CobroConMaquinaTest {
         assertEquals("la propiedad no regresa", 1, dao.fila(ref)!!.generacionPropia)
 
         canal.llega(credito(10_000)); runCurrent()
+        // Codex código r3 #4: tras reconectar, un `updateCredit` (sin folio) ya no se le atribuye a nuestro intento: ni se enseña ni va a
+        // disco; lo que entró lo dice el siguiente `status` de nuestro folio.
+        assertEquals("sin propiedad no se atribuye", EstadoDelCobro.Cobrando(ref, due, 5_000, propio = false), cobro.estado.value)
+        assertEquals(5_000, dao.fila(ref)!!.creditCents)
+        canal.llega(status(ref, credit = 10_000)); runCurrent()
         assertEquals("sin propiedad sólo se muestra", EstadoDelCobro.Cobrando(ref, due, 10_000, propio = false), cobro.estado.value)
-        assertEquals("Codex r2 H3: pero queda en disco, como evidencia", 10_000, dao.fila(ref)!!.creditCents)
+        assertEquals("Codex r2 H3: y queda en disco, como evidencia", 10_000, dao.fila(ref)!!.creditCents)
         cobro.cancelarPorElCliente(); runCurrent()
         advanceTimeBy(20_000)
         assertTrue("sin propiedad no hay cancel ni abandono", canal.cancels().isEmpty())
@@ -592,7 +597,7 @@ class CobroConMaquinaTest {
 
         advanceTimeBy(20_000)
         canal.llega(pong); canal.llega(socketsLibre()); runCurrent()   // sólo respuestas de conexión: no son noticias
-        canal.llega(credito(10_000)); runCurrent()                    // dinero de nuestro Due: sí es noticia, y va a disco
+        canal.llega(status(ref, credit = 10_000)); runCurrent()       // nuestro folio con dinero: sí es noticia, y va a disco
         assertEquals(10_000, dao.fila(ref)!!.creditCents)
         advanceTimeBy(29_999)
         assertEquals(EstadoDelIntento.EN_CURSO, dao.fila(ref)!!.estado)
@@ -952,6 +957,8 @@ class CobroConMaquinaTest {
             if (c.m is MensajeDeLaMaquina.UpdateCredit || c.m is MensajeDeLaMaquina.Sockets || c.m is MensajeDeLaMaquina.Pong) {
                 assertTrue("nada sin folio cierra ni gana: $donde", paso != Paso.CERRAR && paso != Paso.GANAR)
             }
+            // Codex código r3 #4: un crédito sin folio fuera de la conexión de la propiedad nunca es noticia de nuestro intento.
+            if (c.m is MensajeDeLaMaquina.UpdateCredit && !conPropiedad) assertTrue("sin propiedad no se atribuye: $donde", paso != Paso.NOTICIA)
         }
         assertEquals(13 * 8 * 2 * 2, combinaciones)
     }
@@ -972,10 +979,52 @@ class CobroConMaquinaTest {
             d(status("DOTACION"), FaseDelIntento.COBRANDO) to Paso.DUDA,
             d(creditoDe(1_000, 500), FaseDelIntento.SIGUES_AHI) to Paso.DUDA,                // H14
             d(credito(1_000), FaseDelIntento.SIGUES_AHI) to Paso.NOTICIA,
+            // Codex código r3 #4: antes del acuse o tras reconectar, un crédito sin folio (con nuestro total o sin `Due`) es de nadie.
+            d(credito(1_000), FaseDelIntento.COBRANDO, propia = 1) to Paso.NADA,
+            d(creditoDe(1_000, due), FaseDelIntento.COBRANDO, propia = 1) to Paso.NADA,
+            d(credito(1_000), FaseDelIntento.INICIANDO, propia = null) to Paso.NADA,
             d(socketsLibre(), FaseDelIntento.INICIANDO, propia = null) to Paso.NADA,       // una máquina libre nunca decide
             d(pagoCompletado(ref, credit = due, change = 0), FaseDelIntento.ESPERANDO) to Paso.NADA,   // la duda: sólo diario
             d(pagoCompletado(ref, credit = due, change = 0), FaseDelIntento.COBRANDO, gen = 1) to Paso.NADA,   // otra conexión
         )
         tabla.forEachIndexed { i, (paso, esperado) -> assertEquals("renglón $i", esperado, paso) }
+    }
+
+    @Test
+    fun `P1 Codex r3 #4 tras reconectar, un credito sin folio con nuestro total no se escribe en A ni alarga sus 30 s`() = runTest {
+        val cobro = nuevoCobro()
+        val ref = cobroPropio(cobro)
+        canal.caer(); runCurrent()
+        canal.reconectar(); runCurrent()
+        // Antes de que un `status` identifique a A en la conexión nueva, llegan créditos sin folio: con nuestro total y sin `Due`.
+        canal.llega(creditoDe(5_000, dueDeLaOperacion = due)); runCurrent()
+        advanceTimeBy(2_000)
+        canal.llega(credito(6_000)); runCurrent()
+
+        assertEquals("ni se escribe en A", 0, dao.fila(ref)!!.creditCents)
+        advanceTimeBy(1_001)   // la espera de 3 s tras reconectar no se sustituyó por otra de 30
+        assertEquals(EstadoDelCobro.Esperando(ref, due), cobro.estado.value)
+        assertEquals(0, dao.fila(ref)!!.creditCents)
+    }
+
+    @Test
+    fun `P1 Codex r3 #13 un mensaje que ya llego no vuelve a contar aunque su texto ya no quepa en el diario`() = runTest {
+        val cobro = nuevoCobro()
+        val ref = cobroPropio(cobro)
+        canal.llega(cancelada("AQOTRAOPERAC1", credit = 0, change = 0, due = 5_000)); runCurrent()   // A queda en duda
+        assertEquals(EstadoDelIntento.ESPERANDO, dao.fila(ref)!!.estado)
+        val primero = status(ref, credit = 100)
+        assertTrue(dao.anotarMensaje(ref, 1, primero, 100, due))
+        // Sin internet llegan más de 8 KB de mensajes distintos del mismo folio: el TEXTO del diario suelta los más viejos.
+        var n = 1
+        while (primero in dao.fila(ref)!!.mensajesCrudos) assertTrue(dao.anotarMensaje(ref, 1, status(ref, credit = 100 + n++), null, null))
+        dao.marcarDudaSubida(ref, true)   // el SERVIDOR ya tiene todo eso
+        val antes = dao.fila(ref)!!
+
+        assertFalse("APS repite el primero: no es evidencia nueva", dao.anotarMensaje(ref, 3, primero, 100, due))
+
+        val despues = dao.fila(ref)!!
+        assertEquals("ni el diario, ni lo que entró, ni la marca de subida (la versión) cambian", antes, despues)
+        assertTrue(despues.dudaSubida)
     }
 }

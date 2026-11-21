@@ -30,7 +30,6 @@ import javax.inject.Singleton
 
 const val TEXTO_PC_SIN_EMPAREJAR = "Esta PC no está emparejada con la máquina: emparéjala en Ajustes para subir sus cobros"
 const val TEXTO_RESPUESTA_DISTINTA = "El servidor respondió otros importes para este folio: pide a un gerente que lo revise"
-const val TEXTO_CARRITO_ILEGIBLE = "El carrito guardado de este cobro no se puede leer: pide a un gerente que lo revise"
 
 /** R4-1: el dinero de un folio que el SERVIDOR no pudo volver venta queda como incidencia (202); la PC lo dice así. */
 fun textoDeIncidencia(motivo: String): String = "Registrado como incidencia: " + when (motivo) {
@@ -142,13 +141,10 @@ class SubidaDeLaMaquina @Inject constructor(
         // Las que ya estaban subidas: la que se sube en esta pasada no se consulta en el mismo instante.
         val esperan = dao.esperanAlGerente(venueId)
         for (fila in dao.paraSubir(venueId)) {
-            val esDuda = fila.estado == EstadoDelIntento.ESPERANDO
-            // Un carrito ilegible no puede tapar la cola: se ve y espera a un gerente, y las demás siguen.
-            val cuerpo = runCatching { if (esDuda) cuerpoDeLaDuda(fila) else cuerpoDelCierre(fila) }.getOrNull()
-            if (cuerpo == null) {
-                dao.anotarConflicto(fila.referenceCC, TEXTO_CARRITO_ILEGIBLE)
-                continue
-            }
+            // Codex código r3 #1: lo que llegó después de la resolución de un gerente sube como duda (el SERVIDOR abre su revisión).
+            val esDuda = fila.estado == EstadoDelIntento.ESPERANDO || fila.estado == EstadoDelIntento.RESUELTO
+            // Codex código r3 #14: el cuerpo siempre se arma; un carrito ilegible sube SIN carrito y el SERVIDOR guarda primero el dinero.
+            val cuerpo = if (esDuda) cuerpoDeLaDuda(fila) else cuerpoDelCierre(fila)
             val r = try {
                 if (esDuda) api.subirDuda(venueId, credencial, cuerpo) else api.subirCierre(venueId, credencial, cuerpo)
             } catch (e: IOException) {
@@ -181,7 +177,7 @@ class SubidaDeLaMaquina @Inject constructor(
      * Codex código r2 H8: una duda cuyo folio el SERVIDOR atribuye a OTRA PC ya no se consulta (su decisión nunca le llega a ésta). Sí
      * vuelve a subir cuando su diario trae algo nuevo (su propio cierre físico): el SERVIDOR lo agrega a la incidencia.
      */
-    private fun consultable(fila: CobroEnMaquinaEntity) = !(fila.conflicto != null && motivoDelConflicto(fila.respuestaServidor) == OTRA_PC)
+    private fun consultable(fila: CobroEnMaquinaEntity) = !fila.esDeOtraPc()
 
     /**
      * Aplica el acuse (leído en UN solo lugar: [leerAcuse]). false = la pasada se corta (sesión vencida, sin emparejar o sin permiso: lo
@@ -189,6 +185,7 @@ class SubidaDeLaMaquina @Inject constructor(
      * incidencia durable de un 409/422; RECIBIDO se conserva y se reenvía el MISMO mensaje, que lo reanuda.
      */
     private suspend fun aplicar(fila: CobroEnMaquinaEntity, acuse: Acuse, esDuda: Boolean, porPost: Boolean): Boolean {
+        if (fila.estado == EstadoDelIntento.RESUELTO) return entregarTrasResolver(fila, acuse)
         when (acuse) {
             Acuse.SinSesion -> return false
             is Acuse.SinEmparejar -> {
@@ -206,7 +203,7 @@ class SubidaDeLaMaquina @Inject constructor(
                     dao.marcarDudaEnConflicto(fila.referenceCC, acuse.texto, acuse.cuerpo, fila.mensajesCrudos, fila.creditCents)
                 }
                 // Codex código r2 H8: el folio es de OTRA PC: lo de esta PC nunca queda como subido; su incidencia sí se ve.
-                acuse.motivo == OTRA_PC && acuse.duenoDelFolio.let { it == null || it != prefs.dispositivo } ->
+                acuse.motivo == MOTIVO_OTRA_PC && acuse.duenoDelFolio.let { it == null || it != prefs.dispositivo } ->
                     dao.marcarDeOtraPc(fila.referenceCC, acuse.texto, acuse.cuerpo)
                 else -> dao.marcarSubido(fila.referenceCC, acuse.texto, acuse.cuerpo)
             }
@@ -217,12 +214,35 @@ class SubidaDeLaMaquina @Inject constructor(
             }
             is Acuse.Terminado -> when {
                 !esDeEstaPc(acuse.deviceId, porPost) -> Unit   // el folio es de otra PC (o el acuse no dice de quién): no se retira nada
-                esDuda -> if (!dao.resolverConElEco(fila, acuse.json, acuse.cuerpo)) dao.anotarConflicto(fila.referenceCC, TEXTO_RESPUESTA_DISTINTA)
+                esDuda -> if (!dao.resolverConElEco(fila, acuse.json, acuse.cuerpo)) {
+                    dao.anotarConflicto(fila.referenceCC, TEXTO_RESPUESTA_DISTINTA)
+                } else if (porPost) {
+                    // Codex código r3 #1: este POST llevó la evidencia de la fila: si quedó pendiente tras la resolución, ya está allá.
+                    dao.marcarEvidenciaEntregada(fila.referenceCC, fila.mensajesCrudos, fila.creditCents)
+                }
                 else -> aplicarCierre(fila, acuse)
             }
         }
         _aviso.value = null
         return true
+    }
+
+    /**
+     * Codex código r3 #1: la evidencia que llegó DESPUÉS de la resolución de un gerente. Toda respuesta final del SERVIDOR (el eco del
+     * folio, su conflicto o su rechazo) dice que ya la vio: deja de frenar la venta y de subir. La resolución guardada no se toca.
+     */
+    private suspend fun entregarTrasResolver(fila: CobroEnMaquinaEntity, acuse: Acuse): Boolean = when (acuse) {
+        Acuse.SinSesion -> false
+        is Acuse.SinEmparejar -> {
+            _aviso.value = acuse.texto
+            false
+        }
+        Acuse.Reintentar, Acuse.NoExiste -> true
+        else -> {
+            dao.marcarEvidenciaEntregada(fila.referenceCC, fila.mensajesCrudos, fila.creditCents)
+            _aviso.value = null
+            true
+        }
     }
 
     /**
@@ -233,7 +253,7 @@ class SubidaDeLaMaquina @Inject constructor(
     private fun esDeEstaPc(deviceId: String?, porPost: Boolean): Boolean {
         if (deviceId == null) return false
         if (porPost) prefs.recordarDispositivo(deviceId)
-        return porPost || deviceId == prefs.dispositivo
+        return porPost || prefs.esDeEstaPc(deviceId)
     }
 
     private suspend fun aplicarCierre(fila: CobroEnMaquinaEntity, acuse: Acuse.Terminado) {
@@ -263,23 +283,25 @@ class SubidaDeLaMaquina @Inject constructor(
         val cuerpo = JSONObject().put("referenceCC", fila.referenceCC).put("cierre", cierre)
         // r6-6: el emparejamiento con que ESTA PC empezó el cobro.
         cuerpo.put("bindingId", fila.bindingId ?: JSONObject.NULL)
-        // Codex código r2 H15: el carrito viaja SIEMPRE: el primer mensaje del folio lo congela en el SERVIDOR (D2), también un
-        // CANCELADO o un GUARDADO (el gerente ve qué partidas y qué cliente tenía el dinero). El de un PAGADO tiene que leerse.
-        if (outcome == EstadoDelIntento.PAGADO) cuerpo.put("pedido", JSONObject(fila.pedidoJson))
-        else {
-            runCatching { JSONObject(fila.pedidoJson) }.getOrNull()?.let { cuerpo.put("pedido", it) }
-            cierre.put("cancelMode", fila.cancelPedido ?: JSONObject.NULL)
-        }
+        // Codex código r2 H15: el carrito viaja con todo desenlace: el primer mensaje del folio lo congela en el SERVIDOR (D2), también
+        // un CANCELADO o un GUARDADO (el gerente ve qué partidas y qué cliente tenía el dinero). Codex código r3 #14: si el carrito de
+        // disco no se puede leer, el cierre sube SIN él: el SERVIDOR guarda primero el dinero (D1) y deja la incidencia.
+        pedidoLegible(fila)?.let { cuerpo.put("pedido", it) }
+        if (outcome != EstadoDelIntento.PAGADO) cierre.put("cancelMode", fila.cancelPedido ?: JSONObject.NULL)
         return cuerpo
     }
+
+    private fun pedidoLegible(fila: CobroEnMaquinaEntity): JSONObject? = runCatching { JSONObject(fila.pedidoJson) }.getOrNull()
 
     private fun cuerpoDeLaDuda(fila: CobroEnMaquinaEntity): JSONObject = JSONObject()
         .put("referenceCC", fila.referenceCC)
         .put("dueCents", fila.dueCents).put("saleCents", fila.saleCents).put("tipCents", fila.tipCents)
-        .put("pedido", JSONObject(fila.pedidoJson))
+        .apply { pedidoLegible(fila)?.let { put("pedido", it) } }   // Codex código r3 #14: ilegible, sube sin él (r6-2)
         .put("startedAt", iso(fila.creadoEn))
         .put("saleShiftId", fila.saleShiftId ?: JSONObject.NULL)
         .put("lastSeen", loUltimoQueVio(fila))
+        // Codex código r3 #9: lo que entró, como NÚMERO: el SERVIDOR conserva el mayor que vio la PC con este campo.
+        .put("creditCents", fila.creditCents)
         .put("bindingId", fila.bindingId ?: JSONObject.NULL)
 
     /**
@@ -299,12 +321,6 @@ class SubidaDeLaMaquina @Inject constructor(
 }
 
 private val DESENLACES = setOf("PAGADO", "CANCELADO", "GUARDADO")
-
-/** Codex código r2 H8: el `motivo` del 409 de conflicto guardado en la fila. */
-private const val OTRA_PC = "OTRA_PC"
-
-private fun motivoDelConflicto(respuesta: String?): String? =
-    respuesta?.let { runCatching { JSONObject(it).optJSONObject("details")?.optString("motivo") }.getOrNull() }
 
 private fun JSONObject.centavos(campo: String): Int? = (opt(campo) as? Number)?.toInt()
 

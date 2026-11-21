@@ -414,8 +414,10 @@ class SubidaDeLaMaquinaTest {
 
         subida.subir()
 
-        val lastSeen = cuerpo(pedido()).getString("lastSeen")
+        val b = cuerpo(pedido())
+        val lastSeen = b.getString("lastSeen")
         assertEquals("Codex r2 H13: sin la hora de la PC; sólo lo que entró y el diario", "Entró \$50.00\n" + """{"comando":"sockets","cobrando":true}""", lastSeen)
+        assertEquals("Codex r3 #9: y lo que entró, en número", 5_000, b.getInt("creditCents"))
     }
 
     @Test
@@ -450,7 +452,8 @@ class SubidaDeLaMaquinaTest {
         val fila = dao.fila(REF_1)!!
         assertEquals("Esta duda de la máquina ya se subió con otros importes o desde otra PC", fila.conflicto)
         assertTrue(fila.dudaSubida)
-        assertEquals("la incidencia ya está en el SERVIDOR: no frena cerrar sesión", 0, dao.pendientes("venue-1"))
+        // Codex código r3 #2: pero sigue ABIERTA y es de esta PC: frena salir hasta que el gerente la resuelva.
+        assertEquals("una duda propia abierta frena cerrar sesión", 1, dao.pendientes("venue-1"))
 
         assertFalse(subida.subir())
 
@@ -661,6 +664,82 @@ class SubidaDeLaMaquinaTest {
         assertTrue(subida.subir())
 
         assertFalse(dao.fila(REF_1)!!.subido)
+    }
+
+    // MARK: - Codex código r3
+
+    private fun statusDe(ref: String, credit: Int) =
+        JSONObject().put("comando", "status").put("cobrando", true).put("referenceCC", ref).put("Credit", credit / 100.0)
+            .put("Due", 187.5).toString()
+
+    @Test
+    fun `P1 Codex r3 #1 una resolucion anterior no borra el billete que llego despues - la venta sigue frenada y la evidencia sube`() = runBlocking {
+        // El SERVIDOR ya tiene la versión 1 de la duda: $0.
+        insertar(duda(REF_1).copy(dudaSubida = true, versionDeLaDuda = 1))
+        // Llega el aviso de la QuickPay: $100 de este folio. Todavía no sube.
+        assertTrue(dao.anotarMensaje(REF_1, 1, statusDe(REF_1, 10_000), 10_000, 18_750))
+        // Y llega la resolución que el gerente firmó con la versión 1: «Cancelado, $0».
+        val resuelta = evidencia(duda(REF_1), outcome = "CANCELADO", credit = 0, change = 0).put("status", "RESUELTO").put("resolvedBy", "GERENTE")
+        assertTrue(dao.resolverConElEco(dao.fila(REF_1)!!, resuelta, resuelta.toString()))
+
+        val resueltaAqui = dao.fila(REF_1)!!
+        assertEquals(EstadoDelIntento.RESUELTO, resueltaAqui.estado)
+        assertEquals("lo que entró no baja", 10_000, resueltaAqui.creditCents)
+        assertEquals("la venta sigue frenada", 1, dao.bloqueanLaVenta(resueltaAqui.llaveDeVenta))
+        assertEquals("la evidencia sigue por subir", listOf(REF_1), dao.paraSubir("venue-1").map { it.referenceCC })
+        // Un mensaje físico que llega DESPUÉS de la resolución tampoco se tira.
+        assertTrue(dao.anotarMensaje(REF_1, 1, statusDe(REF_1, 12_000), 12_000, 18_750))
+        assertEquals(12_000, dao.fila(REF_1)!!.creditCents)
+
+        // Sube como duda (el SERVIDOR abre la revisión TRAS_RESOLVER) y contesta el eco del folio ya resuelto.
+        cuando("POST", ".*/cash-machine/doubts", ok(resuelta))
+        assertFalse(subida.subir())
+
+        val q = pedido()
+        assertEquals("/api/v1/mobile/venues/venue-1/cash-machine/doubts", q.path)
+        val b = cuerpo(q)
+        assertEquals("Codex r3 #9: lo que entró, en número", 12_000, b.getInt("creditCents"))
+        assertTrue(b.getString("lastSeen").startsWith("Entró \$120.00"))
+        val entregada = dao.fila(REF_1)!!
+        assertTrue(entregada.dudaSubida)
+        assertEquals(EstadoDelIntento.RESUELTO, entregada.estado)
+        assertEquals("CANCELADO", entregada.desenlaceDelServidor)
+        assertEquals("el SERVIDOR ya la tiene: manda su resolución", 0, dao.bloqueanLaVenta(entregada.llaveDeVenta))
+        assertEquals("lo resuelto no frena salir", 0, dao.pendientes("venue-1"))
+    }
+
+    @Test
+    fun `P1 Codex r3 #1 el TERMINADO de un POST que llevo la evidencia nueva la deja entregada`() = runBlocking {
+        insertar(duda(REF_1).copy(creditCents = 10_000))   // la evidencia de $100 no ha subido
+        val resuelta = evidencia(duda(REF_1), outcome = "CANCELADO", credit = 0, change = 0).put("status", "RESUELTO").put("resolvedBy", "GERENTE")
+        cuando("POST", ".*/cash-machine/doubts", ok(resuelta))
+
+        assertFalse(subida.subir())
+
+        val fila = dao.fila(REF_1)!!
+        assertEquals(EstadoDelIntento.RESUELTO, fila.estado)
+        assertTrue("este POST la llevó: ya está allá", fila.dudaSubida)
+        assertEquals(10_000, fila.creditCents)
+        assertEquals(1, servidor.requestCount)
+    }
+
+    @Test
+    fun `P1 Codex r3 #14 un carrito ilegible no frena el dinero - el cierre y la duda suben SIN carrito`() = runBlocking {
+        insertar(pagado.copy(pedidoJson = "{roto"), duda(REF_2).copy(pedidoJson = "{roto"))
+        val incidencia = evidencia(pagado).put("incident", "NO_SE_PUDO_REGISTRAR").put("incidentId", "cinc000000000000000000011")
+            .put("motivo", "SIN_CARRITO")
+        cuando("POST", ".*/cash-machine/sales", ok(incidencia, 202))
+        cuando("POST", ".*/cash-machine/doubts", ok(abierta(1, REF_2)))
+
+        subida.subir()
+
+        val pedidos = (1..servidor.requestCount).map { pedido() }
+        assertEquals(listOf("/api/v1/mobile/venues/venue-1/cash-machine/sales", "/api/v1/mobile/venues/venue-1/cash-machine/doubts"), pedidos.map { it.path })
+        pedidos.forEach { assertFalse("sin carrito", cuerpo(it).has("pedido")) }
+        val cierre = dao.fila(REF_1)!!
+        assertTrue("el SERVIDOR guardó primero el dinero", cierre.subido)
+        assertEquals("Registrado como incidencia: faltaba el carrito de la venta", cierre.conflicto)
+        assertTrue(dao.fila(REF_2)!!.dudaSubida)
     }
 
     private companion object {

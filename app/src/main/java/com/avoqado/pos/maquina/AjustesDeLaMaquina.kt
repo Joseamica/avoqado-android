@@ -84,6 +84,12 @@ class MaquinaDeEfectivoPrefs @Inject constructor(@ApplicationContext context: Co
         if (deviceId != dispositivo) prefs.edit().putString(DISPOSITIVO, deviceId).commit()
     }
 
+    /**
+     * r3 #7 y Codex código r3 #10: ¿el `deviceId` que el SERVIDOR dice dueño de un folio es ESTA PC? Sólo si ya se aprendió (de un POST
+     * con su credencial): un acuse que no lo dice, o que dice otro, nunca retira nada de esta PC.
+     */
+    fun esDeEstaPc(deviceId: String?): Boolean = deviceId != null && deviceId == dispositivo
+
     /** Codex código r1 #10: emparejada, y con la sesión en la MISMA sucursal del emparejamiento. */
     fun activaEn(venueIdDeLaSesion: String?): Boolean = activa && venueId != null && venueId == venueIdDeLaSesion
 
