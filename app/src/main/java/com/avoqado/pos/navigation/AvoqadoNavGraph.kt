@@ -145,6 +145,7 @@ fun AvoqadoNavGraph(
     val avisoDeCobrosRetenidos by appState.avisoDeCobrosRetenidos.collectAsState()
     val avisoDeCocinaSinRed by appState.avisoDeCocinaSinRed.collectAsState()
     val avisoDeRacha by appState.avisoDeRacha.collectAsState()
+    val avisoDePantallas by appState.avisoDePantallas.collectAsState()
     val reconciliationCount by appState.reconciliationCount.collectAsState()
     var reservationIssueCount:Int? by remember { mutableStateOf(null) }
     LaunchedEffect(appState,reservationObservationRevision) {
@@ -185,6 +186,7 @@ fun AvoqadoNavGraph(
                         avisoDeCobrosRetenidos = avisoDeCobrosRetenidos,
                         avisoDeCocinaSinRed = avisoDeCocinaSinRed,
                         avisoDeRacha = avisoDeRacha,
+                        avisoDePantallas = avisoDePantallas,
                         syncIssueCount = reconciliationCount,
                         payLaterReviewCount = payLaterReviewCount,
                         reservationIssueCount = reservationIssueCount,
@@ -282,6 +284,8 @@ private fun MainScaffold(
     avisoDeCocinaSinRed: String? = null,
     /** Ver `AppState.avisoDeRacha`: tras 3 entregas sin acuse, la pantalla que no se alcanza se DICE, con o sin red (KDS 3.5). */
     avisoDeRacha: String? = null,
+    /** Ver `AppState.avisoDePantallas`: la pantalla de cocina que el servidor no ve conectada se DICE, sólo con red (D6 de Flautas). */
+    avisoDePantallas: String? = null,
     syncIssueCount: Int = 0,
     payLaterReviewCount: Int = 0,
     reservationIssueCount: Int? = null,
@@ -525,6 +529,7 @@ private fun MainScaffold(
                         avisoDeLaCaja = avisoDeCobrosRetenidos,
                         avisoDeCocina = avisoDeCocinaSinRed,
                         avisoDeRacha = avisoDeRacha,
+                        avisoDePantallas = avisoDePantallas,
                     )
                     com.avoqado.pos.onlineorders.presentation.BannerDePedidoEnLinea(vigilanteDePedidos)
                     com.avoqado.pos.kds.presentation.BannerDeReparto(vigilanteDeReparto)
@@ -831,6 +836,7 @@ private fun MainScaffold(
                         avisoDeLaCaja = avisoDeCobrosRetenidos,
                         avisoDeCocina = avisoDeCocinaSinRed,
                         avisoDeRacha = avisoDeRacha,
+                        avisoDePantallas = avisoDePantallas,
                     )
                     com.avoqado.pos.onlineorders.presentation.BannerDePedidoEnLinea(vigilanteDePedidos)
                     com.avoqado.pos.kds.presentation.BannerDeReparto(vigilanteDeReparto)

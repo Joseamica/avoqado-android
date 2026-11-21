@@ -48,6 +48,13 @@ sealed interface EstadoDeComanda {
          * soltar y que otro aparato lo intente) de «salió una parte» (soltarlo repetiría lo que ya salió).
          */
         val algoSalio: Boolean = false,
+        /**
+         * Flautas (20-nov, hz:0555ee15:D6, opción B): lo único sin papel fueron estaciones «sólo pantalla» de respaldo (su
+         * pantalla no acusó por el WiFi), no había impresora que lo intentara, y la venta ya está en el servidor: la pantalla
+         * la toma de ahí. No es un acuse de que la cocina la vio (como Square y Toast): si la pantalla no está conectada, lo
+         * dice la franja fija. El reporte a la libreta sigue igual; sólo se calla el AVISO en la caja.
+         */
+        val pantallaLaRecibe: Boolean = false,
     ) : EstadoDeComanda {
         /**
          * D1 (16-nov-2026): la llave de ESTA comanda en `ComandasPendientesStore` — su folio interno, fijo aunque un
@@ -194,6 +201,11 @@ class ReintentoDeComanda @Inject constructor(
          * gerente), igual que el camino legado. Una falla real de impresora se avisa y se reporta siempre.
          */
         negocioSinCocina: () -> Boolean = { false },
+        /**
+         * D6 de Flautas: con los planes SALTADOS de este despacho (por plan, no por nombre), ¿los toma su pantalla del
+         * servidor? Se pregunta sólo si nada TRONÓ y no hay saltadas de un ciclo anterior. Marca [EstadoDeComanda.NoSalio.pantallaLaRecibe].
+         */
+        pantallaLaRecibe: (saltados: List<TicketPlan>) -> Boolean = { false },
         alCambiarEstado: (EstadoDeComanda) -> Unit = {},
     ): EstadoDeComanda {
         var pendientes = plans
@@ -263,6 +275,7 @@ class ReintentoDeComanda @Inject constructor(
                     )
                 },
             ).let { if (it.trabajo == null && negocioSinCocina()) it.copy(sinImpresoraDeCocina = true) else it }
+                .let { if (it.trabajo == null && saltadasPrevias.isEmpty() && pantallaLaRecibe(saltados)) it.copy(pantallaLaRecibe = true) else it }
                 .also { it.saltados = saltados.toList() } // después del `copy`: el cuerpo no viaja en él
         }
         alCambiarEstado(estado)

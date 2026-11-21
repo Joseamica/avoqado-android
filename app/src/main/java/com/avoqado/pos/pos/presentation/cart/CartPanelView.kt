@@ -70,6 +70,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.avoqado.pos.core.util.formatMoney
 import com.avoqado.pos.designsystem.components.AvoqadoModalBottomSheet
+import com.avoqado.pos.designsystem.components.LocalEsEscritorio
 
 import com.avoqado.pos.designsystem.components.PrimaryButton
 import com.avoqado.pos.designsystem.theme.AvoqadoAdaptiveSizeClass
@@ -949,6 +950,22 @@ private fun CartItemRow(
                     text = "+${formatMoney(item.modifiersPrice / 100.0)}",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+
+        // D9 (20-nov): en Windows, con mouse, deslizar no se adivina y un combo sólo se quitaba así. El botón hace lo
+        // mismo que deslizar (el mismo `onDelete`: un combo pide confirmar). En ANDROID no se pinta: ahí se desliza.
+        if (LocalEsEscritorio.current) {
+            IconButton(
+                onClick = onDelete,
+                modifier = Modifier.size(if (useDenseTabletLayout) 32.dp else 36.dp),
+            ) {
+                Icon(
+                    Icons.Filled.Delete,
+                    contentDescription = "Quitar del carrito",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(if (useDenseTabletLayout) 18.dp else 20.dp),
                 )
             }
         }

@@ -244,6 +244,17 @@ interface ApiService {
     @GET("mobile/venues/{venueId}/print-config")
     suspend fun getPrintConfig(@Path("venueId") venueId: String): PrintConfigResponse
 
+    /**
+     * D6 de Flautas (opción B): las pantallas de cocina del negocio que NO están conectadas a internet, decidido por el
+     * servidor (`kitchenDisplayStations.ts` → `pantallasDesconectadas`). Va como petición de FONDO (Codex r6 #3): un 403 (sin
+     * `orders:read`) no abre el diálogo global ni pide PIN en cada sondeo.
+     */
+    @Headers("${com.avoqado.pos.core.data.network.ForbiddenInterceptor.BACKGROUND_HEADER}: 1")
+    @GET("mobile/venues/{venueId}/kds/pantallas-desconectadas")
+    suspend fun pantallasDesconectadas(
+        @Path("venueId") venueId: String,
+    ): com.avoqado.pos.kds.data.PantallasDesconectadasResponse
+
     @POST("mobile/venues/{venueId}/print-jobs/sync")
     suspend fun syncPrintJobs(
         @Path("venueId") venueId: String,
@@ -490,6 +501,16 @@ interface ApiService {
         @Path("itemId") itemId: String,
         @Body request: com.avoqado.pos.tables.data.CompItemRequest,
     ): com.avoqado.pos.tables.data.SimpleSuccessResponse
+
+    // «Anular producto» (TABLE_SERVICE, Flautas 20-nov) — quita UN renglón ya enviado; motivo obligatorio. Sin `orders:void`, el
+    // 403 `overridable` abre el PIN de gerente (ForbiddenInterceptor), igual que la cortesía.
+    @POST("mobile/venues/{venueId}/orders/{orderId}/items/{itemId}/void")
+    suspend fun voidOrderItem(
+        @Path("venueId") venueId: String,
+        @Path("orderId") orderId: String,
+        @Path("itemId") itemId: String,
+        @Body request: com.avoqado.pos.tables.data.VoidItemRequest,
+    ): com.avoqado.pos.tables.data.VoidItemResponse
 
     // "Anular cuenta" (TABLE_SERVICE) — cancels the open order with a required
     // reason; the server releases the bound table (Square's void-check flow).

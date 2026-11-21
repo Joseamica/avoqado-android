@@ -1035,4 +1035,107 @@ class KDSViewModelTest {
         assertEquals(listOf("c1"), vm.comandas.value.map { it.id })
         coVerify(exactly = 0) { ticketsLocales.retirarPendientes(match { "sale:vieja:st-barra" in it }) }
     }
+
+    // MARK: - D14 (Flautas, 20-nov): la ventana minimizada de WINDOWS
+
+    /**
+     * En WINDOWS minimizar no baja el ciclo de vida (`RaizDeEscritorio` sigue RESUMED): sin esto el tablero minimizado seguía
+     * leyendo cada 10 s (el SERVIDOR lo daba por conectado) y acusando por WiFi sin nadie mirando. Minimizada = el mismo
+     * «oculto» que `ON_STOP`; al restaurar lee en el acto, con línea base nueva.
+     */
+    @Test
+    fun `P1 D14 con la ventana minimizada el tablero no lee ni acusa, y al restaurar lee en el acto`() = runTest {
+        val pantalla = PantallaDePrueba()
+        pantalla.registro.currentState = Lifecycle.State.RESUMED
+        val ventana = MutableStateFlow(true)
+        val vm = armar() // 1ª lectura
+        val job = launch { vm.mientrasEsteALaVista(pantalla, ventana) }
+        runCurrent() // 2ª lectura: abrir
+        verify(atLeast = 1) { receptor.activar("v1", "st-barra") }
+
+        ventana.value = false // minimizada; el ciclo de vida sigue RESUMED
+        runCurrent()
+        verifyOrder {
+            receptor.activar("v1", "st-barra")
+            receptor.desactivar()
+        }
+        advanceTimeBy(60_000) // un minuto minimizada: ni una lectura más (con el sondeo vivo serían 6)
+        coVerify(exactly = 2) { repo.fetchOrders(any()) }
+
+        ventana.value = true // restaurada
+        runCurrent() // sin esperar los 10 s del sondeo
+        coVerify(exactly = 3) { repo.fetchOrders(any()) }
+        verifyOrder {
+            receptor.activar("v1", "st-barra")
+            receptor.desactivar()
+            receptor.activar("v1", "st-barra")
+        }
+        job.cancelAndJoin()
+    }
+
+    /**
+     * Como #6 con `ON_STOP`/`ON_START`: minimizar con la lectura colgada apaga el receptor YA, y restaurar NO abre hasta que
+     * la apertura vieja termina de desenrollarse (lo mismo que hace ANDROID al volver del fondo).
+     */
+    @Test
+    fun `P2 D14 minimizar con la lectura colgada apaga en el acto y restaurar abre hasta que la vieja termina`() = runTest {
+        val pantalla = PantallaDePrueba()
+        pantalla.registro.currentState = Lifecycle.State.RESUMED
+        val ventana = MutableStateFlow(true)
+        val vm = armar()
+        coEvery { repo.fetchOrders(any()) } coAnswers {
+            withContext(NonCancellable) { delay(30_000) }
+            Result.success(emptyList())
+        }
+        val job = launch { vm.mientrasEsteALaVista(pantalla, ventana) }
+        runCurrent()
+        clearMocks(receptor, answers = false)
+
+        ventana.value = false // minimizada con la lectura colgada
+        runCurrent()
+        verify(exactly = 1) { receptor.desactivar() }
+
+        ventana.value = true // restaurada antes de que termine la lectura vieja
+        runCurrent()
+        verify(exactly = 0) { receptor.activar(any(), any()) } // todavía no abre: espera a la vieja
+        coVerify(exactly = 2) { repo.fetchOrders(any()) } // armar y la colgada; ningún GET nuevo
+
+        advanceTimeBy(31_000) // termina la lectura vieja: ahora sí abre la nueva
+        runCurrent()
+        verifyOrder {
+            receptor.desactivar()
+            receptor.activar("v1", "st-barra")
+        }
+        coVerify(exactly = 3) { repo.fetchOrders(any()) }
+        verify(exactly = 1) { receptor.desactivar() } // el final de la vieja no apaga la nueva
+        job.cancelAndJoin()
+    }
+
+    // MARK: - D14: dentro de una apertura las lecturas no se arbitran (como `origin/develop`)
+
+    /**
+     * Codex r3 #5: el tablero no arbitra entre lecturas (igual que `origin/develop`): la relectura buena de una acción (rechazar
+     * un pedido) publica aunque un sondeo que arrancó después falle primero. Guarda ese comportamiento.
+     */
+    @Test
+    fun `P2 D14 la relectura buena de una accion publica aunque un sondeo posterior falle antes`() = runTest {
+        val vm = armar()
+        coEvery { repo.denyDeliveryOrder(any(), any()) } returns Result.success(Unit)
+        val puerta = CompletableDeferred<Unit>()
+        var lecturas = 0
+        coEvery { repo.fetchOrders(any()) } coAnswers {
+            if (lecturas++ == 0) {
+                puerta.await()
+                Result.success(listOf(comanda("k2", 2_000))) // el servidor ya no manda k1
+            } else {
+                Result.failure(IOException("sin red"))
+            }
+        }
+        vm.denyDeliveryOrder("k1") // su relectura se queda en vuelo
+        runCurrent()
+        vm.refrescar() // el sondeo arranca después y falla primero
+        puerta.complete(Unit)
+        runCurrent()
+        assertEquals(listOf("k2"), vm.comandas.value.map { it.id })
+    }
 }
