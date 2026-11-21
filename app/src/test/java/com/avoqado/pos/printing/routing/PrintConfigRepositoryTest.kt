@@ -75,21 +75,35 @@ class PrintConfigRepositoryTest {
         assertFalse(repository.descargadaDelServidor("venue-1"))
     }
 
-    /**
-     * Ronda 3 · Familia 2: volver a la sucursal desde otra, sin red, deja en memoria la copia del aparato: su «no» se vuelve a preguntar.
-     * Rehidratar la MISMA sucursal encima de su descarga (un café sin estaciones, en cada venta) no la invalida.
-     */
+    /** Ronda 3 · Familia 2: volver a la sucursal desde otra, sin red, deja en memoria la copia del aparato: su «no» se vuelve a preguntar. */
     @Test fun `R3 Family 2 coming back from another venue without network is the device copy again`() = runTest {
         val sinEstaciones = kotlinx.serialization.json.Json.encodeToString(PrintConfig.serializer(), PrintConfig())
         coEvery { payloadCache.load(PayloadCache.TYPE_PRINT_CONFIG, any()) } returns PayloadCache.Cached(sinEstaciones, 100)
         coEvery { apiService.getPrintConfig("venue-1") } returns PrintConfigResponse(true, PrintConfig())
         repository.refresh("venue-1")
         coEvery { apiService.getPrintConfig(any()) } throws RuntimeException("sin red")
-        repository.refresh("venue-1") // sin estaciones en memoria: se rehidrata la copia de la MISMA sucursal
-        assertTrue("la misma sucursal rehidratada sigue siendo su descarga", repository.descargadaDelServidor("venue-1"))
         repository.refresh("venue-2")
         repository.refresh("venue-1")
         assertFalse("de vuelta sin red: es la copia del aparato", repository.descargadaDelServidor("venue-1"))
+    }
+
+    /**
+     * Ronda 5 · Familia 2 (Ruling 80): la procedencia sigue al contenido EN USO. Volver a hidratar la MISMA sucursal de la copia del aparato
+     * (sin estaciones en memoria y sin red) pone la copia en memoria: eso ya no es la descarga, aunque la descarga fuera de esa sucursal.
+     */
+    @Test fun `R5 Family 2 a same-venue hydrate from the device copy does not count as downloaded`() = runTest {
+        val sinEstaciones = kotlinx.serialization.json.Json.encodeToString(PrintConfig.serializer(), PrintConfig())
+        coEvery { payloadCache.load(PayloadCache.TYPE_PRINT_CONFIG, any()) } returns PayloadCache.Cached(sinEstaciones, 100)
+        coEvery { apiService.getPrintConfig("venue-1") } returns PrintConfigResponse(true, PrintConfig())
+        repository.refresh("venue-1")
+        assertTrue("recién descargada", repository.descargadaDelServidor("venue-1"))
+        coEvery { apiService.getPrintConfig(any()) } throws RuntimeException("sin red")
+        repository.refresh("venue-1") // sin estaciones en memoria y sin red: se hidrata la copia de la MISMA sucursal
+        assertFalse("lo que se usa ahora es la copia del aparato", repository.descargadaDelServidor("venue-1"))
+        // Una descarga buena la vuelve a marcar.
+        coEvery { apiService.getPrintConfig("venue-1") } returns PrintConfigResponse(true, PrintConfig())
+        repository.refresh("venue-1")
+        assertTrue(repository.descargadaDelServidor("venue-1"))
     }
 
     @Test

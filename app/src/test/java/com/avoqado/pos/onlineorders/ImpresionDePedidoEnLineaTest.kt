@@ -359,6 +359,7 @@ class ImpresionDePedidoEnLineaTest {
         var cargada = false
         var hayCocina = false
         var redVolvio = false
+        var servidorConCocina = true
         var refrescos = 0
         coEvery { repo.reclamarComanda(any(), any()) } returns ReclamoDeImpresion(true)
         coEvery { repo.confirmPrint(any(), any()) } returns true
@@ -370,7 +371,7 @@ class ImpresionDePedidoEnLineaTest {
             despachar = { _, _, _, _, _, _ -> despacho.llamadas++; despacho.estado },
             reloj = { ahora },
             configSinDescargar = { !cargada },
-            refrescarConfig = { refrescos++; if (redVolvio) { cargada = true; hayCocina = true } },
+            refrescarConfig = { refrescos++; if (redVolvio) { cargada = true; hayCocina = servidorConCocina } },
         )
         // La descarga inicial falló y no hay copia: se pide otra vez antes de decidir; sigue sin red.
         assertFalse(impresion.puedeIntentar("p1"))
@@ -387,11 +388,16 @@ class ImpresionDePedidoEnLineaTest {
         assertEquals(2, refrescos)
         assertEquals(ResultadoImpresion.Impresa, impresion.imprimirSiToca(pedido(), "dev-1"))
         assertEquals(1, despacho.llamadas)
-        // Ya cargada y SIN impresora de cocina (un café): no se vuelve a pedir; se dice que no, sin red.
+        // Ya cargada y SIN impresora de cocina (un café). Ruling 80 (ronda 5): ese «no» descargado también se vuelve a preguntar, a lo más
+        // una vez cada 30 s (antes se le creía para siempre).
+        servidorConCocina = false
         hayCocina = false
         ahora += 60_000
         assertFalse(impresion.puedeIntentar("p3"))
-        assertEquals(2, refrescos)
+        assertEquals(3, refrescos)
+        ahora += 29_000
+        assertFalse(impresion.puedeIntentar("p3"))
+        assertEquals("a lo más una vez por intervalo", 3, refrescos)
     }
 
     // MARK: - Ronda 3 · Familia 2 (Ruling 49): «no hay impresora de cocina» sólo vale con la configuración del SERVIDOR
@@ -507,6 +513,56 @@ class ImpresionDePedidoEnLineaTest {
         assertFalse("sigue sin red: no hay cocina", impresion.puedeIntentar("p1"))
         assertEquals("antes de saltarse el papel se volvió a pedir la configuración de A", 3, descargasDeA)
     }
+
+    // MARK: - Ronda 5 · Familia 2 (Ruling 80): un «no hay cocina» descargado también se vuelve a preguntar
+
+    /**
+     * La caja DESCARGÓ del SERVIDOR una configuración sin cocina. Durante el turno el dueño agrega y liga la única impresora de cocina en el
+     * panel. Sin reiniciar y sin otra venta (una caja que sólo atiende pedidos en línea), la siguiente vuelta pasado a lo más un intervalo
+     * vuelve a pedir la configuración y la comanda sale. Dentro del intervalo no se vuelve a pedir.
+     */
+    @Test
+    fun `R5 Family 2 a downloaded no-kitchen answer is asked again within one interval and the ticket prints without a restart or a sale`() =
+        kotlinx.coroutines.runBlocking {
+            val api = mockk<com.avoqado.pos.core.data.network.ApiService>()
+            val cache = mockk<com.avoqado.pos.core.data.local.PayloadCache>(relaxed = true)
+            coEvery { cache.load(any(), any()) } returns null
+            val sinCocina = PrintConfig(printers = listOf(PrinterInfo("pr_caja", "Caja", "NETWORK", "192.168.1.9:9100")))
+            val conCocina = PrintConfig(
+                printers = listOf(PrinterInfo("pr_cocina", "Cocina", "NETWORK", "192.168.1.50:9100")),
+                stations = listOf(StationInfo("st", "Cocina", printerId = "pr_cocina")),
+            )
+            var enElPanel = sinCocina
+            var descargas = 0
+            coEvery { api.getPrintConfig("v1") } answers { descargas++; com.avoqado.pos.printing.routing.PrintConfigResponse(true, enElPanel) }
+            val configRepo = com.avoqado.pos.printing.routing.PrintConfigRepository(api, cache)
+            configRepo.refresh("v1")
+            assertTrue("descargada del SERVIDOR, sin cocina", configRepo.descargadaDelServidor("v1"))
+            coEvery { repo.reclamarComanda("p1", "dev-1") } returns ReclamoDeImpresion(true)
+            coEvery { repo.confirmPrint("p1", "dev-1") } returns true
+            val despacho = Despacho()
+            // El cableado de producción, con el reloj de la prueba.
+            val impresion = ImpresionDePedidoEnLinea(
+                repositorio = repo,
+                hayImpresoraDeCocina = { hayImpresoraDeCocina(false, configRepo.getCurrentConfig()) },
+                venueId = { "v1" },
+                despachar = { _, _, _, _, _, _ -> despacho.llamadas++; despacho.estado },
+                reloj = { ahora },
+                configSinDescargar = { !configRepo.descargadaDelServidor("v1") },
+                refrescarConfig = { configRepo.refreshConTope("v1") },
+            )
+            assertFalse("la descarga recién llegada dice que no", impresion.puedeIntentar("p1"))
+            assertEquals(1, descargas)
+            enElPanel = conCocina // el dueño agrega y liga la impresora de cocina en el panel
+            ahora += 10_000
+            assertFalse("dentro del intervalo no se vuelve a pedir", impresion.puedeIntentar("p1"))
+            assertEquals(1, descargas)
+            ahora += 21_000
+            assertTrue("pasado el intervalo se vuelve a pedir y ya hay cocina", impresion.puedeIntentar("p1"))
+            assertEquals(2, descargas)
+            assertEquals(ResultadoImpresion.Impresa, impresion.imprimirSiToca(pedido(), "dev-1"))
+            assertEquals(1, despacho.llamadas)
+        }
 
     @Test
     fun `a business printer that is only the receipt printer gives no claim`() {

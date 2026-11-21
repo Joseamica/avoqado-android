@@ -39,9 +39,10 @@ class PrintConfigRepository @Inject constructor(
     fun getCurrentConfig(): PrintConfig = _config.value
 
     /**
-     * D661 · Ruling 49 (antes R2-5): ¿la configuración en memoria de esta sucursal la DESCARGÓ del SERVIDOR este proceso? La copia del
-     * aparato no cuenta: pudo guardarse antes de que el dueño agregara su impresora de cocina en el panel. Sólo con `true` se le cree a un
-     * «no hay impresora de cocina»; un «sí» de la copia sirve igual (imprimir sin red no espera).
+     * D661 · Rulings 49 y 80: ¿la configuración EN USO de esta sucursal la DESCARGÓ del SERVIDOR este proceso? La copia del aparato no cuenta
+     * (pudo guardarse antes de que el dueño agregara su impresora de cocina en el panel), aunque sea de la misma sucursal. Sólo con `true` se
+     * le cree, la primera vez, a un «no hay impresora de cocina» (después se vuelve a preguntar como cualquier «no»); un «sí» de la copia
+     * sirve igual (imprimir sin red no espera).
      */
     fun descargadaDelServidor(venueId: String): Boolean = synchronized(candado) { venueDescargada == venueId && venueDeLaConfig == venueId }
 
@@ -70,9 +71,9 @@ class PrintConfigRepository @Inject constructor(
     private var venueDeLaConfig: String? = null
 
     /**
-     * Ruling 49: la sucursal cuya configuración en memoria se DESCARGÓ bien del SERVIDOR en este proceso (no la copia del aparato). Volver a
-     * hidratar la MISMA sucursal encima (la copia que esa descarga acaba de guardar) no la invalida; volver a ella desde otra sucursal sí,
-     * con copia del aparato o sin ella: hasta la siguiente descarga buena, su «no» se vuelve a preguntar. Bajo [candado].
+     * Rulings 49 y 80: la sucursal cuya configuración EN USO se DESCARGÓ bien del SERVIDOR en este proceso. La marca sigue al contenido:
+     * en cuanto lo que se usa es la copia del aparato (también la de la MISMA sucursal) o la nada, se borra hasta la siguiente descarga
+     * buena. Bajo [candado].
      */
     private var venueDescargada: String? = null
 
@@ -179,16 +180,18 @@ class PrintConfigRepository @Inject constructor(
             // (A → B → A rápido), la copia de la anterior ya no se publica: pisaría la config de la vigente y sus comandas
             // saldrían por las estaciones e impresoras de la otra. Mismo CAS que la respuesta tardía de [refresh].
             if (ultimoVenuePedido != venueId) return@synchronized false
-            // Ruling 49 (menor 2 de la ronda 4): si la memoria era de otra sucursal, lo que quede —su copia o la nada— no es una descarga.
-            if (venueDeLaConfig != venueId) venueDescargada = null
+            // Rulings 49 y 80: la marca de «descargada» sigue a lo que se usa. Lo que se publica aquí —la copia del aparato, también la de
+            // la MISMA sucursal, o la nada— no es una descarga de este proceso; si no se publica nada, lo que había se queda con su marca.
             if (blob != null) {
                 _config.value = blob
                 venueDeLaConfig = venueId
+                venueDescargada = null
             } else if (venueDeLaConfig != venueId) {
                 // Codex 3.6 (#3): la memoria es de otra sucursal y de ésta no hay copia: sin ruteo (ticket legado), nunca con
                 // las estaciones e impresoras de la anterior.
                 _config.value = PrintConfig()
                 venueDeLaConfig = venueId
+                venueDescargada = null
             }
             true
         }

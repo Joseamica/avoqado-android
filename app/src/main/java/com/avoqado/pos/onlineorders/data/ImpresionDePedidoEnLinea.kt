@@ -59,7 +59,7 @@ fun hayImpresoraDeCocina(localDeCocina: Boolean, config: com.avoqado.pos.printin
 /** Tras un `NoSalio` este aparato deja pasar este tiempo antes de volver a reclamar el mismo pedido (otro aparato lo toma). */
 private const val DESCANSO_TRAS_NO_SALIO_MS = 3 * 60 * 1000L
 
-/** D661 · R2-5 / Ruling 49: lo más seguido que se vuelve a pedir la configuración antes de creerle un «no hay cocina» (una vez por vuelta). */
+/** D661 · R2-5 / Rulings 49 y 80: lo más seguido que un «no hay cocina» (de la copia o de una descarga) vuelve a pedir la configuración. */
 private const val REFRESCO_DE_CONFIG_MS = 30 * 1000L
 
 /**
@@ -89,8 +89,8 @@ class ImpresionDePedidoEnLinea internal constructor(
     private val despachar: suspend (venueId: String?, lineas: List<RoutableItem>, folio: String, tipo: String, orderId: String, encabezado: List<String>) -> EstadoDeComanda?,
     private val reloj: () -> Long = System::currentTimeMillis,
     /**
-     * Ruling 49: la configuración de impresión en memoria NO es una descarga del SERVIDOR de este proceso (es la copia del aparato, o
-     * nada): su «no hay impresora de cocina» puede estar viejo.
+     * Ruling 49: la configuración de impresión en uso NO es una descarga del SERVIDOR de este proceso (es la copia del aparato, o nada):
+     * su «no hay impresora de cocina» se pregunta ya. Ruling 80: el de una descarga sólo se cree hasta la siguiente revisión.
      */
     private val configSinDescargar: () -> Boolean = { false },
     /** R2-5: la vuelve a pedir (la de siempre, con tope de espera: `PrintConfigRepository.refreshConTope`). */
@@ -191,24 +191,25 @@ class ImpresionDePedidoEnLinea internal constructor(
     }
 
     /**
-     * Ruling 49: ¿hay impresora de cocina? Un SÍ vale siempre, también de la copia del aparato (imprimir sin red no espera). Un NO sólo
-     * vale con la configuración que este proceso DESCARGÓ del SERVIDOR; si viene de la copia del aparato o de nada (el dueño pudo agregar
-     * la impresora en el panel después), se vuelve a pedir —a lo más una vez cada [REFRESCO_DE_CONFIG_MS], o sea una por vuelta— y
-     * entonces se decide. Lo usan las tres puertas: [puedeIntentar] (el vigilante), [imprimirSiToca] («Mi equipo» y la bandeja) y
-     * [reimprimir].
+     * Rulings 49 y 80: ¿hay impresora de cocina? Un SÍ vale siempre, también de la copia del aparato (imprimir sin red no espera). Un NO,
+     * venga de donde venga, se vuelve a pedir al SERVIDOR a lo más una vez cada [REFRESCO_DE_CONFIG_MS] (una por vuelta): el dueño pudo
+     * agregar y ligar la impresora de cocina en el panel a media jornada, y una caja que sólo atiende pedidos en línea nunca refresca sola.
+     * La primera vez sólo se le cree sin preguntar al NO de una configuración que este proceso DESCARGÓ del SERVIDOR; el de la copia del
+     * aparato o el de nada se pregunta ya. Lo usan las tres puertas: [puedeIntentar] (el vigilante), [imprimirSiToca] («Mi equipo» y la
+     * bandeja) y [reimprimir].
      */
     private suspend fun hayCocinaConfirmada(): Boolean {
         if (hayImpresoraDeCocina()) return true
-        if (!configSinDescargar()) return false
         val ahora = reloj()
         val ultimo = ultimoRefrescoDeConfig
         if (ultimo != null && ahora - ultimo < REFRESCO_DE_CONFIG_MS) return false
         ultimoRefrescoDeConfig = ahora
+        if (ultimo == null && !configSinDescargar()) return false
         refrescarConfig()
         return hayImpresoraDeCocina()
     }
 
-    /** R2-5: cuándo se pidió por última vez la configuración que no había cargado; null = nunca. */
+    /** R2-5 / Ruling 80: cuándo se revisó por última vez un «no hay cocina» (se pidiera o no la configuración); null = nunca. */
     @Volatile private var ultimoRefrescoDeConfig: Long? = null
 
     /** R2-6: el vigilante no pudo leer ese pedido: el mismo descanso que una comanda que no salió (no se relee en cada sondeo). */
