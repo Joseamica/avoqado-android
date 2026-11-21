@@ -298,6 +298,44 @@ class PorPagarBandejaTest {
         coVerify(exactly = 1) { repo.ready("e1") }
     }
 
+    /**
+     * Ruling 71: un «Entregado» que el SERVIDOR rechaza con `ORDER_CLOSED_NOT_DELIVERED` (devuelto o «No lo recogió») llega como
+     * `Error` con su texto (`OnlineOrdersRepositoryTest › R71 …`). En los DOS caminos —la tarjeta del folio y la de la bandeja— se dice
+     * ese texto, la tarjeta se queda (nada se esconde) y se relee.
+     */
+    @Test
+    fun `R71 a delivery refused as closed not delivered keeps the card in both paths and rereads`() = runTest(dispatcher) {
+        val texto = "Este pedido ya se devolvió («Devuelto»): no se marca entregado. No se aplicó nada."
+        val leo = folio("e1", "W8M2C", "Leo", OnlineOrderStatus.ACCEPTED, 6900, 0, "PAID")
+        val marcado = folio("r1", "R1AAA", "Ana", OnlineOrderStatus.READY, 6900, 0, "PAID", requiere = null)
+            .copy(refundedAt = Instant.parse("2026-11-21T10:00:05Z"))
+        respuesta = Result.success(lista(porEntregar = listOf(leo)))
+        coEvery { repo.inbox(any(), any(), any()) } returns Result.success(inbox(marcado))
+        coEvery { repo.delivered(any()) } returns AccionResultado.Error(texto)
+        val vm = armar()
+        vm.refrescar()
+        assertEquals(listOf("r1"), vm.secciones.value.listos.map { it.orderId })
+
+        // La tarjeta del folio.
+        val lecturas = llamadas.size
+        vm.entregarFolio(leo)
+        advanceUntilIdle()
+        assertEquals(texto, vm.aviso.value)
+        assertTrue("nada se esconde", vm.ocultos.value.isEmpty())
+        assertEquals(listOf("e1"), sinLosYaAtendidos(vm.porPagar.value!!, vm.ocultos.value).porEntregar.map { it.orderId })
+        assertTrue("se relee", llamadas.size > lecturas)
+
+        // La tarjeta de la bandeja.
+        vm.cerrarAviso()
+        vm.marcarEntregado("r1")
+        advanceUntilIdle()
+        assertEquals(texto, vm.aviso.value)
+        assertTrue(vm.ocultos.value.isEmpty())
+        assertEquals(listOf("r1"), vm.secciones.value.listos.map { it.orderId })
+        coVerify(exactly = 2) { repo.delivered(any()) }
+        coVerify(atLeast = 3) { repo.inbox(any(), any(), any()) }
+    }
+
     @Test
     fun `the delivered notice drops the name when the folio has none`() {
         assertEquals("W8M2C entregado", TextosPedidosEnLinea.folioEntregado("W8M2C", null))

@@ -48,7 +48,8 @@ private const val TAG = "🛎 PedidosEnLinea-Repo"
 
 /**
  * Un «no» del servidor ya leído: [status] HTTP, [codigo] del cuerpo y, si es un 409 de estado, el estado en que quedó el pedido.
- * [marcado] (D661 · R2-2): ese 409 trae una marca de cierre (`notPickedUpAt`, `refundRequestedAt` o `refundedAt`, task-4-report).
+ * [marcado] (D661 · R2-2): ese 409 trae una marca de cierre (`notPickedUpAt`, `refundRequestedAt` o `refundedAt`, task-4-report), o es
+ * el código propio de un pedido cerrado sin entregar (Ruling 71, [PEDIDO_CERRADO_SIN_ENTREGAR]).
  */
 private class Rechazo(
     val status: Int, val codigo: String?, val mensaje: String, val estadoActual: OnlineOrderStatus?, val marcado: Boolean = false,
@@ -56,6 +57,12 @@ private class Rechazo(
 
 /** D661 · R2-2: las marcas de cierre de un pedido en línea (task-4-report, «Contract»): ISO o null; un SERVIDOR viejo no las manda. */
 private val MARCAS_DE_CIERRE = listOf("notPickedUpAt", "refundRequestedAt", "refundedAt")
+
+/**
+ * D661 · Ruling 71: el código con que el SERVIDOR rechaza una acción sobre un pedido devuelto, devolviéndose o «No lo recogió» (en vez de
+ * `ORDER_STATE_CHANGED`, para que las apps viejas no lo lean como «Hecho»). Mismo cuerpo: el estado y las tres marcas.
+ */
+private const val PEDIDO_CERRADO_SIN_ENTREGAR = "ORDER_CLOSED_NOT_DELIVERED"
 
 /**
  * Pedidos en línea (la tienda web del negocio) contra `/mobile/venues/:v/online-orders`. Mismo molde que `KDSRepository`.
@@ -141,7 +148,8 @@ class OnlineOrdersRepository @Inject constructor(
         val mensaje = json?.textoONulo("error") ?: json?.textoONulo("message") ?: "Error del servidor ($code)"
         val deEstado = code == 409 && codigo == "ORDER_STATE_CHANGED"
         val estado = if (deEstado) OnlineOrderStatus.from(json.textoONulo("status")) else null
-        val marcado = deEstado && MARCAS_DE_CIERRE.any { json.textoONulo(it) != null }
+        val marcado = (code == 409 && codigo == PEDIDO_CERRADO_SIN_ENTREGAR) ||
+            (deEstado && MARCAS_DE_CIERRE.any { json.textoONulo(it) != null })
         return Rechazo(code, codigo, mensaje, estado, marcado)
     }
 
@@ -322,8 +330,8 @@ class OnlineOrdersRepository @Inject constructor(
             val estado = e.rechazo.estadoActual
             return when {
                 e.rechazo.status == 409 && e.rechazo.codigo == "ONLINE_ORDER_CONFIRMING_PAYMENT" -> AccionResultado.ConfirmandoPago(e.rechazo.mensaje)
-                // D661 · R2-2 (Ruling 36): devuelto, devolviéndose o «No lo recogió»: nunca es «hecho» aunque diga COMPLETED (no se entrega).
-                // Se dice lo del SERVIDOR y la pantalla relee.
+                // D661 · R2-2 (Ruling 36) y Ruling 71 (`ORDER_CLOSED_NOT_DELIVERED`): devuelto, devolviéndose o «No lo recogió»: nunca es
+                // «hecho» aunque diga COMPLETED (no se entrega). Se dice lo del SERVIDOR, la tarjeta se queda y la pantalla relee.
                 e.rechazo.marcado -> AccionResultado.Error(e.rechazo.mensaje)
                 estado == null -> AccionResultado.Error(e.rechazo.mensaje)
                 estado == quiso -> AccionResultado.Hecho

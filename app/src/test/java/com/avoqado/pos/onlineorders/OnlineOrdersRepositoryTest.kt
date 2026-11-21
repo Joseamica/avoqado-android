@@ -519,6 +519,29 @@ class OnlineOrdersRepositoryTest {
         assertEquals(AccionResultado.Hecho, repo.delivered("o1"))
     }
 
+    /**
+     * Ruling 71: el SERVIDOR contesta una acción sobre un pedido cerrado sin entregar (devuelto, devolviéndose o «No lo recogió») con su
+     * propio código `ORDER_CLOSED_NOT_DELIVERED` —mismo cuerpo: el estado y las tres marcas— para que las apps viejas no digan «Hecho».
+     * Esta app lo trata igual que un 409 marcado: nunca «Hecho» ni «ya no disponible», se dice su texto.
+     */
+    @Test
+    fun `R71 ORDER_CLOSED_NOT_DELIVERED is a marked refusal, never Hecho`() = runTest {
+        fun cerrado(status: String, marca: String, texto: String) = MockResponse().setResponseCode(409).setBody(
+            """{"success":false,"code":"ORDER_CLOSED_NOT_DELIVERED","status":"$status","$marca":"2026-11-21T10:00:05.000Z","error":"$texto"}""")
+        val devuelto = "Este pedido ya se devolvió («Devuelto»): no se marca entregado. No se aplicó nada."
+        val noRecogido = "Este pedido se cerró como «No lo recogió» al terminar el día: no se marca entregado. No se aplicó nada."
+        val devolviendo = "Este pedido se está devolviendo: no se marca entregado. No se aplicó nada."
+        server.enqueue(cerrado("COMPLETED", "refundedAt", devuelto))
+        assertEquals(AccionResultado.Error(devuelto), repo.delivered("o1"))
+        server.enqueue(cerrado("COMPLETED", "notPickedUpAt", noRecogido))
+        assertEquals(AccionResultado.Error(noRecogido), repo.delivered("o1"))
+        server.enqueue(cerrado("COMPLETED", "refundRequestedAt", devolviendo))
+        assertEquals(AccionResultado.Error(devolviendo), repo.delivered("o1"))
+        // «Listo» sobre el mismo pedido: tampoco es «ya no disponible» (que escondería la tarjeta), es su texto.
+        server.enqueue(cerrado("COMPLETED", "refundedAt", devuelto))
+        assertEquals(AccionResultado.Error(devuelto), repo.ready("o1"))
+    }
+
     /** Ronda 3 (menor de la re-revisión): una marca presente pero ilegible cuenta como presente (no vuelve «Entregado»). */
     @Test
     fun `R3 a present but unreadable mark counts as present`() = runTest {
