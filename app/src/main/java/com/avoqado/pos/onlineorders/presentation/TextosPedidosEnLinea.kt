@@ -195,6 +195,8 @@ object TextosPedidosEnLinea {
     fun totalPagadoEnLinea(monto: String) = "Total $monto"
     /** El resultado de abrir (lo abrió esta caja u otra ya lo había abierto): dónde quedó. */
     fun abiertoEnPorEntregar(folio: String) = "El pedido $folio ya está en «Por entregar»."
+    /** Otra caja ya lo abrió y ya se cerró (entregado, «No lo recogió» o devuelto). */
+    fun pedidoYaCerrado(folio: String) = "El pedido $folio ya está cerrado: no hay nada que abrir."
     /** Sin red al abrir: no se sabe si llegó; el servidor nunca lo cobra dos veces. */
     const val ABRIR_SIN_CONEXION = "Sin conexión: no se pudo confirmar. Al volver la conexión la lista dice dónde quedó; nunca se cobra dos veces."
     /** Ruling 9: arriba de una comanda cuyo reclamo anterior venció sin confirmarse. */

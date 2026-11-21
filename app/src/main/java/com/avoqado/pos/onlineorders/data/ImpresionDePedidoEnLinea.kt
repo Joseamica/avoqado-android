@@ -53,7 +53,7 @@ private const val DESCANSO_TRAS_NO_SALIO_MS = 3 * 60 * 1000L
 /**
  * Task A4: la comanda de un pedido en línea sale UNA vez, en UN aparato.
  *
- * - Sólo reclama (`claimPrint`) si ESTE aparato tiene al menos una impresora de cocina: así S4 no detiene la entrega por
+ * - Sólo reclama (`reclamarComanda`) si ESTE aparato tiene al menos una impresora de cocina: así S4 no detiene la entrega por
  *   hora de quien no imprime. Cualquier `false` del reclamo (perdido, sin red, 5xx) = no imprimir: el TTL de 90 s del
  *   servidor decide quién la saca.
  * - `confirmPrint` SÓLO si la comanda salió de verdad ([laComandaSalio]); si no, no se confirma y a los 90 s otro aparato la

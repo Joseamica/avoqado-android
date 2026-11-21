@@ -244,7 +244,7 @@ class OnlineOrdersRepositoryTest {
     fun `print routes send x-device-id`() = runTest {
         server.enqueue(MockResponse().setBody("""{"success":true,"data":{"claimed":true}}"""))
         server.enqueue(MockResponse().setBody("""{"success":true,"data":{"ok":false}}"""))
-        assertTrue(repo.claimPrint("o1", "dev-9"))
+        assertTrue(repo.reclamarComanda("o1", "dev-9").reclamado)
         assertFalse(repo.confirmPrint("o1", "dev-9"))
         val c = server.takeRequest(1, TimeUnit.SECONDS)!!
         assertEquals("/api/v1/mobile/venues/v1/online-orders/o1/print/claim", c.requestUrl!!.encodedPath)
@@ -311,7 +311,7 @@ class OnlineOrdersRepositoryTest {
     @Test
     fun `print failure is false never a throw`() = runTest {
         server.enqueue(MockResponse().setResponseCode(500).setBody("{}"))
-        assertFalse(repo.claimPrint("o1", "dev-9"))
+        assertFalse(repo.reclamarComanda("o1", "dev-9").reclamado)
     }
 
     @Test

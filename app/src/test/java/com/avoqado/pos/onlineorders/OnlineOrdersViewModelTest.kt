@@ -780,6 +780,33 @@ class OnlineOrdersViewModelTest {
         assertTrue(vm.ocupados.value.isEmpty())
     }
 
+    /** Revisión del PR #308 (menor 1): el 409 STALE de la segunda caja dice dónde quedó el pedido, no «ya no está disponible». */
+    @Test
+    fun `opening an order another register already moved on says where it ended up`() = runTest(dispatcher) {
+        coEvery { repo.inbox("all", any(), any()) } returns Result.success(bandeja())
+        foliosDelServidor = listaD661(listOf(tarjeta("t1"), tarjeta("t2"), tarjeta("t3")))
+        val vm = armarD661()
+        vm.refrescar()
+        // Otra caja lo abrió y ya lo marcó «Listo»: sigue en «Por entregar».
+        coEvery { repo.abrirPagadoEnLinea("t1") } returns AccionResultado.YaNoDisponible(OnlineOrderStatus.READY)
+        vm.abrirYCobrar("t1"); runCurrent()
+        assertEquals("El pedido T-t1 ya está en «Por entregar».", vm.aviso.value)
+        // Ya se entregó o el cierre del día lo cerró: ya no hay nada que abrir.
+        coEvery { repo.abrirPagadoEnLinea("t2") } returns AccionResultado.YaNoDisponible(OnlineOrderStatus.COMPLETED)
+        vm.abrirYCobrar("t2"); runCurrent()
+        assertEquals("El pedido T-t2 ya está cerrado: no hay nada que abrir.", vm.aviso.value)
+        // Nadie lo abrió a tiempo y se liberó: ése sí ya no está disponible (como antes).
+        coEvery { repo.abrirPagadoEnLinea("t3") } returns AccionResultado.YaNoDisponible(OnlineOrderStatus.EXPIRED)
+        vm.abrirYCobrar("t3"); runCurrent()
+        assertEquals(TextosPedidosEnLinea.YA_NO_DISPONIBLE, vm.aviso.value)
+        // Las demás acciones no cambian: un «Listo» de un pedido que ya se entregó sigue diciendo «ya no está disponible».
+        foliosDelServidor = listaD661(porEntregar = listOf(pedido("e1", OnlineOrderStatus.ACCEPTED)))
+        vm.refrescar()
+        coEvery { repo.ready("e1") } returns AccionResultado.YaNoDisponible(OnlineOrderStatus.COMPLETED)
+        vm.marcarListo("e1"); runCurrent()
+        assertEquals(TextosPedidosEnLinea.YA_NO_DISPONIBLE, vm.aviso.value)
+    }
+
     @Test
     fun `opening without network says it needs a connection and is never queued`() = runTest(dispatcher) {
         coEvery { repo.inbox("all", any(), any()) } returns Result.success(bandeja())

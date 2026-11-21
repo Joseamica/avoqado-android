@@ -311,10 +311,10 @@ class OnlineOrdersRepository @Inject constructor(
 
     // MARK: - Impresión de la comanda (reclamo + sello; la llave es Order.id)
 
-    /** `true` = este aparato ganó el reclamo y debe imprimir. Cualquier fallo es `false`: nunca se imprime sin reclamo. */
-    suspend fun claimPrint(orderId: String, deviceId: String): Boolean = reclamarComanda(orderId, deviceId).reclamado
-
-    /** El reclamo con lo que dijo el servidor (Ruling 9: `posibleRepetida`). Cualquier fallo = no reclamado. */
+    /**
+     * El reclamo con lo que dijo el servidor (Ruling 9: `posibleRepetida`). `reclamado` = este aparato ganó y debe imprimir; cualquier
+     * fallo = no reclamado: nunca se imprime sin reclamo.
+     */
     suspend fun reclamarComanda(orderId: String, deviceId: String): ReclamoDeImpresion {
         val (venueId, token) = sesion() ?: return ReclamoDeImpresion(false)
         return ejecutar(post(ruta(venueId, "online-orders/$orderId/print/claim"), token, deviceId = deviceId))

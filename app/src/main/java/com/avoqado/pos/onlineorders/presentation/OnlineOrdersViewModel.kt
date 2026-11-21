@@ -876,6 +876,14 @@ class OnlineOrdersViewModel internal constructor(
             orderId, permisoActualizar(),
             textoExito = TextosPedidosEnLinea.abiertoEnPorEntregar(tarjeta.orderNumber),
             textoSinConexion = TextosPedidosEnLinea.ABRIR_SIN_CONEXION,
+            // Menor 1 de la revisión del PR #308: el 409 STALE de la segunda caja dice dónde quedó el pedido.
+            textoYaNoDisponible = { estado ->
+                when (estado) {
+                    OnlineOrderStatus.ACCEPTED, OnlineOrderStatus.READY -> TextosPedidosEnLinea.abiertoEnPorEntregar(tarjeta.orderNumber)
+                    OnlineOrderStatus.COMPLETED -> TextosPedidosEnLinea.pedidoYaCerrado(tarjeta.orderNumber)
+                    else -> TextosPedidosEnLinea.YA_NO_DISPONIBLE
+                }
+            },
             alResponder = sondearFoliosDelVigilante,
         ) { repositorio.abrirPagadoEnLinea(orderId) }
     }
@@ -1277,6 +1285,8 @@ class OnlineOrdersViewModel internal constructor(
         huella: HuellaDeFolio? = null,
         /** El texto neutro de «sin red» de esta acción. */
         textoSinConexion: String = TextosPedidosEnLinea.REINTENTA,
+        /** El texto de un pedido que ya está en otro estado (409 STALE), según dónde quedó. */
+        textoYaNoDisponible: (OnlineOrderStatus) -> String = { TextosPedidosEnLinea.YA_NO_DISPONIBLE },
         /** Lo que corre en cuanto llega la respuesta, sea cual sea (D661: el vigilante relee «Por pagar»). */
         alResponder: () -> Unit = {},
         llamada: suspend () -> AccionResultado,
@@ -1309,7 +1319,7 @@ class OnlineOrdersViewModel internal constructor(
                 }
                 _aviso.value = when (resultado) {
                     AccionResultado.Hecho -> textoExito
-                    is AccionResultado.YaNoDisponible -> TextosPedidosEnLinea.YA_NO_DISPONIBLE
+                    is AccionResultado.YaNoDisponible -> textoYaNoDisponible(resultado.status)
                     AccionResultado.SinConexion -> textoSinConexion
                     is AccionResultado.ConfirmandoPago -> resultado.mensaje
                     is AccionResultado.Error -> resultado.mensaje
