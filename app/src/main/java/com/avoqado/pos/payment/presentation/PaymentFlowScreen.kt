@@ -108,6 +108,9 @@ fun PaymentFlowScreen(
     saldoLeidoDeLaCuenta: Int? = null,
 ) {
     val scopeDeSaldo = rememberCoroutineScope()
+    // C5: la máquina de efectivo de esta PC (sólo WINDOWS). null = todo como hoy.
+    val vistaDeLaMaquina = viewModel.maquina?.vista?.collectAsState()?.value
+        ?.takeIf { com.avoqado.pos.designsystem.components.LocalEsEscritorio.current }
     val filaDeSaldo by viewModel.conductaDelSaldo.collectAsState()
     val conexionDelSaldo by viewModel.conexionDelSaldo.collectAsState()
     val servidorDelSaldo by viewModel.servidorDelSaldo.collectAsState()
@@ -340,6 +343,8 @@ fun PaymentFlowScreen(
                         sinRed = sinRedEnElCobro,
                         // Toque explícito del cajero: si el server dice que no, tiene que verse.
                         onRetryTerminals = { viewModel.probeTerminalAvailability(background = false) },
+                        maquina = vistaDeLaMaquina,
+                        onCobrarConMaquina = viewModel::cobrarConMaquina,
                     )
                     TipSelectionSheet(
                         amountCents = currentState.amount,
@@ -352,7 +357,11 @@ fun PaymentFlowScreen(
                 }
             }
             is PaymentFlowState.SelectingPaymentMethod -> {
-                PaymentMethodSelectionScreen(
+                val caja = viewModel.maquina
+                if (caja != null && vistaDeLaMaquina != null && (vistaDeLaMaquina.cobro != null || vistaDeLaMaquina.resuelto != null)) {
+                    // C5: el cobro de ESTA venta en la máquina (o lo que decidió el gerente).
+                    com.avoqado.pos.maquina.ui.PantallaDeLaMaquina(vista = vistaDeLaMaquina, caja = caja, onSalir = cancelarElCobro)
+                } else PaymentMethodSelectionScreen(
                     metodosHabilitados = metodosHabilitados,
                     motivoDeshabilitado = if (!metodosHabilitados) com.avoqado.pos.giftcards.domain.TextosDeTarjetas.CUENTA_SIN_RED else null,
                     paymentContext = paymentContext.copy(totalCents = currentState.amount),
@@ -374,6 +383,8 @@ fun PaymentFlowScreen(
                     // A1: el ViewModel decide (`conOrigen`): el cobro de siempre y un folio la ofrecen; plataforma y «Mi equipo», no.
                     conductaDeSaldo = filaDeSaldo,
                     onSaldoSelected = { scopeDeSaldo.launch { viewModel.actualizarFilaDeSaldo(); if (viewModel.conductaDelSaldo.value.habilitada) { identificadaDeSaldo = null; muestraSaldo = true } } },
+                    maquina = vistaDeLaMaquina,
+                    onCobrarConMaquina = viewModel::cobrarConMaquina,
                 )
             }
             is PaymentFlowState.CollectingCashAmount -> {

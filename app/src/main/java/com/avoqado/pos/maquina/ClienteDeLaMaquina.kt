@@ -39,6 +39,11 @@ interface CanalDeLaMaquina {
 
     /** Manda [json] sólo si la conexión abierta es la de [generacion]. false = no salió nada. */
     fun enviar(json: String, generacion: Int): Boolean
+
+    /** C5: conectar a la máquina de [ip] (o reconectar a otra). Un canal de pruebas no hace nada. */
+    fun conectar(ip: String) {}
+
+    fun desconectar() {}
 }
 
 /**
@@ -75,8 +80,10 @@ class ClienteDeLaMaquina(
     private var socketAbierto: WebSocket? = null    // la vigente ya abierta…
     private var generacionAbierta = 0               // …y su generación
 
+    override fun conectar(ip: String) = conectar(ip, PUERTO)
+
     /** Conecta (o reconecta a otra IP). Lanza IllegalArgumentException si [ip] no es un host válido. */
-    fun conectar(ip: String, puerto: Int = PUERTO) {
+    fun conectar(ip: String, puerto: Int) {
         val url = HttpUrl.Builder().scheme("http").host(ip).port(puerto).build()   // OkHttp lo abre como ws://
         synchronized(candado) {
             desconectar()
@@ -84,7 +91,7 @@ class ClienteDeLaMaquina(
         }
     }
 
-    fun desconectar() {
+    override fun desconectar() {
         synchronized(candado) {
             trabajo?.cancel()
             trabajo = null

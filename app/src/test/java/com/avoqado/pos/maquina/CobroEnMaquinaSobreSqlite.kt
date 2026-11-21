@@ -59,6 +59,9 @@ internal open class CobroEnMaquinaSobreSqlite : CobroEnMaquinaDao, AutoCloseable
 
     override suspend fun porReferencia(referenceCC: String) = fila(referenceCC)
 
+    /** Una sola lectura: sin un reloj que sondee (con `runTest` un sondeo infinito no termina nunca). */
+    override fun observar(referenceCC: String) = kotlinx.coroutines.flow.flowOf(fila(referenceCC))
+
     override suspend fun bloqueanLaVenta(llaveDeVenta: String): Int =
         preparar(CobroEnMaquinaSql.BLOQUEAN_LA_VENTA, "llaveDeVenta" to llaveDeVenta).use { st ->
             st.executeQuery().let { it.next(); it.getInt(1) }

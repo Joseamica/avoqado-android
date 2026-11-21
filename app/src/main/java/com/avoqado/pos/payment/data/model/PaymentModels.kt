@@ -32,6 +32,9 @@ sealed interface ColaDelCobro {
 
     /** `pos_sync_intents` (intent `PAY_CASH` de una mesa abierta sin red). */
     data class Outbox(val intentId: String) : ColaDelCobro
+
+    /** `cobros_en_maquina` (C5): un cobro de la máquina de efectivo; sube por su propia cola con el folio de la máquina. */
+    data class Maquina(val referenceCC: String) : ColaDelCobro
 }
 
 /** Lo que la pantalla de resultado dice de un cobro encolado, en vivo. */

@@ -11,6 +11,10 @@ interface CobroEnMaquinaDao {
     @Query(CobroEnMaquinaSql.POR_REFERENCIA)
     suspend fun porReferencia(referenceCC: String): CobroEnMaquinaEntity?
 
+    /** C5: la fila en vivo (Room la vuelve a emitir cuando cambia la tabla): la pantalla de resultado, sin sondear. */
+    @Query(CobroEnMaquinaSql.POR_REFERENCIA)
+    fun observar(referenceCC: String): kotlinx.coroutines.flow.Flow<CobroEnMaquinaEntity?>
+
     /** Para la caja (C5): mientras dé > 0, la misma venta tampoco se cobra con tarjeta (R2#1). */
     @Query(CobroEnMaquinaSql.BLOQUEAN_LA_VENTA)
     suspend fun bloqueanLaVenta(llaveDeVenta: String): Int

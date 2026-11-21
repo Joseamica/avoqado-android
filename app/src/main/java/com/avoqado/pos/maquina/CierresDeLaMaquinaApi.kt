@@ -9,6 +9,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
+import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -41,13 +42,32 @@ class CierresDeLaMaquinaApi @Inject constructor(private val client: OkHttpClient
 
     /** `GET …/shifts/business-current` (R3#8): `{ shiftId, startTime }` o `null`. */
     suspend fun turnoDelNegocio(venueId: String) =
-        llamar(Request.Builder().get(), "/mobile/venues/$venueId/shifts/business-current", credencial = null)
+        llamar(Request.Builder().get(), "/mobile/venues/$venueId/shifts/business-current", credencial = null, cliente = rapido)
 
-    private suspend fun llamar(pedido: Request.Builder, ruta: String, credencial: String?): RespuestaDelServidor =
+    /**
+     * `POST …/cash-machine/quote` (R4-2): el total del carrito ANTES del `paycash`, sin escribir nada. Se rinde rápido: sin
+     * respuesta, el cobro sigue con el total local (sin red, R4-2), así que esperar 30 s sólo congelaría al cliente.
+     */
+    suspend fun cotizar(venueId: String, pedido: JSONObject) =
+        llamar(Request.Builder().post(pedido.toString().toRequestBody(JSON)), "/mobile/venues/$venueId/cash-machine/quote", null, rapido)
+
+    /** `POST …/cash-machine/doubts/:referenceCC/resolve` (R4-4): el gerente, con SU sesión (`cash-machine:resolve`). */
+    suspend fun resolverDuda(venueId: String, referenceCC: String, cuerpo: JSONObject) =
+        llamar(Request.Builder().post(cuerpo.toString().toRequestBody(JSON)), "/mobile/venues/$venueId/cash-machine/doubts/$referenceCC/resolve", null)
+
+    /** «Rendirse rápido» de la ruta del dinero (`offline-first-y-hub-lan.md` §2.5): 5 s para conectar, 10 s en total. */
+    private val rapido by lazy { client.newBuilder().connectTimeout(5, TimeUnit.SECONDS).callTimeout(10, TimeUnit.SECONDS).build() }
+
+    private suspend fun llamar(
+        pedido: Request.Builder,
+        ruta: String,
+        credencial: String?,
+        cliente: OkHttpClient = client,
+    ): RespuestaDelServidor =
         withContext(Dispatchers.IO) {
             pedido.url(baseUrl + ruta).header(ForbiddenInterceptor.LOCAL_ERROR_HEADER, "1")
             credencial?.let { pedido.header(CREDENCIAL, it) }
-            client.newCall(pedido.build()).execute().use { RespuestaDelServidor(it.code, it.body?.string().orEmpty()) }
+            cliente.newCall(pedido.build()).execute().use { RespuestaDelServidor(it.code, it.body?.string().orEmpty()) }
         }
 
     companion object {

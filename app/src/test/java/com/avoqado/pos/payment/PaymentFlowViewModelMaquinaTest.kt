@@ -1,0 +1,319 @@
+package com.avoqado.pos.payment
+
+import com.avoqado.pos.MainDispatcherRule
+import com.avoqado.pos.areatickets.data.AreaTicketRepository
+import com.avoqado.pos.cashdrawer.data.CashDrawerRepository
+import com.avoqado.pos.core.data.local.SecureStorage
+import com.avoqado.pos.core.domain.RoleManager
+import com.avoqado.pos.core.domain.printing.ComandaDispatcher
+import com.avoqado.pos.loyalty.data.PremioPorAplicar
+import com.avoqado.pos.maquina.AjustesDeLaMaquinaTest
+import com.avoqado.pos.maquina.BovedaDeLaMaquina
+import com.avoqado.pos.maquina.CierresDeLaMaquinaApi
+import com.avoqado.pos.maquina.CobroEnMaquinaSobreSqlite
+import com.avoqado.pos.maquina.Desenlace
+import com.avoqado.pos.maquina.EstadoDelCobro
+import com.avoqado.pos.maquina.ResolucionDelGerente
+import com.avoqado.pos.maquina.EstadoDelIntento
+import com.avoqado.pos.maquina.MaquinaDeEfectivo
+import com.avoqado.pos.maquina.MaquinaDeEfectivoPrefs
+import com.avoqado.pos.maquina.MaquinaDeEfectivoTest
+import com.avoqado.pos.maquina.RespuestaDelServidor
+import com.avoqado.pos.maquina.SubidaDeLaMaquina
+import com.avoqado.pos.maquina.TEXTO_CON_PREMIO
+import com.avoqado.pos.maquina.TEXTO_SOLO_VENTA_COMPLETA
+import com.avoqado.pos.maquina.TurnoDelNegocio
+import com.avoqado.pos.payment.data.CashPaymentRepository
+import com.avoqado.pos.payment.data.OrderRepository
+import com.avoqado.pos.payment.data.PaymentSyncService
+import com.avoqado.pos.payment.data.TerminalListResult
+import com.avoqado.pos.payment.data.TerminalPaymentService
+import com.avoqado.pos.payment.data.model.ColaDelCobro
+import com.avoqado.pos.payment.data.model.PaymentFlowState
+import com.avoqado.pos.payment.data.model.PaymentMethod
+import com.avoqado.pos.payment.domain.ManualPaymentChoice
+import com.avoqado.pos.payment.domain.ManualPaymentMethod
+import com.avoqado.pos.payment.presentation.PaymentFlowViewModel
+import com.avoqado.pos.pos.data.model.CartItem
+import com.avoqado.pos.pos.data.model.CartItemType
+import com.avoqado.pos.pos.presentation.cart.CartState
+import com.avoqado.pos.printing.data.ComandaPrinter
+import com.avoqado.pos.printing.data.ComandasPendientesStore
+import com.avoqado.pos.printing.data.PrinterService
+import com.avoqado.pos.printing.data.ReintentoDeComanda
+import com.avoqado.pos.printing.data.ReporteDeComandas
+import com.avoqado.pos.printing.routing.PrintConfig
+import com.avoqado.pos.printing.routing.PrintConfigRepository
+import com.avoqado.pos.tables.data.TableSession
+import com.avoqado.pos.tpvsettings.data.TpvSettings
+import com.avoqado.pos.tpvsettings.data.TpvSettingsRepository
+import io.mockk.coEvery
+import io.mockk.coVerify
+import io.mockk.every
+import io.mockk.mockk
+import io.mockk.verify
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.test.TestScope
+import kotlinx.coroutines.test.advanceTimeBy
+import kotlinx.coroutines.test.runCurrent
+import kotlinx.coroutines.test.runTest
+import org.json.JSONObject
+import org.junit.After
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Rule
+import org.junit.Test
+import java.util.Random
+
+/**
+ * C5 (R4-5, R5#4, R2#1, R3#1): «Cobrar» en la PC con la máquina. Con la casilla y la credencial, el punto común de cobro sólo
+ * ofrece la máquina y la tarjeta; la orden NO nace en el SERVIDOR antes del cierre; no pide caja ni abre el cajón. Sin la máquina
+ * todo queda como hoy. La máquina, con el canal falso y el DAO sobre SQLite de verdad.
+ */
+@OptIn(ExperimentalCoroutinesApi::class)
+class PaymentFlowViewModelMaquinaTest {
+
+    @get:Rule
+    val mainDispatcherRule = MainDispatcherRule()
+
+    private val orderRepository = mockk<OrderRepository>(relaxed = true)
+    private val cashPaymentRepository = mockk<CashPaymentRepository>(relaxed = true)
+    private val terminalPaymentService = mockk<TerminalPaymentService>(relaxed = true)
+    private val tpvSettingsRepository = mockk<TpvSettingsRepository>(relaxed = true)
+    private val cashDrawerRepository = mockk<CashDrawerRepository>(relaxed = true)
+    private val printerService = mockk<PrinterService>(relaxed = true)
+    private val secureStorage = mockk<SecureStorage>(relaxed = true)
+    private val printConfigRepository = mockk<PrintConfigRepository>(relaxed = true)
+    private val areaTicketRepository = mockk<AreaTicketRepository>(relaxed = true)
+
+    private val canal = MaquinaDeEfectivoTest.CanalFalso()
+    private val dao = CobroEnMaquinaSobreSqlite()
+    private val prefs = MaquinaDeEfectivoPrefs(AjustesDeLaMaquinaTest.contextoConPreferencias())
+    private val boveda = object : BovedaDeLaMaquina {
+        override fun guardar(credencial: String) = Unit
+        override fun leer(): String? = "cred-1"
+        override fun borrar() = Unit
+    }
+    private val api = mockk<CierresDeLaMaquinaApi>()
+    private val turno = mockk<TurnoDelNegocio> {
+        coEvery { refrescar() } returns "turno-1"
+        every { turnoActual() } returns "turno-1"
+    }
+
+    private val cafe = CartItem(id = "cafe", type = CartItemType.ProductItem("prod-cafe"), name = "Café", unitPrice = 18_000)
+
+    @After fun cerrar() = dao.close()
+
+    private fun TestScope.vm(activa: Boolean = true): PaymentFlowViewModel {
+        prefs.guardar("192.168.1.50", activa)
+        every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings(showReviewScreen = false, showTipScreen = false)
+        coEvery { terminalPaymentService.fetchOnlineTerminals(any()) } returns TerminalListResult.Success(emptyList())
+        every { secureStorage.venueName } returns "La Galeterie"
+        every { secureStorage.userId } returns "user-1"
+        every { secureStorage.venueId } returns "venue-1"
+        every { secureStorage.venuePermissions } returns listOf("payments:create")
+        every { areaTicketRepository.session.current() } returns null
+        every { printConfigRepository.getCurrentConfig() } returns PrintConfig()
+        coEvery { api.cotizar("venue-1", any()) } answers {
+            val p = secondArg<JSONObject>()
+            val sale = p.getJSONArray("items").getJSONObject(0).optInt("quantity", 1) * 18_000
+            RespuestaDelServidor(200, JSONObject().put("quoteId", "q-1").put("saleCents", sale).put("tipCents", p.optInt("tip"))
+                .put("totalCents", sale + p.optInt("tip")).put("cobrableEnMaquina", true).toString())
+        }
+        val maquina = MaquinaDeEfectivo(
+            prefs, boveda, dao, api, mockk<SubidaDeLaMaquina>(relaxed = true) { every { aviso } returns kotlinx.coroutines.flow.MutableStateFlow(null) }, turno, RoleManager(secureStorage), printerService,
+            secureStorage, canal, backgroundScope, { testScheduler.currentTime }, Random(7),
+        )
+        return PaymentFlowViewModel(
+            orderRepository = orderRepository,
+            cashPaymentRepository = cashPaymentRepository,
+            tenderTypeRepository = mockk(relaxed = true),
+            terminalPaymentService = terminalPaymentService,
+            tpvSettingsRepository = tpvSettingsRepository,
+            paymentSyncService = mockk<PaymentSyncService>(relaxed = true),
+            cashDrawerRepository = cashDrawerRepository,
+            kdsRepository = mockk(relaxed = true),
+            kdsOrderBus = mockk(relaxed = true),
+            printerService = printerService,
+            secureStorage = secureStorage,
+            comandasPendientesStore = ComandasPendientesStore(AlmacenEnMemoria()),
+            replayDeComandas = mockk(relaxed = true),
+            comandaDispatcher = ComandaDispatcher(
+                printConfigRepository,
+                ReintentoDeComanda(mockk<ComandaPrinter>(relaxed = true), reporteDeComandas = mockk<ReporteDeComandas>(relaxed = true)),
+                printerService,
+            ),
+            tableSession = TableSession(),
+            syncOutbox = mockk(relaxed = true),
+            customerDisplay = com.avoqado.pos.customerdisplay.CustomerDisplayState(),
+            areaTicketRepository = areaTicketRepository,
+            cancelacionDeCobro = mockk(relaxed = true),
+            savedStateHandle = androidx.lifecycle.SavedStateHandle(),
+            maquinaDeEfectivo = maquina,
+        )
+    }
+
+    private fun status(ref: String, due: Int, credit: Int = 0, change: Int = 0, cobrando: Boolean = true, estado: String? = null) =
+        JSONObject().put("comando", "status").put("cobrando", cobrando).put("Status", estado ?: JSONObject.NULL)
+            .put("referenceCC", ref).put("Credit", credit / 100.0).put("Due", due / 100.0)
+            .put("changeDispensed", change / 100.0).put("changeBar", "022220222000").toString()
+
+    /** Abre el cobro y lo manda a la máquina; devuelve el folio. */
+    private fun TestScope.mandarALaMaquina(vm: PaymentFlowViewModel, cart: CartState = CartState(items = listOf(cafe))): String {
+        vm.startPaymentFlow(cart)
+        runCurrent()
+        vm.cobrarConMaquina()
+        runCurrent()
+        return requireNotNull(canal.paycash()) { "no salió el paycash" }.getString("referenceCC")
+    }
+
+    @Test
+    fun `sin la maquina activa todo queda como hoy`() = runTest {
+        val vm = vm(activa = false)
+        vm.startPaymentFlow(CartState(items = listOf(cafe)))
+        runCurrent()
+
+        assertNull(vm.maquina!!.vista.value)
+        vm.confirmCashPreset(20_000)
+        verify { cashPaymentRepository.processCashPayment(any(), 20_000) }
+    }
+
+    @Test
+    fun `P1 con la maquina activa el efectivo a mano, Personalizado y Ya pago de otra forma no cobran`() = runTest {
+        val vm = vm()
+        vm.startPaymentFlow(CartState(items = listOf(cafe)))
+        runCurrent()
+        assertTrue(vm.maquina!!.vista.value!!.fila.habilitada)
+
+        vm.selectPaymentMethod(PaymentMethod.CASH)
+        vm.confirmCashPreset(20_000)
+        vm.confirmCashCustom(18_000)
+        vm.confirmManualChoice(ManualPaymentChoice.Fixed(ManualPaymentMethod.entries.first()))
+        runCurrent()
+
+        verify(exactly = 0) { cashPaymentRepository.processCashPayment(any(), any()) }
+        assertTrue(vm.state.value is PaymentFlowState.SelectingPaymentMethod)
+    }
+
+    @Test
+    fun `P1 la maquina congela el carrito antes del paycash y la orden NO nace en el servidor`() = runTest {
+        val vm = vm()
+        val cart = CartState(items = listOf(cafe))
+
+        val ref = mandarALaMaquina(vm, cart)
+
+        val fila = dao.fila(ref)!!
+        assertEquals(EstadoDelIntento.EN_CURSO, fila.estado)
+        assertEquals(cart.identidadDeVenta, fila.llaveDeVenta)
+        assertEquals("prod-cafe", JSONObject(fila.pedidoJson).getJSONArray("items").getJSONObject(0).getString("productId"))
+        assertEquals(18_000, fila.dueCents)
+        coVerify(exactly = 0) { orderRepository.createOrder(any(), any(), any(), any(), any(), capturedVenueId = any()) }
+        verify(exactly = 0) { cashPaymentRepository.processCashPayment(any(), any()) }
+    }
+
+    @Test
+    fun `P1 el PAGADO de la maquina cobra la venta en efectivo, sin caja y sin abrir el cajon`() = runTest {
+        val vm = vm()
+        val ref = mandarALaMaquina(vm)
+
+        canal.llega(status(ref, 18_000))
+        runCurrent()
+        canal.llega(status(ref, 18_000, credit = 20_000, change = 2_000, cobrando = false, estado = "Pago Completado"))
+        runCurrent()
+
+        val exito = vm.state.value as PaymentFlowState.Success
+        assertEquals(18_000, exito.totalAmount)
+        assertEquals(PaymentMethod.CASH, exito.method)
+        assertEquals(2_000, exito.changeAmount)
+        assertEquals(ColaDelCobro.Maquina(ref), exito.colaDelCobro)
+        assertEquals(0, vm.consumeCompletion()!!.remainingBalanceCents)
+        coVerify(exactly = 0) { printerService.openCashDrawer(any()) }
+        coVerify(exactly = 0) { cashDrawerRepository.addCashSale(any(), any(), any(), any(), any(), llaveDelCobro = any()) }
+    }
+
+    @Test
+    fun `P1 R2#1 con la venta esperando a la maquina la tarjeta no sale`() = runTest {
+        val vm = vm()
+        val ref = mandarALaMaquina(vm)
+        advanceTimeBy(3_001)   // el acuse nunca llegó
+        runCurrent()
+        assertEquals(EstadoDelIntento.ESPERANDO, dao.fila(ref)!!.estado)
+        assertTrue(vm.maquina!!.vista.value!!.ventaEnDuda)
+
+        vm.selectPaymentMethod(PaymentMethod.CARD)
+        runCurrent()
+
+        assertTrue(vm.state.value is PaymentFlowState.SelectingPaymentMethod)
+    }
+
+    @Test
+    fun `R4-4 el gerente resuelve con su sesion que la maquina cobro y la venta queda cobrada`() = runTest {
+        val vm = vm()
+        every { secureStorage.venuePermissions } returns listOf("payments:create", "cash-machine:resolve")
+        coEvery { api.resolverDuda("venue-1", any(), any()) } returns RespuestaDelServidor(200, "{}")
+        mandarALaMaquina(vm)
+        advanceTimeBy(3_001)
+        runCurrent()
+        assertTrue(vm.maquina!!.vista.value!!.cobro is EstadoDelCobro.Esperando)
+
+        vm.maquina!!.resolver(ResolucionDelGerente(Desenlace.PAGADO, 20_000, 2_000, null, null, "Ticket 0042"))
+        runCurrent()
+
+        val exito = vm.state.value as PaymentFlowState.Success
+        assertEquals(18_000 to 2_000, exito.totalAmount to exito.changeAmount)
+    }
+
+    @Test
+    fun `el cliente cancela, recoge su dinero y la venta se puede pagar con tarjeta`() = runTest {
+        val vm = vm()
+        val ref = mandarALaMaquina(vm)
+        canal.llega(status(ref, 18_000))
+        runCurrent()
+        canal.llega(status(ref, 18_000, credit = 5_000))
+        runCurrent()
+
+        vm.maquina!!.cancelarPorElCliente()
+        runCurrent()
+        assertEquals("1", JSONObject(canal.enviados.last()).getString("cancelvalue"))
+        canal.llega(status(ref, 18_000, credit = 5_000, change = 5_000, cobrando = false, estado = "Transacción Cancelada"))
+        runCurrent()
+        assertEquals(Desenlace.CANCELADO, (vm.maquina!!.vista.value!!.cobro as EstadoDelCobro.Cerrado).desenlace)
+        assertTrue("CANCELADO no cobra la venta", vm.state.value is PaymentFlowState.SelectingPaymentMethod)
+
+        vm.maquina!!.listo()
+        runCurrent()
+        assertNull(vm.maquina!!.vista.value!!.cobro)
+        assertTrue(!vm.maquina!!.vista.value!!.ventaEnDuda)
+        vm.selectPaymentMethod(PaymentMethod.CARD)
+        runCurrent()
+        assertTrue(vm.state.value is PaymentFlowState.SelectingTerminal)
+    }
+
+    @Test
+    fun `R5#4 un carrito con premio de sellos no se manda a la maquina y lo dice`() = runTest {
+        val vm = vm()
+        vm.startPaymentFlow(CartState(items = listOf(cafe), pendingStampReward = PremioPorAplicar("premio-1", "Café gratis", "FREE_PRODUCT", null)))
+        runCurrent()
+
+        vm.cobrarConMaquina()
+        runCurrent()
+
+        assertEquals(TEXTO_CON_PREMIO, vm.maquina!!.vista.value!!.aviso)
+        assertTrue(dao.todas().isEmpty())
+        assertNull(canal.paycash())
+    }
+
+    @Test
+    fun `una venta dividida no se cobra en la maquina`() = runTest {
+        val vm = vm()
+        vm.setSplitConfig("EQUALPARTS", numberOfParts = 2)
+        vm.startPaymentFlow(CartState(items = listOf(cafe)))
+        runCurrent()
+
+        assertEquals(TEXTO_SOLO_VENTA_COMPLETA, vm.maquina!!.vista.value!!.fila.motivo)
+        vm.cobrarConMaquina()
+        runCurrent()
+        assertNull(canal.paycash())
+    }
+}

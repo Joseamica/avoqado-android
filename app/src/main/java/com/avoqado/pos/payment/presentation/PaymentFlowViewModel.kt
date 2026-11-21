@@ -282,7 +282,19 @@ class PaymentFlowViewModel @Inject constructor(
      * ANTES de crear la venta. Default por el mismo patrón que [refrescoDelCatalogo]: Hilt y Guice inyectan siempre el singleton.
      */
     private val managerOverrideCoordinator: com.avoqado.pos.core.data.network.ManagerOverrideCoordinator? = null,
+    /**
+     * C5: la máquina de efectivo de esta PC (WINDOWS). Default por el mismo patrón que [refrescoDelCatalogo]: Hilt y Guice inyectan
+     * siempre el singleton; sin la casilla y la credencial ([com.avoqado.pos.maquina.MaquinaDeEfectivo.activa]) todo queda como hoy.
+     */
+    private val maquinaDeEfectivo: com.avoqado.pos.maquina.MaquinaDeEfectivo? = null,
 ) : ViewModel() {
+    /**
+     * C5: la máquina vista desde este cobro. Su `vista` es null sin la máquina activa en esta PC (todo como hoy); con ella, el punto
+     * común de cobro sólo ofrece la máquina y la tarjeta (R4-5).
+     */
+    val maquina: com.avoqado.pos.maquina.CajaConMaquina? =
+        maquinaDeEfectivo?.let { com.avoqado.pos.maquina.CajaConMaquina(it, viewModelScope) { c -> alPagarEnLaMaquina(c) } }
+
     private val cuentaDeTarjetas = MutableStateFlow(false)
     val metodosHabilitados: StateFlow<Boolean> by lazy {
         combine(cuentaDeTarjetas, connectivityMonitor?.isConnected ?: flowOf(false),
@@ -516,6 +528,7 @@ class PaymentFlowViewModel @Inject constructor(
     private fun sincronizacionDe(cola: ColaDelCobro?): Flow<SincronizacionDelCobro> = when (cola) {
         is ColaDelCobro.Pagos -> cashPaymentRepository.observarEstado(cola.id).map(SincronizacionDelCobro::dePago)
         is ColaDelCobro.Outbox -> syncOutbox.observarEstado(cola.intentId).map(SincronizacionDelCobro::deIntent)
+        is ColaDelCobro.Maquina -> maquinaDeEfectivo?.sincronizacion(cola.referenceCC) ?: flowOf(SincronizacionDelCobro.PENDIENTE)
         // Encolado sin fila que mirar: se queda como hasta hoy, pendiente.
         null -> flowOf(SincronizacionDelCobro.PENDIENTE)
     }
@@ -2153,7 +2166,8 @@ class PaymentFlowViewModel @Inject constructor(
             val pagoDelServidor = when (cola) {
                 is ColaDelCobro.Pagos -> cashPaymentRepository.pagoDelServidor(cola.id)
                 is ColaDelCobro.Outbox -> syncOutbox.pagoDelServidor(cola.intentId)
-                null -> null
+                // La venta de la máquina lleva su cliente en el carrito congelado; ligarlo después no se ofrece (1a).
+                is ColaDelCobro.Maquina, null -> null
             }
             if (pagoDelServidor == null) {
                 if (generacion == paymentGeneration) {
@@ -2509,6 +2523,7 @@ class PaymentFlowViewModel @Inject constructor(
         if (venue == secureStorage.venueId) filaDeSaldo.value = conductaDeSaldo()
     }
     suspend fun cobrarConSaldo(identificada: TarjetaIdentificada, montoCents: Int): DesenlaceDeCobro {
+        if (conMaquina()) return DesenlaceDeCobro.NoSalio(com.avoqado.pos.maquina.TEXTO_SOLO_MAQUINA_O_TARJETA).also { resultadoDeSaldo.value = it }
         if (bloqueoDeEntregaDeSaldo()) return DesenlaceDeCobro.NoSalio(TextosDeTarjetas.NO_SE_PUDO_RECUPERAR).also { resultadoDeSaldo.value = it }
         if (!otrosDuenosPermitenCobrar()) return DesenlaceDeCobro.NoSalio(TextosDeTarjetas.COMPROBANDO_COBRO).also { resultadoDeSaldo.value = it }
         if (cobrandoSaldo || llaveDelSaldo != null) return resultadoDeSaldo.value ?: DesenlaceDeCobro.Incierto
@@ -2932,6 +2947,9 @@ class PaymentFlowViewModel @Inject constructor(
         // 🔑 Aquí NO se guarda copia de la llave pendiente: la rama de TARJETA la lee VIVA, para
         // que resolverla a media venta («Volver a consultar») desbloquee de inmediato en vez de
         // obligar al cajero a salir y empezar otra. Medido en la D3 el 21-sep.
+        // C5: la máquina de efectivo (WINDOWS). Sin ella activa en esta PC, su vista queda null y nada cambia.
+        cierreDeLaMaquina = null
+        maquina?.abrir(ventaParaLaMaquina(cart))
         enterInitialState(amount)
     }
 
@@ -2947,6 +2965,78 @@ class PaymentFlowViewModel @Inject constructor(
         } else {
             _state.value = PaymentFlowState.SelectingPaymentMethod(amount)
         }
+    }
+
+    // MARK: - Máquina de efectivo (C5)
+
+    /** El `PAGADO` de la máquina que cobró ESTA venta (o el que confirmó un gerente): lo leen el cajón y el ticket. */
+    private var cierreDeLaMaquina: com.avoqado.pos.maquina.CierreEnPantalla? = null
+
+    /** R4-5: con la máquina activa en esta PC, el punto común de cobro sólo cobra con la máquina o con tarjeta. */
+    private fun conMaquina(): Boolean = maquina?.activa == true
+
+    /**
+     * La venta en pantalla, como la ve la máquina. «Nueva» = la máquina la puede cobrar: sin orden en el SERVIDOR (la orden nace
+     * con el cierre, R4-1), sin mesa, sin dividir, del cobro de siempre y sin vales ni cuenta de tarjetas.
+     */
+    private fun ventaParaLaMaquina(cart: CartState): com.avoqado.pos.maquina.VentaEnPantalla? {
+        val venue = secureStorage.venueId?.takeIf { it.isNotBlank() } ?: return null
+        return com.avoqado.pos.maquina.VentaEnPantalla(
+            venueId = venue,
+            llaveDeVenta = cart.identidadDeVenta,
+            conProductos = hasProductItems(cart),
+            ventaNueva = createdOrderId == null && mesaDelCobro == null && esPagoCompleto() && sesionDelCobro == null &&
+                origenDelCobro == com.avoqado.pos.payment.domain.OrigenDelCobro.NORMAL && !cuentaDeTarjetas.value,
+        )
+    }
+
+    /**
+     * «Efectivo en la máquina» (C5). Arma el MISMO cuerpo de `POST /orders` que la cola y se lo da a la máquina: ella lo cotiza y,
+     * si se puede, lo congela en `cobros_en_maquina` ANTES del `paycash`. La orden NO se crea aquí (R3#1): viaja con el cierre.
+     * No pide caja ni toca el cajón.
+     */
+    fun cobrarConMaquina() {
+        val caja = maquina ?: return
+        val vista = caja.vista.value ?: return
+        val cart = cartState ?: return
+        if (_state.value !is PaymentFlowState.SelectingPaymentMethod || isProcessingPayment || !vista.fila.habilitada) return
+        val venueId = secureStorage.venueId?.takeIf { it.isNotBlank() } ?: return
+        selectedMethod = PaymentMethod.CASH
+        manualMethod = null
+        selectedTender = null
+        val pedido = buildOrderRequest(cart).let { r ->
+            OrderRepository.buildCreateOrderPayload(
+                request = r,
+                staffId = selectedStaffId(),
+                customerId = attachedCustomerId,
+                orderType = r.orderType ?: "TAKEOUT",
+                // R5#4: el premio pendiente viaja para que la máquina (y el SERVIDOR) lo vean y no cobren.
+                stampRewardId = cart.pendingStampRewardId,
+            )
+        }
+        val venta = com.avoqado.pos.maquina.VentaPorCobrar(venueId, cart.identidadDeVenta, pedido, currentBaseAmount(), currentTipCents)
+        viewModelScope.launch { caja.cobrar(venta) }
+    }
+
+    /**
+     * El `PAGADO` de la máquina: la venta queda cobrada en efectivo (el cajero no tecleó nada: lo dijo la máquina), en la cola
+     * propia de la máquina, y sale su ticket. Una sola vez por folio ([com.avoqado.pos.maquina.CajaConMaquina]).
+     */
+    private fun alPagarEnLaMaquina(c: com.avoqado.pos.maquina.CierreEnPantalla) {
+        if (_state.value !is PaymentFlowState.SelectingPaymentMethod) return
+        selectedMethod = PaymentMethod.CASH
+        manualMethod = null
+        selectedTender = null
+        lastCashTenderedCents = c.creditCents
+        cierreDeLaMaquina = c
+        _state.value = PaymentFlowState.Success(
+            totalAmount = c.dueCents,
+            method = PaymentMethod.CASH,
+            changeAmount = c.changeDispensedCents,
+            isQueued = true,
+            colaDelCobro = com.avoqado.pos.payment.data.model.ColaDelCobro.Maquina(c.referenceCC),
+        )
+        autoPrintAfterPayment(PaymentMethod.CASH, c.changeDispensedCents)
     }
 
     fun submitRating(rating: Int?) {
@@ -2980,6 +3070,18 @@ class PaymentFlowViewModel @Inject constructor(
     }
 
     fun selectPaymentMethod(method: PaymentMethod) {
+        val caja = maquina?.takeIf { conMaquina() }
+        if (caja != null) {
+            // R4-5: el efectivo de esta PC es sólo el de la máquina. R2#1: con un intento de ESTA venta en la máquina (abierto, en
+            // duda o terminado), tampoco tarjeta: se lee el disco, no la pantalla.
+            if (method == PaymentMethod.CASH) return
+            viewModelScope.launch { if (!caja.bloqueaLaTarjeta()) elegirMetodo(method) }
+            return
+        }
+        elegirMetodo(method)
+    }
+
+    private fun elegirMetodo(method: PaymentMethod) {
         // D5 · B1: la mesa cobrada por la cola de mesas es sólo efectivo, aunque vuelva la red.
         if (method == PaymentMethod.CARD && (!origenDelCobro.permiteTarjeta || ventaRapidaEnCero() || cobroDeMesaSinRed())) return
         if (bloquearCuentaSinRed()) return
@@ -3044,6 +3146,8 @@ class PaymentFlowViewModel @Inject constructor(
     fun confirmManualChoice(choice: com.avoqado.pos.payment.domain.ManualPaymentChoice) {
         // Un pedido de plataforma o una cuenta cobrada con la copia (D12) se cobran SÓLO en efectivo puro (la pantalla ni lo ofrece).
         if (origenDelCobro.soloEfectivoPuro) return
+        // R4-5: con la máquina, «Ya pagó de otra forma» no existe en esta PC (ni su propina en cero).
+        if (conMaquina()) return
         if (isProcessingPayment || bloquearCuentaSinRed()) return
         when (choice) {
             is com.avoqado.pos.payment.domain.ManualPaymentChoice.Fixed -> {
@@ -3912,6 +4016,9 @@ class PaymentFlowViewModel @Inject constructor(
     }
 
     fun processCashPayment(cashReceivedCents: Int) {
+        // R4-5 (C5): con la máquina activa, el efectivo a mano, «Personalizado», F5 y «Ya pagó de otra forma» no cobran: el efectivo
+        // de esta PC es el de la máquina.
+        if (conMaquina()) return
         if (isProcessingPayment) return
         if (descartandoApartados) return
         if (bloquearCuentaSinRed()) return
@@ -6123,7 +6230,7 @@ class PaymentFlowViewModel @Inject constructor(
         // siguiente limpia `manualMethod`/`selectedTender` y la corrutina podría leerlos ya
         // vacíos — una transferencia abriría el cajón.
         val cobrado = (_state.value as? PaymentFlowState.Success)?.totalAmount ?: (currentBaseAmount() + currentTipCents)
-        val abrirCajon = CajonDeDinero.debeAbrirse(method, manualMethod, selectedTender, cobrado)
+        val abrirCajon = CajonDeDinero.debeAbrirse(method, manualMethod, selectedTender, cobrado, enMaquina = cierreDeLaMaquina != null)
         // Etapa 3 del KDS (3.4): se decide AQUÍ, como el cajón — la venta siguiente limpia estos campos. Una venta
         // ENCOLADA todavía no llega al servidor, que es quien arma la comanda de pantalla: sus estaciones «sólo
         // pantalla» salen en papel de respaldo.

@@ -12,6 +12,7 @@ import com.avoqado.pos.payment.data.model.PaymentMethod
  *   de `countsAsPhysicalCash`: un vale sí, Uber Eats no). Con un server viejo que no manda el
  *   dato, sólo abre el tipo de SISTEMA con base CASH — el lado seguro.
  * - Un cobro en $0 (cortesía total) no movió dinero: no abre.
+ * - Un cobro de la máquina de efectivo (C5): el dinero entró a la QuickPay, no al cajón; la PC de la máquina no tiene cajón.
  *
  * Espejo exacto en avoqado-ios: `Payment/CajonDeDinero.swift`.
  */
@@ -21,7 +22,9 @@ object CajonDeDinero {
         manualMethod: ManualPaymentMethod?,
         tender: TenderTypeOption?,
         montoCents: Int,
+        enMaquina: Boolean = false,
     ): Boolean {
+        if (enMaquina) return false
         if (method != PaymentMethod.CASH) return false
         if (manualMethod != null) return false
         if (montoCents <= 0) return false

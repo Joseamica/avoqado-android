@@ -69,6 +69,8 @@ class AppState @Inject constructor(
     private val cobrosEnMaquinaDao: com.avoqado.pos.maquina.CobroEnMaquinaDao? = null,
     /** C4: la cola propia de la máquina de efectivo arranca y para con la de los cobros. Default para las pruebas de JVM. */
     private val subidaDeLaMaquina: com.avoqado.pos.maquina.SubidaDeLaMaquina? = null,
+    /** C5: la máquina de efectivo arranca con la sesión (rescata lo de un proceso muerto y se conecta). Default para las pruebas de JVM. */
+    private val maquinaDeEfectivo: com.avoqado.pos.maquina.MaquinaDeEfectivo? = null,
 ) : ViewModel() {
 
     /**
@@ -562,6 +564,7 @@ class AppState @Inject constructor(
                 payLaterQueue?.start()
                 pendingGrantQueue?.start()
                 subidaDeLaMaquina?.start()
+                maquinaDeEfectivo?.arrancar()
                 startOfflineOutbox()
                 refreshPlanAndSettings(sesionNueva = true)
             }
@@ -603,6 +606,7 @@ class AppState @Inject constructor(
         payLaterQueue?.start()
         pendingGrantQueue?.start()
         subidaDeLaMaquina?.start()
+        maquinaDeEfectivo?.arrancar()
         startOfflineOutbox()
         // refreshTabs rearma una sola generación de inventario para esta sesión/venue.
         refreshTabs()
