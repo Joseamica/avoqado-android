@@ -324,6 +324,8 @@ class KDSViewModelTest {
             secondArg<List<com.avoqado.pos.kds.domain.PreparationLine>>().map { it.copy(preparation = com.avoqado.pos.kds.domain.PreparationCounts(READY = 1)) }
         }
         coEvery { preparacion.pendingKeys(any(), any()) } returns emptySet()
+        // Un mock relajado devuelve un objeto cualquiera como aviso: al leerlo como texto truena y la tablet cae a la copia del servidor.
+        every { preparacion.notice } returns kotlinx.coroutines.flow.MutableStateFlow<String?>(null)
         // La foto (sin red) todavía la trae «Preparando»; la cocina ya la dejó Lista en este aparato.
         val conTiempos = comanda("k5", 500).copy(preparationVersion = 1, items = listOf(KDSOrderItem(id = "i-k5", productName = "Pozole",
             quantity = 1, externalId = "sync:r:0", preparation = com.avoqado.pos.kds.domain.PreparationCounts(PREPARING = 1))))

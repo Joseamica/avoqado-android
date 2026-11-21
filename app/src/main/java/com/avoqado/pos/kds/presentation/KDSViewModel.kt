@@ -764,6 +764,7 @@ class KDSViewModel @Inject constructor(
     fun cerrarRecientes() {
         aperturaDeRecientes++
         lecturaDeRecientes++
+        _recientes.value = emptyList()
         estacionDeLaHoja = null
         _recientesAbierta.value = false
         _recientesLeyendo.value = false
