@@ -528,11 +528,12 @@ class PreparationDeliveryServiceTest {
             assertEquals("QUEUED", f.job().paperState)
             f.origins.remove("a") // «Marcar resuelta» sobre su rechazo borra la fila de la cola
             f.service.pass("v1")
-            assertEquals("CANCELLED", f.job().paperState); assertTrue(f.job().done)
+            assertEquals("CANCELLED", f.job().paperState)
             assertEquals(PreparationDeliveryService.AVISO_LIBERACION_SIN_CONFIRMAR, f.service.notice.value)
             coVerify(exactly = 0) { f.printer.reintentar(any(), any(), any()) }
             f.service.pass("v1")
-            assertEquals("no vuelve a mirarse", PreparationDeliveryService.AVISO_LIBERACION_SIN_CONFIRMAR, f.service.notice.value)
+            assertEquals("sigue diciendo su aviso", PreparationDeliveryService.AVISO_LIBERACION_SIN_CONFIRMAR, f.service.notice.value)
+            coVerify(exactly = 0) { f.printer.reintentar(any(), any(), any()) }
         } finally { f.service.stop() }
     }
     @Test fun `D16 si marcan resuelto el intent a media espera no imprime aunque haya impresora de respaldo`() = runTest {
@@ -607,5 +608,40 @@ class PreparationDeliveryServiceTest {
             assertEquals("la tarea de v1 no se tocó", "QUEUED", f.job().paperState)
             coVerify(exactly = 0) { f.printer.reintentar(any(), any(), any()) }
         } finally { f.service.stop() }
+    }
+    @Test fun `D16 si el intent desaparece a media pasada no imprime la liberacion`() = runTest {
+        // Sin confirmación de pantalla (no espera): hoy decidiría el papel en esta misma pasada con la impresora de respaldo.
+        val f = fixture(backgroundScope, screensFromServer = emptySet())
+        f.afterStatusRead[0] = { read -> if (read == 1) f.origins.remove("a") } // «Marcar resuelta» mientras manda por WiFi
+        try {
+            f.service.start("v1"); f.service.pass("v1")
+            f.afterStatusRead[0] = null
+            assertEquals("CANCELLED", f.job().paperState)
+            assertEquals(PreparationDeliveryService.AVISO_LIBERACION_SIN_CONFIRMAR, f.service.notice.value)
+            coVerify(exactly = 0) { f.printer.reintentar(any(), any(), any()) }
+        } finally { f.service.stop() }
+    }
+    @Test fun `D16 reimprimir sin intent no se cancela y sale el papel que se pidio`() = runTest {
+        val f = fixture(backgroundScope, screensFromServer = setOf("s"), manualPaper = true)
+        f.origins.remove("a") // la limpieza de ACKED viejos se llevó su intent
+        try {
+            f.service.start("v1"); f.service.pass("v1")
+            assertEquals("DONE", f.job().paperState)
+            coVerify(exactly = 1) { f.printer.reintentar(any(), any(), any()) }
+        } finally { f.service.stop() }
+    }
+    @Test fun `D16 la cancelacion sin intent vuelve a avisar tras cerrar la app`() = runTest {
+        val f = fixture(backgroundScope, screensFromServer = setOf("s"))
+        val key = "preparation:v1:delivery:a"
+        // La app se cerró justo después de guardar la cancelación, antes de que alguien viera el aviso.
+        f.records[key] = f.records.getValue(key).copy(json = json.encodeToString(PreparationDeliveryJob.serializer(),
+            f.job().copy(paperState = "CANCELLED", message = PreparationDeliveryService.AVISO_LIBERACION_SIN_CONFIRMAR)))
+        f.origins.remove("a")
+        val again = f.restart()
+        try {
+            again.start("v1"); again.pass("v1")
+            assertEquals(PreparationDeliveryService.AVISO_LIBERACION_SIN_CONFIRMAR, again.notice.value)
+            coVerify(exactly = 0) { f.printer.reintentar(any(), any(), any()) }
+        } finally { again.stop() }
     }
 }

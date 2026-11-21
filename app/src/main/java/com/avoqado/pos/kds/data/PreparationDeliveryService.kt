@@ -199,11 +199,11 @@ class PreparationDeliveryService @Inject constructor(
                     // «Marcar resuelta» sobre su rechazo) se cancela SIN papel y se avisa; nunca espera ni imprime un «LIBERAR» que
                     // el servidor pudo rechazar. Con evidencia de ACK (una pasada lo vio y luego se limpió el intent), sigue su camino.
                     val orphan = origin == null && job.paperState == "QUEUED" && job.paper != null
-                    if (orphan && job.phase != "ACKED") {
-                        save(row, job.copy(paperState = "CANCELLED", message = AVISO_LIBERACION_SIN_CONFIRMAR, done = true))
-                        enEspera.remove(job.intentId)
-                        _notice.value = AVISO_LIBERACION_SIN_CONFIRMAR
-                        return
+                    if (orphan && job.phase != "ACKED" && !job.manualPaper) { cancelWithoutIntent(row, job); return }
+                    // Codex r4 #4: ya cancelada así; cada pasada vuelve a decir su aviso (sobrevive a un cierre de la app), como las
+                    // tareas sin intent de siempre.
+                    if (origin == null && job.paperState == "CANCELLED" && job.message == AVISO_LIBERACION_SIN_CONFIRMAR) {
+                        _notice.value = AVISO_LIBERACION_SIN_CONFIRMAR; return
                     }
                     check(orphan || origin != null && origin.type == "KDS_ITEM_PROGRESS" && origin.staffId == job.staffId) {
                         "No se pudo confirmar la acción original. Lo guardado se conserva."
@@ -277,6 +277,8 @@ class PreparationDeliveryService @Inject constructor(
             val latestOrigin = database.syncIntentDao().preparationStatuses(job.venueId, listOf(job.intentId)).singleOrNull()
             // Rechazada a media pasada: la siguiente pasada (ya, no en 30 s) la cancela con su rechazo.
             if (latestOrigin?.status == SyncIntentEntity.STATUS_REJECTED) { wakeRequested = true; return }
+            // Codex r4 #1: el intent desapareció a media pasada («Marcar resuelta» sobre su rechazo): igual que la huérfana.
+            if (latestOrigin == null && job.phase != "ACKED" && !job.manualPaper) { cancelWithoutIntent(row, job); return }
             val work = job.paper!!
             val acknowledged = job.commands.groupBy { it.items.first().stationId }.filterValues { commands ->
                 commands.all { it.deliveryId in job.screenReceipts }
@@ -334,6 +336,17 @@ class PreparationDeliveryService @Inject constructor(
         if (job.message != null) _notice.value = job.message
         else if (_notice.value == original.message) _notice.value = null
         if (!waitingNow) enEspera.remove(job.intentId)
+    }
+
+    /**
+     * D16 (Codex r3 #1 y r4): una liberación automática en cola cuyo intent desapareció sin evidencia de ACK (alguien tocó
+     * «Marcar resuelta» sobre su rechazo): `CANCELLED`, SIN papel, con el aviso fijo. «Reimprimir» no entra: lo pidió una
+     * persona sobre un intent que no estaba rechazado. No queda `done`: cada pasada vuelve a decir el aviso.
+     */
+    private suspend fun cancelWithoutIntent(row: CachedPayloadEntity, job: PreparationDeliveryJob) {
+        save(row, job.copy(paperState = "CANCELLED", message = AVISO_LIBERACION_SIN_CONFIRMAR))
+        enEspera.remove(job.intentId)
+        _notice.value = AVISO_LIBERACION_SIN_CONFIRMAR
     }
 
     /**
