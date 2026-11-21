@@ -109,6 +109,7 @@ class AvoqadoDatabaseMigrationTest {
             AvoqadoDatabaseMigrations.MIGRATION_20_21,
             AvoqadoDatabaseMigrations.MIGRATION_21_22,
             AvoqadoDatabaseMigrations.MIGRATION_22_23,
+            AvoqadoDatabaseMigrations.MIGRATION_23_24,
         ).build().also { roomDb ->
             roomDb.openHelper.writableDatabase
         }

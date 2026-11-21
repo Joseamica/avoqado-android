@@ -23,10 +23,10 @@ data class VentaEnPantalla(
     /** Sin orden en el SERVIDOR, sin mesa, sin dividir, del cobro de siempre: la máquina sólo cobra carritos nuevos (R4-1). */
     val ventaNueva: Boolean,
     /**
-     * Codex código POS r5 #2: esta venta (por [llaveDeVenta]) tiene un cobro con tarjeta sin confirmar: la máquina no la cobra (serían dos
-     * cobros de la misma compra). Cubre la venta en memoria a la que la caja volvió sin su orden; la restaurada ya no llega ([restaurada]).
+     * Codex código POS r7 #1 (regla pegajosa): esta venta mandó alguna vez un cobro con tarjeta a la terminal
+     * ([com.avoqado.pos.pos.presentation.cart.CartState.intentoConTarjeta]). La máquina nunca la cobra: esa tarjeta pudo aprobarse tarde.
      */
-    val tarjetaSinConfirmar: Boolean = false,
+    val intentoConTarjeta: Boolean = false,
     /** Decisión A: la trajo «Restaurar» (o volvió ligada a su copia guardada): la máquina no la cobra. */
     val restaurada: Boolean = false,
     /** Decisión B: va ligada a una reserva o a una clase: la máquina no la cobra, con o sin internet. */
@@ -151,7 +151,7 @@ class CajaConMaquina(
             VistaDeLaMaquina(
                 fila = filaDeLaMaquina(
                     ahora, v.conProductos, v.ventaNueva, l.ventaEnDuda, cobroVivo = vivo(estado) || l.apartada,
-                    tarjetaSinConfirmar = v.tarjetaSinConfirmar, restaurada = v.restaurada, conReserva = v.conReserva,
+                    intentoConTarjeta = v.intentoConTarjeta, restaurada = v.restaurada, conReserva = v.conReserva,
                 ),
                 // Lo que decidió el gerente (o su incidencia) se ve en lugar de la duda.
                 cobro = mio.takeIf { l.resuelto == null && l.incidencia == null },
@@ -286,9 +286,9 @@ class CajaConMaquina(
         synchronized(candado) {
             val l = local.value
             val v = l.venta ?: return false
-            // Codex código POS r5 #2: la tarjeta de esta venta sigue sin confirmar. Decisión A: la trajo «Restaurar». La máquina no la aparta
-            // (se lee aquí, al tocar: la fila puede ir un cuadro atrás). La reserva la frena el pedido mismo, antes de cotizar.
-            if (l.enVuelo || l.miFolio != null || v.tarjetaSinConfirmar || v.restaurada) return false
+            // Codex código POS r7 #1: esta venta ya intentó la tarjeta. Decisión A: la trajo «Restaurar». La máquina no la aparta (se lee
+            // aquí, al tocar: la fila puede ir un cuadro atrás). La reserva la frena el pedido mismo, antes de cotizar.
+            if (l.enVuelo || l.miFolio != null || v.intentoConTarjeta || v.restaurada) return false
             val ficha = maquina.apartar(v.llaveDeVenta) ?: return false
             local.value = l.copy(aviso = null, apartada = true, enVuelo = true, ficha = ficha)
             return true

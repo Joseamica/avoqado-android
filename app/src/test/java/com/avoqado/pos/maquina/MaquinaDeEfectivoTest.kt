@@ -480,10 +480,10 @@ class MaquinaDeEfectivoTest {
 
     @Test
     fun `R5#9 el comprobante de diferencia sale del excedente del servidor, con el mismo folio`() {
-        assertNull("sin respuesta todavía", comprobanteDeLaMaquina(pagadoSubido, "LG"))
-        assertNull("sin excedente", comprobanteDeLaMaquina(pagadoSubido.copy(respuestaServidor = """{"outcome":"PAGADO","excedenteCents":0}"""), "LG"))
+        assertNull("sin respuesta todavía", comprobanteDeLaMaquina(pagadoSubido.conSuCierreFisico(), "LG"))
+        assertNull("sin excedente", comprobanteDeLaMaquina(pagadoSubido.copy(respuestaServidor = """{"outcome":"PAGADO","excedenteCents":0}""").conSuCierreFisico(), "LG"))
 
-        val c = comprobanteDeLaMaquina(pagadoSubido.copy(respuestaServidor = """{"outcome":"PAGADO","excedenteCents":500}""", aDeberCents = 500), "LG")!!
+        val c = comprobanteDeLaMaquina(pagadoSubido.copy(respuestaServidor = """{"outcome":"PAGADO","excedenteCents":500}""", aDeberCents = 500).conSuCierreFisico(), "LG")!!
 
         assertEquals("AQ000000000001", c.orderNumber)
         assertEquals(com.avoqado.pos.printing.receiptlayout.KIND_COMPROBANTE_DE_LA_MAQUINA, c.kind)
@@ -491,24 +491,24 @@ class MaquinaDeEfectivoTest {
             com.avoqado.pos.printing.receiptlayout.ReceiptCashMachine("AQ000000000001", 500, title = "COMPROBANTE DE DIFERENCIA"),
             c.cashMachine,
         )
-        assertNull("GUARDADO nunca", comprobanteDeLaMaquina(pagadoSubido.copy(estado = EstadoDelIntento.GUARDADO, creditCents = 5_000, changeDispensedCents = 0, aDeberCents = 5_000), "LG"))
-        assertEquals(1_000L, comprobanteDeLaMaquina(pagadoSubido.copy(estado = EstadoDelIntento.CANCELADO, creditCents = 5_000, changeDispensedCents = 4_000, aDeberCents = 1_000), "LG")!!.cashMachine!!.owedCents)
+        assertNull("GUARDADO nunca", comprobanteDeLaMaquina(pagadoSubido.copy(estado = EstadoDelIntento.GUARDADO, creditCents = 5_000, changeDispensedCents = 0, aDeberCents = 5_000).conSuCierreFisico(), "LG"))
+        assertEquals(1_000L, comprobanteDeLaMaquina(pagadoSubido.copy(estado = EstadoDelIntento.CANCELADO, creditCents = 5_000, changeDispensedCents = 4_000, aDeberCents = 1_000).conSuCierreFisico(), "LG")!!.cashMachine!!.owedCents)
         assertEquals("el desenlace del gerente sale de su respuesta", 700L,
-            comprobanteDeLaMaquina(pagadoSubido.copy(estado = EstadoDelIntento.RESUELTO, respuestaServidor = """{"outcome":"PAGADO","excedenteCents":700,"creditCents":20000}""", aDeberCents = 700), "LG")!!.cashMachine!!.owedCents)
-        val cambio = comprobanteDeLaMaquina(pagadoSubido.copy(aDeberCents = 500), "LG")!!
+            comprobanteDeLaMaquina(pagadoSubido.copy(estado = EstadoDelIntento.RESUELTO, respuestaServidor = """{"outcome":"PAGADO","excedenteCents":700,"creditCents":20000}""", aDeberCents = 700).conSuCierreFisico(), "LG")!!.cashMachine!!.owedCents)
+        val cambio = comprobanteDeLaMaquina(pagadoSubido.copy(aDeberCents = 500).conSuCierreFisico(), "LG")!!
         assertEquals("Codex r1 #13: también el cambio físico que no dio", 500L, cambio.cashMachine!!.owedCents)
         assertEquals("COMPROBANTE DE LA MÁQUINA", cambio.cashMachine!!.title)
     }
 
     @Test
     fun `P1 Codex r1 #13 la deuda vieja no se pierde detras de 60 cobros que no deben, y se pagina`() = runTest {
-        dao.insertar(pagadoSubido.copy(referenceCC = "AQ0000000000ZZ", creadoEn = 0, creditCents = 10_000, dueCents = 8_000, saleCents = 8_000, changeDispensedCents = 1_500, aDeberCents = 500))
-        (1..60).forEach { i -> dao.insertar(pagadoSubido.copy(referenceCC = "AQ" + i.toString().padStart(12, '0'), creadoEn = i.toLong())) }
+        dao.insertarCerrada(pagadoSubido.copy(referenceCC = "AQ0000000000ZZ", creadoEn = 0, creditCents = 10_000, dueCents = 8_000, saleCents = 8_000, changeDispensedCents = 1_500, aDeberCents = 500))
+        (1..60).forEach { i -> dao.insertarCerrada(pagadoSubido.copy(referenceCC = "AQ" + i.toString().padStart(12, '0'), creadoEn = i.toLong())) }
         val m = maquina()
 
         assertEquals(listOf("AQ0000000000ZZ" to 500), m.comprobantes().map { it.first.referenceCC to it.second })
         assertEquals(1, m.cuantosComprobantes())
-        (1..60).forEach { i -> dao.insertar(pagadoSubido.copy(referenceCC = "AQD" + i.toString().padStart(11, '0'), creadoEn = 100L + i, aDeberCents = 100)) }
+        (1..60).forEach { i -> dao.insertarCerrada(pagadoSubido.copy(referenceCC = "AQD" + i.toString().padStart(11, '0'), creadoEn = 100L + i, aDeberCents = 100)) }
         assertEquals(50, m.comprobantes().size)
         assertEquals(61, m.cuantosComprobantes())
         assertEquals("con «Ver más» llega a la vieja", "AQ0000000000ZZ", m.comprobantes(limite = 100).last().first.referenceCC)
@@ -516,10 +516,10 @@ class MaquinaDeEfectivoTest {
 
     @Test
     fun `los comprobantes son los de la sucursal que deben algo y se reimprimen`() = runTest {
-        dao.insertar(pagadoSubido.copy(respuestaServidor = """{"outcome":"PAGADO","excedenteCents":500}""", aDeberCents = 500))
-        dao.insertar(pagadoSubido.copy(referenceCC = "AQ000000000002", respuestaServidor = """{"outcome":"PAGADO","excedenteCents":0}"""))
-        dao.insertar(pagadoSubido.copy(referenceCC = "AQ000000000003", estado = EstadoDelIntento.CANCELADO, creditCents = 5_000, changeDispensedCents = 0, creadoEn = 2, aDeberCents = 5_000))
-        dao.insertar(pagadoSubido.copy(referenceCC = "AQ000000000004", venueId = "venue-2", respuestaServidor = """{"outcome":"PAGADO","excedenteCents":900}""", aDeberCents = 900))
+        dao.insertarCerrada(pagadoSubido.copy(respuestaServidor = """{"outcome":"PAGADO","excedenteCents":500}""", aDeberCents = 500))
+        dao.insertarCerrada(pagadoSubido.copy(referenceCC = "AQ000000000002", respuestaServidor = """{"outcome":"PAGADO","excedenteCents":0}"""))
+        dao.insertarCerrada(pagadoSubido.copy(referenceCC = "AQ000000000003", estado = EstadoDelIntento.CANCELADO, creditCents = 5_000, changeDispensedCents = 0, creadoEn = 2, aDeberCents = 5_000))
+        dao.insertarCerrada(pagadoSubido.copy(referenceCC = "AQ000000000004", venueId = "venue-2", respuestaServidor = """{"outcome":"PAGADO","excedenteCents":900}""", aDeberCents = 900))
         coEvery { impresora.imprimirOriginal(any()) } returns PrinterService.PrintOutcome.Printed(1)
         coEvery { impresora.manualPrintReceipt(any()) } returns PrinterService.PrintOutcome.Printed(1)
         val m = maquina()
@@ -549,8 +549,8 @@ class MaquinaDeEfectivoTest {
      */
     @Test
     fun `P1 Codex POS r5 #1 un original que fallo al cerrar el trabajo ya no vuelve a salir como original`() = runTest {
-        dao.insertar(pagadoSubido.copy(estado = EstadoDelIntento.CANCELADO, creditCents = 5_000, changeDispensedCents = 3_000, aDeberCents = 2_000))
-        dao.insertar(pagadoSubido.copy(referenceCC = "AQ000000000002", subido = false))
+        dao.insertarCerrada(pagadoSubido.copy(estado = EstadoDelIntento.CANCELADO, creditCents = 5_000, changeDispensedCents = 3_000, aDeberCents = 2_000))
+        dao.insertarCerrada(pagadoSubido.copy(referenceCC = "AQ000000000002", subido = false))
         val windows = PrinterService.PrintOutcome.Failed("Error de impresión: La impresora «POS-80» no recibió el ticket completo")
         coEvery { impresora.imprimirOriginal(any()) } returns windows
         val copias = mutableListOf<com.avoqado.pos.printing.data.model.ReceiptData>()
@@ -671,7 +671,11 @@ class MaquinaDeEfectivoTest {
     @Test
     fun `P1 Codex POS r5 #3 el cierre fisico que dio el cambio gana sobre la resolucion en cero - no hay deuda en papel, Revisar en el panel`() = runTest {
         resueltaPorElGerente("AQ000000000080")
-        resueltaPorElGerente("AQ000000000081")   // la de control: no llegó nada más de la máquina
+        // La de control: el cierre físico dice lo mismo que la resolución ($0 de cambio). Codex código POS r7: sin cierre físico no hay deuda
+        // en papel (el cambio no consta: lo tecleó un gerente), así que la de control lo trae.
+        resueltaPorElGerente("AQ000000000081")
+        assertTrue(dao.anotarMensaje("AQ000000000081", 1, status("AQ000000000081", 8_000, 10_000, 0, cobrando = false, estado = "Pago Completado"), 10_000, 8_000))
+        resueltaPorElGerente("AQ000000000082")   // Codex código POS r7: sólo lo del gerente, sin cierre físico
         assertTrue(dao.anotarMensaje("AQ000000000080", 1, status("AQ000000000080", 8_000, 10_000, 2_000, cobrando = false, estado = "Pago Completado"), 10_000, 8_000))
         val f = dao.fila("AQ000000000080")!!
         assertEquals(1, dao.marcarEvidenciaEntregada(f.referenceCC, f.mensajesCrudos, f.creditCents))
@@ -680,13 +684,18 @@ class MaquinaDeEfectivoTest {
         coEvery { impresora.imprimirOriginal(capture(tickets)) } returns PrinterService.PrintOutcome.Printed(1)
         val m = maquina()
 
-        assertEquals(listOf("AQ000000000081" to 2_000, "AQ000000000080" to null), m.comprobantes().map { it.first.referenceCC to it.second })
+        assertEquals(
+            listOf("AQ000000000081" to 2_000, "AQ000000000082" to null, "AQ000000000080" to null).sortedBy { it.first },
+            m.comprobantes().map { it.first.referenceCC to it.second }.sortedBy { it.first },
+        )
         assertNull("sin comprobante de $20", m.imprimirComprobante("AQ000000000080"))
-        assertEquals(2, m.imprimirTicketsPendientes())
+        assertNull("Codex código POS r7: el cambio que tecleó el gerente no autoriza un comprobante", m.imprimirComprobante("AQ000000000082"))
+        assertEquals(3, m.imprimirTicketsPendientes())
 
         val porFolio = tickets.associateBy { it.orderNumber }
         assertNull("el ticket ya no dice «te debemos $20»", porFolio.getValue("AQ000000000080").cashMachine!!.owedCents)
         assertEquals("la de control sí", 2_000L, porFolio.getValue("AQ000000000081").cashMachine!!.owedCents)
+        assertTrue(porFolio.getValue("AQ000000000082").cashMachine!!.revisarEnElPanel)
         coVerify(exactly = 0) { impresora.manualPrintReceipt(any()) }
     }
 
@@ -704,7 +713,7 @@ class MaquinaDeEfectivoTest {
 
     @Test
     fun `P1 Codex r4 #10 si el ticket del folio ya salio, el comprobante de diferencia sale como REIMPRESION, nunca como otro original`() = runTest {
-        dao.insertar(
+        dao.insertarCerrada(
             pagadoSubido.copy(
                 ticketImpreso = TicketDelCobro.IMPRESO, aDeberCents = 500,
                 respuestaServidor = """{"outcome":"PAGADO","excedenteCents":500}""",
@@ -744,7 +753,7 @@ class MaquinaDeEfectivoTest {
 
     @Test
     fun `P1 Codex r2 H9 la impresion automatica y dos toques del boton al mismo tiempo sacan UN solo original`() = runTest {
-        dao.insertar(pagadoSubido.copy(subido = false))
+        dao.insertarCerrada(pagadoSubido.copy(subido = false))
         val papel = kotlinx.coroutines.CompletableDeferred<PrinterService.PrintOutcome>()
         coEvery { impresora.imprimirOriginal(any()) } coAnswers { papel.await() }
         val m = maquina()
@@ -765,7 +774,7 @@ class MaquinaDeEfectivoTest {
 
     @Test
     fun `P1 Codex r2 H9 si la PC murio imprimiendo, el ticket se ofrece como REIMPRESION, nunca como otro original`() = runTest {
-        dao.insertar(pagadoSubido.copy(ticketImpreso = TicketDelCobro.IMPRIMIENDO))
+        dao.insertarCerrada(pagadoSubido.copy(ticketImpreso = TicketDelCobro.IMPRIMIENDO))
         val impresos = mutableListOf<com.avoqado.pos.printing.data.model.ReceiptData>()
         coEvery { impresora.manualPrintReceipt(capture(impresos)) } returns PrinterService.PrintOutcome.OutOfPaper andThen PrinterService.PrintOutcome.Printed(1)
         val m = maquina()
@@ -782,7 +791,7 @@ class MaquinaDeEfectivoTest {
 
     @Test
     fun `P1 Codex r2 H10 un PAGADO que el servidor dejo como incidencia no ofrece ticket de venta sino el comprobante del dinero`() = runTest {
-        dao.insertar(
+        dao.insertarCerrada(
             pagadoSubido.copy(
                 conflicto = "Registrado como incidencia: la venta ya no se pudo armar", aDeberCents = 500,
                 respuestaServidor = """{"ack":"TERMINADO","incident":"NO_SE_PUDO_REGISTRAR","owedCents":500}""",
@@ -807,8 +816,8 @@ class MaquinaDeEfectivoTest {
             subido = false, creditCents = 20_000, changeDispensedCents = 1_000, quoteId = null,
             renglonesJson = """[{"name":"Café","quantity":2,"unitCents":9000,"totalCents":18000}]""",
         )
-        dao.insertar(pagado)
-        dao.insertar(pagado.copy(referenceCC = "AQ000000000002", ticketImpreso = TicketDelCobro.IMPRESO))
+        dao.insertarCerrada(pagado)
+        dao.insertarCerrada(pagado.copy(referenceCC = "AQ000000000002", ticketImpreso = TicketDelCobro.IMPRESO))
         val impresos = mutableListOf<com.avoqado.pos.printing.data.model.ReceiptData>()
         coEvery { impresora.imprimirOriginal(capture(impresos)) } returns PrinterService.PrintOutcome.OutOfPaper andThen PrinterService.PrintOutcome.Printed(1)
         val m = maquina()
@@ -877,7 +886,7 @@ class MaquinaDeEfectivoTest {
 
     @Test
     fun `P1 Codex r3 #12 con el 202 definitivo ya en la fila, el primer papel es el comprobante del dinero aunque la caja traiga un ticket`() = runTest {
-        dao.insertar(
+        dao.insertarCerrada(
             pagadoSubido.copy(
                 conflicto = "Registrado como incidencia: la venta ya no se pudo armar",
                 respuestaServidor = """{"ack":"TERMINADO","incident":"NO_SE_PUDO_REGISTRAR"}""",
@@ -891,5 +900,205 @@ class MaquinaDeEfectivoTest {
         m.imprimirPapelDelFolio("AQ000000000001", ticketDeLaCaja)
 
         assertEquals(com.avoqado.pos.printing.receiptlayout.KIND_COMPROBANTE_DE_LA_MAQUINA, impresos.single().kind)
+    }
+
+    // MARK: - Codex código POS r7 (decisión del coordinador: el papel lee columnas físicas que sólo crecen, nunca el diario)
+
+    /** Un cobro de $80 en vivo, con la propiedad ganada. El folio queda «a la vista»: su papel no sale solo (se imprime en la prueba). */
+    private suspend fun TestScope.cobroDe80EnVivo(m: MaquinaDeEfectivo): String {
+        coEvery { api.cotizar(any(), any()) } returns cotizacion(8_000, 0)
+        val r = m.cobrar(venta(JSONObject(pedido.toString()).put("tip", 0), sale = 8_000, tip = 0))
+        val ref = (r as InicioEnLaMaquina.Iniciado).referenceCC
+        m.aLaVista(ref, true)
+        canal.llega(status(ref, 8_000))
+        runCurrent()
+        return ref
+    }
+
+    private fun pagoCompletado(ref: String, due: Int, credit: Int, change: Int) =
+        status(ref, due, credit, change, cobrando = false, estado = "Pago Completado")
+
+    /**
+     * Codex código POS r7 #2: mensajes nuevos del folio, cada uno acusado antes por el SERVIDOR (el diario sólo se recorta con lo entregado),
+     * hasta que el texto de 8 KB ya no guarda [linea]. Devuelve cuántos hicieron falta.
+     */
+    private suspend fun recortarHastaQueSalga(ref: String, linea: String): Int {
+        var n = 0
+        while (linea in dao.fila(ref)!!.mensajesCrudos) {
+            check(++n < 500) { "el diario nunca se recortó" }
+            val f = dao.fila(ref)!!
+            assertEquals(1, dao.marcarEvidenciaEntregada(ref, f.mensajesCrudos, f.creditCents))
+            assertTrue(dao.anotarMensaje(ref, 1, status(ref, 8_000, 10_000).replace("022220222000", n.toString().padStart(12, '0')), 10_000, 8_000))
+        }
+        return n
+    }
+
+    /**
+     * Codex código POS r7 #2 (los dos cierres): venta de $80, $100 dentro, el panel la resolvió PAGADO con $0 devueltos. La máquina mandó un
+     * cierre con $20 de cambio y otro de $100 de total con $0: «Revisar en el panel». Tras el acuse del SERVIDOR y los mensajes que siguieron,
+     * el diario de 8 KB soltó el cierre de los $20 y la PC volvía a ofrecer el original por $20 ya entregados. La contradicción no vive en el
+     * diario: el papel sigue igual.
+     */
+    @Test
+    fun `P1 Codex POS r7 #2 recortar el diario no borra la contradiccion - sigue sin comprobante de 20 y sin cambio en papel`() = runTest {
+        val ref = "AQ000000000080"
+        resueltaPorElGerente(ref)
+        val conCambio = pagoCompletado(ref, 8_000, 10_000, 2_000)
+        assertTrue(dao.anotarMensaje(ref, 1, conCambio, 10_000, 8_000))
+        assertTrue(dao.anotarMensaje(ref, 1, pagoCompletado(ref, 10_000, 10_000, 0), 10_000, 10_000))
+
+        assertTrue(recortarHastaQueSalga(ref, conCambio) > 0)
+        assertTrue("el otro cierre sigue en el diario: es justo lo que Codex reprodujo", "\"Due\":100" in dao.fila(ref)!!.mensajesCrudos)
+
+        val tickets = mutableListOf<com.avoqado.pos.printing.data.model.ReceiptData>()
+        coEvery { impresora.imprimirOriginal(capture(tickets)) } returns PrinterService.PrintOutcome.Printed(1)
+        val m = maquina()
+        assertEquals(listOf(ref to null), m.comprobantes().map { it.first.referenceCC to it.second })
+        assertNull("sin comprobante de $20", m.imprimirComprobante(ref))
+        assertEquals(1, m.imprimirTicketsPendientes())
+        val t = tickets.single()
+        assertNull(t.cashMachine!!.owedCents)
+        assertTrue(t.cashMachine!!.revisarEnElPanel)
+        assertNull(t.changeAmount)
+        assertNull(t.cashTendered)
+        val papel = textoDelPapel(t)
+        assertFalse(papel, "Cambio:" in papel || "Te debemos" in papel)
+        assertTrue(papel, TEXTO_REVISAR_EN_EL_PANEL in papel)
+        coVerify(exactly = 0) { impresora.manualPrintReceipt(any()) }
+    }
+
+    /**
+     * Codex código POS r7 #2 (un solo cierre): el gerente tecleó $10 de cambio y el cierre físico confirmó $20. Al salir ese cierre del diario
+     * reaparecían «Cambio: $10.00» y «Te debemos $10.00». Lo físico está en columnas: «Recibido $100», «Cambio $20» y «Revisar en el panel».
+     */
+    @Test
+    fun `P1 Codex POS r7 #2 con un solo cierre recortado del diario, el papel sigue diciendo el cambio de la maquina`() = runTest {
+        val ref = "AQ000000000090"
+        resueltaPorElGerente(ref, cambio = 1_000)
+        val cierre = pagoCompletado(ref, 8_000, 10_000, 2_000)
+        assertTrue(dao.anotarMensaje(ref, 1, cierre, 10_000, 8_000))
+        assertTrue(recortarHastaQueSalga(ref, cierre) > 0)
+
+        val tickets = mutableListOf<com.avoqado.pos.printing.data.model.ReceiptData>()
+        coEvery { impresora.imprimirOriginal(capture(tickets)) } returns PrinterService.PrintOutcome.Printed(1)
+        val m = maquina()
+        assertEquals(listOf(ref to null), m.comprobantes().map { it.first.referenceCC to it.second })
+        assertEquals(1, m.imprimirTicketsPendientes())
+        val t = tickets.single()
+        assertEquals(10_000 to 2_000, t.cashTendered to t.changeAmount)
+        assertNull("ni «Te debemos $10»", t.cashMachine!!.owedCents)
+        val papel = textoDelPapel(t)
+        assertTrue(papel, Regex("Cambio:\\s+\\$20\\.00").containsMatchIn(papel))
+        assertFalse(papel, "\$10.00" in papel)
+        assertTrue(papel, TEXTO_REVISAR_EN_EL_PANEL in papel)
+    }
+
+    /**
+     * Codex código POS r7 #3: venta de $80; el primer cierre dice $100 recibidos y $0 devueltos (PAGADO solo, debe $20). Antes de sincronizar o
+     * imprimir, APS confirma que SÍ entregó los $20. Con la fila ya PAGADA ese segundo cierre actualizaba cero filas y quedaba un original
+     * por $20. Ahora se guarda (en cualquier estado) y la deuda la revisa el panel.
+     */
+    @Test
+    fun `P1 Codex POS r7 #3 el segundo cierre que llega con la fila ya PAGADA no se tira - sin original por 20 ya entregados`() = runTest {
+        val m = maquina()
+        val ref = cobroDe80EnVivo(m)
+        canal.llega(pagoCompletado(ref, 8_000, 10_000, 0))
+        runCurrent()
+        assertEquals(listOf<Any>(EstadoDelIntento.PAGADO, 2_000), dao.fila(ref)!!.let { listOf(it.estado, it.aDeberCents) })
+
+        canal.llega(pagoCompletado(ref, 8_000, 10_000, 2_000))
+        runCurrent()
+
+        val tickets = mutableListOf<com.avoqado.pos.printing.data.model.ReceiptData>()
+        coEvery { impresora.imprimirOriginal(capture(tickets)) } returns PrinterService.PrintOutcome.Printed(1)
+        assertEquals(listOf(ref to null), m.comprobantes().map { it.first.referenceCC to it.second })
+        assertNull("sin comprobante de $20", m.imprimirComprobante(ref))
+        m.imprimirPapelDelFolio(ref)
+        val t = tickets.single()
+        assertNull(t.cashMachine!!.owedCents)
+        assertTrue(t.cashMachine!!.revisarEnElPanel)
+        val papel = textoDelPapel(t)
+        assertFalse(papel, "Te debemos" in papel || "Cambio:" in papel)
+    }
+
+    /**
+     * Codex código POS r7 #4 (regresión de a79f97ae): venta de $80; la máquina ya había contado $100 y su cierre dijo «$80 recibidos, $0 de
+     * cambio». El registro conservó los $100 (debe $20), pero el ticket decía «Recibido: $80.00» y «Te debemos $20.00». Lo recibido es lo
+     * más que contó la máquina: $100, $0 de cambio, debe $20, igual que el registro.
+     */
+    @Test
+    fun `P1 Codex POS r7 #4 con 100 contados y un cierre de 80 recibidos, el ticket dice lo que conto la maquina`() = runTest {
+        val m = maquina()
+        val ref = cobroDe80EnVivo(m)
+        canal.llega(status(ref, 8_000, credit = 10_000))
+        canal.llega(pagoCompletado(ref, 8_000, 8_000, 0))
+        runCurrent()
+        assertEquals(listOf<Any>(EstadoDelIntento.PAGADO, 10_000, 0, 2_000), dao.fila(ref)!!.let { listOf(it.estado, it.creditCents, it.changeDispensedCents, it.aDeberCents) })
+
+        val tickets = mutableListOf<com.avoqado.pos.printing.data.model.ReceiptData>()
+        coEvery { impresora.imprimirOriginal(capture(tickets)) } returns PrinterService.PrintOutcome.Printed(1)
+        m.imprimirPapelDelFolio(ref)
+        val t = tickets.single()
+        assertEquals(10_000 to 0, t.cashTendered to t.changeAmount)
+        assertEquals(2_000L, t.cashMachine!!.owedCents)
+        val papel = textoDelPapel(t)
+        assertTrue(papel, Regex("Recibido:\\s+\\$100\\.00").containsMatchIn(papel))
+        assertFalse(papel, Regex("Recibido:\\s+\\$80\\.00").containsMatchIn(papel))
+        assertEquals(listOf(ref to 2_000), m.comprobantes().map { it.first.referenceCC to it.second })
+    }
+
+    /**
+     * Codex código POS r7 #4: un cierre del folio con OTRO total ($200) que el motor mandó a revisión; el panel la resolvió PAGADO. El ticket
+     * decía «Recibido: $200.00» en una venta de $80. Ese cierre es evidencia (la máquina se contradijo), nunca lo recibido del papel.
+     */
+    @Test
+    fun `P1 Codex POS r7 #4 un cierre de otro total que el motor mando a revision nunca es lo Recibido del papel`() = runTest {
+        val m = maquina()
+        val ref = cobroDe80EnVivo(m)
+        canal.llega(pagoCompletado(ref, 20_000, 20_000, 0))
+        runCurrent()
+        assertEquals(EstadoDelIntento.ESPERANDO, dao.fila(ref)!!.estado)
+        val eco = JSONObject().put("ack", "TERMINADO").put("deviceId", ESTA_PC).put("referenceCC", ref).put("outcome", "PAGADO")
+            .put("resolvedBy", "GERENTE").put("dueCents", 8_000).put("saleCents", 8_000).put("tipCents", 0)
+            .put("creditCents", 10_000).put("changeDispensedCents", 2_000).put("owedCents", 0).put("excedenteCents", 0)
+        assertTrue(dao.resolverConElEco(dao.fila(ref)!!, eco, eco.toString()))
+
+        val tickets = mutableListOf<com.avoqado.pos.printing.data.model.ReceiptData>()
+        coEvery { impresora.imprimirOriginal(capture(tickets)) } returns PrinterService.PrintOutcome.Printed(1)
+        m.imprimirPapelDelFolio(ref)
+        val t = tickets.single()
+        assertNull(t.cashTendered)
+        assertNull(t.changeAmount)
+        assertNull(t.cashMachine!!.owedCents)
+        assertTrue(t.cashMachine!!.revisarEnElPanel)
+        assertFalse(textoDelPapel(t), "\$200.00" in textoDelPapel(t))
+    }
+
+    /** Codex código POS r7: lo físico sólo crece y la contradicción es pegajosa, en cualquier estado y aunque el diario se recorte. */
+    @Test
+    fun `P1 Codex POS r7 las columnas fisicas solo crecen y la contradiccion no se borra nunca`() = runTest {
+        val m = maquina()
+        val ref = cobroDe80EnVivo(m)
+        canal.llega(status(ref, 8_000, credit = 10_000))
+        canal.llega(pagoCompletado(ref, 8_000, 10_000, 2_000))
+        canal.llega(pagoCompletado(ref, 8_000, 10_000, 2_000).replace("022220222000", "000000000000"))   // el mismo cierre, otra barra
+        runCurrent()
+        val f = dao.fila(ref)!!
+        assertEquals(listOf<Any?>(10_000, "PAGADO", 2_000, false), listOf(f.creditoFisicoCents, f.cierreFisico, f.cambioFisicoCents, f.maquinaSeContradijo))
+        assertFalse("el mismo cierre con otra barra no contradice nada", f.porRevisarEnElPanel())
+
+        // Ya PAGADO (y subido): la máquina dice que contó más. Se guarda, se contradice, y no vuelve atrás.
+        dao.marcarSubido(ref, null, null)
+        canal.llega(status(ref, 8_000, credit = 12_000))
+        runCurrent()
+        assertTrue(dao.fila(ref)!!.maquinaSeContradijo)
+        assertEquals(12_000, dao.fila(ref)!!.creditoFisicoCents)
+        assertEquals("lo registrado no cambia", 10_000, dao.fila(ref)!!.creditCents)
+        canal.llega(pagoCompletado(ref, 8_000, 10_000, 2_000).replace("022220222000", "111111111111"))
+        runCurrent()
+        assertTrue("pegajosa", dao.fila(ref)!!.maquinaSeContradijo)
+        assertTrue(dao.fila(ref)!!.evidenciaTardiaPorSubir())
+        assertEquals("esa evidencia sólo está aquí: frena salir", 1, dao.pendientes("venue-1"))
+        assertEquals(listOf(ref), dao.paraSubir("venue-1").map { it.referenceCC })
     }
 }

@@ -67,7 +67,9 @@ internal open class CobroEnMaquinaSobreSqlite : CobroEnMaquinaDao, AutoCloseable
         renglonesJson = rs.getString("renglonesJson"), desenlaceDelServidor = rs.getString("desenlaceDelServidor"),
         cierreTardio = rs.getString("cierreTardio"), aDeberCents = rs.getInt("aDeberCents"),
         versionDeLaDuda = rs.intONulo("versionDeLaDuda"), huellasDelDiario = rs.getString("huellasDelDiario"),
-        comandaJson = rs.getString("comandaJson"),
+        comandaJson = rs.getString("comandaJson"), creditoFisicoCents = rs.getInt("creditoFisicoCents"),
+        cierreFisico = rs.getString("cierreFisico"), cambioFisicoCents = rs.intONulo("cambioFisicoCents"),
+        maquinaSeContradijo = rs.getInt("maquinaSeContradijo") == 1,
     )
 
     /** Lectura directa, sin suspender (para revisar el disco desde un `enviar` falso). */
@@ -119,7 +121,8 @@ internal open class CobroEnMaquinaSobreSqlite : CobroEnMaquinaDao, AutoCloseable
             "mensajesCrudos" to f.mensajesCrudos, "respuestaServidor" to f.respuestaServidor, "bindingId" to f.bindingId,
             "renglonesJson" to f.renglonesJson, "desenlaceDelServidor" to f.desenlaceDelServidor, "cierreTardio" to f.cierreTardio,
             "aDeberCents" to f.aDeberCents, "versionDeLaDuda" to f.versionDeLaDuda, "huellasDelDiario" to f.huellasDelDiario,
-            "comandaJson" to f.comandaJson,
+            "comandaJson" to f.comandaJson, "creditoFisicoCents" to f.creditoFisicoCents, "cierreFisico" to f.cierreFisico,
+            "cambioFisicoCents" to f.cambioFisicoCents, "maquinaSeContradijo" to if (f.maquinaSeContradijo) 1 else 0,
         )
         val sql = "INSERT INTO cobros_en_maquina (${columnas.joinToString { it.first }}) VALUES (${columnas.joinToString { ":" + it.first }})"
         actualizar(sql, *columnas.toTypedArray())
@@ -137,6 +140,11 @@ internal open class CobroEnMaquinaSobreSqlite : CobroEnMaquinaDao, AutoCloseable
             CobroEnMaquinaSql.ESCRIBIR_DIARIO, "referenceCC" to referenceCC, "anterior" to anterior, "nuevo" to nuevo, "huellas" to huellas,
             "creditoAnterior" to creditoAnterior, "credito" to credito,
         )
+
+    override suspend fun anotarLoFisico(referenceCC: String, credito: Int, cierre: String?, cambio: Int?, imposible: Boolean) = actualizar(
+        CobroEnMaquinaSql.ANOTAR_LO_FISICO, "referenceCC" to referenceCC, "credito" to credito, "cierre" to cierre, "cambio" to cambio,
+        "imposible" to if (imposible) 1 else 0,
+    )
 
     override suspend fun pedirCancel(referenceCC: String, cancelvalue: String, ahora: Long): Int =
         actualizar(CobroEnMaquinaSql.PEDIR_CANCEL, "referenceCC" to referenceCC, "cancelvalue" to cancelvalue, "ahora" to ahora)
@@ -212,3 +220,18 @@ internal open class CobroEnMaquinaSobreSqlite : CobroEnMaquinaDao, AutoCloseable
     override suspend fun terminarTicket(referenceCC: String, valor: Int) =
         actualizar(CobroEnMaquinaSql.TERMINAR_TICKET, "referenceCC" to referenceCC, "valor" to valor)
 }
+
+/**
+ * Codex código POS r7: la fila como la deja un `status` de cierre que dice lo mismo que su registro —las columnas físicas que escribe
+ * [CobroEnMaquinaDao.anotarMensaje] antes de cerrar—. Para las pruebas que insertan a mano un cobro ya cerrado por la máquina (o resuelto con
+ * lo mismo que dijo la máquina): sin ellas, el papel lo trata como «sin cierre físico» y dice «Revisar en el panel».
+ */
+internal fun CobroEnMaquinaEntity.conSuCierreFisico(): CobroEnMaquinaEntity {
+    val resuelto = estado == EstadoDelIntento.RESUELTO
+    val credito = if (resuelto) runCatching { org.json.JSONObject(respuestaServidor!!).getInt("creditCents") }.getOrDefault(creditCents) else creditCents
+    val pagado = if (resuelto) desenlace == Desenlace.PAGADO else estado == EstadoDelIntento.PAGADO
+    return copy(creditoFisicoCents = credito, cierreFisico = if (pagado) "PAGADO" else "CANCELADO", cambioFisicoCents = changeDispensedCents)
+}
+
+/** [CobroEnMaquinaDao.insertar] de un cobro ya cerrado, con su cierre físico ([conSuCierreFisico]). */
+internal suspend fun CobroEnMaquinaDao.insertarCerrada(fila: CobroEnMaquinaEntity) = insertar(fila.conSuCierreFisico())

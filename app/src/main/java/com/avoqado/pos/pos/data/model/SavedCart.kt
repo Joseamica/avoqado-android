@@ -46,6 +46,8 @@ data class SavedCart(
      * copias viejas: se usa `carrito:<id>`, que tampoco cambia de una restauración a otra.
      */
     val llaveDeLaMaquina: String? = null,
+    /** Codex código POS r7 #1: esta venta ya mandó un cobro con tarjeta a la terminal (`CartState.intentoConTarjeta`). False en copias viejas. */
+    val intentoConTarjeta: Boolean = false,
 ) {
     val itemCount: Int get() = items.sumOf { it.quantity }
 }

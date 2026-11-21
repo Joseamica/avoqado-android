@@ -141,8 +141,9 @@ class SubidaDeLaMaquina @Inject constructor(
         // Las que ya estaban subidas: la que se sube en esta pasada no se consulta en el mismo instante.
         val esperan = dao.esperanAlGerente(venueId)
         for (fila in dao.paraSubir(venueId)) {
-            // Codex código r3 #1: lo que llegó después de la resolución de un gerente sube como duda (el SERVIDOR abre su revisión).
-            val esDuda = fila.estado == EstadoDelIntento.ESPERANDO || fila.estado == EstadoDelIntento.RESUELTO
+            // Codex código r3 #1 y POS r7: lo que llegó después de la resolución de un gerente, o de un cierre que el SERVIDOR ya tiene, sube
+            // como duda (el SERVIDOR abre su revisión).
+            val esDuda = fila.estado == EstadoDelIntento.ESPERANDO || fila.subeTrasTerminar()
             // Codex código r3 #14: el cuerpo siempre se arma; un carrito ilegible sube SIN carrito y el SERVIDOR guarda primero el dinero.
             val r = try {
                 subirFolio(venueId, credencial, fila, esDuda)
@@ -201,7 +202,7 @@ class SubidaDeLaMaquina @Inject constructor(
      * incidencia durable de un 409/422; RECIBIDO se conserva y se reenvía el MISMO mensaje, que lo reanuda.
      */
     private suspend fun aplicar(fila: CobroEnMaquinaEntity, acuse: Acuse, esDuda: Boolean, porPost: Boolean): Boolean {
-        if (fila.estado == EstadoDelIntento.RESUELTO) return entregarTrasResolver(fila, acuse, porPost)
+        if (fila.subeTrasTerminar()) return entregarTrasResolver(fila, acuse, porPost)
         when (acuse) {
             Acuse.SinSesion -> return false
             is Acuse.SinEmparejar -> {
@@ -321,8 +322,9 @@ class SubidaDeLaMaquina @Inject constructor(
         .put("startedAt", iso(fila.creadoEn))
         .put("saleShiftId", fila.saleShiftId ?: JSONObject.NULL)
         .put("lastSeen", loUltimoQueVio(fila))
-        // Codex código r3 #9: lo que entró, como NÚMERO: el SERVIDOR conserva el mayor que vio la PC con este campo.
-        .put("creditCents", fila.creditCents)
+        // Codex código r3 #9: lo que entró, como NÚMERO: el SERVIDOR conserva el mayor que vio la PC con este campo. Codex código POS r7:
+        // con lo que la máquina contó DESPUÉS de un cierre (columna física), que lo registrado de ese cierre ya no recoge.
+        .put("creditCents", loQueEntro(fila))
         .put("bindingId", fila.bindingId ?: JSONObject.NULL)
 
     /**
@@ -429,7 +431,7 @@ private fun incidenciaDe(cuerpo: String): String? = runCatching {
  * [tope] bytes, los mensajes más NUEVOS primero (el SERVIDOR guarda el principio si le sobra); el diario completo se queda en la PC.
  */
 fun textoDeLoQueVio(fila: CobroEnMaquinaEntity, tope: Int = TOPE_DEL_DIARIO_QUE_SUBE): String {
-    val texto = StringBuilder("Entró ${com.avoqado.pos.core.util.formatMoneyFromCents(fila.creditCents)}")
+    val texto = StringBuilder("Entró ${com.avoqado.pos.core.util.formatMoneyFromCents(loQueEntro(fila))}")
     val lineas = fila.mensajesCrudos.lines().filter { it.isNotBlank() }.asReversed()
     var bytes = texto.toString().toByteArray(Charsets.UTF_8).size + RESERVA_DEL_AVISO
     var van = 0
@@ -442,6 +444,9 @@ fun textoDeLoQueVio(fila: CobroEnMaquinaEntity, tope: Int = TOPE_DEL_DIARIO_QUE_
     if (van < lineas.size) texto.append("\n… y ${lineas.size - van} mensajes más viejos, sólo en esta PC")
     return texto.toString()
 }
+
+/** Lo más que la PC vio entrar de un folio: lo de la fila o, si la máquina contó más después de cerrar, lo físico. */
+private fun loQueEntro(fila: CobroEnMaquinaEntity) = maxOf(fila.creditCents, fila.creditoFisicoCents)
 
 /** Codex código POS r5 #4: lo más que sube del diario de un folio (64 KiB); lo demás se queda en la PC. */
 internal const val TOPE_DEL_DIARIO_QUE_SUBE = 64 * 1024

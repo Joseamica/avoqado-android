@@ -6,6 +6,8 @@ import com.avoqado.pos.cashdrawer.data.CashDrawerRepository
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.domain.RoleManager
 import com.avoqado.pos.core.domain.printing.ComandaDispatcher
+import com.avoqado.pos.giftcards.domain.aCartState
+import com.avoqado.pos.giftcards.domain.aFoto
 import com.avoqado.pos.loyalty.data.PremioPorAplicar
 import com.avoqado.pos.maquina.AjustesDeLaMaquinaTest
 import com.avoqado.pos.maquina.BovedaDeLaMaquina
@@ -215,7 +217,6 @@ class PaymentFlowViewModelMaquinaTest {
     fun `P1 Codex POS r5 #2 y r6 un carrito restaurado no se cobra en la maquina, diga lo que diga la lista de tarjetas`() = runTest {
         val pan = CartItem(id = "pan", type = CartItemType.ProductItem("prod-pan"), name = "Pan", unitPrice = 8_000)
         val restaurado = CartState(items = listOf(pan), carritoGuardadoId = "guardado-80", vinoDeCarritoGuardado = true, llaveDeLaMaquina = "carrito:guardado-80")
-        every { terminalPaymentService.pendienteDeLaLlave(any()) } returns null
         every { terminalPaymentService.pendienteDeLaVenta(any()) } returns null
         val vm = vm()
 
@@ -261,20 +262,66 @@ class PaymentFlowViewModelMaquinaTest {
         assertTrue("el carrito de catálogo sí", vm.maquina!!.vista.value!!.fila.habilitada)
     }
 
+    /**
+     * Codex código POS r7 #1: la cajera manda la venta de $80 a la tarjeta, elige «Salir, queda pendiente» y conserva el carrito; la tarjeta se
+     * aprueba. Al volver a «Cobrar» con el MISMO carrito, la máquina estaba bloqueada al minuto 9 y habilitada al 11: vencía el aviso y el
+     * carrito en memoria ya no traía la orden del cobro. Si el cliente depositaba, pagaba $160 por $80. Regla pegajosa del coordinador: la
+     * venta que mandó una tarjeta a la terminal nunca se cobra en la máquina (nace al mandarla y no vence).
+     */
     @Test
-    fun `P1 Codex POS r5 #2 si la tarjeta de la venta queda sin confirmar despues de pintar la fila, el toque se lee vivo y no cobra`() = runTest {
-        val cart = CartState(items = listOf(cafe))
+    fun `P1 Codex POS r7 #1 la venta que mando una tarjeta nunca va a la maquina, tampoco al minuto 11 con el carrito abierto`() = runTest {
+        val pan = CartItem(id = "pan", type = CartItemType.ProductItem("prod-pan"), name = "Pan", unitPrice = 8_000)
+        // El carrito de CartViewModel: el cobro le avisa que salió una tarjeta (como `marcarIntentoConTarjeta`).
+        var carrito = CartState(items = listOf(pan))
+        val alMandarTarjeta = { id: String -> if (carrito.identidadDeVenta == id) carrito = carrito.copy(intentoConTarjeta = true) }
         val vm = vm()
-        vm.startPaymentFlow(cart)
-        runCurrent()
-        assertTrue(vm.maquina!!.vista.value!!.fila.habilitada)
-        every { terminalPaymentService.pendienteDeLaLlave(cart.llaveParaLaMaquina) } returns "req-1"
+        coEvery { terminalPaymentService.fetchOnlineTerminals(any()) } returns
+            TerminalListResult.Success(listOf(com.avoqado.pos.payment.data.OnlineTerminal(terminalId = "t1", name = "Terminal 1", isOnline = true, hasSocket = true)))
+        coEvery { orderRepository.createOrder(any(), any(), any(), any(), any(), any(), any(), any(), any()) } returns
+            Result.success(com.avoqado.pos.payment.data.model.CreateOrderResponse(success = true, data = com.avoqado.pos.payment.data.model.OrderData(id = "orden-80", total = 80.0)))
+        coEvery { terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any(), any(), any(), any(), any()) } returns
+            com.avoqado.pos.payment.data.TerminalPaymentResult.Undetermined("Cobro sin confirmar", "req-80")
 
+        vm.startPaymentFlow(carrito, onIntentoConTarjeta = alMandarTarjeta)
+        runCurrent()
+        assertTrue("antes de la tarjeta, la máquina sí", vm.maquina!!.vista.value!!.fila.habilitada)
+        vm.selectPaymentMethod(PaymentMethod.CARD)
+        runCurrent()
+        vm.selectTerminalAndPay("t1")
+        runCurrent()
+        coVerify(exactly = 1) { terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any(), any(), any(), any(), any()) }
+        assertTrue("la marca nace al mandar la tarjeta", carrito.intentoConTarjeta)
+        vm.salirDejandoPendiente()
+
+        advanceTimeBy(11 * 60_000L)
+        runCurrent()
+        // La tarjeta se aprobó y su aviso ya venció; el carrito en memoria no trae la orden: la lista de tarjetas no dice nada de esta venta.
+        every { terminalPaymentService.pendienteDeLaVenta(any()) } returns null
+        vm.startPaymentFlow(carrito, onIntentoConTarjeta = alMandarTarjeta)
+        runCurrent()
+
+        val fila = vm.maquina!!.vista.value!!.fila
+        assertFalse(fila.habilitada)
+        assertEquals(com.avoqado.pos.maquina.TEXTO_VENTA_CON_TARJETA, fila.motivo)
+        assertFalse("se lee al tocar", vm.maquina!!.apartar())
         vm.cobrarConMaquina()
         runCurrent()
+        assertNull("no salió el paycash", canal.paycash())
+        assertTrue("nada quedó en disco", dao.todas().isEmpty())
+        coVerify(exactly = 0) { api.cotizar(any(), any()) }
 
-        assertNull(canal.paycash())
-        assertEquals(com.avoqado.pos.maquina.TEXTO_TARJETA_SIN_CONFIRMAR, vm.maquina!!.vista.value!!.fila.motivo)
+        // Un carrito NUEVO con lo mismo sí se cobra en la máquina: la regla es «esta venta mandó una tarjeta», no el producto.
+        vm.startPaymentFlow(CartState(items = listOf(pan)))
+        runCurrent()
+        assertTrue(vm.maquina!!.vista.value!!.fila.habilitada)
+    }
+
+    /** Codex código POS r7 #1: la marca viaja con la copia guardada y con la foto de la venta, y vuelve al restaurar. */
+    @Test
+    fun `P1 Codex POS r7 #1 la marca de tarjeta viaja con la foto de la venta`() {
+        val conTarjeta = CartState(items = listOf(cafe), intentoConTarjeta = true)
+        assertTrue(conTarjeta.aFoto(null).aCartState().intentoConTarjeta)
+        assertFalse(CartState(items = listOf(cafe)).aFoto(null).aCartState().intentoConTarjeta)
     }
 
     @Test
@@ -820,7 +867,10 @@ class PaymentFlowViewModelMaquinaTest {
         val papel = impresos.single()
         assertEquals("sólo el comprobante del dinero, con su folio", KIND_COMPROBANTE_DE_LA_MAQUINA, papel.kind)
         assertEquals(ref, papel.orderNumber)
-        assertEquals(2_000L, papel.cashMachine!!.owedCents)
+        // Codex código POS r7 (decisión del coordinador): la máquina nunca confirmó el cambio (sólo lo tecleó el gerente): sin cifra de
+        // deuda en papel, «Revisar en el panel», donde está la incidencia con sus $20.
+        assertNull(papel.cashMachine!!.owedCents)
+        assertTrue(papel.cashMachine!!.revisarEnElPanel)
     }
 
     @Test

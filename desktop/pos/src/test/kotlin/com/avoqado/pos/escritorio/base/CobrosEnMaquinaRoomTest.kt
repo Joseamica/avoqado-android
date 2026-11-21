@@ -88,6 +88,46 @@ class CobrosEnMaquinaRoomTest {
         } finally { carpeta.toFile().deleteRecursively() }
     }
 
+    @Test fun `Codex POS r7 una base v23 con un cobro pagado llega a v24 con su cierre fisico y sin contradiccion`() {
+        val carpeta = Files.createTempDirectory("migraciones")
+        try {
+            val ayudante = ayudanteDeMigraciones(carpeta.resolve("base"))
+            ayudante.createDatabase(23).use { v23 ->
+                v23.execSQL(
+                    "INSERT INTO cobros_en_maquina (referenceCC, venueId, llaveDeVenta, pedidoJson, saleCents, tipCents, dueCents, " +
+                        "creadoEn, estado, creditCents, changeDispensedCents, cierreConocido, resueltoPor, subido, dudaSubida, ticketImpreso, " +
+                        "mensajesCrudos, aDeberCents, huellasDelDiario) VALUES ('AQ000000000001', 'venue-1', 'venta-1', '{}', 8000, 0, 8000, 1, " +
+                        "'PAGADO', 10000, 1500, 1, 'MAQUINA', 1, 0, 0, 'g1 crudo', 500, '')",
+                )
+            }
+            ayudante.runMigrationsAndValidate(24, migracionesDeAndroid().map { it.paraRoom() }).use { v24 ->
+                assertEquals(1L, v24.leerLargo(
+                    "SELECT COUNT(*) FROM cobros_en_maquina WHERE creditoFisicoCents = 10000 AND cierreFisico = 'PAGADO' " +
+                        "AND cambioFisicoCents = 1500 AND maquinaSeContradijo = 0",
+                ))
+            }
+        } finally { carpeta.toFile().deleteRecursively() }
+    }
+
+    @Test fun `Codex POS r7 el DAO real - un segundo cierre distinto con la fila ya PAGADA se guarda y queda contradicho para siempre`() = runBlocking {
+        val carpeta = Files.createTempDirectory("cobros-en-maquina")
+        val base = DatabaseModule.provideDatabase(ContextoDeEscritorio(carpeta))
+        try {
+            val dao = base.cobrosEnMaquinaDao()
+            dao.insertar(CobroEnMaquinaEntity("AQ000000000001", "venue-1", "venta-1", "{}", 8_000, 0, 8_000, null, null, creadoEn = 1, estado = EstadoDelIntento.EN_CURSO))
+            fun cierre(cambio: Double) = """{"comando":"status","cobrando":false,"Status":"Pago Completado","referenceCC":"AQ000000000001","Credit":100,"Due":80,"changeDispensed":$cambio}"""
+            assertTrue(dao.anotarMensaje("AQ000000000001", 1, cierre(0.0), 10_000, 8_000))
+            assertEquals(1, dao.cerrar("AQ000000000001", EstadoDelIntento.PAGADO, 10_000, 0, 99, aDeber = 2_000))
+            assertTrue(dao.anotarMensaje("AQ000000000001", 1, cierre(20.0), 10_000, 8_000), "ya PAGADA: el segundo cierre no se tira")
+            val f = dao.porReferencia("AQ000000000001")!!
+            assertEquals(listOf<Any?>(10_000, "PAGADO", 0, true), listOf(f.creditoFisicoCents, f.cierreFisico, f.cambioFisicoCents, f.maquinaSeContradijo))
+            assertEquals(listOf<Any?>(EstadoDelIntento.PAGADO, 10_000, 0), listOf(f.estado, f.creditCents, f.changeDispensedCents), "lo registrado no cambia")
+        } finally {
+            base.close()
+            carpeta.toFile().deleteRecursively()
+        }
+    }
+
     @Test fun `Codex r3 el DAO real - una duda propia frena salir y lo resuelto no`() = runBlocking {
         val carpeta = Files.createTempDirectory("cobros-en-maquina")
         val base = DatabaseModule.provideDatabase(ContextoDeEscritorio(carpeta))

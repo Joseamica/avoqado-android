@@ -43,8 +43,8 @@ class KdsLanMigracionTest {
     }
 
     @Test
-    fun `el esquema exportado es la version 23`() {
-        assertEquals("23", esquema.nameWithoutExtension)
+    fun `el esquema exportado es la version 24`() {
+        assertEquals("24", esquema.nameWithoutExtension)
     }
 
     @Test

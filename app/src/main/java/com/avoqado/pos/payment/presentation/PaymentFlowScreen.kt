@@ -82,6 +82,8 @@ fun PaymentFlowScreen(
     viewModel: PaymentFlowViewModel = hiltViewModel(),
     cuentaDeTarjetas: Boolean = false,
     onCreacionIncierta: (String, String) -> Unit = { _, _ -> },
+    /** Codex código POS r7 #1: la venta mandó un cobro con tarjeta; ver `PaymentFlowViewModel.startPaymentFlow`. */
+    onIntentoConTarjeta: (String) -> Unit = {},
     onCreacionResuelta: (String) -> Unit = {},
     ventaViva: () -> CartState = { cartState },
     fotoDeLaVenta: (() -> FotoDeLaVenta)? = null,
@@ -219,6 +221,7 @@ fun PaymentFlowScreen(
             apertura = aperturaDelCobro,
             cuentaDeTarjetas = cuentaDeTarjetas,
             onCreacionIncierta = onCreacionIncierta,
+            onIntentoConTarjeta = onIntentoConTarjeta,
             onCreacionResuelta = onCreacionResuelta,
             origen = origen,
             textoSiLaCuentaSeCancelo = textoSiLaCuentaSeCancelo,

@@ -102,6 +102,24 @@ data class CobroEnMaquinaEntity(
     val huellasDelDiario: String = "",
     /** v23, ya no se escribe ni se lee (recorte R3 de la 1a, 21-nov: sin comanda a cocina). La columna se queda por las bases v23. */
     val comandaJson: String? = null,
+    /**
+     * v24 (Codex código POS r7, decisión del coordinador): la EVIDENCIA FÍSICA del folio, en columnas fijas que sólo crecen
+     * ([CobroEnMaquinaSql.ANOTAR_LO_FISICO]). Se escriben con CADA mensaje físico de este folio, en cualquier estado de la fila (también
+     * PAGADO, RESUELTO o en conflicto: nunca «0 filas»). El papel lee sólo esto y el acuse del SERVIDOR ([recibidoYCambioEnPapel],
+     * [porRevisarEnElPanel]); el diario ya sólo sube, y recortarlo no cambia nada de lo impreso.
+     *
+     * Lo más que la máquina dijo haber contado de este folio con su `Due`.
+     */
+    val creditoFisicoCents: Int = 0,
+    /** v24: el desenlace del PRIMER cierre físico posible de este folio y su `Due` ([Cierre]: `PAGADO` o `CANCELADO`); null = ninguno. */
+    val cierreFisico: String? = null,
+    /** v24: el cambio que confirmó ese cierre. */
+    val cambioFisicoCents: Int? = null,
+    /**
+     * v24, PEGAJOSA: la máquina se contradijo sobre este folio —otro cierre con otro desenlace u otro cambio, un cierre imposible o de otro
+     * total, o (ya terminado aquí) más dinero del registrado—. Nunca vuelve a false: ni otro mensaje ni recortar el diario la borran.
+     */
+    val maquinaSeContradijo: Boolean = false,
 )
 
 /**
@@ -147,6 +165,19 @@ internal object CobroEnMaquinaSql {
             "`renglonesJson` TEXT, `desenlaceDelServidor` TEXT, `cierreTardio` TEXT, `aDeberCents` INTEGER NOT NULL, " +
             "`versionDeLaDuda` INTEGER, PRIMARY KEY(`referenceCC`))"
 
+    /** 🔴 La tabla como la dejó la v23 (`MIGRATION_22_23`), congelada: la v24 le agrega [MIGRAR_23_24]. */
+    const val CREAR_TABLA_V23: String =
+        "CREATE TABLE IF NOT EXISTS `cobros_en_maquina` (" +
+            "`referenceCC` TEXT NOT NULL, `venueId` TEXT NOT NULL, `llaveDeVenta` TEXT NOT NULL, `pedidoJson` TEXT NOT NULL, " +
+            "`saleCents` INTEGER NOT NULL, `tipCents` INTEGER NOT NULL, `dueCents` INTEGER NOT NULL, `saleShiftId` TEXT, " +
+            "`quoteId` TEXT, `creadoEn` INTEGER NOT NULL, `estado` TEXT NOT NULL, `generacionPropia` INTEGER, " +
+            "`ultimoCreditoEn` INTEGER, `creditCents` INTEGER NOT NULL, `changeDispensedCents` INTEGER NOT NULL, " +
+            "`cancelPedido` TEXT, `cancelPedidoEn` INTEGER, `cierreEn` INTEGER, `cierreConocido` INTEGER NOT NULL, " +
+            "`resueltoPor` TEXT, `subido` INTEGER NOT NULL, `dudaSubida` INTEGER NOT NULL, `conflicto` TEXT, " +
+            "`ticketImpreso` INTEGER NOT NULL, `mensajesCrudos` TEXT NOT NULL, `respuestaServidor` TEXT, `bindingId` TEXT, " +
+            "`renglonesJson` TEXT, `desenlaceDelServidor` TEXT, `cierreTardio` TEXT, `aDeberCents` INTEGER NOT NULL, " +
+            "`versionDeLaDuda` INTEGER, `huellasDelDiario` TEXT NOT NULL, `comandaJson` TEXT, PRIMARY KEY(`referenceCC`))"
+
     /** 🔴 En el formato EXACTO que Room genera HOY para [CobroEnMaquinaEntity] (lo vigila `CobroEnMaquinaMigracionTest`). */
     const val CREAR_TABLA: String =
         "CREATE TABLE IF NOT EXISTS `cobros_en_maquina` (" +
@@ -158,7 +189,8 @@ internal object CobroEnMaquinaSql {
             "`resueltoPor` TEXT, `subido` INTEGER NOT NULL, `dudaSubida` INTEGER NOT NULL, `conflicto` TEXT, " +
             "`ticketImpreso` INTEGER NOT NULL, `mensajesCrudos` TEXT NOT NULL, `respuestaServidor` TEXT, `bindingId` TEXT, " +
             "`renglonesJson` TEXT, `desenlaceDelServidor` TEXT, `cierreTardio` TEXT, `aDeberCents` INTEGER NOT NULL, " +
-            "`versionDeLaDuda` INTEGER, `huellasDelDiario` TEXT NOT NULL, `comandaJson` TEXT, PRIMARY KEY(`referenceCC`))"
+            "`versionDeLaDuda` INTEGER, `huellasDelDiario` TEXT NOT NULL, `comandaJson` TEXT, `creditoFisicoCents` INTEGER NOT NULL, " +
+            "`cierreFisico` TEXT, `cambioFisicoCents` INTEGER, `maquinaSeContradijo` INTEGER NOT NULL, PRIMARY KEY(`referenceCC`))"
 
     /** v21 (C4): la respuesta final del SERVIDOR, en columna propia y nula. Nada que migrar: una fila vieja no la tiene. */
     const val MIGRAR_20_21: String = "ALTER TABLE cobros_en_maquina ADD COLUMN respuestaServidor TEXT"
@@ -189,11 +221,49 @@ internal object CobroEnMaquinaSql {
         "ALTER TABLE cobros_en_maquina ADD COLUMN comandaJson TEXT",
     )
 
+    /**
+     * v24 (Codex código POS r7): la evidencia física en columnas. Un cierre de la máquina de antes ya la tenía en su fila (el motor la
+     * escribió de un `status` de cierre): ésa se copia; lo demás arranca vacío (una duda resuelta de antes sale «Revisar en el panel»).
+     * ponytail: un segundo cierre que sólo estaba en el diario de una fila de antes no se reconstruye (la 1a no está en producción).
+     */
+    val MIGRAR_23_24: List<String> = listOf(
+        "ALTER TABLE cobros_en_maquina ADD COLUMN creditoFisicoCents INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE cobros_en_maquina ADD COLUMN cierreFisico TEXT",
+        "ALTER TABLE cobros_en_maquina ADD COLUMN cambioFisicoCents INTEGER",
+        "ALTER TABLE cobros_en_maquina ADD COLUMN maquinaSeContradijo INTEGER NOT NULL DEFAULT 0",
+        "UPDATE cobros_en_maquina SET creditoFisicoCents = creditCents WHERE estado != 'RESUELTO'",
+        "UPDATE cobros_en_maquina SET cierreFisico = CASE estado WHEN 'PAGADO' THEN 'PAGADO' ELSE 'CANCELADO' END, " +
+            "cambioFisicoCents = changeDispensedCents " +
+            "WHERE estado IN ('PAGADO', 'CANCELADO', 'GUARDADO') AND resueltoPor = 'MAQUINA'",
+    )
+
+    /**
+     * Codex código POS r7: lo físico de un mensaje de ESTE folio, en CUALQUIER estado de la fila. Todo sólo crece: el crédito con MAX, el
+     * primer cierre posible se queda y la contradicción nunca se borra. SQLite evalúa cada SET con la fila de ANTES: se compara contra el
+     * primer cierre. Ya terminado aquí (PAGADO, CANCELADO o GUARDADO), más dinero que el registrado también es contradicción.
+     */
+    const val ANOTAR_LO_FISICO: String =
+        "UPDATE cobros_en_maquina SET creditoFisicoCents = MAX(creditoFisicoCents, :credito), " +
+            "cierreFisico = COALESCE(cierreFisico, :cierre), " +
+            "cambioFisicoCents = CASE WHEN cierreFisico IS NULL THEN :cambio ELSE cambioFisicoCents END, " +
+            "maquinaSeContradijo = CASE WHEN maquinaSeContradijo = 1 OR :imposible = 1 " +
+            "OR (cierreFisico IS NOT NULL AND :cierre IS NOT NULL AND (cierreFisico != :cierre OR cambioFisicoCents != :cambio)) " +
+            "OR (estado IN ('PAGADO', 'CANCELADO', 'GUARDADO') AND :credito > creditCents) THEN 1 ELSE 0 END " +
+            "WHERE referenceCC = :referenceCC"
+
+    /**
+     * Codex código POS r7: la máquina se contradijo DESPUÉS de que el SERVIDOR ya tenía el cierre de este folio. Esa evidencia sólo está
+     * en esta PC: sube como duda (el SERVIDOR la anota para el gerente, «TRAS_RESOLVER») y frena salir hasta que la tenga.
+     */
+    private const val EVIDENCIA_TARDIA =
+        "(estado IN ('PAGADO', 'CANCELADO', 'GUARDADO') AND subido = 1 AND maquinaSeContradijo = 1 AND dudaSubida = 0)"
+
     const val POR_REFERENCIA: String = "SELECT * FROM cobros_en_maquina WHERE referenceCC = :referenceCC"
 
     /** Las filas de una venta que PUEDEN impedir cobrarla otra vez; cuáles la frenan lo decide UNA regla ([bloqueaLaVenta]). */
     const val FILAS_DE_LA_VENTA: String =
-        "SELECT * FROM cobros_en_maquina WHERE llaveDeVenta = :llaveDeVenta AND estado IN ('EN_CURSO', 'ESPERANDO', 'PAGADO', 'RESUELTO')"
+        "SELECT * FROM cobros_en_maquina WHERE llaveDeVenta = :llaveDeVenta " +
+            "AND (estado IN ('EN_CURSO', 'ESPERANDO', 'PAGADO', 'RESUELTO') OR maquinaSeContradijo = 1)"
 
     /** Codex código r1 #7: el intento abierto o en duda de esta venta, para que la pantalla de la máquina lo recupere tras reiniciar. */
     const val INTENTO_DE_LA_VENTA: String =
@@ -209,15 +279,16 @@ internal object CobroEnMaquinaSql {
 
     /**
      * Codex código r2, bloque A: el diario de un folio crece con [CobroEnMaquinaDao.anotarMensaje], con la condición de que nadie lo
-     * haya cambiado desde que se leyó (sin carrera aunque dos escriban). Sólo en una fila abierta, en duda o resuelta por un gerente
-     * (Codex código r3 #1: lo que la máquina dice DESPUÉS de la resolución nunca se tira); en la duda y en la resuelta es evidencia nueva
-     * y vuelve a subir (`dudaSubida = 0`). Lo que cerró la máquina ya no cambia: un cierre repetido es retransmisión.
+     * haya cambiado desde que se leyó (sin carrera aunque dos escriban). Sólo SUBE (Codex código POS r7: el papel no lo lee). Lo que no
+     * sea un intento abierto es evidencia nueva y vuelve a subir (`dudaSubida = 0`): la duda, la resuelta (Codex código r3 #1) y la ya
+     * terminada aquí en la que la máquina se contradijo ([CobroEnMaquinaDao.anotarMensaje] sólo la escribe entonces).
      */
     const val ESCRIBIR_DIARIO: String =
-        "UPDATE cobros_en_maquina SET mensajesCrudos = :nuevo, huellasDelDiario = :huellas, creditCents = :credito, " +
-            "dudaSubida = CASE WHEN estado IN ('ESPERANDO', 'RESUELTO') THEN 0 ELSE dudaSubida END " +
-            "WHERE referenceCC = :referenceCC AND mensajesCrudos = :anterior AND creditCents = :creditoAnterior " +
-            "AND estado IN ('EN_CURSO', 'ESPERANDO', 'RESUELTO')"
+        "UPDATE cobros_en_maquina SET mensajesCrudos = :nuevo, huellasDelDiario = :huellas, " +
+            // Lo registrado de un cierre ya terminado aquí no cambia: su evidencia nueva vive en las columnas físicas.
+            "creditCents = CASE WHEN estado IN ('EN_CURSO', 'ESPERANDO', 'RESUELTO') THEN :credito ELSE creditCents END, " +
+            "dudaSubida = CASE WHEN estado != 'EN_CURSO' THEN 0 ELSE dudaSubida END " +
+            "WHERE referenceCC = :referenceCC AND mensajesCrudos = :anterior AND creditCents = :creditoAnterior"
 
     const val PEDIR_CANCEL: String =
         "UPDATE cobros_en_maquina SET cancelPedido = :cancelvalue, cancelPedidoEn = :ahora " +
@@ -248,12 +319,13 @@ internal object CobroEnMaquinaSql {
      */
     const val PUEDEN_FRENAR: String =
         "SELECT * FROM cobros_en_maquina WHERE estado IN ('EN_CURSO', 'ESPERANDO') " +
-            "OR (estado IN ('PAGADO', 'CANCELADO', 'GUARDADO') AND subido = 0) OR (estado = 'RESUELTO' AND dudaSubida = 0)"
+            "OR (estado IN ('PAGADO', 'CANCELADO', 'GUARDADO') AND subido = 0) OR (estado = 'RESUELTO' AND dudaSubida = 0) " +
+            "OR $EVIDENCIA_TARDIA"
 
     const val POR_SUBIR: String =
         "SELECT * FROM cobros_en_maquina " +
             "WHERE (estado IN ('PAGADO', 'CANCELADO', 'GUARDADO') AND subido = 0) OR (estado IN ('ESPERANDO', 'RESUELTO') AND dudaSubida = 0) " +
-            "ORDER BY creadoEn ASC, referenceCC ASC"
+            "OR $EVIDENCIA_TARDIA ORDER BY creadoEn ASC, referenceCC ASC"
 
     // MARK: - La subida (C4)
 
@@ -268,7 +340,7 @@ internal object CobroEnMaquinaSql {
             "OR (estado = 'ESPERANDO' AND dudaSubida = 0 AND (conflicto IS NULL OR respuestaServidor IS NOT NULL)) " +
             // Codex código r3 #1: lo que la máquina dijo DESPUÉS de que un gerente lo resolviera sube como duda (el SERVIDOR abre la
             // revisión «TRAS_RESOLVER»).
-            "OR (estado = 'RESUELTO' AND dudaSubida = 0)) " +
+            "OR (estado = 'RESUELTO' AND dudaSubida = 0) OR $EVIDENCIA_TARDIA) " +
             "ORDER BY creadoEn ASC, referenceCC ASC"
 
     /**
@@ -318,11 +390,12 @@ internal object CobroEnMaquinaSql {
             "WHERE referenceCC = :referenceCC AND estado = 'ESPERANDO' AND $LA_MISMA_EVIDENCIA"
 
     /**
-     * Codex código r3 #1: el SERVIDOR ya tiene la evidencia que llegó DESPUÉS de la resolución (la que se MANDÓ): deja de frenar la venta y
-     * de subir. Si mientras tanto llegó otra, sigue por subir.
+     * Codex código r3 #1 y POS r7: el SERVIDOR ya tiene la evidencia que llegó DESPUÉS de la resolución o del cierre que ya tenía (la que
+     * se MANDÓ): deja de subir y de frenar salir. Si mientras tanto llegó otra, sigue por subir.
      */
     const val MARCAR_EVIDENCIA_ENTREGADA: String =
-        "UPDATE cobros_en_maquina SET dudaSubida = 1 WHERE referenceCC = :referenceCC AND estado = 'RESUELTO' AND $LA_MISMA_EVIDENCIA"
+        "UPDATE cobros_en_maquina SET dudaSubida = 1 WHERE referenceCC = :referenceCC " +
+            "AND (estado = 'RESUELTO' OR (estado IN ('PAGADO', 'CANCELADO', 'GUARDADO') AND subido = 1)) AND $LA_MISMA_EVIDENCIA"
 
     /** `1` = el SERVIDOR ya tiene la duda; `0` = la perdió (404 al consultarla): se vuelve a subir. */
     const val MARCAR_DUDA_SUBIDA: String =
@@ -388,10 +461,23 @@ internal object CobroEnMaquinaSql {
 fun CobroEnMaquinaEntity.frenaLaSalida(): Boolean = when (estado) {
     EstadoDelIntento.EN_CURSO -> true
     EstadoDelIntento.ESPERANDO -> if (esDeOtraPc() || esIncidenciaSinDuda()) !dudaSubida else true
-    EstadoDelIntento.PAGADO, EstadoDelIntento.CANCELADO, EstadoDelIntento.GUARDADO -> !subido && !(conflicto != null && respuestaServidor != null)
+    EstadoDelIntento.PAGADO, EstadoDelIntento.CANCELADO, EstadoDelIntento.GUARDADO ->
+        (!subido && !(conflicto != null && respuestaServidor != null)) || evidenciaTardiaPorSubir()
     EstadoDelIntento.RESUELTO -> !dudaSubida
     else -> false
 }
+
+/** Codex código POS r7: ya terminada aquí y el SERVIDOR con su cierre, la máquina se contradijo y eso sólo está en esta PC. */
+fun CobroEnMaquinaEntity.evidenciaTardiaPorSubir(): Boolean = subido && maquinaSeContradijo && !dudaSubida && terminadaAqui()
+
+private fun CobroEnMaquinaEntity.terminadaAqui() =
+    estado == EstadoDelIntento.PAGADO || estado == EstadoDelIntento.CANCELADO || estado == EstadoDelIntento.GUARDADO
+
+/**
+ * Lo que sube como duda aunque ya tenga desenlace: lo que la máquina dijo después de que un gerente lo resolviera (Codex código r3 #1), o
+ * después de un cierre que el SERVIDOR ya tiene (Codex código POS r7). El acuse sólo lo marca como entregado.
+ */
+fun CobroEnMaquinaEntity.subeTrasTerminar(): Boolean = estado == EstadoDelIntento.RESUELTO || (subido && terminadaAqui())
 
 /**
  * Codex código r1 #8, r3 #1 y Codex código POS r4 #1: LA regla de qué impide cobrar otra vez la MISMA venta: un intento abierto, en duda o
@@ -403,7 +489,8 @@ fun CobroEnMaquinaEntity.bloqueaLaVenta(): Boolean = when (estado) {
     EstadoDelIntento.EN_CURSO, EstadoDelIntento.ESPERANDO, EstadoDelIntento.PAGADO -> true
     EstadoDelIntento.RESUELTO -> (desenlaceDelServidor ?: Desenlace.PAGADO.name) == Desenlace.PAGADO.name || !dudaSubida ||
         creditCents > creditoDeLaResolucion()
-    else -> false
+    // Codex código POS r7: un CANCELADO o GUARDADO del que la máquina dijo otra cosa (otro cierre, más dinero) pudo quedarse con el dinero.
+    else -> maquinaSeContradijo
 }
 
 /** Lo que entró según la resolución del SERVIDOR (su eco en `respuestaServidor`); sin saberlo, 0. */
@@ -411,44 +498,27 @@ private fun CobroEnMaquinaEntity.creditoDeLaResolucion(): Int =
     respuestaServidor?.let { runCatching { (JSONObject(it).opt("creditCents") as? Number)?.toInt() }.getOrNull() } ?: 0
 
 /**
- * Codex código POS r5 #3 y r6 (decisión C): los cierres FÍSICOS de este folio en su diario (un `status` con su folio que cierra), distintos por
- * desenlace, total, crédito y cambio: el mismo `status` repetido con otra barra de cambio cuenta una vez.
+ * Codex código POS r7 (decisión del coordinador): «Recibido» y «Cambio» del papel, de las columnas físicas y nunca del diario ni de lo que
+ * tecleó un gerente: lo más que contó la máquina y el cambio que confirmó su cierre. null = no consta: sin cierre físico, o la máquina se
+ * contradijo (dos cierres distintos, uno imposible o de otro total); entonces esos renglones no salen.
  */
-internal fun CobroEnMaquinaEntity.cierresFisicos(): List<MensajeDeLaMaquina.Status> =
-    mensajesCrudos.lineSequence().mapNotNull { leerMensaje(it.substringAfter(' ')) as? MensajeDeLaMaquina.Status }
-        .filter { it.referenceCC == referenceCC && it.cierre() != null }
-        .distinctBy { listOf(it.cierre(), it.dueCents, it.creditCents, it.changeDispensedCents) }
-        .toList()
-
-/**
- * Codex código POS r5 #3 y r6: lo que la máquina dijo de este folio no cuadra —dos cierres físicos distintos del mismo folio (ninguno manda),
- * o, en una resolución del gerente, más dinero que el resuelto o un cierre con otro desenlace, otro crédito u otro cambio (el cliente pudo
- * recibir ya su cambio)—. La deuda no se adivina: ni comprobante ni «te debemos» en papel hasta que lo revise el panel.
- */
-fun CobroEnMaquinaEntity.porRevisarEnElPanel(): Boolean {
-    val cierres = cierresFisicos()
-    if (cierres.size > 1) return true
-    if (estado != EstadoDelIntento.RESUELTO) return false
-    val credito = creditoDeLaResolucion()
-    if (creditCents > credito) return true
-    val c = cierres.singleOrNull() ?: return false
-    val mismoDesenlace = if (c.cierre() == Cierre.PAGADO) desenlace == Desenlace.PAGADO else desenlace != Desenlace.PAGADO
-    return !mismoDesenlace || c.creditCents != credito || c.changeDispensedCents != changeDispensedCents
+internal fun CobroEnMaquinaEntity.recibidoYCambioEnPapel(): Pair<Int, Int>? {
+    if (maquinaSeContradijo || cierreFisico == null) return null
+    return creditoFisicoCents to (cambioFisicoCents ?: return null)
 }
 
 /**
- * Decisión C (Codex código POS r6): «Recibido» y «Cambio» del papel de un PAGADO. Con UN cierre físico de pago, lo que dijo la máquina (nunca
- * lo que tecleó un gerente). Sin cierre físico y sin nada que contradiga la fila, lo de la fila. Si no (cierres que no cuadran, o un cierre
- * que no es de pago), null: esos renglones no salen.
+ * Codex código POS r5 #3, r6 y r7: el papel no afirma una deuda que lo físico no respalda. «Revisar en el panel» (ni comprobante ni «Te
+ * debemos») si lo físico no consta ([recibidoYCambioEnPapel]) o no coincide con lo registrado —el cierre que aceptó el motor, o la
+ * resolución del gerente—: otro desenlace, otro recibido u otro cambio. Sólo lee columnas que no se recortan.
  */
-internal fun CobroEnMaquinaEntity.recibidoYCambioEnPapel(): Pair<Int, Int>? {
-    val cierres = cierresFisicos()
-    val c = cierres.singleOrNull()
-    return when {
-        c != null && c.cierre() == Cierre.PAGADO -> c.creditCents to c.changeDispensedCents
-        cierres.isEmpty() && !porRevisarEnElPanel() -> creditCents to changeDispensedCents
-        else -> null
-    }
+fun CobroEnMaquinaEntity.porRevisarEnElPanel(): Boolean {
+    val (recibido, cambio) = recibidoYCambioEnPapel() ?: return true
+    val resuelto = estado == EstadoDelIntento.RESUELTO
+    val credito = if (resuelto) creditoDeLaResolucion() else creditCents
+    val d = desenlace
+    val mismoDesenlace = if (cierreFisico == Cierre.PAGADO.name) d == Desenlace.PAGADO else d != null && d != Desenlace.PAGADO
+    return !mismoDesenlace || recibido != credito || cambio != changeDispensedCents
 }
 
 /**

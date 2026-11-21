@@ -729,6 +729,36 @@ class SubidaDeLaMaquinaTest {
         assertEquals("Codex código POS r4 #1: «Cancelado, \$0» no cubre los \$100 que vio la PC", 1, dao.bloqueanLaVenta(fila.llaveDeVenta))
     }
 
+    /**
+     * Codex código POS r7 #3: el SERVIDOR ya tiene el PAGADO de este folio ($200 por $187.50, $0 de cambio: debe $12.50) y la máquina confirma
+     * DESPUÉS que sí dio los $12.50. Eso sólo está en esta PC: sube como duda (el SERVIDOR lo anota «TRAS_RESOLVER» para el gerente) y frena
+     * salir hasta que llega. Lo registrado no cambia y el papel sigue en «Revisar en el panel».
+     */
+    @Test
+    fun `P1 Codex POS r7 #3 un cierre distinto que llega con el PAGADO ya subido sube como duda y frena salir hasta entregarse`() = runBlocking {
+        val subido = final(REF_1, EstadoDelIntento.PAGADO, credit = 20_000, change = 0)
+            .copy(subido = true, creditoFisicoCents = 20_000, cierreFisico = "PAGADO", cambioFisicoCents = 0)
+        insertar(subido)
+        assertEquals(0, dao.pendientes("venue-1"))
+        val conCambio = JSONObject().put("comando", "status").put("cobrando", false).put("Status", "Pago Completado").put("referenceCC", REF_1)
+            .put("Credit", 200.0).put("Due", 187.5).put("changeDispensed", 12.5).toString()
+
+        assertTrue(dao.anotarMensaje(REF_1, 1, conCambio, 20_000, 18_750))
+        assertEquals("sólo está en esta PC: frena salir", 1, dao.pendientes("venue-1"))
+        cuando("POST", ".*/cash-machine/doubts", ok(evidencia(subido)))
+        assertFalse(subida.subir())
+
+        val q = pedido()
+        assertEquals("/api/v1/mobile/venues/venue-1/cash-machine/doubts", q.path)
+        assertTrue(cuerpo(q).getString("lastSeen").contains("Pago Completado"))
+        val f = dao.fila(REF_1)!!
+        assertTrue("entregada", f.dudaSubida)
+        assertTrue(f.maquinaSeContradijo)
+        assertEquals(listOf<Any>(EstadoDelIntento.PAGADO, 20_000, 0), listOf(f.estado, f.creditCents, f.changeDispensedCents))
+        assertEquals(0, dao.pendientes("venue-1"))
+        assertTrue("el papel sigue sin deuda", f.porRevisarEnElPanel())
+    }
+
     /** Codex código POS r4 #1/#3: un folio que un gerente resolvió «Cancelado, $0» y, DESPUÉS, la máquina dice que entraron $100. */
     private suspend fun resueltaConEvidenciaNueva(): CobroEnMaquinaEntity {
         insertar(duda(REF_1).copy(dudaSubida = true, versionDeLaDuda = 1))

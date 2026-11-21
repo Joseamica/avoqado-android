@@ -59,8 +59,11 @@ const val TEXTO_VENTA_RESTAURADA = "Esta venta se restauró: cóbrala con tarjet
  * sin internet: recepción puede abrir y cobrar la misma reserva mientras la máquina recibe el dinero.
  */
 const val TEXTO_RESERVA_EN_CAJA = "Las reservas se cobran en caja o con tarjeta"
-/** Codex código POS r5 #2: la tarjeta de ESTA venta (por su llave) sigue sin confirmar. */
-const val TEXTO_TARJETA_SIN_CONFIRMAR = "Hay un cobro con tarjeta sin confirmar para esta venta"
+/**
+ * Codex código POS r7 #1 (regla pegajosa del coordinador): esta venta ya mandó un cobro con tarjeta a la terminal. Nunca vence: si esa
+ * tarjeta se aprobó tarde, la máquina cobraría la misma compra otra vez.
+ */
+const val TEXTO_VENTA_CON_TARJETA = "Esta venta ya intentó cobrarse con tarjeta: termínala con tarjeta o empieza un carrito nuevo"
 
 /** Codex código r1 #12: «Hay N tickets sin imprimir». */
 fun textoDeTicketsSinImprimir(n: Int): String = if (n == 1) "Hay 1 ticket sin imprimir" else "Hay $n tickets sin imprimir"
@@ -95,8 +98,8 @@ fun filaDeLaMaquina(
     ventaNueva: Boolean,
     ventaEnDuda: Boolean,
     cobroVivo: Boolean,
-    /** Codex código POS r5 #2: un cobro con tarjeta de ESTA venta (su llave en memoria) sin confirmar. */
-    tarjetaSinConfirmar: Boolean = false,
+    /** Codex código POS r7 #1: esta venta ya mandó alguna vez un cobro con tarjeta a la terminal (pegajoso, nunca vence). */
+    intentoConTarjeta: Boolean = false,
     /** Decisión A (Codex código POS r5 #2 y r6): la trajo «Restaurar» (o volvió ligada a su copia guardada). */
     restaurada: Boolean = false,
     /** Decisión B (Codex código POS r6): va ligada a una reserva o a una clase. */
@@ -105,7 +108,7 @@ fun filaDeLaMaquina(
     val motivo = when {
         ventaEnDuda -> TEXTO_VENTA_EN_DUDA
         restaurada -> TEXTO_VENTA_RESTAURADA
-        tarjetaSinConfirmar -> TEXTO_TARJETA_SIN_CONFIRMAR
+        intentoConTarjeta -> TEXTO_VENTA_CON_TARJETA
         conReserva -> TEXTO_RESERVA_EN_CAJA
         !ventaNueva -> TEXTO_SOLO_VENTA_COMPLETA
         ahora.conexion != Conexion.CONECTADA -> TEXTO_NO_RESPONDE
@@ -210,8 +213,6 @@ fun renglonesParaCongelar(items: List<com.avoqado.pos.printing.data.model.Receip
  */
 fun ticketDeLaFila(fila: CobroEnMaquinaEntity, negocio: String): com.avoqado.pos.printing.data.model.ReceiptData {
     val renglones = renglonesDelTicket(fila.renglonesJson).orEmpty()
-    // Codex código POS r5 #3: lo físico que contradice la resolución no se imprime como «te debemos».
-    val debe = if (fila.porRevisarEnElPanel()) 0 else deudaFisica(Desenlace.PAGADO, fila.dueCents, fila.creditCents, fila.changeDispensedCents)
     val papel = papelCongelado(fila.renglonesJson)
     val totales = com.avoqado.pos.printing.data.model.TotalesDelTicket.desdeLoCobrado(
         cobrado = fila.saleCents,
@@ -220,7 +221,8 @@ fun ticketDeLaFila(fila: CobroEnMaquinaEntity, negocio: String): com.avoqado.pos
         cargo = 0,
         impuestoAgregado = papel?.optInt("impuestoAgregadoCents", 0) ?: 0,
     )
-    return com.avoqado.pos.printing.data.model.ReceiptData(
+    // Codex código POS r7: «Recibido», «Cambio» y «Te debemos» salen de las columnas físicas ([conLoFisico]), nunca de la fila registrada.
+    return conLoFisico(fila, com.avoqado.pos.printing.data.model.ReceiptData(
         orderNumber = fila.referenceCC,
         orderType = "",
         items = renglones,
@@ -233,14 +235,8 @@ fun ticketDeLaFila(fila: CobroEnMaquinaEntity, negocio: String): com.avoqado.pos
         cashierName = papel?.takeIf { !it.isNull("atendio") }?.optString("atendio")?.takeIf { it.isNotBlank() },
         venueName = negocio,
         date = Date(fila.cierreEn ?: fila.creadoEn),
-        cashTendered = fila.creditCents,
-        changeAmount = fila.changeDispensedCents,
-        cashMachine = com.avoqado.pos.printing.receiptlayout.ReceiptCashMachine(
-            referenceCC = fila.referenceCC,
-            owedCents = debe.takeIf { it > 0 }?.toLong(),
-            priceToConfirm = fila.quoteId == null,
-        ),
-    )
+        cashMachine = com.avoqado.pos.printing.receiptlayout.ReceiptCashMachine(fila.referenceCC, priceToConfirm = fila.quoteId == null),
+    ))
 }
 
 /** C7: el comprobante de [fila] (mismo folio que la venta), o null si no debe nada. */
@@ -283,9 +279,10 @@ fun papelDeLaFila(
 }
 
 /**
- * Decisión C (Codex código POS r6): el ticket de venta de [fila], con «Recibido» y «Cambio» del cierre FÍSICO ([recibidoYCambioEnPapel]),
- * nunca de lo que tecleó un gerente; sin ellos (cierres que no cuadran) no salen esos renglones. Si lo de la máquina contradice la
- * resolución, ni «Te debemos»: «Revisar en el panel».
+ * Decisión C (Codex código POS r6) y Codex código POS r7: el ticket de venta de [fila] —el que armó la caja o el de la fila— con «Recibido»,
+ * «Cambio» y «Te debemos» de las columnas FÍSICAS ([recibidoYCambioEnPapel]), nunca de lo que tecleó un gerente, de un cierre que el motor
+ * descartó ni del diario (que se recorta). Si no constan, esos renglones no salen; si lo físico no respalda lo registrado, ni «Te debemos»:
+ * «Revisar en el panel».
  */
 private fun conLoFisico(
     fila: CobroEnMaquinaEntity,
@@ -294,10 +291,17 @@ private fun conLoFisico(
     val enPapel = fila.recibidoYCambioEnPapel()
     val maquina = t.cashMachine ?: com.avoqado.pos.printing.receiptlayout.ReceiptCashMachine(fila.referenceCC, priceToConfirm = fila.quoteId == null)
     val revisar = fila.porRevisarEnElPanel()
+    // Un comprobante (el de diferencia que pide «Imprimir comprobante») trae su importe del SERVIDOR ([deudaDelComprobante]); el ticket de
+    // venta, el cambio físico que no se dio. Los dos sólo si lo físico respalda lo registrado.
+    val debe = when {
+        revisar -> null
+        t.kind == com.avoqado.pos.printing.receiptlayout.KIND_COMPROBANTE_DE_LA_MAQUINA -> maquina.owedCents
+        else -> enPapel?.let { (recibido, cambio) -> deudaFisica(Desenlace.PAGADO, fila.dueCents, recibido, cambio).toLong() }
+    }
     return t.copy(
         cashTendered = enPapel?.first,
         changeAmount = enPapel?.second,
-        cashMachine = if (revisar) maquina.copy(owedCents = null, revisarEnElPanel = true) else maquina,
+        cashMachine = maquina.copy(owedCents = debe?.takeIf { it > 0 }, revisarEnElPanel = revisar),
     )
 }
 

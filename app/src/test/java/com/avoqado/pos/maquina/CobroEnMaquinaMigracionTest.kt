@@ -53,18 +53,73 @@ class CobroEnMaquinaMigracionTest {
     }
 
     @Test
-    fun `la tabla de hoy es la que Room espera en la v23`() {
+    fun `la tabla de la v23 es la que Room esperaba en la v23`() {
         val (sql, indices) = createSql(23)
+        assertEquals(sql, CobroEnMaquinaSql.CREAR_TABLA_V23)
+        assertTrue(indices.isNullOrEmpty())
+    }
+
+    @Test
+    fun `la tabla de hoy es la que Room espera en la v24`() {
+        val (sql, indices) = createSql(24)
         assertEquals(sql, CobroEnMaquinaSql.CREAR_TABLA)
         assertTrue(indices.isNullOrEmpty())
     }
 
     @Test
-    fun `las migraciones 19 a 20, 20 a 21, 21 a 22 y 22 a 23 existen y van en cadena`() {
+    fun `las migraciones 19 a 20, 20 a 21, 21 a 22, 22 a 23 y 23 a 24 existen y van en cadena`() {
         assertEquals(19 to 20, AvoqadoDatabaseMigrations.MIGRATION_19_20.let { it.startVersion to it.endVersion })
         assertEquals(20 to 21, AvoqadoDatabaseMigrations.MIGRATION_20_21.let { it.startVersion to it.endVersion })
         assertEquals(21 to 22, AvoqadoDatabaseMigrations.MIGRATION_21_22.let { it.startVersion to it.endVersion })
         assertEquals(22 to 23, AvoqadoDatabaseMigrations.MIGRATION_22_23.let { it.startVersion to it.endVersion })
+        assertEquals(23 to 24, AvoqadoDatabaseMigrations.MIGRATION_23_24.let { it.startVersion to it.endVersion })
+    }
+
+    /**
+     * Codex código POS r7: una base v23 llega a v24 con la evidencia física en columnas. Un cierre de la máquina copia lo que el motor ya
+     * había escrito de su `status`; una duda conserva lo que entró; una resuelta por un gerente arranca sin cierre físico (su papel dice
+     * «Revisar en el panel»); nada se contradice todavía.
+     */
+    @Test
+    fun `Codex POS r7 una base v23 llega a v24 con lo fisico de cada cobro y sin contradicciones`() {
+        DriverManager.getConnection("jdbc:sqlite::memory:").use { v23 ->
+            v23.createStatement().use { it.executeUpdate(CobroEnMaquinaSql.CREAR_TABLA_V23) }
+            fun insertar(ref: String, estado: String, credit: Int, change: Int, resueltoPor: String?) = v23.createStatement().use {
+                it.executeUpdate(
+                    "INSERT INTO cobros_en_maquina (referenceCC, venueId, llaveDeVenta, pedidoJson, saleCents, tipCents, dueCents, " +
+                        "creadoEn, estado, creditCents, changeDispensedCents, cierreConocido, subido, dudaSubida, ticketImpreso, " +
+                        "mensajesCrudos, aDeberCents, huellasDelDiario, resueltoPor) VALUES ('$ref', 'venue-1', 'venta-$ref', '{}', 8000, 0, 8000, 1, " +
+                        "'$estado', $credit, $change, 1, 0, 0, 0, 'g1 crudo', 0, '', ${resueltoPor?.let { "'$it'" } ?: "NULL"})",
+                )
+            }
+            insertar("AQ000000000001", "PAGADO", 10_000, 1_500, "MAQUINA")
+            insertar("AQ000000000002", "GUARDADO", 5_000, 0, "MAQUINA")
+            insertar("AQ000000000003", "ESPERANDO", 5_000, 0, null)
+            insertar("AQ000000000004", "RESUELTO", 10_000, 2_000, "GERENTE")
+
+            CobroEnMaquinaSql.MIGRAR_23_24.forEach { sql -> v23.createStatement().use { it.executeUpdate(sql) } }
+
+            val hoy = DriverManager.getConnection("jdbc:sqlite::memory:").use { nueva ->
+                nueva.createStatement().use { it.executeUpdate(CobroEnMaquinaSql.CREAR_TABLA) }
+                columnas(nueva)
+            }
+            assertEquals("las mismas columnas que crea Room hoy", hoy, columnas(v23))
+            v23.createStatement().use { st ->
+                val rs = st.executeQuery(
+                    "SELECT referenceCC, creditoFisicoCents, cierreFisico, cambioFisicoCents, maquinaSeContradijo FROM cobros_en_maquina ORDER BY referenceCC",
+                )
+                val filas = generateSequence {
+                    if (rs.next()) listOf<Any?>(rs.getString(1), rs.getInt(2), rs.getString(3), rs.getObject(4)?.let { (it as Number).toInt() }, rs.getInt(5)) else null
+                }.toList()
+                assertEquals(
+                    listOf(
+                        listOf<Any?>("AQ000000000001", 10_000, "PAGADO", 1_500, 0), listOf<Any?>("AQ000000000002", 5_000, "CANCELADO", 0, 0),
+                        listOf<Any?>("AQ000000000003", 5_000, null, null, 0), listOf<Any?>("AQ000000000004", 0, null, null, 0),
+                    ),
+                    filas,
+                )
+            }
+        }
     }
 
     @Test
@@ -82,11 +137,11 @@ class CobroEnMaquinaMigracionTest {
 
             CobroEnMaquinaSql.MIGRAR_22_23.forEach { sql -> v22.createStatement().use { it.executeUpdate(sql) } }
 
-            val hoy = DriverManager.getConnection("jdbc:sqlite::memory:").use { nueva ->
-                nueva.createStatement().use { it.executeUpdate(CobroEnMaquinaSql.CREAR_TABLA) }
+            val v23 = DriverManager.getConnection("jdbc:sqlite::memory:").use { nueva ->
+                nueva.createStatement().use { it.executeUpdate(CobroEnMaquinaSql.CREAR_TABLA_V23) }
                 columnas(nueva)
             }
-            assertEquals("las mismas columnas que crea Room hoy", hoy, columnas(v22))
+            assertEquals("las mismas columnas que creaba Room en la v23", v23, columnas(v22))
             v22.createStatement().use { st ->
                 val rs = st.executeQuery("SELECT estado, creditCents, huellasDelDiario, comandaJson FROM cobros_en_maquina")
                 assertTrue(rs.next())

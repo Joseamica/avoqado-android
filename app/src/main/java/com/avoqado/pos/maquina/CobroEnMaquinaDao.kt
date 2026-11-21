@@ -49,23 +49,31 @@ interface CobroEnMaquinaDao {
     @Query(CobroEnMaquinaSql.ESCRIBIR_DIARIO)
     suspend fun escribirDiario(referenceCC: String, anterior: String, nuevo: String, huellas: String, creditoAnterior: Int, credito: Int): Int
 
+    @Query(CobroEnMaquinaSql.ANOTAR_LO_FISICO)
+    suspend fun anotarLoFisico(referenceCC: String, credito: Int, cierre: String?, cambio: Int?, imposible: Boolean): Int
+
     /**
-     * Codex código r2, bloque A: un mensaje de la máquina al diario de SU folio ([referenceCC]), ANTES de decidir nada. Sólo una fila de
-     * esta PC abierta, en duda o resuelta por un gerente (Codex código r3 #1: lo que llega después de resolverla es evidencia, nunca se
-     * tira). Un mensaje físico que ya llegó alguna vez no cambia nada, ni el crédito ni la versión (H13 y r3 #13). [creditCents] cuenta
-     * sólo si el mensaje es del `Due` de la fila ([dueCents]): lo que entró de otra operación nunca se le atribuye. true = evidencia nueva
-     * en disco.
+     * Codex código r2, bloque A y POS r7: un mensaje de la máquina a SU folio ([referenceCC]), ANTES de decidir nada.
+     * 1. Lo FÍSICO, en columnas fijas que sólo crecen, en CUALQUIER estado de la fila ([loFisicoDelMensaje]): un cierre que llega con la fila
+     *    ya PAGADA, resuelta o en conflicto nunca se tira. Es lo único que lee el papel.
+     * 2. El DIARIO, sólo para subir: de una fila abierta, en duda o resuelta por un gerente (Codex código r3 #1), o de una ya terminada aquí
+     *    en la que la máquina se contradijo (sube como duda). Un mensaje físico que ya llegó alguna vez no cambia nada (H13 y r3 #13).
+     *    [creditCents] cuenta sólo si el mensaje es del `Due` de la fila ([dueCents]): lo que entró de otra operación nunca se le atribuye.
+     * true = evidencia nueva por subir.
      */
     @Transaction
     suspend fun anotarMensaje(referenceCC: String, generacion: Int, crudo: String, creditCents: Int?, dueCents: Int?): Boolean {
-        val fila = porReferencia(referenceCC) ?: return false
-        if (fila.estado != EstadoDelIntento.EN_CURSO && fila.estado != EstadoDelIntento.ESPERANDO && fila.estado != EstadoDelIntento.RESUELTO) {
-            return false
+        var fila = porReferencia(referenceCC) ?: return false
+        loFisicoDelMensaje(fila, crudo, creditCents, dueCents)?.let { f ->
+            anotarLoFisico(referenceCC, f.credito, f.cierre, f.cambio, f.imposible)
+            fila = porReferencia(referenceCC) ?: return false
         }
-        // Codex código POS r4 #15: sólo lo que el SERVIDOR ya tiene (la duda o lo de después de resolver, acusados) se puede recortar.
+        val viva = fila.estado == EstadoDelIntento.EN_CURSO || fila.estado == EstadoDelIntento.ESPERANDO || fila.estado == EstadoDelIntento.RESUELTO
+        if (!viva && !fila.maquinaSeContradijo) return false
+        // Codex código POS r4 #15: sólo lo que el SERVIDOR ya tiene (la duda o lo de después de terminar, acusados) se puede recortar.
         val entregado = fila.estado != EstadoDelIntento.EN_CURSO && fila.dudaSubida
         val anotado = DiarioDelFolio.agregar(fila.mensajesCrudos, fila.huellasDelDiario, generacion, crudo, entregado) ?: return false
-        val credito = if (creditCents != null && dueCents == fila.dueCents) maxOf(fila.creditCents, creditCents) else fila.creditCents
+        val credito = if (viva && creditCents != null && dueCents == fila.dueCents) maxOf(fila.creditCents, creditCents) else fila.creditCents
         return escribirDiario(referenceCC, fila.mensajesCrudos, anotado.diario, anotado.huellas, fila.creditCents, credito) > 0
     }
 
@@ -171,3 +179,24 @@ interface CobroEnMaquinaDao {
  * regla que cerrar sesión ([frenaLaSalida]).
  */
 suspend fun CobroEnMaquinaDao.hayPendientesDeLaMaquina(): Boolean = pendientes(null) > 0
+
+/** Lo que un mensaje físico le aporta a las columnas de su folio ([CobroEnMaquinaDao.anotarLoFisico]). */
+internal data class LoFisico(val credito: Int, val cierre: String?, val cambio: Int?, val imposible: Boolean)
+
+/**
+ * Codex código POS r7: lo físico de [crudo] para [fila]. El crédito cuenta sólo del `Due` de la fila (el `status` de su folio o el
+ * `updateCredit` que el motor le atribuyó). Un `status` de cierre de ESTE folio es su cierre físico si su `Due` es el de la fila y sus
+ * importes caben en su desenlace (con lo más que se contó, como el motor); si no, es evidencia de contradicción y nunca un importe.
+ * null = no aporta nada.
+ */
+internal fun loFisicoDelMensaje(fila: CobroEnMaquinaEntity, crudo: String, creditCents: Int?, dueCents: Int?): LoFisico? {
+    val credito = creditCents?.takeIf { dueCents == fila.dueCents }?.coerceAtLeast(0) ?: 0
+    val status = (leerMensaje(crudo) as? MensajeDeLaMaquina.Status)?.takeIf { it.referenceCC == fila.referenceCC }
+    val cierre = status?.cierre() ?: return LoFisico(credito, null, null, false).takeIf { credito > 0 }
+    // La misma cuenta del motor ([desenlaceDelCierre]) sin el modo del `cancel`: «devolver» admite cualquier cambio hasta lo que entró.
+    val posible = status.dueCents == fila.dueCents && desenlaceDelCierre(
+        cierre, cancelPedido = "1", dueCents = fila.dueCents, creditCents = maxOf(fila.creditoFisicoCents, credito),
+        changeCents = status.changeDispensedCents,
+    ) != null
+    return if (posible) LoFisico(credito, cierre.name, status.changeDispensedCents, false) else LoFisico(credito, null, null, true)
+}

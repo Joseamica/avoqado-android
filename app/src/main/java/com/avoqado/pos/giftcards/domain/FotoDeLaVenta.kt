@@ -32,6 +32,8 @@ data class FotoDeLaVenta(
     val clienteDescuento: com.avoqado.pos.customers.data.model.DescuentoDelCliente? = null,
     val autorizacionDelDescuento: AutorizacionDelDescuento? = null,
     val descuentosDeClienteQuitados: Set<String> = emptySet(),
+    /** Codex código POS r7 #1: la venta ya mandó un cobro con tarjeta (pegajoso): la foto restaurada tampoco va a la máquina. */
+    val intentoConTarjeta: Boolean = false,
 )
 
 fun CartState.aFoto(cliente: CartViewModel.SelectedCustomer?): FotoDeLaVenta = FotoDeLaVenta(
@@ -45,7 +47,7 @@ fun CartState.aFoto(cliente: CartViewModel.SelectedCustomer?): FotoDeLaVenta = F
     descuentoDeCuentaCongelado = descuentoDeCuentaCongelado?.copy(huellas = descuentoDeCuentaCongelado.huellas.toMap()),
     creacionIncierta = creacionIncierta, llavePagarDespues = llavePagarDespues, clienteId = cliente?.id, clienteNombre = cliente?.name,
     clienteDescuento = cliente?.descuentoDelCliente, autorizacionDelDescuento = autorizacionDelDescuento,
-    descuentosDeClienteQuitados = descuentosDeClienteQuitados.toSet(),
+    descuentosDeClienteQuitados = descuentosDeClienteQuitados.toSet(), intentoConTarjeta = intentoConTarjeta,
 )
 
 fun FotoDeLaVenta.aCartState(): CartState = CartState(
@@ -59,4 +61,5 @@ fun FotoDeLaVenta.aCartState(): CartState = CartState(
     descuentoDeCuentaCongelado = descuentoDeCuentaCongelado?.copy(huellas = descuentoDeCuentaCongelado.huellas.toMap()),
     creacionIncierta = creacionIncierta, llavePagarDespues = llavePagarDespues,
     autorizacionDelDescuento = autorizacionDelDescuento, descuentosDeClienteQuitados = descuentosDeClienteQuitados.toSet(),
+    intentoConTarjeta = intentoConTarjeta,
 )
