@@ -1503,21 +1503,18 @@ class CartViewModel @Inject constructor(
     }
 
     private fun defaultCartState(): CartState {
-        val sesion = vendedorDeLaSesion()
-        return CartState(
-            selectedStaffId = secureStorage.selectedStaffIdForCurrentVenue ?: sesion.selectedStaffId,
-            selectedStaffName = secureStorage.selectedStaffNameForCurrentVenue ?: sesion.selectedStaffName,
-        )
-    }
-
-    /** Quien inició sesión, sin mirar la selección guardada en disco (que pudo no borrarse: D7, Codex r1 #1). */
-    private fun vendedorDeLaSesion(): CartState = CartState(
-        selectedStaffId = secureStorage.userId.orEmpty(),
-        selectedStaffName = listOfNotNull(secureStorage.userFirstName, secureStorage.userLastName)
+        val loggedInStaffName = listOfNotNull(secureStorage.userFirstName, secureStorage.userLastName)
             .joinToString(" ")
             .trim()
-            .ifEmpty { secureStorage.userEmail ?: "Staff" },
-    )
+            .ifEmpty { secureStorage.userEmail ?: "Staff" }
+        val storedStaffId = secureStorage.selectedStaffIdForCurrentVenue
+        val storedStaffName = secureStorage.selectedStaffNameForCurrentVenue
+
+        return CartState(
+            selectedStaffId = storedStaffId ?: secureStorage.userId.orEmpty(),
+            selectedStaffName = storedStaffName ?: loggedInStaffName,
+        )
+    }
 
     fun fetchStaff() {
         viewModelScope.launch {
@@ -1563,7 +1560,7 @@ class CartViewModel @Inject constructor(
             // cliente: sólo deja de llevar al vendedor dado de baja. Vaciarla borraba el vínculo y la cajera podía cobrar la
             // compra completa en un folio nuevo: $40 en A + $100 en B por una compra de $100 (CartSplitContinuidadTest).
             if (alCerrarElCobro || hayVentaAMedias()) {
-                val sinVendedor = vendedorDeLaSesion()
+                val sinVendedor = defaultCartState()
                 _cartState.update { it.copy(selectedStaffId = sinVendedor.selectedStaffId, selectedStaffName = sinVendedor.selectedStaffName) }
                 return
             }

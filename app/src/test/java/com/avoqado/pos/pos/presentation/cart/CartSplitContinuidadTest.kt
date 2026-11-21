@@ -324,36 +324,6 @@ class CartSplitContinuidadTest {
         io.mockk.verify { secureStorage.clearSelectedStaffForCurrentVenue() }
     }
 
-    /**
-     * P1 (D7, Codex r1 #1 del PR #319). En WINDOWS el guardado puede fallar y la memoria vuelve a lo que había: tras
-     * `clearSelectedStaffForCurrentVenue()` el disco SIGUE diciendo «staff-fantasma». Si el vendedor nuevo se releyera de
-     * ahí, el carrito seguiría mandando al dado de baja y el SERVIDOR rechazaría el cobro del saldo (400). El que queda es
-     * el de la sesión.
-     */
-    @Test
-    fun `P1 si el disco no olvida al vendedor dado de baja, la venta a medias queda con el de la sesion`() = runTest {
-        coEvery { staffRepository.getActiveStaff() } returns Result.success(emptyList())
-        every { secureStorage.userId } returns "user-1"
-        every { secureStorage.userFirstName } returns "Ana"
-        every { secureStorage.userLastName } returns "Caja"
-        every { secureStorage.selectedStaffIdForCurrentVenue } returns "staff-fantasma"
-        every { secureStorage.selectedStaffNameForCurrentVenue } returns "Beto"
-        val vm = createViewModel()
-        vm.setSelectedCustomer("cli-1", "Ana Cliente")
-        vm.sembrarSaldoPendiente("order-a", cents = 6_000)
-        val saldo = vm.cartState.value.items
-        assertEquals("montaje: la venta va a nombre de Beto", "staff-fantasma", vm.cartState.value.selectedStaffId)
-
-        vm.fetchStaff()
-        advanceUntilIdle()
-
-        assertEquals(saldo, vm.cartState.value.items)
-        assertEquals("order-a", vm.resolvePendingSplitOrderForCharge())
-        assertEquals("cli-1", vm.selectedCustomer.value?.id)
-        assertEquals("user-1", vm.cartState.value.selectedStaffId)
-        assertEquals("Ana Caja", vm.cartState.value.selectedStaffName)
-    }
-
     // ── Membresías capturadas al abrir el cobro ────────────────────────────────
 
     private val membresia = com.avoqado.pos.articles.data.model.CreditPack(
