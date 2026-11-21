@@ -41,9 +41,14 @@ fun ConnectivityBanner(
     avisoDeCocina: String? = null,
     /** 3.5, D11: la racha («La pantalla de Barra no se alcanza por el WiFi») se ve CON o sin internet. */
     avisoDeRacha: String? = null,
+    /**
+     * D6 de Flautas (opción B): «La pantalla de cocina de X no está conectada a internet» (`AppState.avisoDePantallas`). Sólo
+     * CON red, y nunca se esconde detrás de otro aviso: la caja ya no avisa «No salió» orden por orden.
+     */
+    avisoDePantallas: String? = null,
 ) {
     AnimatedVisibility(
-        visible = visible || avisoDeLaCaja != null || avisoDeRacha != null,
+        visible = visible || avisoDeLaCaja != null || avisoDeRacha != null || avisoDePantallas != null,
         enter = slideInVertically { -it },
         exit = slideOutVertically { -it },
         modifier = modifier,
@@ -57,7 +62,7 @@ fun ConnectivityBanner(
             contentAlignment = Alignment.Center,
         ) {
             Text(
-                text = textoDeLaBanda(visible, pendingSync, avisoDeLaCaja, avisoDeCocina, avisoDeRacha),
+                text = textoDeLaBanda(visible, pendingSync, avisoDeLaCaja, avisoDeCocina, avisoDeRacha, avisoDePantallas),
                 color = Color.White,
                 style = MaterialTheme.typography.labelMedium,
                 fontWeight = FontWeight.SemiBold,
@@ -74,11 +79,22 @@ fun ConnectivityBanner(
     }
 }
 
-/** Qué dice la banda. PURA: con red, la caja retenida gana a la racha; sin red, la racha reemplaza al aviso de papel. */
-internal fun textoDeLaBanda(visible: Boolean, pendingSync: Int, avisoDeLaCaja: String?, avisoDeCocina: String?, avisoDeRacha: String?): String =
+/**
+ * Qué dice la banda. PURA: con red, la caja retenida gana a la racha; sin red, la racha reemplaza al aviso de papel.
+ * D6 de Flautas: [avisoDePantallas] («… no está conectada a internet») sólo se dice CON red (sin red no se afirma nada del
+ * servidor: Codex r7 #3) y nunca lo tapa otro aviso: va junto a la caja retenida o junto a la racha.
+ */
+internal fun textoDeLaBanda(
+    visible: Boolean,
+    pendingSync: Int,
+    avisoDeLaCaja: String?,
+    avisoDeCocina: String?,
+    avisoDeRacha: String?,
+    avisoDePantallas: String? = null,
+): String =
     when {
-        !visible && avisoDeLaCaja != null -> avisoDeLaCaja
-        !visible && avisoDeRacha != null -> avisoDeRacha
+        !visible && avisoDeLaCaja != null -> listOfNotNull(avisoDeLaCaja, avisoDePantallas).joinToString(" · ")
+        !visible && (avisoDePantallas != null || avisoDeRacha != null) -> listOfNotNull(avisoDePantallas, avisoDeRacha).joinToString(" · ")
         else -> textoSinRed(pendingSync, avisoDeRacha ?: avisoDeCocina)
     }
 

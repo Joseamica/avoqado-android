@@ -175,6 +175,18 @@ object KitchenDeliveryPolicy {
         }
     }
 
+    /**
+     * D6 de Flautas (20-nov, opción B del founder «como Square y Toast», simplificada tras Codex r7): las pantallas de cocina
+     * que el SERVIDOR no ve conectadas (no han pedido su tablero en 90 s). Los nombres los manda el servidor, de SU
+     * configuración: aquí sólo se arma el texto. Dice sólo lo que se sabe: no promete entrega (lo que salió en papel de
+     * respaldo no vuelve a la pantalla) ni habla del WiFi del local (eso es [avisoDeRacha]). `null` = ninguna.
+     */
+    fun avisoDePantallasSinInternet(nombres: List<String>): String? = when (nombres.size) {
+        0 -> null
+        1 -> "La pantalla de cocina de ${nombres.single()} no está conectada a internet"
+        else -> "Las pantallas de cocina de ${lista(nombres)} no están conectadas a internet"
+    }
+
     private fun lista(nombres: List<String>): String =
         if (nombres.size == 1) nombres.single() else nombres.dropLast(1).joinToString(", ") + " y " + nombres.last()
 }

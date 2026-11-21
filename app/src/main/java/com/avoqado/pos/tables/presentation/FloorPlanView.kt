@@ -73,6 +73,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import com.avoqado.pos.designsystem.components.AvoqadoModalBottomSheet
+import com.avoqado.pos.designsystem.components.clicDerecho
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.designsystem.theme.Success
 import com.avoqado.pos.tables.data.DiningTable
@@ -310,6 +311,7 @@ private fun FloorTableNode(
                 contentDescription = label
                 role = Role.Button
             }
+            .clicDerecho(onLongPress)   // mouse: clic derecho = mantener presionado (D9, 20-nov)
             .combinedClickable(onClick = onTap, onLongClick = onLongPress),
         contentAlignment = Alignment.Center,
     ) {

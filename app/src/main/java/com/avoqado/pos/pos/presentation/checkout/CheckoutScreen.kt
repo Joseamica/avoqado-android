@@ -2858,7 +2858,7 @@ private fun IPhoneCartSheet(
 // MARK: - Cart Item Detail Panel (matching iOS: side panel on tablet, sheet on phone)
 
 @Composable
-private fun CartItemDetailPanel(
+internal fun CartItemDetailPanel(
     item: CartItem,
     isTablet: Boolean,
     onUpdateQuantity: (Int) -> Unit,
@@ -2882,7 +2882,13 @@ private fun CartItemDetailPanel(
                     .width(400.dp)
                     .fillMaxHeight()
                     .background(MaterialTheme.colorScheme.surface)
-                    .clickable(enabled = false, onClick = {}),
+                    // D10 (Flautas, WINDOWS): HABILITADO a propósito, como el de la báscula. Uno deshabilitado deja pasar al
+                    // fondo el Espacio/Enter que el campo no consume (y el clic en un hueco), y el fondo cierra el panel.
+                    .clickable(
+                        indication = null,
+                        interactionSource = remember { MutableInteractionSource() },
+                        onClick = {},
+                    ),
             ) {
                 CartItemDetailContent(
                     item = item,

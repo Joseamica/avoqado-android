@@ -195,6 +195,20 @@ class KitchenDeliveryPolicyTest {
         assertNull("una estación que ya no existe en la config no se nombra", KitchenDeliveryPolicy.avisoDeRacha(setOf("st_borrada"), c))
     }
 
+    /** D6 de Flautas (opción B): los nombres vienen del servidor; el texto no promete entrega ni habla del WiFi. */
+    @Test
+    fun `D6 el aviso de pantallas sin internet nombra las que el servidor no ve, y nada si ninguna`() {
+        assertNull(KitchenDeliveryPolicy.avisoDePantallasSinInternet(emptyList()))
+        assertEquals(
+            "La pantalla de cocina de COCINA 1 no está conectada a internet",
+            KitchenDeliveryPolicy.avisoDePantallasSinInternet(listOf("COCINA 1")),
+        )
+        assertEquals(
+            "Las pantallas de cocina de Barra, Postres y Café no están conectadas a internet",
+            KitchenDeliveryPolicy.avisoDePantallasSinInternet(listOf("Barra", "Postres", "Café")),
+        )
+    }
+
     @Test
     fun `P1 el aviso de racha ignora una estacion cuya pantalla se apago`() {
         val c = config(cocina, barraSoloPantalla.copy(hasKitchenDisplay = false))
