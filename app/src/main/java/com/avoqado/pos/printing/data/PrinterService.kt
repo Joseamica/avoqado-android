@@ -799,8 +799,8 @@ class PrinterService @Inject constructor(
             printer = conectarOEncontrar(printer)
         }
 
-        // D661 · Ruling 50: ya con su turno, su permiso USB y su conexión, lo último antes del primer byte. Una comanda en línea cuyo
-        // reclamo se hizo viejo esperando no manda nada (la siguiente vuelta la reclama otra vez). Sin guarda (todo lo demás), nada cambia.
+        // D661 · Ruling 50: ya con su turno, su permiso USB y su conexión, lo último antes del primer byte. Una comanda de tarjeta de «Nadie»
+        // cuyo reclamo se hizo viejo esperando no manda nada (la siguiente vuelta la reclama otra vez). Sin guarda (todo lo demás), nada cambia.
         if (kotlinx.coroutines.currentCoroutineContext()[GuardaDelPrimerByte]?.puedeEscribir?.invoke() == false) {
             if (printer.connectionTypeEnum == PrinterConnectionType.WIFI) releaseWifiConnection(printer.id)
             throw PermisoParaImprimirVencido()

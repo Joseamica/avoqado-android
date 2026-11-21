@@ -5,7 +5,7 @@ import kotlin.coroutines.CoroutineContext
 
 /**
  * D661 · Ruling 50: el permiso de mandar el PRIMER byte de un trabajo de impresión. Viaja en el contexto de la corrutina: quien imprime algo
- * que sólo vale un tiempo (la comanda de un pedido en línea y su reclamo de 90 s) lo pone, y [PrinterService] lo pregunta justo antes de
+ * que sólo vale un tiempo (la comanda de tarjeta de «Nadie» y su reclamo de 90 s) lo pone, y [PrinterService] lo pregunta justo antes de
  * escribir, después de toda espera (el turno de la impresora, la conexión, el permiso USB). Si dice que no, no sale nada:
  * [PermisoParaImprimirVencido]. Sin guarda en el contexto (recibos, cortes, todo lo demás) nada cambia.
  */

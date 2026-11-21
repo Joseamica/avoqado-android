@@ -19,6 +19,7 @@ import com.avoqado.pos.printing.routing.RoutableItem
 import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlin.coroutines.EmptyCoroutineContext
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
 
@@ -37,8 +38,9 @@ sealed interface ResultadoImpresion {
     data object YaEnCurso : ResultadoImpresion
 
     /**
-     * Ruling 50: la comanda esperó su impresora (el turno, el permiso USB, la conexión) hasta que su reclamo tuvo 75 s, y no mandó ni un
-     * byte. Se suelta sin descanso: la siguiente vuelta la reclama otra vez y el SERVIDOR decide (devuelto = no; si no, repetida con marca).
+     * Ruling 50 (sólo la comanda de tarjeta de «Nadie», enmendado en la ronda 4): esperó su impresora (el turno, el permiso USB, la
+     * conexión) hasta que su reclamo tuvo 75 s, y no mandó ni un byte. Se suelta sin descanso: la siguiente vuelta del vigilante la reclama
+     * otra vez y el SERVIDOR decide (devuelto = no; si no, repetida con marca).
      */
     data object ReclamoVencido : ResultadoImpresion
 }
@@ -156,8 +158,11 @@ class ImpresionDePedidoEnLinea internal constructor(
                     if (!reclamo.reclamado) return@run ResultadoImpresion.OtroAparato
                     if (venueId() != sucursal) return@run ResultadoImpresion.NoSalio
                     val permiso = PermisoDelReclamo(pedidoEn, relojMonotono)
+                    // Ruling 50 enmendado (el 66 de la TPV): el tope es SÓLO de la comanda de tarjeta de «Nadie». Las demás salen aunque
+                    // tarden, como antes de la ronda 3: sólo las vuelve a reclamar la bandeja a la vista, y negarlas las volvería «nunca».
+                    val guarda = if (esComandaDeTarjetaEnNadie(order)) GuardaDelPrimerByte(permiso::puedeEscribir) else EmptyCoroutineContext
                     // Ruling 9: el reclamo se concedió sobre otro que venció sin confirmarse; el papel pudo haber salido ya.
-                    val salio = withContext(GuardaDelPrimerByte(permiso::puedeEscribir)) {
+                    val salio = withContext(guarda) {
                         sacarComanda(order, sucursal, posibleRepetida = reclamo.posibleRepetida)
                     }
                     // Esperó su impresora hasta que el reclamo se hizo viejo y no salió ni un byte: se suelta sin confirmar ni descansar.
@@ -249,9 +254,17 @@ class ImpresionDePedidoEnLinea internal constructor(
 }
 
 /**
- * Ruling 50: el permiso de mandar el primer byte de UNA comanda reclamada. Lo pregunta `PrinterService` justo antes de escribir en cada
- * impresora, ya con su turno, su permiso USB y su conexión. El primer «sí» se queda (ya empezó: termina aunque la siguiente estación tarde);
- * antes de eso, un reclamo de [VIGENCIA_UTIL_DEL_RECLAMO_MS] o más dice que no.
+ * Ruling 50 enmendado (ronda 4, el 66 de la TPV): la comanda con tope es la de tarjeta de «Nadie» (D661: `CARD_ONLINE` sin aceptación, la
+ * que el SERVIDOR lista en `comandasPorImprimir`), la saque el vigilante o la bandeja: el vigilante la vuelve a reclamar solo, y es la única
+ * con la regla del papel devuelto y la del reclamo repetido. «Mi equipo» y el folio que se cobra en caja no lo llevan.
+ */
+private fun esComandaDeTarjetaEnNadie(order: OnlineOrder) = order.paymentMode == "CARD_ONLINE" && order.requiresAcceptance == false
+
+/**
+ * Ruling 50: el permiso de mandar el primer byte de UNA comanda de tarjeta de «Nadie» reclamada. Lo pregunta `PrinterService` justo antes de
+ * escribir en cada impresora, ya con su turno, su permiso USB y su conexión. El primer «sí» se queda (ya empezó: termina aunque la siguiente
+ * estación tarde; «empezó» es «se concedió», aunque esa impresora falle después); antes de eso, un reclamo de [VIGENCIA_UTIL_DEL_RECLAMO_MS]
+ * o más dice que no.
  */
 private class PermisoDelReclamo(private val pedidoEn: Long, private val relojMonotono: () -> Long) {
     private var empezo = false
