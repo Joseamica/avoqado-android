@@ -335,6 +335,7 @@ class KDSViewModelTest {
         every { prefs.estacion("v1") } returns "st-barra"
         every { prefs.foto(any(), any(), any()) } returns null
         every { roleManager.role } returns "KITCHEN"
+        every { roleManager.canManagePrinters } returns false
         every { planManager.hasFeature("KITCHEN_DISPLAY") } returns true
         coEvery { repo.fetchBoardPage(any(), any()) } coAnswers { repo.fetchOrders(firstArg()).map { KDSRepository.BoardPage(it) } }
         coEvery { repo.fetchDeliveryChannels() } returns Result.success(emptyList())
