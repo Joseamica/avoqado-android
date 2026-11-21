@@ -277,9 +277,10 @@ class AppStateVenueRecoveryTest {
     private fun kotlinx.coroutines.test.TestScope.recienIniciada(
         ajustes: AjustesQueTardan,
         configurarSesion: SecureStorage.() -> Unit = {},
+        alArrancarLaCola: () -> Unit = {},
     ): AppState {
         val appState = createAppState(
-            true, {}, {}, {}, onOutboxStart = {}, tpvSettingsRepository = ajustes.repo,
+            true, {}, {}, {}, onOutboxStart = alArrancarLaCola, tpvSettingsRepository = ajustes.repo,
             planManager = ajustes.planManager, configurarSesion = { ajustes.sesion(this); configurarSesion() },
         )
         runCurrent()
@@ -370,6 +371,42 @@ class AppStateVenueRecoveryTest {
 
         ajustes.alContestar = { ajustes.plan = ajustes.plan?.copy(grantedFeatureCodes = listOf("GIFT_CARDS")) }
         ajustes.contesta()
+        advanceUntilIdle()
+
+        assertTrue(antes != appState.mainNavigation.value.contentKey)
+    }
+
+    @Test
+    fun `D17 sin cambio hace todo lo de refreshTabs menos rehacer la pantalla`() = runTest {
+        // Codex r1 #4 y r2 #3: saltarse refreshTabs() entero dejaba sin arrancar el hub entre cajas cuando llega el plan y sin
+        // el segundo intento de la config de impresión. Ahora corre igual que antes; sólo la llave se queda.
+        val ajustes = AjustesQueTardan()
+        var arranquesDeLaCola = 0
+        val appState = recienIniciada(ajustes, alArrancarLaCola = { arranquesDeLaCola++ })
+        val antes = appState.mainNavigation.value
+        val arranquesAntes = arranquesDeLaCola
+
+        ajustes.contesta()
+        advanceUntilIdle()
+
+        assertEquals(antes, appState.mainNavigation.value)
+        assertEquals("startOfflineOutbox() corre como antes", arranquesAntes + 1, arranquesDeLaCola)
+    }
+
+    @Test
+    fun `D17 un plan que llego por otro camino antes de settings si rehace la pantalla`() = runTest {
+        // Codex r2 #1: el sondeo de la pantalla del cliente guarda el plan sin rehacer nada. La comparación es contra lo que
+        // tenía la pantalla al montarse, no contra lo guardado justo antes de pedir `/settings`.
+        val ajustes = AjustesQueTardan().apply { plan = plan?.copy(grantedFeatureCodes = listOf("GIFT_CARDS")) }
+        val appState = createAppState(
+            true, {}, {}, {}, onOutboxStart = {}, tpvSettingsRepository = ajustes.repo, planManager = ajustes.planManager,
+            configurarSesion = { ajustes.sesion(this); every { reservationsEnabled } returns true },
+        )
+        runCurrent()
+        val antes = appState.mainNavigation.value.contentKey
+        ajustes.plan = ajustes.plan?.copy(grantedFeatureCodes = listOf("GIFT_CARDS", "RESERVATIONS")) // el sondeo
+
+        ajustes.contesta() // `/settings` contesta lo mismo que ya estaba guardado
         advanceUntilIdle()
 
         assertTrue(antes != appState.mainNavigation.value.contentKey)
