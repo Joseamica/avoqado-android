@@ -51,6 +51,9 @@ internal fun textoDeCocina(
 ): String = if (e is java.io.IOException && e !is java.net.SocketTimeoutException) sinRed
     else ServerErrorText.humanize(e, fallback, offlineMessage = sinRed)
 
+/** Cada cuánto se relee la hoja «Servicio y entregas» abierta: lo mismo que el tablero de la cocina. */
+internal const val SONDEO_DE_LA_HOJA_MS = 10_000L
+
 @HiltViewModel
 class PreparationServiceViewModel @Inject constructor(
     private val repository: KitchenPreparationRepository, private val storage: SecureStorage, outbox: SyncOutbox,
@@ -66,7 +69,8 @@ class PreparationServiceViewModel @Inject constructor(
     private var localCursor: String? = null
     private var localHasMore = false
     private var remoteHasMore = true
-    private fun resetPages() { remoteRows = emptyList(); localRows = emptyList(); localCursor = null; localHasMore = false; remoteHasMore = true }
+    private var masDeUnaPagina = false
+    private fun resetPages() { remoteRows = emptyList(); localRows = emptyList(); localCursor = null; localHasMore = false; remoteHasMore = true; masDeUnaPagina = false }
     private fun appendRows(before: List<PreparationLine>, after: List<PreparationLine>) =
         (before + after).associateBy { it.stableKey }.values.toList()
     init { viewModelScope.launch { outbox.acks.collect {
@@ -101,11 +105,22 @@ class PreparationServiceViewModel @Inject constructor(
             } }
         }
     }
-    fun open(order: String?) { orderId = order; visible = true; epoch++; resetPages(); _state.value = PreparationServiceState(); refresh(negotiate = true); refreshPaper() }
+    /**
+     * QA del conjunto 3 (21-nov): con la hoja abierta, lo que cambia en OTRO aparato (un producto anulado en otra caja, un avance de
+     * la cocina que no pasó por aquí) no llegaba hasta reabrirla. Mientras se ve, se relee cada [SONDEO_DE_LA_HOJA_MS], como el
+     * tablero de la cocina. Se apaga al cerrarla.
+     */
+    private var sondeo: kotlinx.coroutines.Job? = null
+    fun open(order: String?) {
+        orderId = order; visible = true; epoch++; resetPages(); _state.value = PreparationServiceState(); refresh(negotiate = true); refreshPaper()
+        sondeo?.cancel()
+        // Con «Cargar más» ya abierto no se relee: refresh() vuelve a la primera página y se perderían las demás.
+        sondeo = viewModelScope.launch { while (visible) { delay(SONDEO_DE_LA_HOJA_MS); if (visible && !masDeUnaPagina) refresh() } }
+    }
     fun showHistory(history: Boolean) {
         epoch++; resetPages(); _state.value = PreparationServiceState(history = history); refresh()
     }
-    fun close() { visible = false; epoch++ }
+    fun close() { visible = false; epoch++; sondeo?.cancel(); sondeo = null }
     fun refreshPaper(more: Boolean = false) {
         val service = delivery ?: return
         val v = storage.venueId ?: return
@@ -155,6 +170,7 @@ class PreparationServiceViewModel @Inject constructor(
     fun refresh(more: Boolean = false, negotiate: Boolean = false) {
         if (_state.value.loading || !visible) return
         val venueId = storage.venueId ?: return
+        if (more) masDeUnaPagina = true
         val generation = epoch
         val previous = _state.value
         val remoteCursor = previous.cursor.takeIf { more }
