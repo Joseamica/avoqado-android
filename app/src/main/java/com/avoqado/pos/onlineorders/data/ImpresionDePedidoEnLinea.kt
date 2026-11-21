@@ -113,9 +113,7 @@ class ImpresionDePedidoEnLinea internal constructor(
         // Sin renglones no hay comanda que sacar: reclamar sólo retendría el pedido a otro aparato.
         if (order.items.isEmpty()) return ResultadoImpresion.NoSalio
         val sucursal = venueId() ?: return ResultadoImpresion.NoSalio
-        val ahora = reloj()
-        fallosRecientes.entries.removeIf { ahora - it.value >= DESCANSO_TRAS_NO_SALIO_MS }
-        if (fallosRecientes.containsKey(order.orderId)) return ResultadoImpresion.NoSalio
+        if (enDescanso(order.orderId)) return ResultadoImpresion.NoSalio
         if (!enCurso.add(order.orderId)) return ResultadoImpresion.YaEnCurso
         return try {
             withContext(NonCancellable) {
@@ -136,6 +134,21 @@ class ImpresionDePedidoEnLinea internal constructor(
         } finally {
             enCurso.remove(order.orderId)
         }
+    }
+
+    /**
+     * D661 (revisión del PR #308, Important #2): ¿vale la pena LEER este pedido del servidor para su comanda? Las mismas puertas que
+     * [imprimirSiToca] mira en el aparato antes de reclamar —hay impresora de cocina, el pedido no está en su descanso tras un `NoSalio`
+     * y no se está imprimiendo aquí—, sin tocar la red. El vigilante lo pregunta antes de cada lectura.
+     */
+    suspend fun puedeIntentar(orderId: String): Boolean =
+        !enDescanso(orderId) && orderId !in enCurso && hayImpresoraDeCocina()
+
+    /** Ese pedido falló aquí hace menos de [DESCANSO_TRAS_NO_SALIO_MS] (de paso olvida los descansos ya vencidos). */
+    private fun enDescanso(orderId: String): Boolean {
+        val ahora = reloj()
+        fallosRecientes.entries.removeIf { ahora - it.value >= DESCANSO_TRAS_NO_SALIO_MS }
+        return fallosRecientes.containsKey(orderId)
     }
 
     /** «Reimprimir»: la saca en ESTE aparato sin reclamar ni confirmar (no toca el estado de impresión del servidor). */

@@ -532,6 +532,8 @@ private fun MainScaffold(
                         avisoDePantallas = avisoDePantallas,
                     )
                     com.avoqado.pos.onlineorders.presentation.BannerDePedidoEnLinea(vigilanteDePedidos)
+                    // D661 (Ruling 19): los pagados con tarjeta en línea por abrir; puede verse junto con el de arriba.
+                    com.avoqado.pos.onlineorders.presentation.BannerDePagadosEnLinea(vigilanteDePedidos)
                     com.avoqado.pos.kds.presentation.BannerDeReparto(vigilanteDeReparto)
                     com.avoqado.pos.sync.presentation.QuarantineBanner(count=salesBannerCount,
                         historyAvailable=salesSummary==null && roleManager.canResolveQuarantine,historyUnavailable=q15HistoryUnavailable,
@@ -839,6 +841,8 @@ private fun MainScaffold(
                         avisoDePantallas = avisoDePantallas,
                     )
                     com.avoqado.pos.onlineorders.presentation.BannerDePedidoEnLinea(vigilanteDePedidos)
+                    // D661 (Ruling 19): los pagados con tarjeta en línea por abrir; puede verse junto con el de arriba.
+                    com.avoqado.pos.onlineorders.presentation.BannerDePagadosEnLinea(vigilanteDePedidos)
                     com.avoqado.pos.kds.presentation.BannerDeReparto(vigilanteDeReparto)
                     com.avoqado.pos.sync.presentation.QuarantineBanner(count=salesBannerCount,
                         historyAvailable=salesSummary==null && roleManager.canResolveQuarantine,historyUnavailable=q15HistoryUnavailable,

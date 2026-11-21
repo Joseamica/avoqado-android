@@ -199,4 +199,9 @@ object TextosPedidosEnLinea {
     const val ABRIR_SIN_CONEXION = "Sin conexión: no se pudo confirmar. Al volver la conexión la lista dice dónde quedó; nunca se cobra dos veces."
     /** Ruling 9: arriba de una comanda cuyo reclamo anterior venció sin confirmarse. */
     const val POSIBLE_REPETIDA = "POSIBLE REPETIDA: revisa si ya salió"
+    // Revisión del PR #308 (Ruling 19): la banda del timbre de los pagados en línea, en cualquier pantalla. iOS los copia igual.
+    const val PAGADO_EN_LINEA_POR_ABRIR = "Pedido pagado en línea · ábrelo para cobrar"
+    /** La banda: el texto oficial y, con más de uno, cuántos hay por abrir. */
+    fun avisoDePagadosEnLinea(n: Int) = if (n > 1) "$PAGADO_EN_LINEA_POR_ABRIR ($n por abrir)" else PAGADO_EN_LINEA_POR_ABRIR
+    const val VER = "Ver"
 }

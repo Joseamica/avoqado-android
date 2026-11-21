@@ -311,6 +311,34 @@ class ImpresionDePedidoEnLineaTest {
         coVerify(exactly = 2) { repo.reclamarComanda("p1", "dev-1") }
     }
 
+    /** Revisión del PR #308 (Important #2): el vigilante pregunta esto ANTES de leer el pedido del servidor. Las mismas puertas, sin red. */
+    @Test
+    fun `puedeIntentar answers from the device alone - kitchen printer, rest after a failure and work in progress`() = runTest {
+        // Sin impresora de cocina: no.
+        assertFalse(armar(hayImpresora = false).puedeIntentar("p1"))
+        coEvery { repo.reclamarComanda(any(), any()) } returns ReclamoDeImpresion(true)
+        coEvery { repo.confirmPrint(any(), any()) } returns true
+        val despacho = Despacho(EstadoDeComanda.NoSalio(listOf("Cocina"), "sin papel", "W-17")).apply { compuerta = CompletableDeferred() }
+        val impresion = armar(despacho)
+        // Con impresora y nada pendiente: sí.
+        assertTrue(impresion.puedeIntentar("p1"))
+        // Mientras ESE pedido se imprime aquí: no (otro pedido sí).
+        val enCurso = async { impresion.imprimirSiToca(pedido(), "dev-1") }
+        testScheduler.runCurrent()
+        assertFalse(impresion.puedeIntentar("p1"))
+        assertTrue(impresion.puedeIntentar("p2"))
+        // No salió: el mismo descanso de 3 minutos que el reclamo.
+        despacho.compuerta!!.complete(Unit)
+        assertEquals(ResultadoImpresion.NoSalio, enCurso.await())
+        assertFalse(impresion.puedeIntentar("p1"))
+        ahora += 179_000
+        assertFalse(impresion.puedeIntentar("p1"))
+        ahora += 2_000
+        assertTrue(impresion.puedeIntentar("p1"))
+        // Preguntar nunca toca al servidor: el único reclamo es el de la impresión de arriba.
+        coVerify(exactly = 1) { repo.reclamarComanda(any(), any()) }
+    }
+
     @Test
     fun `a business printer that is only the receipt printer gives no claim`() {
         val recibo = PrinterInfo("pr_caja", "Caja", "NETWORK", "192.168.1.9:9100")

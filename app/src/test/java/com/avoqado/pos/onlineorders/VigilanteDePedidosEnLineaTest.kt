@@ -2,6 +2,9 @@ package com.avoqado.pos.onlineorders
 
 import androidx.lifecycle.LifecycleOwner
 import com.avoqado.pos.onlineorders.data.VigilanteDePedidosEnLinea
+import com.avoqado.pos.onlineorders.data.tarjetasQueAvisan
+import com.avoqado.pos.onlineorders.presentation.TextosPedidosEnLinea
+import com.avoqado.pos.onlineorders.presentation.textoDelBanner
 import com.avoqado.pos.onlineorders.domain.ConteosPorPagar
 import com.avoqado.pos.onlineorders.domain.CursoresPorPagar
 import com.avoqado.pos.onlineorders.domain.Inbox
@@ -685,23 +688,43 @@ class VigilanteDePedidosEnLineaTest {
         val leidos = mutableListOf<String>()
         val impresas = mutableListOf<OnlineOrder>()
         val pedidos = mutableMapOf<String, OnlineOrder>()
+        /** Cuánto tarda cada lectura del pedido, y cuántas hubo a la vez como máximo. */
+        var demora = 0L
+        private var enVuelo = 0
+        var maximoEnVuelo = 0
         suspend fun leer(id: String): Result<OnlineOrder> {
             leidos += id
+            enVuelo++
+            maximoEnVuelo = maxOf(maximoEnVuelo, enVuelo)
+            try {
+                if (demora > 0) delay(demora)
+            } finally {
+                enVuelo--
+            }
             return pedidos[id]?.let { Result.success(it) } ?: Result.failure(IOException("sin red"))
         }
         suspend fun imprimir(p: OnlineOrder) { impresas += p }
     }
 
-    private fun TestScope.armarD661(folios: Folios, comandas: Comandas = Comandas()): Fixture {
-        val f = Fixture(Falso(Result.success(inbox())))
+    private fun TestScope.armarD661(
+        folios: Folios,
+        comandas: Comandas = Comandas(),
+        inbox: Inbox = inbox(),
+        puedeImprimir: suspend (String) -> Boolean = { true },
+    ): Fixture {
+        val f = Fixture(Falso(Result.success(inbox)))
         f.vigilante = VigilanteDePedidosEnLinea(
             consultar = f.falso::consultar, puedeLeer = { f.puedeLeer }, tienePlan = { f.tienePlan }, sonar = { f.sonidos++ },
             scope = backgroundScope, venueActual = { f.venue },
             consultarPorPagar = folios::leer, puedeCobrar = { true }, foliosGuardados = { folios.guardada },
-            leerPedido = comandas::leer, imprimirComanda = comandas::imprimir,
+            leerPedido = comandas::leer, imprimirComanda = comandas::imprimir, puedeImprimirComanda = puedeImprimir,
         )
         return f
     }
+
+    /** Ruling 19: lo que dice la banda de los pagados en línea (la MISMA regla que el sonido). Vacío = no se ve. */
+    private fun banda(f: Fixture): List<String> =
+        tarjetasQueAvisan(f.vigilante.tarjetasPorAbrir.value, f.vigilante.tarjetasEnVivo.value).map { it.orderId }
 
     @Test
     fun `rings every 4s while the server reports paid orders to open`() = runTest {
@@ -874,5 +897,149 @@ class VigilanteDePedidosEnLineaTest {
         advanceTimeBy(10_000); runCurrent()
         assertEquals(3, comandas.impresas.size)
         sinRed.vigilante.onStop(owner)
+    }
+
+    // MARK: - Revisión del PR #308, Important #1 (Ruling 19): la banda propia del timbre de los pagados en línea
+
+    private fun fuente(ruta: String) = listOf(java.io.File(ruta), java.io.File("app/$ruta")).first { it.exists() }.readText()
+
+    @Test
+    fun `the paid online banner shows on any screen while there is something to open on a live read`() = runTest {
+        // Lo que se ve es lo que suena: sin el que otra caja está cobrando, y con el conteo cuando hay más de uno.
+        val folios = Folios(Result.success(listaD661(listOf(tarjeta("t1"), tarjeta("t2", cobrando = true)))))
+        val f = armarD661(folios)
+        f.vigilante.onStart(owner); runCurrent()
+        assertEquals(listOf("t1"), banda(f))
+        assertEquals("Pedido pagado en línea · ábrelo para cobrar", TextosPedidosEnLinea.avisoDePagadosEnLinea(banda(f).size))
+        folios.respuesta = Result.success(listaD661(listOf(tarjeta("t1"), tarjeta("t3"))))
+        advanceTimeBy(30_000); runCurrent()
+        assertEquals(listOf("t1", "t3"), banda(f))
+        assertEquals("Pedido pagado en línea · ábrelo para cobrar (2 por abrir)", TextosPedidosEnLinea.avisoDePagadosEnLinea(banda(f).size))
+        // «En cualquier pantalla»: va en la barra de arriba de las DOS disposiciones del NavGraph (tablet y teléfono).
+        val navGraph = fuente("src/main/java/com/avoqado/pos/navigation/AvoqadoNavGraph.kt")
+        assertEquals(2, Regex("""BannerDePagadosEnLinea\(vigilanteDePedidos\)""").findAll(navGraph).count())
+        f.vigilante.onStop(owner)
+    }
+
+    @Test
+    fun `the paid online banner is not shown from a saved or stale copy`() = runTest {
+        // Arranque en frío sin red: la copia guardada trae uno por abrir (cuenta en el menú) pero la banda no sale: pudo abrirse hace rato.
+        val folios = Folios(Result.failure(IOException("sin red")))
+        folios.guardada = listaD661(listOf(tarjeta("t1")))
+        val f = armarD661(folios)
+        f.vigilante.onStart(owner); runCurrent()
+        assertEquals(listOf("t1"), f.vigilante.tarjetasPorAbrir.value.map { it.orderId })
+        assertTrue(banda(f).isEmpty())
+        // Una respuesta más vieja que la copia (R102) tampoco la enseña.
+        folios.respuesta = Result.success(listaD661(listOf(tarjeta("t1"))).copy(masViejaQueLaCopia = true, copiaGuardada = false))
+        advanceTimeBy(10_000); runCurrent()
+        assertTrue(banda(f).isEmpty())
+        // Una lectura en vivo sí …
+        folios.respuesta = Result.success(listaD661(listOf(tarjeta("t1"))))
+        advanceTimeBy(30_000); runCurrent()
+        assertEquals(listOf("t1"), banda(f))
+        // … y si la red se cae, se esconde aunque la lista se siga viendo en la pantalla.
+        folios.respuesta = Result.failure(IOException("sin red"))
+        advanceTimeBy(30_000); runCurrent()
+        assertEquals(listOf("t1"), f.vigilante.tarjetasPorAbrir.value.map { it.orderId })
+        assertTrue(banda(f).isEmpty())
+        // De vuelta del segundo plano, nada hasta la primera lectura en vivo de esta vuelta.
+        folios.respuesta = Result.success(listaD661(listOf(tarjeta("t1"))))
+        advanceTimeBy(10_000); runCurrent()
+        assertEquals(listOf("t1"), banda(f))
+        f.vigilante.onStop(owner)
+        folios.respuesta = Result.failure(IOException("sin red"))
+        f.vigilante.onStart(owner); runCurrent()
+        assertTrue(banda(f).isEmpty())
+        f.vigilante.onStop(owner)
+    }
+
+    @Test
+    fun `the paid online banner disappears when the last one is opened`() = runTest {
+        val folios = Folios(Result.success(listaD661(listOf(tarjeta("t1"), tarjeta("t2")))))
+        val f = armarD661(folios)
+        f.vigilante.onStart(owner); runCurrent()
+        assertEquals(listOf("t1", "t2"), banda(f))
+        // Una caja abrió t1: la relectura inmediata (la pantalla la pide al abrir) ya no lo trae.
+        folios.respuesta = Result.success(listaD661(listOf(tarjeta("t2"))))
+        f.vigilante.sondearFoliosYa(); runCurrent()
+        assertEquals(listOf("t2"), banda(f))
+        // Otra caja está cobrando t2: ya no cuenta.
+        folios.respuesta = Result.success(listaD661(listOf(tarjeta("t2", cobrando = true))))
+        f.vigilante.sondearFoliosYa(); runCurrent()
+        assertTrue(banda(f).isEmpty())
+        // Abierto el último, nada.
+        folios.respuesta = Result.success(listaD661())
+        f.vigilante.sondearFoliosYa(); runCurrent()
+        assertTrue(banda(f).isEmpty())
+        f.vigilante.onStop(owner)
+    }
+
+    @Test
+    fun `the paid online banner coexists with the Mi equipo banner`() = runTest {
+        // Un pedido de «Mi equipo» por aceptar Y uno pagado en línea por abrir: se ven las dos bandas a la vez.
+        val folios = Folios(Result.success(listaD661(listOf(tarjeta("t1")))))
+        val f = armarD661(folios, inbox = inbox(listOf(pedido("p1", folio = "W-17"))))
+        f.vigilante.onStart(owner); runCurrent()
+        assertEquals("Nuevo pedido en línea #W-17", textoDelBanner(f.vigilante.pendientes.value.map { it.orderNumber }))
+        assertEquals(listOf("t1"), banda(f))
+        // Aceptar el de «Mi equipo» no esconde la de los pagados en línea, ni al revés.
+        f.falso.respuesta = Result.success(inbox())
+        f.vigilante.sondearYa(); runCurrent()
+        assertTrue(f.vigilante.pendientes.value.isEmpty())
+        assertEquals(listOf("t1"), banda(f))
+        f.falso.respuesta = Result.success(inbox(listOf(pedido("p2", folio = "W-18"))))
+        folios.respuesta = Result.success(listaD661())
+        f.vigilante.sondearYa(); f.vigilante.sondearFoliosYa(); runCurrent()
+        assertEquals(listOf("p2"), f.vigilante.pendientes.value.map { it.orderId })
+        assertTrue(banda(f).isEmpty())
+        // En el NavGraph van una debajo de la otra, en las dos disposiciones: la de «Mi equipo» (D662, sin tocar) y la propia.
+        val navGraph = fuente("src/main/java/com/avoqado/pos/navigation/AvoqadoNavGraph.kt")
+        val juntas = Regex("""BannerDePedidoEnLinea\(vigilanteDePedidos\)\s+(//[^\n]*\s+)?com\.avoqado\.pos\.onlineorders\.presentation\.BannerDePagadosEnLinea\(vigilanteDePedidos\)""")
+        assertEquals(2, juntas.findAll(navGraph).count())
+        f.vigilante.onStop(owner)
+    }
+
+    // MARK: - Revisión del PR #308, Important #2: la comanda no se lee si este aparato no la puede sacar
+
+    @Test
+    fun `with no kitchen printer no order is read for its kitchen ticket`() = runTest {
+        val comandas = Comandas()
+        comandas.pedidos["c1"] = pagadoNadie("c1"); comandas.pedidos["c2"] = pagadoNadie("c2")
+        val folios = Folios(Result.success(listaD661(comandas = listOf(ComandaPorImprimir("c1", "T-c1"), ComandaPorImprimir("c2", "T-c2")))))
+        var hayImpresora = false
+        val preguntas = mutableListOf<String>()
+        val f = armarD661(folios, comandas, puedeImprimir = { id -> preguntas += id; hayImpresora })
+        f.vigilante.onStart(owner); runCurrent()
+        advanceTimeBy(90_000); runCurrent()
+        // Cuatro lecturas de «Por pagar» (cada 30 s) y ni una lectura del pedido: el aparato contestó solo, sin red.
+        assertEquals(4, folios.latidos.size)
+        assertEquals(emptyList<String>(), comandas.leidos)
+        assertTrue(comandas.impresas.isEmpty())
+        assertTrue(preguntas.isNotEmpty())
+        // Se conecta la impresora de cocina: en la siguiente lectura sí se leen y salen.
+        hayImpresora = true
+        advanceTimeBy(30_000); runCurrent()
+        assertEquals(listOf("c1", "c2"), comandas.leidos)
+        assertEquals(listOf("c1", "c2"), comandas.impresas.map { it.orderId })
+        f.vigilante.onStop(owner)
+    }
+
+    @Test
+    fun `kitchen tickets are read one at a time in a single walk`() = runTest {
+        val comandas = Comandas()
+        comandas.demora = 20_000
+        val ids = listOf("c1", "c2", "c3")
+        ids.forEach { comandas.pedidos[it] = pagadoNadie(it) }
+        val folios = Folios(Result.success(listaD661(comandas = ids.map { ComandaPorImprimir(it, "T-$it") })))
+        val f = armarD661(folios, comandas)
+        f.vigilante.onStart(owner); runCurrent()
+        // La vuelta tarda 60 s (tres lecturas de 20 s); la lectura de los 30 s trae la misma lista y no abre otra vuelta encima.
+        advanceTimeBy(59_000); runCurrent()
+        assertEquals("de una en una", 1, comandas.maximoEnVuelo)
+        assertEquals(ids, comandas.leidos)
+        advanceTimeBy(2_000); runCurrent()
+        assertEquals(ids, comandas.impresas.map { it.orderId })
+        f.vigilante.onStop(owner)
     }
 }
