@@ -128,11 +128,13 @@ internal fun ContenidoDeLaMaquina(
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.SemiBold,
             )
+            // Codex código r3 #7: sin `cash-machine:configure` se entra a la bandeja, pero la IP y emparejar se ven en gris y se dice por qué.
+            if (estado.cargado && !estado.puedeConfigurar) Nota(com.avoqado.pos.maquina.TEXTO_SIN_PERMISO)
             AvoqadoPillTextField(
                 value = estado.ip,
                 onValueChange = onIp,
                 placeholder = "IP de la máquina, por ejemplo 192.168.1.50",
-                enabled = estado.cargado && !estado.ocupado && !estado.ipBloqueada,
+                enabled = estado.cargado && !estado.ocupado && !estado.ipBloqueada && estado.puedeConfigurar,
                 keyboardType = KeyboardType.Uri,
                 imeAction = ImeAction.Done,
             )
@@ -141,7 +143,7 @@ internal fun ContenidoDeLaMaquina(
 
             OutlinedButton(
                 onClick = onProbar,
-                enabled = estado.cargado && esIpv4(estado.ip) && estado.prueba != PruebaDeConexion.PROBANDO,
+                enabled = estado.cargado && estado.puedeConfigurar && esIpv4(estado.ip) && estado.prueba != PruebaDeConexion.PROBANDO,
                 modifier = Modifier.fillMaxWidth(),
             ) { Text("Probar conexión") }
             when (estado.prueba) {
@@ -184,15 +186,20 @@ internal fun ContenidoDeLaMaquina(
                         verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
                     ) {
                         Text(
-                            "Folio ${c.referenceCC} · ${com.avoqado.pos.core.util.formatMoneyFromCents(c.dueCents)}",
+                            "Folio ${c.referenceCC} · ${com.avoqado.pos.core.util.formatMoneyFromCents(c.dueCents)}" +
+                                // Codex código r3 #9 y #8: lo que entró, en número; y si sólo falta terminarlo.
+                                (c.creditCents?.let { " · entró ${com.avoqado.pos.core.util.formatMoneyFromCents(it)}" } ?: "") +
+                                (if (c.porTerminar) " · $TEXTO_POR_TERMINAR" else ""),
                             style = MaterialTheme.typography.bodyMedium,
                             modifier = Modifier.weight(1f),
                         )
-                        OutlinedButton(onClick = { resolviendoFolio = c.referenceCC }) { Text("Resolver con gerente") }
+                        OutlinedButton(onClick = { resolviendoFolio = c.referenceCC }) {
+                            Text(if (c.porTerminar) "Terminar" else "Resolver con gerente")
+                        }
                     }
                 }
-                // Codex código r2 H6: ninguna duda del negocio se queda fuera por el tope de la página.
-                if (estado.siguienteDeDudas != null) {
+                // Codex código r2 H6 y r3 #8: ninguna duda se queda fuera por el tope de la página (del SERVIDOR o de esta PC).
+                if (estado.hayMasDudas) {
                     OutlinedButton(onClick = onVerMasDudas, modifier = Modifier.fillMaxWidth()) {
                         Text("Ver más (${(estado.enEsperaTotal - estado.enEspera.size).coerceAtLeast(1)})")
                     }

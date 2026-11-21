@@ -109,7 +109,7 @@ class MaquinaDeEfectivoSheetTest {
         val estado = EstadoDeLaMaquina(
             cargado = true, ip = "192.168.1.50", ipGuardada = "192.168.1.50", activa = false, ticketsSinImprimir = 2,
             enEspera = listOf(com.avoqado.pos.maquina.CobroEnEspera("AQ0000000KIOS1", 9_000, 1, version = 2, evidencia = "Entró \$100.00")),
-            enEsperaTotal = 103, siguienteDeDudas = "c-2",
+            enEsperaTotal = 103, hayMasDudas = true,
         )
         setContent { Hoja(estado) }
 
@@ -117,6 +117,24 @@ class MaquinaDeEfectivoSheetTest {
         onNodeWithText("Imprimir").assertIsEnabled()
         onNodeWithText("Folio AQ0000000KIOS1", substring = true).assertIsDisplayed()
         onNodeWithText("Ver más (102)").assertIsDisplayed()
+    }
+
+    @Test fun `P1 Codex r3 #7 con resolver y sin configurar se ve la bandeja y emparejar queda en gris con la razon`() = runComposeUiTest {
+        val estado = EstadoDeLaMaquina(
+            cargado = true, ip = "192.168.1.50", puedeConfigurar = false, puedeResolver = true,
+            enEspera = listOf(
+                com.avoqado.pos.maquina.CobroEnEspera("AQ0000000KIOS1", 9_000, 1, version = 2, creditCents = 10_000),
+                com.avoqado.pos.maquina.CobroEnEspera("AQ00000000RELE", 18_000, 1, version = 3, porTerminar = true, outcome = "PAGADO"),
+            ),
+            enEsperaTotal = 2,
+        )
+        setContent { Hoja(estado) }
+
+        onNodeWithText(com.avoqado.pos.maquina.TEXTO_SIN_PERMISO).assertIsDisplayed()
+        onNodeWithText("Emparejar esta PC con la máquina").assertIsNotEnabled()
+        onNodeWithText("Folio AQ0000000KIOS1", substring = true).assertIsDisplayed()
+        onNodeWithText("Resolver con gerente").assertIsEnabled()
+        onNodeWithText("Terminar").assertIsEnabled()
     }
 
     @Test fun `sin emparejar la hoja deja emparejar una IP bien escrita`() = runComposeUiTest {

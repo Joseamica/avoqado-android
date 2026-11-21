@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import com.avoqado.pos.maquina.BovedaDeLaMaquina
 import com.avoqado.pos.maquina.CobroEnMaquinaDao
 import com.avoqado.pos.maquina.EmparejamientoDeLaMaquina
+import com.avoqado.pos.maquina.MaquinaDeEfectivo
 import com.avoqado.pos.maquina.MaquinaDeEfectivoPrefs
 import com.avoqado.pos.maquina.TEXTO_IP_INVALIDA
 import com.avoqado.pos.maquina.comoDuda
@@ -61,7 +62,13 @@ data class EstadoDeLaMaquina(
     val enEspera: List<com.avoqado.pos.maquina.CobroEnEspera> = emptyList(),
     /** Codex código r2 H6: cuántos hay en total (la lista enseña los primeros; «Ver más» trae la siguiente página). */
     val enEsperaTotal: Int = 0,
-    val siguienteDeDudas: String? = null,
+    /** Codex código r3 #8: quedan más por enseñar (otra página del SERVIDOR, de los POR_TERMINAR o de las de esta PC). */
+    val hayMasDudas: Boolean = false,
+    /**
+     * Codex código r3 #7: la sesión trae `cash-machine:configure`. Sin él se entra igual con `cash-machine:resolve` (la bandeja), pero la
+     * IP, probar y emparejar quedan en gris; el SERVIDOR lo vuelve a exigir.
+     */
+    val puedeConfigurar: Boolean = true,
     val puedeResolver: Boolean = false,
     val resolviendo: Boolean = false,
     val avisoDeResolver: String? = null,
@@ -81,10 +88,10 @@ data class EstadoDeLaMaquina(
     private val ipNueva: Boolean get() = ip.trim() != ipGuardada
 
     val puedeEmparejar: Boolean
-        get() = cargado && !ocupado && esIpv4(ip) && !(emparejada && !ipNueva && emparejadaConOtra == null) &&
+        get() = puedeConfigurar && cargado && !ocupado && esIpv4(ip) && !(emparejada && !ipNueva && emparejadaConOtra == null) &&
             !(ipBloqueada && (ipNueva || emparejadaConOtra != null))
 
-    val puedeDesemparejar: Boolean get() = cargado && !ocupado && activa && !hayPendientes
+    val puedeDesemparejar: Boolean get() = puedeConfigurar && cargado && !ocupado && activa && !hayPendientes
 }
 
 /**
@@ -117,25 +124,65 @@ class MaquinaDeEfectivoViewModel @Inject constructor(
         viewModelScope.launch { refrescar() }
     }
 
-    /** Codex código r2 H6: la siguiente página de las dudas del negocio. */
+    /** Codex código r3 #8: cuántas dudas de esta PC se enseñan; «Ver más» lo sube cuando ya no hay páginas del SERVIDOR. */
+    private var limiteLocal = com.avoqado.pos.maquina.CierresDeLaMaquinaApi.DUDAS_POR_PAGINA
+    private var cursorEsperando: String? = null
+    private var cursorPorTerminar: String? = null
+    private var localesHayMas = false
+
+    private fun hayMas() = cursorEsperando != null || cursorPorTerminar != null || localesHayMas
+
+    /** Codex código r2 H6 y r3 #8: la siguiente página: la de las dudas del SERVIDOR, la de los POR_TERMINAR o la de esta PC. */
     fun verMasDudas() {
         val maquina = maquinaDeEfectivo ?: return
-        val cursor = _estado.value.siguienteDeDudas ?: return
+        val (kind, cursor) = when {
+            cursorEsperando != null -> MaquinaDeEfectivo.KIND_ESPERANDO to cursorEsperando
+            cursorPorTerminar != null -> MaquinaDeEfectivo.KIND_POR_TERMINAR to cursorPorTerminar
+            else -> null to null
+        }
+        if (kind == null) {
+            if (!localesHayMas) return
+            limiteLocal += com.avoqado.pos.maquina.CierresDeLaMaquinaApi.DUDAS_POR_PAGINA
+            viewModelScope.launch { refrescar() }
+            return
+        }
         viewModelScope.launch {
             val pagina = try {
-                maquina.dudasDelNegocio(cursor)
+                maquina.dudasDelNegocio(cursor, kind)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
                 null
             } ?: return@launch _estado.update { it.copy(aviso = TEXTO_SIN_MAS_DUDAS) }
+            if (kind == MaquinaDeEfectivo.KIND_ESPERANDO) cursorEsperando = pagina.siguiente else cursorPorTerminar = pagina.siguiente
             _estado.update { e ->
                 e.copy(
                     enEspera = e.enEspera + pagina.dudas.filter { n -> e.enEspera.none { it.referenceCC == n.referenceCC } },
-                    siguienteDeDudas = pagina.siguiente,
+                    hayMasDudas = hayMas(),
                 )
             }
         }
+    }
+
+    /**
+     * Codex código r2 H6 y r3 #8: la bandeja. Con el SERVIDOR: sus dudas `ESPERANDO` y sus folios `POR_TERMINAR` (de cualquier PC), más
+     * las de esta PC que él nunca acusó, sin repetir folio ni contarlo dos veces. Sin él: TODAS las de esta PC, con su total y por
+     * páginas.
+     */
+    private suspend fun leerBandeja(): Pair<List<com.avoqado.pos.maquina.CobroEnEspera>, Int> {
+        val m = maquinaDeEfectivo ?: return emptyList<com.avoqado.pos.maquina.CobroEnEspera>() to 0
+        val esperando = runCatching { m.dudasDelNegocio(kind = MaquinaDeEfectivo.KIND_ESPERANDO) }.getOrNull()
+        val porTerminar = esperando?.let { runCatching { m.dudasDelNegocio(kind = MaquinaDeEfectivo.KIND_POR_TERMINAR) }.getOrNull() }
+        val conServidor = esperando != null && porTerminar != null
+        val (locales, totalLocal) = runCatching { m.dudasDeEstaPc(soloSinSubir = conServidor, limite = limiteLocal) }
+            .getOrDefault(emptyList<com.avoqado.pos.maquina.CobroEnMaquinaEntity>() to 0)
+        cursorEsperando = esperando?.siguiente?.takeIf { conServidor }
+        cursorPorTerminar = porTerminar?.siguiente?.takeIf { conServidor }
+        localesHayMas = locales.size < totalLocal
+        val delServidor = if (conServidor) esperando!!.dudas + porTerminar!!.dudas else emptyList()
+        val aqui = locales.map { it.comoDuda() }.filter { l -> delServidor.none { it.referenceCC == l.referenceCC } }
+        val totalDelServidor = if (conServidor) esperando!!.total + porTerminar!!.total else 0
+        return (delServidor + aqui) to totalDelServidor + totalLocal - (locales.size - aqui.size)
     }
 
     /** Seam de pruebas. */
@@ -169,7 +216,7 @@ class MaquinaDeEfectivoViewModel @Inject constructor(
 
     fun emparejar() {
         val actual = _estado.value
-        if (actual.ocupado) return
+        if (actual.ocupado || !actual.puedeConfigurar) return
         val ip = actual.ip.trim()
         if (!esIpv4(ip)) return _estado.update { it.copy(aviso = TEXTO_IP_INVALIDA) }
         // Ya emparejada con esta IP en ESTA sucursal: nada que hacer. Emparejada en otra (Codex código r1 #10) sí se puede emparejar aquí.
@@ -197,7 +244,7 @@ class MaquinaDeEfectivoViewModel @Inject constructor(
     }
 
     fun desemparejar() {
-        if (_estado.value.ocupado) return
+        if (_estado.value.ocupado || !_estado.value.puedeConfigurar) return
         _estado.update { it.copy(ocupado = true, aviso = null, listo = null) }
         viewModelScope.launch {
             val aviso = intentar {
@@ -305,13 +352,7 @@ class MaquinaDeEfectivoViewModel @Inject constructor(
         val comprobantes = runCatching { maquinaDeEfectivo?.comprobantes(limiteDeComprobantes).orEmpty() }.getOrDefault(emptyList())
             .map { (fila, debe) -> ComprobantePorImprimir(fila.referenceCC, debe) }
         val comprobantesTotal = runCatching { maquinaDeEfectivo?.cuantosComprobantes() ?: 0 }.getOrDefault(comprobantes.size)
-        // Codex código r2 H6: las del NEGOCIO según el SERVIDOR (de cualquier PC), y las de esta PC que él todavía no tiene.
-        val pagina = runCatching { maquinaDeEfectivo?.dudasDelNegocio() }.getOrNull()
-        val locales = runCatching { maquinaDeEfectivo?.dudasEnEspera().orEmpty() }.getOrDefault(emptyList())
-            .map { it.comoDuda() }
-        val delServidor = pagina?.dudas.orEmpty()
-        val soloAqui = locales.filter { l -> delServidor.none { it.referenceCC == l.referenceCC } }
-        val enEspera = delServidor + soloAqui
+        val (enEspera, enEsperaTotal) = leerBandeja()
         val ticketsSinImprimir = runCatching { maquinaDeEfectivo?.cuantosTicketsSinImprimir() ?: 0 }.getOrDefault(0)
         val emparejadaConOtra = (prefs.nombreDeLaSucursal ?: "otra sucursal")
             .takeIf { activa && prefs.venueId != emparejamiento.sucursalDeLaSesion }
@@ -319,8 +360,10 @@ class MaquinaDeEfectivoViewModel @Inject constructor(
             it.copy(
                 cargado = true, ocupado = false, ip = if (campo) ip.orEmpty() else it.ip, ipGuardada = ip, activa = activa,
                 conCredencial = conCredencial, hayPendientes = pendientes, aviso = aviso, listo = listo, comprobantes = comprobantes,
-                enEspera = enEspera, enEsperaTotal = (pagina?.total ?: 0) + soloAqui.size, siguienteDeDudas = pagina?.siguiente,
+                enEspera = enEspera, enEsperaTotal = enEsperaTotal, hayMasDudas = hayMas(),
                 puedeResolver = maquinaDeEfectivo?.puedeResolver() == true, emparejadaConOtra = emparejadaConOtra,
+                // Sin la máquina inyectada (las pruebas de JVM del emparejamiento) no hay sesión que revisar: el SERVIDOR lo exige igual.
+                puedeConfigurar = runCatching { maquinaDeEfectivo?.puedeConfigurar() }.getOrNull() ?: true,
                 comprobantesTotal = maxOf(comprobantesTotal, comprobantes.size), ticketsSinImprimir = ticketsSinImprimir,
             )
         }

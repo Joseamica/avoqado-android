@@ -108,7 +108,7 @@ class MaquinaDeEfectivoViewModelTest {
         io.mockk.coEvery { maquina.imprimirComprobante("AQ000000000001") } returns
             com.avoqado.pos.printing.data.PrinterService.PrintOutcome.Printed(1) andThen
             com.avoqado.pos.printing.data.PrinterService.PrintOutcome.OutOfPaper
-        io.mockk.coEvery { maquina.dudasEnEspera() } returns emptyList()
+        io.mockk.coEvery { maquina.dudasDeEstaPc(any(), any()) } returns (emptyList<CobroEnMaquinaEntity>() to 0)
         io.mockk.coEvery { maquina.comprobantes(100) } returns listOf(fila to 500, fila.copy(referenceCC = "AQ000000000002") to 300)
         io.mockk.coEvery { maquina.cuantosComprobantes() } returns 2
         every { maquina.puedeResolver() } returns false
@@ -161,7 +161,7 @@ class MaquinaDeEfectivoViewModelTest {
         val maquina = mockk<MaquinaDeEfectivo>()
         val duda = fila("AQ00000000000D", EstadoDelIntento.ESPERANDO)
         io.mockk.coEvery { maquina.comprobantes() } returns emptyList()
-        io.mockk.coEvery { maquina.dudasEnEspera() } returns listOf(duda) andThen emptyList()
+        io.mockk.coEvery { maquina.dudasDeEstaPc(false, any()) } returns (listOf(duda) to 1) andThen (emptyList<CobroEnMaquinaEntity>() to 0)
         every { maquina.puedeResolver() } returns true
         val resolucion = ResolucionDelGerente(Desenlace.CANCELADO, 5_000, 5_000, null, "1", "pantalla: devolvió todo")
         io.mockk.coEvery { maquina.resolver("AQ00000000000D", resolucion) } returns ResultadoDeResolver.Resuelto(Desenlace.CANCELADO, 5_000, 5_000)
@@ -180,18 +180,21 @@ class MaquinaDeEfectivoViewModelTest {
         val maquina = mockk<MaquinaDeEfectivo>(relaxed = true)
         val delKiosco = CobroEnEspera("AQ0000000KIOS1", 9_000, 1, version = 2, evidencia = "Entró \$100.00")
         val siguiente = CobroEnEspera("AQ0000000KIOS2", 5_000, 2)
-        io.mockk.coEvery { maquina.dudasDelNegocio(null) } returns PaginaDeDudas(listOf(delKiosco), total = 103, siguiente = "c-2")
-        io.mockk.coEvery { maquina.dudasDelNegocio("c-2") } returns PaginaDeDudas(listOf(siguiente), total = 103, siguiente = null)
-        io.mockk.coEvery { maquina.dudasEnEspera() } returns listOf(fila("AQ00000000000D", EstadoDelIntento.ESPERANDO))
+        io.mockk.coEvery { maquina.dudasDelNegocio(null, MaquinaDeEfectivo.KIND_ESPERANDO) } returns
+            PaginaDeDudas(listOf(delKiosco), total = 103, siguiente = "c-2")
+        io.mockk.coEvery { maquina.dudasDelNegocio("c-2", MaquinaDeEfectivo.KIND_ESPERANDO) } returns
+            PaginaDeDudas(listOf(siguiente), total = 103, siguiente = null)
+        io.mockk.coEvery { maquina.dudasDelNegocio(null, MaquinaDeEfectivo.KIND_POR_TERMINAR) } returns PaginaDeDudas(emptyList(), 0, null)
+        io.mockk.coEvery { maquina.dudasDeEstaPc(true, any()) } returns (listOf(fila("AQ00000000000D", EstadoDelIntento.ESPERANDO)) to 1)
         val vm = vm(maquina).abierta()
 
         assertEquals(listOf("AQ0000000KIOS1", "AQ00000000000D"), vm.estado.value.enEspera.map { it.referenceCC })
         assertEquals("las del servidor más la de esta PC que él todavía no tiene", 104, vm.estado.value.enEsperaTotal)
-        assertEquals("c-2", vm.estado.value.siguienteDeDudas)
+        assertTrue(vm.estado.value.hayMasDudas)
 
         vm.verMasDudas()
 
-        vm.esperar("trajo la siguiente página") { it.enEspera.size == 3 && it.siguienteDeDudas == null }
+        vm.esperar("trajo la siguiente página") { it.enEspera.size == 3 && !it.hayMasDudas }
         assertEquals("AQ0000000KIOS2", vm.estado.value.enEspera.last().referenceCC)
     }
 
@@ -200,7 +203,9 @@ class MaquinaDeEfectivoViewModelTest {
         val maquina = mockk<MaquinaDeEfectivo>(relaxed = true)
         val vista = CobroEnEspera("AQ0000000KIOS1", 9_000, 1, version = 2, evidencia = "Entró \$100.00")
         val alDia = vista.copy(version = 3, evidencia = "Entró \$150.00")
-        io.mockk.coEvery { maquina.dudasDelNegocio(null) } returns PaginaDeDudas(listOf(vista), total = 1, siguiente = null)
+        io.mockk.coEvery { maquina.dudasDelNegocio(null, MaquinaDeEfectivo.KIND_ESPERANDO) } returns PaginaDeDudas(listOf(vista), total = 1, siguiente = null)
+        io.mockk.coEvery { maquina.dudasDelNegocio(null, MaquinaDeEfectivo.KIND_POR_TERMINAR) } returns PaginaDeDudas(emptyList(), 0, null)
+        io.mockk.coEvery { maquina.dudasDeEstaPc(any(), any()) } returns (emptyList<CobroEnMaquinaEntity>() to 0)
         val resolucion = ResolucionDelGerente(Desenlace.PAGADO, 10_000, 1_000, null, null, "comprobante", version = 2)
         io.mockk.coEvery { maquina.resolver("AQ0000000KIOS1", resolucion) } returns ResultadoDeResolver.EvidenciaNueva("Llegó evidencia nueva", alDia)
         io.mockk.every { maquina.puedeResolver() } returns true
@@ -215,7 +220,8 @@ class MaquinaDeEfectivoViewModelTest {
     fun `P1 Codex r2 #12 los tickets que no salieron tambien se imprimen desde Ajustes, con la maquina apagada`() {
         val maquina = mockk<MaquinaDeEfectivo>(relaxed = true)
         io.mockk.coEvery { maquina.cuantosTicketsSinImprimir() } returns 2 andThen 0
-        io.mockk.coEvery { maquina.dudasDelNegocio(any()) } returns null
+        io.mockk.coEvery { maquina.dudasDelNegocio(any(), any()) } returns null
+        io.mockk.coEvery { maquina.dudasDeEstaPc(any(), any()) } returns (emptyList<CobroEnMaquinaEntity>() to 0)
         io.mockk.coEvery { maquina.imprimirTicketsPendientes() } returns 2
         prefs.guardar("192.168.1.50", activa = false, venueId = "venue-1")
         val vm = vm(maquina).abierta()
@@ -369,5 +375,59 @@ class MaquinaDeEfectivoViewModelTest {
         override fun guardar(credencial: String) { this.credencial = credencial }
         override fun leer(): String? = credencial
         override fun borrar() { credencial = null }
+    }
+
+    // MARK: - Codex código r3
+
+    @Test
+    fun `P1 Codex r3 #7 con resolver y sin configurar se entra a la bandeja, pero emparejar queda en gris y no manda nada`() {
+        val maquina = mockk<MaquinaDeEfectivo>(relaxed = true)
+        every { maquina.puedeResolver() } returns true
+        every { maquina.puedeConfigurar() } returns false
+        io.mockk.coEvery { maquina.dudasDelNegocio(any(), any()) } returns null
+        io.mockk.coEvery { maquina.dudasDeEstaPc(any(), any()) } returns (listOf(fila("AQ00000000000D", EstadoDelIntento.ESPERANDO)) to 1)
+        val vm = vm(maquina).abierta()
+
+        assertTrue(vm.estado.value.puedeResolver)
+        assertEquals(listOf("AQ00000000000D"), vm.estado.value.enEspera.map { it.referenceCC })
+        vm.cambiarIp("192.168.1.50")
+        assertFalse(vm.estado.value.puedeEmparejar)
+        vm.emparejar()
+        vm.desemparejar()
+        assertEquals("configurar sigue pidiendo su permiso", 0, servidor.requestCount)
+    }
+
+    @Test
+    fun `P1 Codex r3 #8 sin el servidor la bandeja ensena TODAS las dudas de esta PC, con su total y Ver mas`() {
+        val maquina = mockk<MaquinaDeEfectivo>(relaxed = true)
+        val dudas = (1..103).map { fila("AQ%012d".format(it), EstadoDelIntento.ESPERANDO) }
+        io.mockk.coEvery { maquina.dudasDelNegocio(any(), any()) } returns null
+        io.mockk.coEvery { maquina.dudasDeEstaPc(false, any()) } answers { dudas.take(secondArg<Int>()) to dudas.size }
+        val vm = vm(maquina).abierta()
+
+        assertEquals(50, vm.estado.value.enEspera.size)
+        assertEquals("el total real, no el tope de la consulta", 103, vm.estado.value.enEsperaTotal)
+        assertTrue(vm.estado.value.hayMasDudas)
+        vm.verMasDudas()
+        vm.esperar("la segunda página") { it.enEspera.size == 100 && it.hayMasDudas }
+        vm.verMasDudas()
+        vm.esperar("todas") { it.enEspera.size == 103 && !it.hayMasDudas }
+    }
+
+    @Test
+    fun `P1 Codex r3 #8 con el servidor lista los POR_TERMINAR y no cuenta dos veces una duda de esta PC que el ya tiene`() {
+        val maquina = mockk<MaquinaDeEfectivo>(relaxed = true)
+        val porTerminar = CobroEnEspera("AQ00000000RELE", 18_000, 1, version = 3, creditCents = 20_000, porTerminar = true, outcome = "PAGADO")
+        io.mockk.coEvery { maquina.dudasDelNegocio(null, MaquinaDeEfectivo.KIND_ESPERANDO) } returns
+            PaginaDeDudas(listOf(CobroEnEspera("AQ00000000000D", 18_000, 1, version = 2)), total = 1, siguiente = null)
+        io.mockk.coEvery { maquina.dudasDelNegocio(null, MaquinaDeEfectivo.KIND_POR_TERMINAR) } returns PaginaDeDudas(listOf(porTerminar), 1, null)
+        // Sólo se piden las que el SERVIDOR nunca acusó (`soloSinSubir`): las demás ya vienen en su lista.
+        io.mockk.coEvery { maquina.dudasDeEstaPc(true, any()) } returns (emptyList<CobroEnMaquinaEntity>() to 0)
+        val vm = vm(maquina).abierta()
+
+        assertEquals(listOf("AQ00000000000D", "AQ00000000RELE"), vm.estado.value.enEspera.map { it.referenceCC })
+        assertEquals(2, vm.estado.value.enEsperaTotal)
+        assertTrue(vm.estado.value.enEspera.last().porTerminar)
+        io.mockk.coVerify(exactly = 0) { maquina.dudasDeEstaPc(false, any()) }
     }
 }

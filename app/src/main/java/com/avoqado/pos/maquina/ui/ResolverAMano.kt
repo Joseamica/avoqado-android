@@ -61,6 +61,9 @@ internal fun horaDelComprobante(texto: String, inicio: ZonedDateTime): Instant? 
 /** ponytail: lo último del diario cabe en el diálogo; el completo lo tiene el SERVIDOR (y el DASHBOARD). */
 private const val EVIDENCIA_VISIBLE = 800
 
+/** Codex código r3 #8: un folio que la máquina ya cerró y sólo falta registrar (relevaron su PC). */
+internal const val TEXTO_POR_TERMINAR = "por terminar"
+
 private enum class Opcion(val etiqueta: String, val desenlace: Desenlace) {
     COBRO("Cobró", Desenlace.PAGADO),
     CANCELO("Canceló", Desenlace.CANCELADO),
@@ -93,6 +96,8 @@ internal fun ResolverAMano(
      */
     duda: com.avoqado.pos.maquina.CobroEnEspera? = null,
 ) {
+    // Codex código r3 #8: un POR_TERMINAR no se teclea: la máquina ya lo cerró; el gerente sólo lo termina con la versión que ve.
+    if (duda?.porTerminar == true) return TerminarPendiente(puedeResolver, resolviendo, aviso, duda, onResolver, onCerrar)
     var opcion by remember { mutableStateOf<Opcion?>(null) }
     var modo by remember { mutableStateOf<Modo?>(null) }
     var entro by remember { mutableStateOf("") }
@@ -139,6 +144,8 @@ internal fun ResolverAMano(
                 return@Column
             }
             duda?.let { d ->
+                // Codex código r3 #9: lo que entró, del campo numérico (no de la cola del texto, que se recorta).
+                d.creditCents?.let { Text("Entró, según la PC: ${com.avoqado.pos.core.util.formatMoneyFromCents(it)}", style = MaterialTheme.typography.titleSmall) }
                 d.evidencia?.let { e ->
                     Text("Lo que vio la PC (versión ${d.version})", style = MaterialTheme.typography.titleSmall)
                     Text(e.takeLast(EVIDENCIA_VISIBLE), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -161,6 +168,59 @@ internal fun ResolverAMano(
             AvoqadoPillTextField(value = vio, onValueChange = { vio = it }, placeholder = "Lo que viste en la máquina")
             aviso?.let { Text(it, color = MaterialTheme.colorScheme.error) }
             Spacer(Modifier.height(AvoqadoTheme.spacing.xs))
+        }
+    }
+}
+
+/** Codex código r3 #8: «Terminar» un folio POR_TERMINAR: lo que guardó la máquina, a la vista, y un solo botón con su versión. */
+@Composable
+private fun TerminarPendiente(
+    puedeResolver: Boolean,
+    resolviendo: Boolean,
+    aviso: String?,
+    duda: com.avoqado.pos.maquina.CobroEnEspera,
+    onResolver: (ResolucionDelGerente) -> Unit,
+    onCerrar: () -> Unit,
+) {
+    val desenlace = Desenlace.entries.firstOrNull { it.name == duda.outcome } ?: Desenlace.PAGADO
+    AvoqadoDialog(
+        title = "Terminar el cobro",
+        description = "La máquina ya cerró este cobro y su PC se relevó antes de registrarlo. Termínalo con lo que guardó.",
+        onDismiss = onCerrar,
+        dismissOnClickOutside = false,
+        actionButton = {
+            PrimaryButton(
+                text = "Terminar",
+                fullWidth = true,
+                isLoading = resolviendo,
+                enabled = puedeResolver,
+                onClick = {
+                    onResolver(
+                        ResolucionDelGerente(
+                            desenlace = desenlace,
+                            creditCents = duda.creditCents ?: 0,
+                            changeDispensedCents = duda.changeDispensedCents ?: 0,
+                            horaDelComprobante = null,
+                            cancelMode = null,
+                            evidencia = "",
+                            version = duda.version,
+                            porTerminar = true,
+                        ),
+                    )
+                },
+            )
+        },
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
+            if (!puedeResolver) {
+                Text(TEXTO_SIN_PERMISO_RESOLVER, color = MaterialTheme.colorScheme.error)
+                return@Column
+            }
+            Text("Folio ${duda.referenceCC} (versión ${duda.version})", style = MaterialTheme.typography.titleSmall)
+            Text("Desenlace: ${desenlace.name}", style = MaterialTheme.typography.bodyMedium)
+            duda.creditCents?.let { Text("Entró: ${com.avoqado.pos.core.util.formatMoneyFromCents(it)}", style = MaterialTheme.typography.bodyMedium) }
+            duda.changeDispensedCents?.let { Text("Cambio: ${com.avoqado.pos.core.util.formatMoneyFromCents(it)}", style = MaterialTheme.typography.bodyMedium) }
+            aviso?.let { Text(it, color = MaterialTheme.colorScheme.error) }
         }
     }
 }
