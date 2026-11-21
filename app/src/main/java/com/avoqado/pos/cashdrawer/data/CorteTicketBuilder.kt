@@ -8,6 +8,41 @@ import com.avoqado.pos.printing.data.ESCPOSPrinter
 import com.avoqado.pos.printing.data.model.PaperWidth
 
 /**
+ * 🔴 F1, fila 12 / P9 (B4 de `docs/audit/2026-11-17-f1-pantallas/diseno.md`): los cobros con tarjeta por confirmar de ESTE aparato
+ * (la lista de la banda «Cobros por confirmar»), en el corte parcial, en «Cerrar caja» y en el corte final, en pantalla y en papel.
+ * Sólo informa: NO frena el cierre. Sin red sale igual (la lista vive en el aparato).
+ * 🔴 Codex r1 #1: sin el «No están en el total.» de B4: si la terminal sí registró el cobro y este aparato aún no se entera, ese
+ * cobro YA viene en el desglose del servidor, y el corte lo negaría.
+ * 🔴 Codex r2 (rediseño): son las dudas vivas AL MOMENTO, todas, igual que la banda. Repartirlas por turno con horas mentía (cierre
+ * sin red que el servidor fecha al recibirlo, reloj del aparato adelantado, filas sin fecha ni sucursal); por eso un corte viejo del
+ * Historial no lleva la línea.
+ *
+ * @param completo `false` si a alguna fila le falta el importe o la propina: el total es un mínimo («al menos»).
+ */
+data class PorConfirmarEnElCorte(val cuantos: Int, val cents: Long, val completo: Boolean) {
+    val etiqueta: String get() = "Cobros con tarjeta por confirmar ($cuantos)"
+    val importe: String get() = when {
+        completo -> pesos
+        cents == 0L -> "importe por confirmar"
+        else -> "al menos $pesos"
+    }
+    val texto: String get() = "$etiqueta: $importe"
+    private val pesos: String get() = com.avoqado.pos.core.util.formatMoney(cents / 100.0)
+
+    companion object {
+        /** `null` = no hay dudas: no sale la línea. La suma va en `Long` (Codex r2 #4: 22 intentos del tope desbordaban `Int`). */
+        fun de(cobros: List<com.avoqado.pos.payment.presentation.CobroPorConfirmar>): PorConfirmarEnElCorte? {
+            if (cobros.isEmpty()) return null
+            return PorConfirmarEnElCorte(
+                cuantos = cobros.size,
+                cents = cobros.sumOf { (it.montoCents ?: 0).toLong() },
+                completo = cobros.all { it.montoCents != null && !it.antesDePropina },
+            )
+        }
+    }
+}
+
+/**
  * Arma el ticket ESC/POS del corte de caja.
  *
  * Vive fuera del ViewModel porque hay DOS cosas que lo imprimen —el corte
@@ -140,6 +175,7 @@ object CorteTicketBuilder {
          * inventado queda como prueba (Testarudo, 28-sep-2026).
          */
         sinConfirmar: Boolean = false,
+        porConfirmar: PorConfirmarEnElCorte? = null,
     ): ByteArray {
         val fecha = java.time.format.DateTimeFormatter.ofPattern("dd MMM yyyy", java.util.Locale("es", "MX"))
         val hora = java.time.format.DateTimeFormatter.ofPattern("HH:mm", java.util.Locale("es", "MX"))
@@ -254,6 +290,15 @@ object CorteTicketBuilder {
         }
         if (ciego) p.printLine(OCULTO_CIEGO)
         p.printDivider()
+
+        // F1 P9: lo que quedó con tarjeta en duda en este aparato. El título cabe justo en 58 mm (32).
+        porConfirmar?.let {
+            p.setBold(true)
+            p.printLine("COBROS CON TARJETA POR CONFIRMAR")
+            p.setBold(false)
+            p.printTwoColumns(if (it.cuantos == 1) "1 cobro" else "${it.cuantos} cobros", it.importe)
+            p.printDivider()
+        }
 
         // PROPINAS — su propia sección, como en el Corte Z de SoftRestaurant.
         //

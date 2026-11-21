@@ -79,6 +79,8 @@ fun DailyReportView(
      * Testarudo, 28-sep-2026: un «Faltante $145» que no existía, sin ninguna pista de por qué.
      */
     sinConfirmar: Boolean = false,
+    /** F1 P9: los cobros con tarjeta por confirmar de este aparato. `null` = ninguno: no sale la línea. Sólo informa. */
+    porConfirmar: com.avoqado.pos.cashdrawer.data.PorConfirmarEnElCorte? = null,
     onDismiss: () -> Unit,
 ) {
     val context = LocalContext.current
@@ -288,6 +290,19 @@ fun DailyReportView(
                         fontWeight = FontWeight.SemiBold,
                     )
                 }
+            }
+
+            // F1 P9: la tarjeta en duda se ve en el corte. No se dice si el desglose la cuenta: si la terminal sí la registró,
+            // ya viene arriba (Codex r1 #1). Un solo texto que se parte, no dos columnas: en un teléfono angosto con letra grande el
+            // importe se quedaba sin ancho (Codex r3 #1).
+            porConfirmar?.let {
+                Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
+                Text(
+                    text = it.texto,
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Medium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
             }
 
             Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxl))
