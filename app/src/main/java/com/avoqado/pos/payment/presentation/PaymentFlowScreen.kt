@@ -419,6 +419,7 @@ fun PaymentFlowScreen(
                     segundoAviso = segundoAviso,
                     sinLista = currentState.sinLista,
                     onReintentar = { viewModel.retry() },
+                    motivo = currentState.motivo,
                 )
             }
             is PaymentFlowState.Processing, is PaymentFlowState.SentToTerminal -> {

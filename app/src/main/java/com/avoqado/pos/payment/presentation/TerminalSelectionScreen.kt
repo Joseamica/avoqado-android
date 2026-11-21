@@ -66,6 +66,8 @@ fun TerminalSelectionScreen(
     cuentaDeTarjetas: Boolean = false,
     conectado: Boolean = true,
     servidor: Boolean = true,
+    /** F1 fila 11: por qué consta que el cobro anterior de esta venta no se cobró (la firma del gerente, un rechazo). */
+    motivo: String? = null,
 ) {
     // Teclas del POS de Windows (founder, 19-oct): F4 otra vez = la PRIMERA terminal de la lista (F4, F4 cobra en la
     // terminal); Esc = Cancelar. Lo mismo que el clic. Números no: la pistola puede soltar un «1» suelto de un código
@@ -108,6 +110,17 @@ fun TerminalSelectionScreen(
         Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxl))
 
         if (!enLinea) Text(com.avoqado.pos.giftcards.domain.TextosDeTarjetas.SIN_RED)
+
+        // F1 fila 11: lo que acaba de resolver la duda de esta venta, antes de elegir terminal.
+        motivo?.let {
+            Text(
+                text = it,
+                style = MaterialTheme.typography.bodyLarge,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.widthIn(max = 400.dp),
+            )
+            Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))
+        }
 
         // Arriba de la lista: se lee ANTES de tocar una terminal.
         listOfNotNull(avisoDeOtroCobro, segundoAviso).forEach { aviso ->

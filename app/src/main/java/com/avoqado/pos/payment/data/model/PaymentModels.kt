@@ -73,7 +73,8 @@ sealed class PaymentFlowState {
      * @param sinLista lo que se pinta en lugar de la lista cuando no cargó, con «Reintentar»: sin red (B7b-5, sin rojo), el
      *   error del servidor (N6) o que no hay terminales conectadas (paridad con iOS). El aviso de otras ventas sigue arriba.
      */
-    data class SelectingTerminal(val totalAmount: Int, val sinLista: String? = null) : PaymentFlowState()
+    /** @param motivo F1 fila 11: por qué consta que el cobro anterior de esta venta no se cobró (p. ej. la firma del gerente). */
+    data class SelectingTerminal(val totalAmount: Int, val sinLista: String? = null, val motivo: String? = null) : PaymentFlowState()
     /**
      * @param efectivoEnVuelo 🔴 D2 v6 punto 5: es un cobro en EFECTIVO que viaja (crear la orden o el POST del pago). No se ofrece
      *   «Cancelar» ni el ViewModel lo acepta: borrar su apartado no detendría un cobro que puede llegar al servidor.

@@ -3222,8 +3222,8 @@ class PaymentFlowViewModel @Inject constructor(
      * A elegir terminal. TODA entrada a esta pantalla pasa por aquí, para que ninguna llegue sin el aviso de las otras
      * ventas — también la que viene de resolver el cobro de ésta.
      */
-    private fun ofrecerTerminales(total: Int) {
-        _state.value = PaymentFlowState.SelectingTerminal(total)
+    private fun ofrecerTerminales(total: Int, motivo: String? = null) {
+        _state.value = PaymentFlowState.SelectingTerminal(total, motivo = motivo)
         fetchTerminals()
         revisarPendientesDeOtrasVentas()
     }
@@ -5278,12 +5278,9 @@ class PaymentFlowViewModel @Inject constructor(
                         salirPorCuentaCambiada(outcome.message, apartadoDelCobro)
                     } else {
                         // F1 fila 11 (D3, 21-nov): la consulta (casi siempre la automática de 5 s) trajo el porqué —la firma del
-                        // gerente, un rechazo, una cancelación—. Saltar callado al selector lo tiraba; se dice con la misma pantalla
-                        // del envío directo, y su «Reintentar» lleva al selector (`undeterminedRequestId` ya va nulo arriba).
-                        _state.value = PaymentFlowState.Error(
-                            message = outcome.message,
-                            source = if (outcome.sinCobroNiRechazo) PaymentErrorSource.NO_SE_COBRO else PaymentErrorSource.TERMINAL,
-                        )
+                        // gerente, un rechazo, una cancelación— y el salto callado al selector lo tiraba. Va escrito en el mismo
+                        // selector: mismo destino, mismas teclas (F4/Esc en Windows) y mismo aviso de las otras ventas.
+                        ofrecerTerminales(total, motivo = outcome.message)
                     }
                 }
                 is TerminalPaymentResult.Undetermined -> {

@@ -392,6 +392,29 @@ class AtajosDelCobroEnLaEscenaTest {
         assertEquals(1, cancelado)
     }
 
+    @Test fun `F1 fila 11 el selector ensena la firma del gerente y F4 y Esc siguen igual`() = runComposeUiTest {
+        var elegida: String? = null
+        var cancelado = 0
+        setContent {
+            EnWindows {
+                TerminalSelectionScreen(
+                    terminals = listOf(OnlineTerminal("T-A", "Caja 1")),
+                    onTerminalSelected = { elegida = it },
+                    onCancel = { cancelado++ },
+                    avisoDeOtroCobro = null,
+                    onRevisarAviso = {},
+                    onEntendidoAviso = {},
+                    motivo = "Se revisó y se marcó como no cobrado. Ya puedes cobrar esta cuenta.",
+                )
+            }
+        }
+        onNodeWithText("Se revisó y se marcó como no cobrado. Ya puedes cobrar esta cuenta.").assertExists()
+        runOnIdle { assertTrue(AtajosDeTeclado.atender(Key.F4)) }
+        assertEquals("T-A", elegida)
+        runOnIdle { assertTrue(AtajosDeTeclado.atender(Key.Escape)) }
+        assertEquals(1, cancelado)
+    }
+
     @Test fun `mientras se buscan terminales F4 no hace nada`() = runComposeUiTest {
         var elegida: String? = null
         setContent {
