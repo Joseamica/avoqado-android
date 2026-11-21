@@ -80,7 +80,9 @@ class FotoDeLaVentaTest {
             "renglonesParaVer" -
             // Máquina de efectivo (Codex código r1 #2): la identidad de la venta para la máquina, como `identidadDeVenta`: lo que se
             // restaura de la foto es otra venta (y con la máquina activa el saldo no se ofrece: sólo la máquina o la tarjeta).
-            "llaveDeLaMaquina"
+            "llaveDeLaMaquina" -
+            // Máquina de efectivo (Codex código POS r8 #2): «nació en esta caja» NUNCA viaja: lo que vuelve de una foto es «restaurado».
+            "nacioEnEstaCaja"
         val deFoto = FotoDeLaVenta::class.java.declaredFields.filterNot { it.isSynthetic || java.lang.reflect.Modifier.isStatic(it.modifiers) }.map { it.name }.toSet() - setOf("clienteId", "clienteNombre", "clienteDescuento")
         assertEquals(delCarrito, deFoto)
     }

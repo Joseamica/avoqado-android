@@ -84,13 +84,14 @@ class SubidaDeLaMaquinaTest {
 
     private val pedido = """{"items":[{"productId":"p1","quantity":1}],"externalId":"venta-1"}"""
 
+    /** Un cierre de la máquina como lo deja el motor: lo registrado y su cierre físico ([conSuCierreFisico]) dicen lo mismo. */
     private fun final(ref: String, estado: String, credit: Int, change: Int, cancel: String? = null, venue: String = "venue-1") =
         CobroEnMaquinaEntity(
             referenceCC = ref, venueId = venue, llaveDeVenta = "venta-$ref", pedidoJson = pedido, saleCents = 18_000,
             tipCents = 750, dueCents = 18_750, saleShiftId = "turno-1", quoteId = "cot-1", creadoEn = 1_000, estado = estado,
             creditCents = credit, changeDispensedCents = change, cancelPedido = cancel, cierreEn = 1_763_640_000_000,
             cierreConocido = true, resueltoPor = "MAQUINA",
-        )
+        ).conSuCierreFisico()
 
     private fun duda(ref: String) = CobroEnMaquinaEntity(
         referenceCC = ref, venueId = "venue-1", llaveDeVenta = "venta-$ref", pedidoJson = pedido, saleCents = 18_000,
@@ -409,7 +410,7 @@ class SubidaDeLaMaquinaTest {
 
     @Test
     fun `P1 Codex r1 #6 la duda sube lo ultimo que quedo en disco, con lo que entro`() = runBlocking {
-        insertar(duda(REF_1).copy(creditCents = 5_000, ultimoCreditoEn = 1_763_639_050_000))
+        insertar(duda(REF_1).copy(creditCents = 5_000, creditoFisicoCents = 5_000, ultimoCreditoEn = 1_763_639_050_000))
         cuando("POST", ".*/cash-machine/doubts", ok(abierta(1)))
 
         subida.subir()
@@ -883,7 +884,7 @@ class SubidaDeLaMaquinaTest {
     fun `P1 Codex POS r5 #4 la primera duda con un diario de mas de 1 MiB llega al panel - lo nuevo primero y creditCents como numero`() = runBlocking {
         val diario = (1..8_000).joinToString("\n") { i -> "g1 " + statusCompleto(REF_1, i * 50, 500_000) }
         assertTrue("el caso de Codex: ${diario.length} bytes", diario.toByteArray().size > 1_048_576)
-        insertar(duda(REF_1).copy(dueCents = 500_000, saleCents = 500_000, tipCents = 0, creditCents = 400_000, mensajesCrudos = diario))
+        insertar(duda(REF_1).copy(dueCents = 500_000, saleCents = 500_000, tipCents = 0, creditCents = 400_000, creditoFisicoCents = 400_000, mensajesCrudos = diario))
         conLimiteDe1MiB { ok(abierta(1), 202) }
 
         assertTrue("queda la consulta al gerente", subida.subir())
@@ -949,6 +950,215 @@ class SubidaDeLaMaquinaTest {
         assertFalse(cuerpo(q).has("pedido"))
         assertEquals(1, servidor.requestCount)
         assertTrue(dao.fila(REF_1)!!.subido)
+    }
+
+    // MARK: - Codex código POS r8: la pasada exhaustiva (F1 y F2)
+
+    /** Un `status` de [ref] con [due] (cierre si trae [estado]). */
+    private fun statusDeLaMaquina(ref: String, due: Int, credit: Int, change: Int = 0, estado: String? = null) =
+        JSONObject().put("comando", "status").put("cobrando", estado == null).put("Status", estado ?: JSONObject.NULL)
+            .put("referenceCC", ref).put("Credit", credit / 100.0).put("Due", due / 100.0).put("changeDispensed", change / 100.0).toString()
+
+    /** El 409 del SERVIDOR cuando el folio es de OTRA PC: guarda la observación y deja su incidencia. */
+    private fun deOtraPc(code: String = "CASH_MACHINE_DOUBT_CONFLICT") = MockResponse().setResponseCode(409).setBody(
+        JSONObject().put("message", "Este folio de la máquina es de otra PC").put("code", code)
+            .put("details", JSONObject().put("motivo", "OTRA_PC").put("deviceId", "la-otra-pc").put("incidentId", "cinc0000000000000000otrapc"))
+            .toString(),
+    )
+
+    /**
+     * Codex código POS r8 #4 (F1): venta de $80. El primer cierre dice $80 recibidos y $0 de cambio; ANTES de subir, la máquina cuenta $100 del
+     * mismo folio sin devolver cambio. La PC mandaba a registrar $80 y $0 de deuda (faltaban $20). Una fila que se contradice antes de su
+     * primera subida sube como DUDA con lo que contó la máquina; el SERVIDOR nunca recibe la venta limpia del primer cierre.
+     */
+    @Test
+    fun `P1 Codex POS r8 #4 un cierre que la maquina contradice antes de subir sube como duda con lo que conto, nunca como venta del primer cierre`() = runBlocking {
+        insertar(
+            CobroEnMaquinaEntity(REF_1, "venue-1", "venta-$REF_1", pedido, 8_000, 0, 8_000, "turno-1", null, 1_763_639_000_000, EstadoDelIntento.EN_CURSO),
+        )
+        assertTrue(dao.anotarMensaje(REF_1, 1, statusDeLaMaquina(REF_1, 8_000, 8_000, 0, "Pago Completado"), 8_000, 8_000))
+        assertEquals(1, dao.cerrar(REF_1, EstadoDelIntento.PAGADO, 8_000, 0, 1_763_640_000_000, aDeber = 0))
+        assertTrue(dao.anotarMensaje(REF_1, 1, statusDeLaMaquina(REF_1, 8_000, 10_000, 0, "Pago Completado"), 10_000, 8_000))
+        cuando("POST", ".*/cash-machine/sales", ok(evidencia(dao.fila(REF_1)!!)))
+        cuando("POST", ".*/cash-machine/doubts", ok(abierta(1)))
+
+        subida.subir()
+
+        val q = pedido()
+        assertEquals("la venta de \$80 nunca sube", "/api/v1/mobile/venues/venue-1/cash-machine/doubts", q.path)
+        val b = cuerpo(q)
+        assertEquals(10_000, b.getInt("creditCents"))
+        assertTrue(b.getString("lastSeen"), b.getString("lastSeen").startsWith("Entró \$100.00"))
+        assertEquals(1, servidor.requestCount)
+        val f = dao.fila(REF_1)!!
+        assertEquals(EstadoDelIntento.ESPERANDO, f.estado)
+        assertTrue("el SERVIDOR ya la tiene", f.dudaSubida)
+        assertEquals("una duda propia frena salir hasta que la resuelva el panel", 1, dao.pendientes("venue-1"))
+        assertEquals("y la venta sigue frenada", 1, dao.bloqueanLaVenta(f.llaveDeVenta))
+    }
+
+    /**
+     * Codex código POS r8 #3 (F2): la PC informa una cancelación en $0 y el SERVIDOR contesta que el folio es de OTRA PC (abre su incidencia).
+     * Después la QuickPay confirma $80 recibidos de ese folio. La PC los guardaba en disco pero no los subía ni frenaba salir: el gerente seguía
+     * viendo $0. Ahora suben como duda (el SERVIDOR los agrega a la incidencia), frenan salir hasta el acuse, y la misma evidencia no vuelve a subir.
+     */
+    @Test
+    fun `P1 Codex POS r8 #3 con el folio de OTRA PC el dinero que llega despues sube como duda y frena salir hasta su acuse`() = runBlocking {
+        insertar(final(REF_1, EstadoDelIntento.CANCELADO, credit = 0, change = 0, cancel = "1"))
+        cuando("POST", ".*/cash-machine/sales", deOtraPc("CASH_MACHINE_CLOSE_CONFLICT"))
+        cuando("POST", ".*/cash-machine/doubts", deOtraPc())
+        assertFalse(subida.subir())
+        assertEquals("su incidencia está en el SERVIDOR", 0, dao.pendientes("venue-1"))
+
+        val ochenta = statusDeLaMaquina(REF_1, 18_750, 8_000)
+        assertTrue(dao.anotarMensaje(REF_1, 1, ochenta, 8_000, 18_750))
+
+        assertEquals("los \$80 sólo están aquí: frenan salir", 1, dao.pendientes("venue-1"))
+        assertEquals(listOf(REF_1), dao.paraSubir("venue-1").map { it.referenceCC })
+        assertFalse(subida.subir())
+        pedido()   // el cierre de $0
+        val q = pedido()
+        assertEquals("/api/v1/mobile/venues/venue-1/cash-machine/doubts", q.path)
+        assertEquals(8_000, cuerpo(q).getInt("creditCents"))
+        assertEquals("con su acuse (la incidencia de la otra PC) ya no frena", 0, dao.pendientes("venue-1"))
+
+        assertFalse("la misma evidencia otra vez no es nueva", dao.anotarMensaje(REF_1, 1, ochenta, 8_000, 18_750))
+        assertFalse(subida.subir())
+        assertEquals("sin vueltas", 2, servidor.requestCount)
+    }
+
+    /**
+     * Codex código POS r8 #5 (F1): venta de $80; el gerente la resolvió con $150 recibidos. Después la QuickPay confirma $100 recibidos y $20
+     * devueltos. La PC subía `creditCents = 15000` y «Entró $150.00» como observación de la PC: $50 de más atribuidos a la máquina. Lo que
+     * sube como lo que vio la PC sale de las columnas físicas; lo que tecleó un gerente nunca.
+     */
+    @Test
+    fun `P1 Codex POS r8 #5 lo que tecleo el gerente nunca sube como lo que conto la maquina`() = runBlocking {
+        insertar(
+            CobroEnMaquinaEntity(
+                REF_1, "venue-1", "venta-$REF_1", pedido, 8_000, 0, 8_000, "turno-1", null, 1_763_639_000_000, EstadoDelIntento.ESPERANDO,
+                dudaSubida = true, versionDeLaDuda = 1,
+            ),
+        )
+        val eco = JSONObject().put("success", true).put("ack", "TERMINADO").put("deviceId", DISPOSITIVO).put("status", "RESUELTO")
+            .put("referenceCC", REF_1).put("outcome", "PAGADO").put("resolvedBy", "GERENTE").put("dueCents", 8_000).put("saleCents", 8_000)
+            .put("tipCents", 0).put("creditCents", 15_000).put("changeDispensedCents", 7_000).put("owedCents", 0).put("excedenteCents", 0)
+        assertTrue(dao.resolverConElEco(dao.fila(REF_1)!!, eco, eco.toString()))
+        assertTrue(dao.anotarMensaje(REF_1, 1, statusDeLaMaquina(REF_1, 8_000, 10_000, 2_000, "Pago Completado"), 10_000, 8_000))
+        cuando("POST", ".*/cash-machine/doubts", ok(eco))
+
+        assertFalse(subida.subir())
+
+        val b = cuerpo(pedido())
+        assertEquals("lo que contó la máquina", 10_000, b.getInt("creditCents"))
+        val lastSeen = b.getString("lastSeen")
+        assertTrue(lastSeen, lastSeen.startsWith("Entró \$100.00"))
+        assertFalse(lastSeen, "\$150.00" in lastSeen)
+        assertEquals("entregada", 0, dao.pendientes("venue-1"))
+    }
+
+    /**
+     * Codex código POS r8 #3 (F2, la familia completa): la tabla estado × «la máquina cuenta más de lo que ya se le reportó al SERVIDOR». En
+     * TODOS los estados esa fila vuelve a quedar por subir como duda, frena salir hasta el acuse y sube lo que contó la máquina. El acuse la
+     * entrega y la misma evidencia nunca vuelve a subir (sin ciclo).
+     */
+    @Test
+    fun `P1 Codex POS r8 F2 en todos los estados la evidencia nueva sube como duda, frena salir hasta su acuse y no da vueltas`() = runBlocking {
+        val otraPc = JSONObject().put("code", "CASH_MACHINE_DOUBT_CONFLICT")
+            .put("details", JSONObject().put("motivo", "OTRA_PC").put("deviceId", "la-otra-pc").put("incidentId", "cinc0000000000000000otrapc")).toString()
+        val imposible = JSONObject().put("code", CODIGO_IMPOSIBLE).put("details", JSONObject().put("incidentId", "cinc000000000000imposible")).toString()
+        fun duda(ref: String, n: Long) = duda(ref).copy(creadoEn = n, mensajesCrudos = "")
+        fun cerrado(ref: String, n: Long, estado: String, credit: Int, change: Int, cancel: String? = null) =
+            final(ref, estado, credit, change, cancel).copy(creadoEn = n)
+        val filas = listOf(
+            duda("AQ00000000000A", 1).copy(dudaSubida = true),                                                       // duda abierta en el SERVIDOR
+            duda("AQ00000000000B", 2).copy(dudaSubida = true, conflicto = "otra PC", respuestaServidor = otraPc),     // duda de otra PC
+            duda("AQ00000000000C", 3).copy(dudaSubida = true, conflicto = "imposible", respuestaServidor = imposible), // sólo incidencia (422)
+            duda("AQ00000000000D", 4).copy(conflicto = "El pedido debe ser un objeto"),                                // rechazo sin incidencia
+            cerrado("AQ00000000000E", 5, EstadoDelIntento.PAGADO, 20_000, 1_250),                                     // por subir
+            cerrado("AQ00000000000F", 6, EstadoDelIntento.CANCELADO, 0, 0, "1")
+                .copy(conflicto = "otra PC", respuestaServidor = otraPc),                                               // de otra PC (r8 #3)
+            cerrado("AQ00000000000G", 7, EstadoDelIntento.PAGADO, 20_000, 1_250).copy(conflicto = "El pedido debe ser un objeto"),
+            cerrado("AQ00000000000H", 8, EstadoDelIntento.PAGADO, 20_000, 1_250).copy(conflicto = TEXTO_RESPUESTA_DISTINTA),
+            cerrado("AQ00000000000I", 9, EstadoDelIntento.PAGADO, 20_000, 1_250).copy(subido = true, respuestaServidor = "{}"),
+            cerrado("AQ00000000000J", 10, EstadoDelIntento.GUARDADO, 5_000, 0, "2")
+                .copy(subido = true, conflicto = "incidencia", respuestaServidor = """{"details":{"incidentId":"cinc00000000000000000000j"}}"""),
+            cerrado("AQ00000000000K", 11, EstadoDelIntento.CANCELADO, 5_000, 5_000, "1").copy(subido = true, respuestaServidor = "{}"),
+            duda("AQ00000000000L", 12).copy(
+                estado = EstadoDelIntento.RESUELTO, dudaSubida = true, desenlaceDelServidor = "CANCELADO",
+                respuestaServidor = """{"outcome":"CANCELADO","creditCents":0,"changeDispensedCents":0}""",
+            ),
+        )
+        insertar(*filas.toTypedArray())
+        val porFolio = mutableMapOf<String, MutableList<String>>()
+        servidor.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val ruta = request.path!!
+                if (request.method == "GET") return ok(abierta(1, ruta.substringAfterLast('/')))
+                val b = JSONObject(request.body.readUtf8())
+                val ref = b.getString("referenceCC")
+                synchronized(porFolio) { porFolio.getOrPut(ref) { mutableListOf() } += ruta.substringAfterLast('/') + ":" + b.optInt("creditCents") }
+                return when {
+                    ruta.endsWith("/sales") -> MockResponse().setResponseCode(500)
+                    ref == "AQ00000000000B" || ref == "AQ00000000000F" -> deOtraPc()
+                    ref == "AQ00000000000C" -> MockResponse().setResponseCode(422).setBody(imposible)
+                    else -> MockResponse().setResponseCode(409).setBody(
+                        JSONObject().put("code", "CASH_MACHINE_DOUBT_CONFLICT").put("message", "Quedó registrado para el gerente")
+                            .put("details", JSONObject().put("motivo", "OTRA_EVIDENCIA").put("deviceId", DISPOSITIVO).put("incidentId", "cinc00000000000000000otra")).toString(),
+                    )
+                }
+            }
+        }
+
+        // La máquina cuenta $50 más de lo que cada fila ya le reportó al SERVIDOR.
+        val mensajes = filas.associate { f -> f.referenceCC to statusDeLaMaquina(f.referenceCC, f.dueCents, f.creditCents + 5_000) }
+        for (f in filas) assertTrue(f.referenceCC, dao.anotarMensaje(f.referenceCC, 1, mensajes.getValue(f.referenceCC), f.creditCents + 5_000, f.dueCents))
+
+        val porSubir = dao.paraSubir("venue-1").map { it.referenceCC }.toSet()
+        for (f in filas) {
+            assertTrue("${f.referenceCC} vuelve a quedar por subir", f.referenceCC in porSubir)
+            assertTrue("${f.referenceCC} frena salir", dao.fila(f.referenceCC)!!.frenaLaSalida())
+        }
+
+        subida.subir()
+
+        for (f in filas) {
+            assertEquals("${f.referenceCC} sube UNA vez como duda, con lo que contó la máquina", listOf("doubts:${f.creditCents + 5_000}"), porFolio[f.referenceCC])
+        }
+        val propias = setOf("AQ00000000000A", "AQ00000000000D", "AQ00000000000E", "AQ00000000000G", "AQ00000000000H")
+        for (f in filas) {
+            val fila = dao.fila(f.referenceCC)!!
+            if (f.referenceCC in propias) assertEquals("${f.referenceCC}: una duda propia abierta", EstadoDelIntento.ESPERANDO, fila.estado)
+            else assertFalse("${f.referenceCC}: con su acuse ya no frena", fila.frenaLaSalida())
+        }
+
+        // La misma evidencia otra vez: nada nuevo, nada sube (sólo se consultan las dudas propias abiertas).
+        for (f in filas) assertFalse(f.referenceCC, dao.anotarMensaje(f.referenceCC, 1, mensajes.getValue(f.referenceCC), f.creditCents + 5_000, f.dueCents))
+        subida.subir()
+        for (f in filas) assertEquals("${f.referenceCC} sin vueltas", 1, porFolio[f.referenceCC]!!.size)
+    }
+
+    /** Codex código POS r8 (F1): el SQL que vuelve duda un cierre sin cierre físico confiable dice lo mismo que [loQueContoLaMaquina]. */
+    @Test
+    fun `Codex POS r8 la regla del cierre confiable es la misma en SQL y en Kotlin`() = runBlocking {
+        val base = final(REF_1, EstadoDelIntento.PAGADO, credit = 20_000, change = 1_250)
+        var n = 0
+        val filas = listOf(true, false).flatMap { contradijo ->
+            listOf("PAGADO", null).flatMap { cierre ->
+                listOf(1_250, null).map { cambio ->
+                    base.copy(referenceCC = "AQ" + (++n).toString().padStart(12, '0'), llaveDeVenta = "venta-$n", maquinaSeContradijo = contradijo, cierreFisico = cierre, cambioFisicoCents = cambio)
+                }
+            }
+        }
+        insertar(*filas.toTypedArray())
+
+        dao.aDudaSinCierreConfiable(null)
+
+        for (f in filas) {
+            val aDuda = dao.fila(f.referenceCC)!!.estado == EstadoDelIntento.ESPERANDO
+            assertEquals(f.referenceCC, f.loQueContoLaMaquina().cierre == null, aDuda)
+        }
+        assertEquals("sólo una de las ocho es confiable", 1, filas.count { it.loQueContoLaMaquina().cierre != null })
     }
 
     private companion object {

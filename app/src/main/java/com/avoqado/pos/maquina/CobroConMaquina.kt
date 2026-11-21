@@ -385,24 +385,26 @@ class CobroConMaquina(
     }
 
     private suspend fun cerrar(a: Intento, m: MensajeDeLaMaquina.Status, cierre: Cierre) {
-        // Codex código POS r4 #2: el cierre nunca registra menos de lo que la máquina ya contó de este folio (lo de su diario y lo que vio
-        // este intento): un «Transacción Cancelada» en $0 tras $50 deja constancia de esos $50, también en el abandono.
-        val credito = maxOf(m.creditCents, a.credit, dao.porReferencia(a.ref)?.creditCents ?: 0)
-        val desenlace = desenlaceDelCierre(cierre, a.cancelPedido, a.due, credito, m.changeDispensedCents)
+        // Codex código POS r8 #4 (F1): lo que se registra es lo que contó la máquina ([loQueContoLaMaquina]; este cierre ya está en sus
+        // columnas). Si la máquina ya se contradijo sobre este folio (otro cierre que llegó por otra conexión, uno imposible), no hay venta
+        // limpia: duda. Codex código POS r4 #2: nunca menos de lo que ya contó: un «Transacción Cancelada» en $0 tras $50 deja esos $50.
+        // Este mensaje (con su crédito) ya está en esas columnas, y lo que vio este intento también: lo contado es lo más que entró.
+        val (credito, cambio) = dao.porReferencia(a.ref)?.loQueContoLaMaquina()?.cierre ?: return aEsperando(a)
+        val desenlace = desenlaceDelCierre(cierre, a.cancelPedido, a.due, credito, cambio)
             ?: return aEsperando(a)   // contradictorio: el crudo ya está en el diario
         // El desenlace y «por subir» en UN `UPDATE`: la fila es la cola (R4-1). Codex código r1 #15: la hora es la que dice la máquina;
         // sin ella, la de la PC sólo para enseñar y el cierre sube sin hora conocida. #13: lo físico que se le debe al cliente.
         val hora = horaDeLaMaquina(m.fecha, zona())
         dao.cerrar(
-            a.ref, desenlace.name, credito, m.changeDispensedCents, hora ?: reloj(), conocido = hora != null,
-            aDeber = deudaFisica(desenlace, a.due, credito, m.changeDispensedCents),
+            a.ref, desenlace.name, credito, cambio, hora ?: reloj(), conocido = hora != null,
+            aDeber = deudaFisica(desenlace, a.due, credito, cambio),
         )
         alTerminar()
         alCerrar(a.ref, desenlace)
         a.fase = FaseDelIntento.CERRADO
         a.desenlace = desenlace
         a.credit = credito
-        a.change = m.changeDispensedCents
+        a.change = cambio
         cancelarTemporizador()
         publicar()
     }

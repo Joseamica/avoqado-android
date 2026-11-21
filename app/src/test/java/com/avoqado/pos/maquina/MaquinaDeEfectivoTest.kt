@@ -996,7 +996,8 @@ class MaquinaDeEfectivoTest {
     /**
      * Codex código POS r7 #3: venta de $80; el primer cierre dice $100 recibidos y $0 devueltos (PAGADO solo, debe $20). Antes de sincronizar o
      * imprimir, APS confirma que SÍ entregó los $20. Con la fila ya PAGADA ese segundo cierre actualizaba cero filas y quedaba un original
-     * por $20. Ahora se guarda (en cualquier estado) y la deuda la revisa el panel.
+     * por $20. Ahora se guarda (en cualquier estado). Codex código POS r8 #4: y como el SERVIDOR todavía no tiene ese cierre, deja de ser
+     * desenlace: vuelve a «Esperando a la máquina» y sube como duda; la deuda y el papel los decide el panel (ni original por $20 ni venta limpia).
      */
     @Test
     fun `P1 Codex POS r7 #3 el segundo cierre que llega con la fila ya PAGADA no se tira - sin original por 20 ya entregados`() = runTest {
@@ -1009,16 +1010,15 @@ class MaquinaDeEfectivoTest {
         canal.llega(pagoCompletado(ref, 8_000, 10_000, 2_000))
         runCurrent()
 
-        val tickets = mutableListOf<com.avoqado.pos.printing.data.model.ReceiptData>()
-        coEvery { impresora.imprimirOriginal(capture(tickets)) } returns PrinterService.PrintOutcome.Printed(1)
-        assertEquals(listOf(ref to null), m.comprobantes().map { it.first.referenceCC to it.second })
+        val f = dao.fila(ref)!!
+        assertEquals("r8 #4: sin subir, la contradicción la vuelve duda", EstadoDelIntento.ESPERANDO, f.estado)
+        assertTrue(f.maquinaSeContradijo)
+        assertEquals(listOf(ref), dao.paraSubir("venue-1").map { it.referenceCC })
+        assertEquals(1, dao.bloqueanLaVenta(f.llaveDeVenta))
+        assertTrue("ninguna deuda por cobrar", m.comprobantes().isEmpty())
         assertNull("sin comprobante de $20", m.imprimirComprobante(ref))
-        m.imprimirPapelDelFolio(ref)
-        val t = tickets.single()
-        assertNull(t.cashMachine!!.owedCents)
-        assertTrue(t.cashMachine!!.revisarEnElPanel)
-        val papel = textoDelPapel(t)
-        assertFalse(papel, "Te debemos" in papel || "Cambio:" in papel)
+        assertNull("ni papel: lo decide el panel", m.imprimirPapelDelFolio(ref))
+        coVerify(exactly = 0) { impresora.imprimirOriginal(any()) }
     }
 
     /**
@@ -1100,5 +1100,76 @@ class MaquinaDeEfectivoTest {
         assertTrue(dao.fila(ref)!!.evidenciaTardiaPorSubir())
         assertEquals("esa evidencia sólo está aquí: frena salir", 1, dao.pendientes("venue-1"))
         assertEquals(listOf(ref), dao.paraSubir("venue-1").map { it.referenceCC })
+    }
+
+    // MARK: - Codex código POS r8: la pasada exhaustiva (F1 y F4)
+
+    /**
+     * Codex código POS r8 #6 (F4): venta LOCAL de $80 (sin cotizar), $100 recibidos y $0 devueltos: debe $20. La cajera pide el comprobante;
+     * antes de que salga a la impresora llega el precio confirmado de $70 (debe $30). La PC preparaba el papel con su primera lectura ($20) y
+     * conservaba ese importe aunque la fila reclamada ya dijera $30: el original quedaba corto por $10. El papel sale de la fila que devuelve
+     * el reclamo.
+     */
+    @Test
+    fun `P1 Codex POS r8 #6 el comprobante sale de la fila reclamada - con el acuse de 70 dice 30, no los 20 del primer toque`() = runTest {
+        val ref = "AQ000000000080"
+        val conAcuse = object : CobroEnMaquinaSobreSqlite() {
+            var llego = false
+            override suspend fun reclamarTicket(referenceCC: String): Int = super.reclamarTicket(referenceCC).also {
+                if (!llego) {
+                    llego = true
+                    marcarSubido(ref, null, """{"outcome":"PAGADO","excedenteCents":1000,"owedCents":3000}""", 3_000)
+                }
+            }
+        }
+        try {
+            conAcuse.insertarCerrada(
+                CobroEnMaquinaEntity(
+                    ref, "venue-1", "venta-$ref", "{}", 8_000, 0, 8_000, null, null, 1, EstadoDelIntento.PAGADO,
+                    creditCents = 10_000, changeDispensedCents = 0, cierreEn = 5, resueltoPor = "MAQUINA", aDeberCents = 2_000,
+                ),
+            )
+            val impresos = mutableListOf<com.avoqado.pos.printing.data.model.ReceiptData>()
+            coEvery { impresora.imprimirOriginal(capture(impresos)) } returns PrinterService.PrintOutcome.Printed(1)
+            val m = MaquinaDeEfectivo(
+                prefs, boveda, conAcuse, api, subida, turno, RoleManager(sesion), impresora, sesion, canal, backgroundScope,
+                { testScheduler.currentTime }, Random(7), monotonico = { testScheduler.currentTime },
+            )
+
+            assertEquals(PrinterService.PrintOutcome.Printed(1), m.imprimirComprobante(ref))
+
+            val c = impresos.single()
+            assertEquals(3_000L, c.cashMachine!!.owedCents)
+            assertEquals("COMPROBANTE DE DIFERENCIA", c.cashMachine!!.title)
+            val papel = textoDelPapel(c)
+            assertTrue(papel, "Te debemos \$30.00" in papel)
+            assertFalse(papel, "\$20.00" in papel)
+        } finally {
+            conAcuse.close()
+        }
+    }
+
+    /**
+     * Codex código POS r8 #4 (F1, la familia en el motor): un cierre del folio que llega tarde de otra conexión dice $100 con $20 de cambio; el
+     * cierre en vivo dice $100 con $0. La máquina ya se contradijo ANTES del cierre en vivo: ese cobro no es una venta limpia de ninguno de los
+     * dos cierres. Queda en duda (el gerente lo resuelve en el panel), nunca PAGADO con el cambio del último.
+     */
+    @Test
+    fun `P1 Codex POS r8 #4 si la maquina se contradijo antes del cierre en vivo el cobro queda en duda, nunca PAGADO`() = runTest {
+        val m = maquina()
+        val ref = cobroDe80EnVivo(m)
+        val tarde = pagoCompletado(ref, 8_000, 10_000, 2_000)
+        assertTrue(canal.recibidos.tryEmit(Recibido(0, leerMensaje(tarde)!!, tarde)))
+        runCurrent()
+        assertEquals("de otra conexión no decide nada", EstadoDelIntento.EN_CURSO, dao.fila(ref)!!.estado)
+
+        canal.llega(pagoCompletado(ref, 8_000, 10_000, 0))
+        runCurrent()
+
+        val f = dao.fila(ref)!!
+        assertEquals(EstadoDelIntento.ESPERANDO, f.estado)
+        assertTrue(f.maquinaSeContradijo)
+        assertTrue("sube como duda", f.referenceCC in dao.paraSubir("venue-1").map { it.referenceCC })
+        assertEquals(1, dao.bloqueanLaVenta(f.llaveDeVenta))
     }
 }

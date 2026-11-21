@@ -3032,9 +3032,10 @@ class PaymentFlowViewModel @Inject constructor(
             // Codex código POS r7 #1: la venta mandó alguna vez una tarjeta a la terminal (pegajoso; sustituye la lista de pendientes
             // por su llave, que vencía a los 10 min).
             intentoConTarjeta = cart.intentoConTarjeta,
-            // Decisión A (Codex código POS r5 #2 y r6): un carrito traído con «Restaurar» (o que volvió ligado a su copia) nunca va a la
-            // máquina: su tarjeta pudo salir con otra versión o aprobarse hace más de su ventana, y la lista ya no lo sabría.
-            restaurada = cart.vinoDeCarritoGuardado,
+            // Decisión A (Codex código POS r5 #2, r6 y r8 #2): todo carrito que no nació vacío en esta caja —«Restaurar», «Venta por
+            // recuperar», la foto de un rechazo de saldo, de cualquier versión— nunca va a la máquina: su tarjeta pudo salir con otra versión
+            // o aprobarse hace más de su ventana, y la lista ya no lo sabría.
+            restaurada = cart.vinoDeCarritoGuardado || !cart.nacioEnEstaCaja,
             // Decisión B (Codex código POS r6): una reserva o una clase se cobra en caja o con tarjeta, con o sin red.
             conReserva = !cart.reservationId.isNullOrBlank(),
         )
@@ -3050,9 +3051,10 @@ class PaymentFlowViewModel @Inject constructor(
         val vista = caja.vista.value ?: return
         val cart = cartState ?: return
         if (_state.value !is PaymentFlowState.SelectingPaymentMethod || isProcessingPayment || !vista.fila.habilitada) return
-        // Codex código POS r7 #1: el carrito vivo, al tocar (la fila pudo pintarse antes de que saliera la tarjeta de esta venta). Se vuelve
-        // a abrir la vista de la máquina para que la fila diga por qué.
-        if (cart.intentoConTarjeta) return caja.abrir(ventaParaLaMaquina(cart))
+        // Codex código POS r7 #1 y r8 #2: el carrito VIVO, al tocar, con LA regla de qué venta nunca va a la máquina (la fila pudo pintarse
+        // antes de que saliera la tarjeta, o el cobro cambió de carrito tras un rechazo de saldo). Se vuelve a abrir la vista para que diga por qué.
+        val enVivo = ventaParaLaMaquina(cart) ?: return
+        if (enVivo.motivoSinMaquina != null) return caja.abrir(enVivo)
         val venueId = secureStorage.venueId?.takeIf { it.isNotBlank() } ?: return
         val pedido = buildOrderRequest(cart).let { r ->
             OrderRepository.buildCreateOrderPayload(

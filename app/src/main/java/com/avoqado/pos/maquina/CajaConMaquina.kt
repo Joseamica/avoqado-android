@@ -31,7 +31,10 @@ data class VentaEnPantalla(
     val restaurada: Boolean = false,
     /** Decisión B: va ligada a una reserva o a una clase: la máquina no la cobra, con o sin internet. */
     val conReserva: Boolean = false,
-)
+) {
+    /** Codex código POS r8 #2 (F3): por qué esta venta nunca va a la máquina ([motivoSinMaquina], LA regla); null = puede. */
+    val motivoSinMaquina: String? get() = com.avoqado.pos.maquina.motivoSinMaquina(ventaNueva, restaurada, intentoConTarjeta, conReserva)
+}
 
 /** Un `PAGADO` de la máquina (o el que confirmó un gerente) que la caja convierte en venta cobrada. */
 data class CierreEnPantalla(
@@ -286,9 +289,9 @@ class CajaConMaquina(
         synchronized(candado) {
             val l = local.value
             val v = l.venta ?: return false
-            // Codex código POS r7 #1: esta venta ya intentó la tarjeta. Decisión A: la trajo «Restaurar». La máquina no la aparta (se lee
-            // aquí, al tocar: la fila puede ir un cuadro atrás). La reserva la frena el pedido mismo, antes de cotizar.
-            if (l.enVuelo || l.miFolio != null || v.intentoConTarjeta || v.restaurada) return false
+            // Codex código POS r7 #1 y r8 #2: la regla de qué venta nunca va a la máquina ([VentaEnPantalla.motivoSinMaquina]) se lee aquí, al
+            // tocar: la fila puede ir un cuadro atrás.
+            if (l.enVuelo || l.miFolio != null || v.motivoSinMaquina != null) return false
             val ficha = maquina.apartar(v.llaveDeVenta) ?: return false
             local.value = l.copy(aviso = null, apartada = true, enVuelo = true, ficha = ficha)
             return true

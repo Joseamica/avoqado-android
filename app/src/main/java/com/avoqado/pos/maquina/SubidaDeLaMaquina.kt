@@ -132,6 +132,8 @@ class SubidaDeLaMaquina @Inject constructor(
 
     /** Una pasada. Devuelve si queda trabajo (algo por subir o una duda esperando al gerente). */
     internal suspend fun subir(): Boolean = withContext(io) {
+        // Codex código POS r8 (F1): un cierre sin cierre físico confiable nunca sube como venta limpia: antes de leer la cola, vuelve a duda.
+        dao.aDudaSinCierreConfiable(null)
         val venueId = secureStorage.venueId ?: return@withContext false
         val credencial = boveda.leer()
         if (credencial == null) {
@@ -144,6 +146,8 @@ class SubidaDeLaMaquina @Inject constructor(
             // Codex código r3 #1 y POS r7: lo que llegó después de la resolución de un gerente, o de un cierre que el SERVIDOR ya tiene, sube
             // como duda (el SERVIDOR abre su revisión).
             val esDuda = fila.estado == EstadoDelIntento.ESPERANDO || fila.subeTrasTerminar()
+            // Codex código POS r8: la máquina se contradijo entre la conversión de arriba y esta lectura: la pasada siguiente la sube como duda.
+            if (!esDuda && fila.loQueContoLaMaquina().cierre == null) continue
             // Codex código r3 #14: el cuerpo siempre se arma; un carrito ilegible sube SIN carrito y el SERVIDOR guarda primero el dinero.
             val r = try {
                 subirFolio(venueId, credencial, fila, esDuda)
@@ -284,20 +288,26 @@ class SubidaDeLaMaquina @Inject constructor(
         else dao.marcarSubido(fila.referenceCC, acuse.incidencia, acuse.cuerpo, json.centavos("owedCents"))
     }
 
-    /** R5#7: el mismo folio, desenlace e importes. De una duda, lo que entró y el cambio los decide el gerente. */
+    /**
+     * R5#7: el mismo folio, desenlace e importes. De una duda, lo que entró y el cambio los decide el gerente. Codex código POS r8 (F1): lo que
+     * entró y el cambio se comparan con lo que se MANDÓ: el cierre de la máquina ([loQueContoLaMaquina]).
+     */
     private fun repite(fila: CobroEnMaquinaEntity, json: JSONObject, outcome: String, conLoQueEntro: Boolean): Boolean =
         json.optString("referenceCC") == fila.referenceCC && json.optString("outcome") == outcome &&
             json.centavos("dueCents") == fila.dueCents && json.centavos("saleCents") == fila.saleCents &&
             json.centavos("tipCents") == fila.tipCents &&
-            (!conLoQueEntro || (json.centavos("creditCents") == fila.creditCents &&
-                json.centavos("changeDispensedCents") == fila.changeDispensedCents))
+            (!conLoQueEntro || fila.loQueContoLaMaquina().cierre.let { c ->
+                c != null && c.first == json.centavos("creditCents") && c.second == json.centavos("changeDispensedCents")
+            })
 
     private fun cuerpoDelCierre(fila: CobroEnMaquinaEntity, conCarrito: Boolean = true): JSONObject {
         val outcome = fila.estado
+        // Codex código POS r8 (F1): lo que contó la máquina, de las columnas físicas; [subir] sólo manda aquí un cierre confiable.
+        val (credito, cambio) = checkNotNull(fila.loQueContoLaMaquina().cierre) { "un cierre sin cierre físico confiable sube como duda" }
         val cierre = JSONObject()
             .put("outcome", outcome)
             .put("dueCents", fila.dueCents).put("saleCents", fila.saleCents).put("tipCents", fila.tipCents)
-            .put("creditCents", fila.creditCents).put("changeDispensedCents", fila.changeDispensedCents)
+            .put("creditCents", credito).put("changeDispensedCents", cambio)
             // Codex código r1 #15: la hora sólo sube si la dijo la máquina; la de la PC nunca pasa por «conocida».
             .put("occurredAtKnown", fila.cierreConocido && fila.cierreEn != null)
             .put("occurredAt", fila.cierreEn?.takeIf { fila.cierreConocido }?.let(::iso) ?: JSONObject.NULL)
@@ -322,8 +332,8 @@ class SubidaDeLaMaquina @Inject constructor(
         .put("startedAt", iso(fila.creadoEn))
         .put("saleShiftId", fila.saleShiftId ?: JSONObject.NULL)
         .put("lastSeen", loUltimoQueVio(fila))
-        // Codex código r3 #9: lo que entró, como NÚMERO: el SERVIDOR conserva el mayor que vio la PC con este campo. Codex código POS r7:
-        // con lo que la máquina contó DESPUÉS de un cierre (columna física), que lo registrado de ese cierre ya no recoge.
+        // Codex código r3 #9: lo que entró, como NÚMERO: el SERVIDOR conserva el mayor que vio la PC con este campo. Codex código POS r8 #5:
+        // sólo lo que contó la máquina (columna física), nunca lo que tecleó un gerente al resolver.
         .put("creditCents", loQueEntro(fila))
         .put("bindingId", fila.bindingId ?: JSONObject.NULL)
 
@@ -445,8 +455,11 @@ fun textoDeLoQueVio(fila: CobroEnMaquinaEntity, tope: Int = TOPE_DEL_DIARIO_QUE_
     return texto.toString()
 }
 
-/** Lo más que la PC vio entrar de un folio: lo de la fila o, si la máquina contó más después de cerrar, lo físico. */
-private fun loQueEntro(fila: CobroEnMaquinaEntity) = maxOf(fila.creditCents, fila.creditoFisicoCents)
+/**
+ * Lo más que la máquina contó de un folio ([loQueContoLaMaquina]). Codex código POS r8 #5: antes era lo mayor entre lo registrado y lo físico,
+ * y lo registrado de un folio resuelto es lo que TECLEÓ el gerente ($150 subía como si la máquina los hubiera contado).
+ */
+private fun loQueEntro(fila: CobroEnMaquinaEntity) = fila.loQueContoLaMaquina().recibido
 
 /** Codex código POS r5 #4: lo más que sube del diario de un folio (64 KiB); lo demás se queda en la PC. */
 internal const val TOPE_DEL_DIARIO_QUE_SUBE = 64 * 1024

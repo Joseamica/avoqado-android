@@ -156,6 +156,13 @@ data class CartState(
      */
     val intentoConTarjeta: Boolean = false,
     /**
+     * 🔴 DINERO. Máquina de efectivo (Codex código POS r8 #2): este carrito nació vacío en esta caja ([CartViewModel] lo crea así al empezar
+     * cada venta) y todo lo que tiene se tecleó aquí. Por omisión NO: cualquier otro camino que arma un carrito —una copia guardada, «Venta por
+     * recuperar», la foto de un rechazo de saldo, una mesa, una cuenta, el formato de una versión anterior— es «restaurado» y la máquina no lo
+     * cobra (su tarjeta pudo salir con otra versión). No viaja en la copia guardada ni en la foto: al volver, nunca es nuevo.
+     */
+    val nacioEnEstaCaja: Boolean = false,
+    /**
      * 🔴 DINERO. «Se cobra el precio que vio el cliente» (17-oct): el descuento de CUENTA que viajó en la orden cuyo servidor
      * corrigió precios. Mientras el carrito siga siendo esa venta ([DescuentoCongelado.vigentePara]), [orderDiscountCents] usa
      * este monto en vez de recalcular el %: así el carrito cobra lo mismo que la orden. Sólo nace de [conPreciosDelServidor] con
@@ -1256,7 +1263,8 @@ class CartViewModel @Inject constructor(
         _cartState.update {
             it.copy(identidadDeVenta = actual.identidadDeVenta, creacionIncierta = actual.creacionIncierta,
                 vinoDeCarritoGuardado = actual.vinoDeCarritoGuardado, carritoGuardadoId = actual.carritoGuardadoId,
-                llaveDeLaMaquina = actual.llaveDeLaMaquina, intentoConTarjeta = actual.intentoConTarjeta)
+                llaveDeLaMaquina = actual.llaveDeLaMaquina, intentoConTarjeta = actual.intentoConTarjeta,
+                nacioEnEstaCaja = actual.nacioEnEstaCaja)
         }
         addCustomAmount(name = "Saldo pendiente", amountCents = saldo)
         markPendingSplitOrder(orden)
@@ -1525,6 +1533,7 @@ class CartViewModel @Inject constructor(
         return CartState(
             selectedStaffId = storedStaffId ?: secureStorage.userId.orEmpty(),
             selectedStaffName = storedStaffName ?: loggedInStaffName,
+            nacioEnEstaCaja = true,   // Codex código POS r8 #2: la ÚNICA venta nueva; todo lo demás es «restaurado»
         )
     }
 
@@ -2555,6 +2564,7 @@ class CartViewModel @Inject constructor(
         val creacionOriginal = _cartState.value.creacionIncierta
         val vinoDeGuardado = _cartState.value.vinoDeCarritoGuardado
         val conTarjeta = _cartState.value.intentoConTarjeta
+        val nacioAqui = _cartState.value.nacioEnEstaCaja   // Codex código POS r8 #2: el saldo de una venta restaurada sigue siendo restaurado
         // El recibo retira su copia; una respuesta tardía no puede tocar la venta siguiente.
         carritoGuardadoDelCobro?.let {
             if (!savedCartsRepository.deleteCart(it)) Log.w("🛒", "No se confirmó el retiro de la copia marcada $it")
@@ -2600,7 +2610,7 @@ class CartViewModel @Inject constructor(
                 // un descuento fijo de toda la cuenta se quedaría entero en los renglones que quedan.
                 if (remainingBalanceCents > 0 && _cartState.value.totalCents != remainingBalanceCents) {
                     clearCart()
-                    _cartState.update { it.copy(identidadDeVenta = identidadOriginal, creacionIncierta = creacionOriginal, vinoDeCarritoGuardado = vinoDeGuardado, intentoConTarjeta = conTarjeta) }
+                    _cartState.update { it.copy(identidadDeVenta = identidadOriginal, creacionIncierta = creacionOriginal, vinoDeCarritoGuardado = vinoDeGuardado, intentoConTarjeta = conTarjeta, nacioEnEstaCaja = nacioAqui) }
                     addCustomAmount(name = "Saldo pendiente", amountCents = remainingBalanceCents)
                 }
                 RamaCobro.RENGLONES_PAGADOS
@@ -2608,7 +2618,7 @@ class CartViewModel @Inject constructor(
             remainingBalanceCents > 0 -> {
                 // El cliente sobrevive: `clearCart()` no lo toca, a propósito.
                 clearCart()
-                _cartState.update { it.copy(identidadDeVenta = identidadOriginal, creacionIncierta = creacionOriginal, vinoDeCarritoGuardado = vinoDeGuardado, intentoConTarjeta = conTarjeta) }
+                _cartState.update { it.copy(identidadDeVenta = identidadOriginal, creacionIncierta = creacionOriginal, vinoDeCarritoGuardado = vinoDeGuardado, intentoConTarjeta = conTarjeta, nacioEnEstaCaja = nacioAqui) }
                 addCustomAmount(name = "Saldo pendiente", amountCents = remainingBalanceCents)
                 RamaCobro.QUEDA_SALDO
             }

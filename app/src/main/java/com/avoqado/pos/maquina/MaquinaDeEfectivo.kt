@@ -88,6 +88,20 @@ data class LaMaquinaAhora(
 data class FilaDeLaMaquina(val visible: Boolean, val habilitada: Boolean, val motivo: String?, val avisoDeCambio: String?)
 
 /**
+ * Codex código POS r8 #2 (F3): LA regla de qué venta nunca va a la máquina por lo que ES (no por cómo está la máquina). La usan la fila
+ * ([filaDeLaMaquina]), el toque que aparta ([CajaConMaquina.apartar]) y el cobro con el carrito VIVO al tocar. Primero la que no es venta nueva
+ * y completa (mesa, cuenta, dividida: su texto es el que la explica); luego «restaurada» —todo carrito que no nació en esta caja: copia
+ * guardada, venta por recuperar, la foto de un rechazo de saldo, de cualquier versión—, la tarjeta ya mandada y la reserva. null = puede.
+ */
+fun motivoSinMaquina(ventaNueva: Boolean, restaurada: Boolean, intentoConTarjeta: Boolean, conReserva: Boolean): String? = when {
+    !ventaNueva -> TEXTO_SOLO_VENTA_COMPLETA
+    restaurada -> TEXTO_VENTA_RESTAURADA
+    intentoConTarjeta -> TEXTO_VENTA_CON_TARJETA
+    conReserva -> TEXTO_RESERVA_EN_CAJA
+    else -> null
+}
+
+/**
  * La fila de la máquina. No aparece en una venta sin productos; en gris con la razón si la venta ya tiene un cobro en duda, si
  * no es una venta nueva y completa (la máquina sólo cobra carritos nuevos: la orden nace con el cierre, R4-1), si la máquina no
  * responde o está ocupada. Con poco cambio (o sin saberlo) avisa y deja seguir.
@@ -107,13 +121,12 @@ fun filaDeLaMaquina(
 ): FilaDeLaMaquina {
     val motivo = when {
         ventaEnDuda -> TEXTO_VENTA_EN_DUDA
-        restaurada -> TEXTO_VENTA_RESTAURADA
-        intentoConTarjeta -> TEXTO_VENTA_CON_TARJETA
-        conReserva -> TEXTO_RESERVA_EN_CAJA
-        !ventaNueva -> TEXTO_SOLO_VENTA_COMPLETA
-        ahora.conexion != Conexion.CONECTADA -> TEXTO_NO_RESPONDE
-        ahora.ocupada || cobroVivo -> TEXTO_OCUPADA
-        else -> null
+        else -> motivoSinMaquina(ventaNueva, restaurada, intentoConTarjeta, conReserva)
+            ?: when {
+                ahora.conexion != Conexion.CONECTADA -> TEXTO_NO_RESPONDE
+                ahora.ocupada || cobroVivo -> TEXTO_OCUPADA
+                else -> null
+            }
     }
     return FilaDeLaMaquina(
         visible = conProductos,
@@ -280,24 +293,20 @@ fun papelDeLaFila(
 
 /**
  * Decisión C (Codex código POS r6) y Codex código POS r7: el ticket de venta de [fila] —el que armó la caja o el de la fila— con «Recibido»,
- * «Cambio» y «Te debemos» de las columnas FÍSICAS ([recibidoYCambioEnPapel]), nunca de lo que tecleó un gerente, de un cierre que el motor
+ * «Cambio» y «Te debemos» de las columnas FÍSICAS ([loQueContoLaMaquina]), nunca de lo que tecleó un gerente, de un cierre que el motor
  * descartó ni del diario (que se recorta). Si no constan, esos renglones no salen; si lo físico no respalda lo registrado, ni «Te debemos»:
- * «Revisar en el panel».
+ * «Revisar en el panel». Codex código POS r8 #6: sólo tickets de venta; un comprobante se arma completo de la fila reclamada
+ * ([comprobanteDeLaMaquina]), nunca de un papel preparado antes.
  */
 private fun conLoFisico(
     fila: CobroEnMaquinaEntity,
     t: com.avoqado.pos.printing.data.model.ReceiptData,
 ): com.avoqado.pos.printing.data.model.ReceiptData {
-    val enPapel = fila.recibidoYCambioEnPapel()
+    val enPapel = fila.loQueContoLaMaquina().cierre
     val maquina = t.cashMachine ?: com.avoqado.pos.printing.receiptlayout.ReceiptCashMachine(fila.referenceCC, priceToConfirm = fila.quoteId == null)
     val revisar = fila.porRevisarEnElPanel()
-    // Un comprobante (el de diferencia que pide «Imprimir comprobante») trae su importe del SERVIDOR ([deudaDelComprobante]); el ticket de
-    // venta, el cambio físico que no se dio. Los dos sólo si lo físico respalda lo registrado.
-    val debe = when {
-        revisar -> null
-        t.kind == com.avoqado.pos.printing.receiptlayout.KIND_COMPROBANTE_DE_LA_MAQUINA -> maquina.owedCents
-        else -> enPapel?.let { (recibido, cambio) -> deudaFisica(Desenlace.PAGADO, fila.dueCents, recibido, cambio).toLong() }
-    }
+    // El cambio físico que no se dio, sólo si lo físico respalda lo registrado.
+    val debe = enPapel?.takeIf { !revisar }?.let { (recibido, cambio) -> deudaFisica(Desenlace.PAGADO, fila.dueCents, recibido, cambio).toLong() }
     return t.copy(
         cashTendered = enPapel?.first,
         changeAmount = enPapel?.second,
@@ -606,6 +615,8 @@ class MaquinaDeEfectivo internal constructor(
         referenceCC: String,
         ticketDeVenta: com.avoqado.pos.printing.data.model.ReceiptData? = null,
         aPedido: Boolean = false,
+        /** Codex código POS r8 #6: el comprobante de lo que se debe ([comprobanteDeLaMaquina]), armado de la fila que devuelve el reclamo. */
+        soloComprobante: Boolean = false,
     ): PrinterService.PrintOutcome? {
         val negocio = secureStorage.venueName ?: "Avoqado"
         var ya = false
@@ -621,7 +632,7 @@ class MaquinaDeEfectivo internal constructor(
                 aPedido && fila.ticketImpreso == TicketDelCobro.IMPRESO -> true
                 else -> return null
             }
-            val papel = papelDeLaFila(fila, negocio, ticketDeVenta)
+            val papel = if (soloComprobante) comprobanteDeLaMaquina(fila, negocio) else papelDeLaFila(fila, negocio, ticketDeVenta)
             if (papel == null) {
                 if (gano) dao.terminarTicket(referenceCC, TicketDelCobro.PENDIENTE)
                 return null
@@ -650,17 +661,12 @@ class MaquinaDeEfectivo internal constructor(
      * El comprobante de [referenceCC] desde la lista de lo que se debe (Ajustes). TODO papel del folio pasa por [imprimirPapelDelFolio] y
      * su reclamo (Codex código POS r4 #10): un CANCELADO o una venta que quedó como incidencia (su comprobante ES el papel del folio), y
      * también el comprobante de diferencia de una venta (el precio bajó al subir). El primero que sale del folio es el original; los
-     * demás, «REIMPRESIÓN»: una deuda nunca se presenta dos veces como original. null = esa fila no le debe nada.
+     * demás, «REIMPRESIÓN»: una deuda nunca se presenta dos veces como original. null = esa fila no le debe nada. Codex código POS r8 #6: el
+     * importe y el título salen de la fila que devuelve el reclamo; antes se preparaba el papel con una lectura anterior y un acuse que llegaba
+     * en medio ($70 confirmado: debe $30) imprimía los $20 viejos.
      */
-    suspend fun imprimirComprobante(referenceCC: String): PrinterService.PrintOutcome? {
-        val fila = dao.porReferencia(referenceCC) ?: return null
-        val diferencia = if (fila.desenlace == Desenlace.PAGADO && fila.conflicto == null) {
-            comprobanteDeLaMaquina(fila, secureStorage.venueName ?: "Avoqado") ?: return null
-        } else {
-            null
-        }
-        return imprimirPapelDelFolio(referenceCC, diferencia, aPedido = true)
-    }
+    suspend fun imprimirComprobante(referenceCC: String): PrinterService.PrintOutcome? =
+        imprimirPapelDelFolio(referenceCC, aPedido = true, soloComprobante = true)
 
     /**
      * Lo que la máquina les debe a clientes en la sucursal de la sesión, con su comprobante reimprimible, los más nuevos primero. Codex

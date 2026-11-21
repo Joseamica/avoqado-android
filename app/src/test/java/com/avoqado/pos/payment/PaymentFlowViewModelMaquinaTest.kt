@@ -198,7 +198,7 @@ class PaymentFlowViewModelMaquinaTest {
     }
 
     /** Abre el cobro y lo manda a la máquina; devuelve el folio. */
-    private fun TestScope.mandarALaMaquina(vm: PaymentFlowViewModel, cart: CartState = CartState(items = listOf(cafe))): String {
+    private fun TestScope.mandarALaMaquina(vm: PaymentFlowViewModel, cart: CartState = CartState(nacioEnEstaCaja = true, items = listOf(cafe))): String {
         vm.startPaymentFlow(cart)
         runCurrent()
         vm.cobrarConMaquina()
@@ -234,7 +234,7 @@ class PaymentFlowViewModelMaquinaTest {
         coVerify(exactly = 0) { api.cotizar(any(), any()) }
 
         // Un carrito NUEVO con lo mismo sí se cobra en la máquina: la regla es «restaurado», no el producto.
-        vm.startPaymentFlow(CartState(items = listOf(pan)))
+        vm.startPaymentFlow(CartState(nacioEnEstaCaja = true, items = listOf(pan)))
         runCurrent()
         assertTrue(vm.maquina!!.vista.value!!.fila.habilitada)
     }
@@ -247,7 +247,7 @@ class PaymentFlowViewModelMaquinaTest {
     fun `P1 Codex POS r6 la reserva deja la fila de la maquina en gris con su razon`() = runTest {
         val vm = vm()
 
-        vm.startPaymentFlow(CartState(items = listOf(cafe), reservationId = "res-1"))
+        vm.startPaymentFlow(CartState(nacioEnEstaCaja = true, items = listOf(cafe), reservationId = "res-1"))
         runCurrent()
         val fila = vm.maquina!!.vista.value!!.fila
         assertFalse(fila.habilitada)
@@ -257,7 +257,7 @@ class PaymentFlowViewModelMaquinaTest {
         assertNull(canal.paycash())
         coVerify(exactly = 0) { api.cotizar(any(), any()) }
 
-        vm.startPaymentFlow(CartState(items = listOf(cafe)))
+        vm.startPaymentFlow(CartState(nacioEnEstaCaja = true, items = listOf(cafe)))
         runCurrent()
         assertTrue("el carrito de catálogo sí", vm.maquina!!.vista.value!!.fila.habilitada)
     }
@@ -272,7 +272,7 @@ class PaymentFlowViewModelMaquinaTest {
     fun `P1 Codex POS r7 #1 la venta que mando una tarjeta nunca va a la maquina, tampoco al minuto 11 con el carrito abierto`() = runTest {
         val pan = CartItem(id = "pan", type = CartItemType.ProductItem("prod-pan"), name = "Pan", unitPrice = 8_000)
         // El carrito de CartViewModel: el cobro le avisa que salió una tarjeta (como `marcarIntentoConTarjeta`).
-        var carrito = CartState(items = listOf(pan))
+        var carrito = CartState(nacioEnEstaCaja = true, items = listOf(pan))
         val alMandarTarjeta = { id: String -> if (carrito.identidadDeVenta == id) carrito = carrito.copy(intentoConTarjeta = true) }
         val vm = vm()
         coEvery { terminalPaymentService.fetchOnlineTerminals(any()) } returns
@@ -311,15 +311,49 @@ class PaymentFlowViewModelMaquinaTest {
         coVerify(exactly = 0) { api.cotizar(any(), any()) }
 
         // Un carrito NUEVO con lo mismo sí se cobra en la máquina: la regla es «esta venta mandó una tarjeta», no el producto.
-        vm.startPaymentFlow(CartState(items = listOf(pan)))
+        vm.startPaymentFlow(CartState(nacioEnEstaCaja = true, items = listOf(pan)))
         runCurrent()
         assertTrue(vm.maquina!!.vista.value!!.fila.habilitada)
+    }
+
+    /**
+     * Codex código POS r8 #2 (F3): antes de actualizar, la cajera deja pendiente una tarjeta de $80; sobre ese carrito intenta saldo de regalo
+     * y el rechazo deja una foto recuperable. Tras actualizar, «Venta por recuperar» la restaura con el formato de la versión anterior (sin la
+     * marca de tarjeta) y la máquina quedaba habilitada: si la tarjeta se aprobó, $160 por $80. Todo lo que no es un carrito nuevo tecleado
+     * aquí es «restaurado», venga de donde venga y en el formato que sea.
+     */
+    @Test
+    fun `P1 Codex POS r8 #2 una venta por recuperar con el formato de la version anterior nunca va a la maquina`() = runTest {
+        val pan = CartItem(id = "pan", type = CartItemType.ProductItem("prod-pan"), name = "Pan", unitPrice = 8_000)
+        val json = kotlinx.serialization.json.Json { ignoreUnknownKeys = true; encodeDefaults = true }
+        val foto = com.avoqado.pos.giftcards.domain.FotoDeLaVenta.serializer()
+        val deHoy = json.encodeToJsonElement(foto, CartState(items = listOf(pan), intentoConTarjeta = true).aFoto(null))
+        val deAntes = kotlinx.serialization.json.JsonObject(
+            (deHoy as kotlinx.serialization.json.JsonObject).filterKeys { it != "intentoConTarjeta" },
+        )
+        val recuperada = json.decodeFromJsonElement(foto, deAntes).aCartState()
+        assertFalse("el formato de antes no trae la marca", recuperada.intentoConTarjeta)
+        every { terminalPaymentService.pendienteDeLaVenta(any()) } returns null
+        val vm = vm()
+
+        vm.startPaymentFlow(recuperada)
+        assertFalse("se lee al tocar", vm.maquina!!.apartar())
+        runCurrent()
+        val fila = vm.maquina!!.vista.value!!.fila
+        assertFalse(fila.habilitada)
+        assertEquals(com.avoqado.pos.maquina.TEXTO_VENTA_RESTAURADA, fila.motivo)
+        vm.cobrarConMaquina()
+        runCurrent()
+
+        assertNull("no salió el paycash", canal.paycash())
+        assertTrue("nada quedó en disco", dao.todas().isEmpty())
+        coVerify(exactly = 0) { api.cotizar(any(), any()) }
     }
 
     /** Codex código POS r7 #1: la marca viaja con la copia guardada y con la foto de la venta, y vuelve al restaurar. */
     @Test
     fun `P1 Codex POS r7 #1 la marca de tarjeta viaja con la foto de la venta`() {
-        val conTarjeta = CartState(items = listOf(cafe), intentoConTarjeta = true)
+        val conTarjeta = CartState(nacioEnEstaCaja = true, items = listOf(cafe), intentoConTarjeta = true)
         assertTrue(conTarjeta.aFoto(null).aCartState().intentoConTarjeta)
         assertFalse(CartState(items = listOf(cafe)).aFoto(null).aCartState().intentoConTarjeta)
     }
@@ -327,7 +361,7 @@ class PaymentFlowViewModelMaquinaTest {
     @Test
     fun `sin la maquina activa todo queda como hoy`() = runTest {
         val vm = vm(activa = false)
-        vm.startPaymentFlow(CartState(items = listOf(cafe)))
+        vm.startPaymentFlow(CartState(nacioEnEstaCaja = true, items = listOf(cafe)))
         runCurrent()
 
         assertNull(vm.maquina!!.vista.value)
@@ -338,7 +372,7 @@ class PaymentFlowViewModelMaquinaTest {
     @Test
     fun `P1 con la maquina activa el efectivo a mano, Personalizado y Ya pago de otra forma no cobran`() = runTest {
         val vm = vm()
-        vm.startPaymentFlow(CartState(items = listOf(cafe)))
+        vm.startPaymentFlow(CartState(nacioEnEstaCaja = true, items = listOf(cafe)))
         runCurrent()
         assertTrue(vm.maquina!!.vista.value!!.fila.habilitada)
 
@@ -355,7 +389,7 @@ class PaymentFlowViewModelMaquinaTest {
     @Test
     fun `P1 la maquina congela el carrito antes del paycash y la orden NO nace en el servidor`() = runTest {
         val vm = vm()
-        val cart = CartState(items = listOf(cafe))
+        val cart = CartState(nacioEnEstaCaja = true, items = listOf(cafe))
 
         val ref = mandarALaMaquina(vm, cart)
 
@@ -408,7 +442,7 @@ class PaymentFlowViewModelMaquinaTest {
         val vm = vm()
         val respuesta = kotlinx.coroutines.CompletableDeferred<RespuestaDelServidor>()
         coEvery { api.cotizar("venue-1", any()) } coAnswers { respuesta.await() }
-        vm.startPaymentFlow(CartState(items = listOf(cafe)))
+        vm.startPaymentFlow(CartState(nacioEnEstaCaja = true, items = listOf(cafe)))
         runCurrent()
 
         vm.cobrarConMaquina()
@@ -432,7 +466,7 @@ class PaymentFlowViewModelMaquinaTest {
     @Test
     fun `P1 Codex r2 H1 con la maquina desemparejada, la venta con su efectivo en duda no se cobra con tarjeta ni a mano`() = runTest {
         val vm = vm(activa = false)   // la PC tuvo máquina (su IP se queda) y el gerente la desemparejó
-        val cart = CartState(items = listOf(cafe))
+        val cart = CartState(nacioEnEstaCaja = true, items = listOf(cafe))
         dao.insertar(
             com.avoqado.pos.maquina.CobroEnMaquinaEntity(
                 "AQ000000000007", "venue-1", cart.llaveParaLaMaquina, "{}", 18_000, 0, 18_000, null, "q-1", 1, EstadoDelIntento.ESPERANDO,
@@ -460,7 +494,7 @@ class PaymentFlowViewModelMaquinaTest {
     @Test
     fun `Codex r2 H1 con la maquina desemparejada, una venta sin nada en la maquina se cobra como siempre`() = runTest {
         val vm = vm(activa = false)
-        vm.startPaymentFlow(CartState(items = listOf(cafe)))
+        vm.startPaymentFlow(CartState(nacioEnEstaCaja = true, items = listOf(cafe)))
         runCurrent()
         assertFalse(vm.maquina!!.bloqueadaSinMaquina.value)
 
@@ -475,11 +509,11 @@ class PaymentFlowViewModelMaquinaTest {
         val vm = vm()
         val respuesta = kotlinx.coroutines.CompletableDeferred<RespuestaDelServidor>()
         coEvery { api.cotizar("venue-1", any()) } coAnswers { respuesta.await() }
-        vm.startPaymentFlow(CartState(items = listOf(cafe)))   // A
+        vm.startPaymentFlow(CartState(nacioEnEstaCaja = true, items = listOf(cafe)))   // A
         runCurrent()
         vm.cobrarConMaquina(); runCurrent()
 
-        vm.startPaymentFlow(CartState(items = listOf(cafe.copy(id = "te", name = "Té"))))   // Esc, y la cajera abre B
+        vm.startPaymentFlow(CartState(nacioEnEstaCaja = true, items = listOf(cafe.copy(id = "te", name = "Té"))))   // Esc, y la cajera abre B
         runCurrent()
         respuesta.complete(
             RespuestaDelServidor(200, JSONObject().put("quoteId", "q-1").put("saleCents", 18_000).put("tipCents", 0)
@@ -500,7 +534,7 @@ class PaymentFlowViewModelMaquinaTest {
         coEvery { printerService.imprimirOriginal(any()) } returns PrinterService.PrintOutcome.Printed(1)
         val vm = vm()
         val refA = mandarALaMaquina(vm)
-        vm.startPaymentFlow(CartState(items = listOf(cafe.copy(id = "te", name = "Té"))))   // B
+        vm.startPaymentFlow(CartState(nacioEnEstaCaja = true, items = listOf(cafe.copy(id = "te", name = "Té"))))   // B
         runCurrent()
 
         canal.llega(status(refA, 18_000)); runCurrent()
@@ -524,7 +558,7 @@ class PaymentFlowViewModelMaquinaTest {
         coEvery { api.cotizar("venue-1", any()) } returns RespuestaDelServidor(
             200, JSONObject().put("cobrableEnMaquina", false).put("motivo", "CENTAVOS").toString(),
         )
-        vm.startPaymentFlow(CartState(items = listOf(cafe)))
+        vm.startPaymentFlow(CartState(nacioEnEstaCaja = true, items = listOf(cafe)))
         runCurrent()
 
         vm.cobrarConMaquina()
@@ -541,7 +575,7 @@ class PaymentFlowViewModelMaquinaTest {
     fun `P1 recorte R2 tras reiniciar, la pantalla recupera la duda de esta venta y cuando el panel dice PAGADO la venta queda cobrada`() = runTest {
         coEvery { printerService.imprimirOriginal(any()) } returns PrinterService.PrintOutcome.Printed(1)
         val vm = vm()
-        val cart = CartState(items = listOf(cafe))
+        val cart = CartState(nacioEnEstaCaja = true, items = listOf(cafe))
         // Lo que dejó el proceso anterior: la venta quedó «Esperando a la máquina» y la app se cerró.
         dao.insertar(
             com.avoqado.pos.maquina.CobroEnMaquinaEntity(
@@ -600,7 +634,7 @@ class PaymentFlowViewModelMaquinaTest {
         val vm = vm()
         val respuesta = kotlinx.coroutines.CompletableDeferred<RespuestaDelServidor>()
         coEvery { api.cotizar("venue-1", any()) } coAnswers { respuesta.await() }
-        val carrito = CartState(items = listOf(cafe))
+        val carrito = CartState(nacioEnEstaCaja = true, items = listOf(cafe))
         vm.startPaymentFlow(carrito); runCurrent()
         vm.cobrarConMaquina(); runCurrent()
         assertTrue("apartada mientras cotiza", vm.maquina!!.maquina.apartada(carrito.llaveParaLaMaquina))
@@ -620,7 +654,7 @@ class PaymentFlowViewModelMaquinaTest {
     @Test
     fun `P1 Codex r3 #5 salir entre la escritura en disco y el envio tampoco enciende la maquina`() = runTest {
         val vm = vm()
-        vm.startPaymentFlow(CartState(items = listOf(cafe))); runCurrent()
+        vm.startPaymentFlow(CartState(nacioEnEstaCaja = true, items = listOf(cafe))); runCurrent()
         dao.alInsertar = { vm.cancel() }   // la PC guarda el intento y, antes del paycash, la cajera sale
 
         vm.cobrarConMaquina(); runCurrent()
@@ -658,7 +692,7 @@ class PaymentFlowViewModelMaquinaTest {
     @Test
     fun `R5#4 un carrito con premio de sellos no se manda a la maquina y lo dice`() = runTest {
         val vm = vm()
-        vm.startPaymentFlow(CartState(items = listOf(cafe), pendingStampReward = PremioPorAplicar("premio-1", "Café gratis", "FREE_PRODUCT", null)))
+        vm.startPaymentFlow(CartState(nacioEnEstaCaja = true, items = listOf(cafe), pendingStampReward = PremioPorAplicar("premio-1", "Café gratis", "FREE_PRODUCT", null)))
         runCurrent()
 
         vm.cobrarConMaquina()
@@ -922,7 +956,7 @@ class PaymentFlowViewModelMaquinaTest {
         val impresos = mutableListOf<ReceiptData>()
         coEvery { printerService.imprimirOriginal(capture(impresos)) } returns PrinterService.PrintOutcome.Printed(1)
         val vm = vm()
-        val cart = CartState(items = listOf(cafe), orderTaxPercent = 16, selectedStaffId = "staff-ana", selectedStaffName = "Ana")
+        val cart = CartState(nacioEnEstaCaja = true, items = listOf(cafe), orderTaxPercent = 16, selectedStaffId = "staff-ana", selectedStaffName = "Ana")
         val ref = mandarALaMaquina(vm, cart)
         canal.llega(status(ref, 18_000)); runCurrent()
         canal.llega(status(ref, 18_000, credit = 20_000, change = 2_000, cobrando = false, estado = "Pago Completado")); runCurrent()
@@ -942,7 +976,7 @@ class PaymentFlowViewModelMaquinaTest {
     fun `P1 Codex r4 #12 un PAGADO que llega mientras Cobrar todavia lee su fila cobra la venta y saca su ticket una vez`() = runTest {
         coEvery { printerService.imprimirOriginal(any()) } returns PrinterService.PrintOutcome.Printed(1)
         val vm = vm()
-        vm.startPaymentFlow(CartState(items = listOf(cafe))); runCurrent()
+        vm.startPaymentFlow(CartState(nacioEnEstaCaja = true, items = listOf(cafe))); runCurrent()
         var lecturaLenta = false
         // La máquina acepta y cierra en el mismo instante en que sale el `paycash`…
         canal.alEnviar = { json ->
@@ -968,7 +1002,7 @@ class PaymentFlowViewModelMaquinaTest {
     fun `una venta dividida no se cobra en la maquina`() = runTest {
         val vm = vm()
         vm.setSplitConfig("EQUALPARTS", numberOfParts = 2)
-        vm.startPaymentFlow(CartState(items = listOf(cafe)))
+        vm.startPaymentFlow(CartState(nacioEnEstaCaja = true, items = listOf(cafe)))
         runCurrent()
 
         assertEquals(TEXTO_SOLO_VENTA_COMPLETA, vm.maquina!!.vista.value!!.fila.motivo)

@@ -30,7 +30,9 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
@@ -125,6 +127,31 @@ class LlaveDeLaMaquinaTest {
 
         assertEquals("carrito:copia-1", una.llaveParaLaMaquina)
         assertEquals(una.llaveParaLaMaquina, otra.llaveParaLaMaquina)
+    }
+
+    /**
+     * Codex código POS r8 #2 (F3): sólo el carrito que la caja empieza vacío nació en esta caja. Restaurar una copia, recuperar una foto (de
+     * cualquier versión) o armar un carrito por fuera da «restaurado» —la máquina no lo cobra— y vaciar empieza otra venta nueva.
+     */
+    @Test
+    fun `P1 Codex POS r8 #2 solo el carrito que la caja empieza vacio nacio aqui - restaurar o recuperar nunca`() {
+        val vm = carrito(SavedCartsRepository(PrefsDeDosCapas().context))
+        assertTrue("la venta nueva", vm.cartState.value.nacioEnEstaCaja)
+        vm.addProductWithModifiers(pan, modifiers = emptyList())
+        assertTrue("teclear en ella no la cambia", vm.cartState.value.nacioEnEstaCaja)
+        val foto = vm.fotoDeLaVenta()
+        vm.clearCart()
+        assertTrue(vm.restaurarFoto(foto))
+        assertFalse("Venta por recuperar", vm.cartState.value.nacioEnEstaCaja)
+
+        vm.clearCart()
+        assertTrue("vaciar empieza otra venta nueva", vm.cartState.value.nacioEnEstaCaja)
+        val viejo = Json { ignoreUnknownKeys = true }.decodeFromString<SavedCart>(
+            """{"id":"copia-1","name":"Viejo","items":[{"productId":"pan","name":"Pan","unitPrice":5000,"quantity":1}]}""",
+        )
+        vm.restoreSavedCart(viejo)
+        assertFalse("Restaurar una copia", vm.cartState.value.nacioEnEstaCaja)
+        assertFalse("y un carrito armado por fuera tampoco", com.avoqado.pos.pos.presentation.cart.CartState().nacioEnEstaCaja)
     }
 
     @Test

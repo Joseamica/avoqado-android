@@ -121,7 +121,9 @@ class CobrosEnMaquinaRoomTest {
             assertTrue(dao.anotarMensaje("AQ000000000001", 1, cierre(20.0), 10_000, 8_000), "ya PAGADA: el segundo cierre no se tira")
             val f = dao.porReferencia("AQ000000000001")!!
             assertEquals(listOf<Any?>(10_000, "PAGADO", 0, true), listOf(f.creditoFisicoCents, f.cierreFisico, f.cambioFisicoCents, f.maquinaSeContradijo))
-            assertEquals(listOf<Any?>(EstadoDelIntento.PAGADO, 10_000, 0), listOf(f.estado, f.creditCents, f.changeDispensedCents), "lo registrado no cambia")
+            // Codex código POS r8 #4: el SERVIDOR todavía no tenía ese cierre: deja de ser desenlace y sube como duda (lo registrado no cambia).
+            assertEquals(listOf<Any?>(EstadoDelIntento.ESPERANDO, 10_000, 0), listOf(f.estado, f.creditCents, f.changeDispensedCents))
+            assertEquals(listOf("AQ000000000001"), dao.porSubir().map { it.referenceCC })
         } finally {
             base.close()
             carpeta.toFile().deleteRecursively()

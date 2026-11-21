@@ -52,11 +52,18 @@ interface CobroEnMaquinaDao {
     @Query(CobroEnMaquinaSql.ANOTAR_LO_FISICO)
     suspend fun anotarLoFisico(referenceCC: String, credito: Int, cierre: String?, cambio: Int?, imposible: Boolean): Int
 
+    /** Codex código POS r8 (F1, F2): [CobroEnMaquinaSql.A_DUDA_SIN_CIERRE_CONFIABLE] de [referenceCC], o de todas con null. */
+    @Query(CobroEnMaquinaSql.A_DUDA_SIN_CIERRE_CONFIABLE)
+    suspend fun aDudaSinCierreConfiable(referenceCC: String?): Int
+
     /**
      * Codex código r2, bloque A y POS r7: un mensaje de la máquina a SU folio ([referenceCC]), ANTES de decidir nada.
      * 1. Lo FÍSICO, en columnas fijas que sólo crecen, en CUALQUIER estado de la fila ([loFisicoDelMensaje]): un cierre que llega con la fila
      *    ya PAGADA, resuelta o en conflicto nunca se tira. Es lo único que lee el papel.
-     * 2. El DIARIO, sólo para subir: de una fila abierta, en duda o resuelta por un gerente (Codex código r3 #1), o de una ya terminada aquí
+     * 2. Codex código POS r8 #3 y #4: si con eso la máquina se contradijo sobre un cierre que el SERVIDOR todavía no tiene, ese cierre deja de
+     *    ser desenlace y la fila vuelve a duda, en la misma transacción ([CobroEnMaquinaSql.A_DUDA_SIN_CIERRE_CONFIABLE]): sube como duda y
+     *    frena salir desde este instante, también si era de OTRA PC o estaba rechazada.
+     * 3. El DIARIO, sólo para subir: de una fila abierta, en duda o resuelta por un gerente (Codex código r3 #1), o de una ya terminada aquí
      *    en la que la máquina se contradijo (sube como duda). Un mensaje físico que ya llegó alguna vez no cambia nada (H13 y r3 #13).
      *    [creditCents] cuenta sólo si el mensaje es del `Due` de la fila ([dueCents]): lo que entró de otra operación nunca se le atribuye.
      * true = evidencia nueva por subir.
@@ -68,6 +75,7 @@ interface CobroEnMaquinaDao {
             anotarLoFisico(referenceCC, f.credito, f.cierre, f.cambio, f.imposible)
             fila = porReferencia(referenceCC) ?: return false
         }
+        if (fila.maquinaSeContradijo && aDudaSinCierreConfiable(referenceCC) > 0) fila = porReferencia(referenceCC) ?: return false
         val viva = fila.estado == EstadoDelIntento.EN_CURSO || fila.estado == EstadoDelIntento.ESPERANDO || fila.estado == EstadoDelIntento.RESUELTO
         if (!viva && !fila.maquinaSeContradijo) return false
         // Codex código POS r4 #15: sólo lo que el SERVIDOR ya tiene (la duda o lo de después de terminar, acusados) se puede recortar.

@@ -141,6 +141,9 @@ internal open class CobroEnMaquinaSobreSqlite : CobroEnMaquinaDao, AutoCloseable
             "creditoAnterior" to creditoAnterior, "credito" to credito,
         )
 
+    override suspend fun aDudaSinCierreConfiable(referenceCC: String?) =
+        actualizar(CobroEnMaquinaSql.A_DUDA_SIN_CIERRE_CONFIABLE, "referenceCC" to referenceCC)
+
     override suspend fun anotarLoFisico(referenceCC: String, credito: Int, cierre: String?, cambio: Int?, imposible: Boolean) = actualizar(
         CobroEnMaquinaSql.ANOTAR_LO_FISICO, "referenceCC" to referenceCC, "credito" to credito, "cierre" to cierre, "cambio" to cambio,
         "imposible" to if (imposible) 1 else 0,

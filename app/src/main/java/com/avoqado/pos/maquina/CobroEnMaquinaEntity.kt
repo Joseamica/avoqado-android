@@ -105,7 +105,7 @@ data class CobroEnMaquinaEntity(
     /**
      * v24 (Codex código POS r7, decisión del coordinador): la EVIDENCIA FÍSICA del folio, en columnas fijas que sólo crecen
      * ([CobroEnMaquinaSql.ANOTAR_LO_FISICO]). Se escriben con CADA mensaje físico de este folio, en cualquier estado de la fila (también
-     * PAGADO, RESUELTO o en conflicto: nunca «0 filas»). El papel lee sólo esto y el acuse del SERVIDOR ([recibidoYCambioEnPapel],
+     * PAGADO, RESUELTO o en conflicto: nunca «0 filas»). El papel lee sólo esto y el acuse del SERVIDOR ([loQueContoLaMaquina],
      * [porRevisarEnElPanel]); el diario ya sólo sube, y recortarlo no cambia nada de lo impreso.
      *
      * Lo más que la máquina dijo haber contado de este folio con su `Due`.
@@ -282,13 +282,35 @@ internal object CobroEnMaquinaSql {
      * haya cambiado desde que se leyó (sin carrera aunque dos escriban). Sólo SUBE (Codex código POS r7: el papel no lo lee). Lo que no
      * sea un intento abierto es evidencia nueva y vuelve a subir (`dudaSubida = 0`): la duda, la resuelta (Codex código r3 #1) y la ya
      * terminada aquí en la que la máquina se contradijo ([CobroEnMaquinaDao.anotarMensaje] sólo la escribe entonces).
+     *
+     * Codex código POS r8 #3 (F2): un rechazo SIN incidencia (`conflicto` sin `respuestaServidor`: un 400, otros importes) era de la evidencia
+     * de antes; con evidencia nueva se suelta y la fila vuelve a subir una vez. Con incidencia (hay respuesta) el conflicto se queda: esa fila ya
+     * sube por su propia regla.
      */
     const val ESCRIBIR_DIARIO: String =
         "UPDATE cobros_en_maquina SET mensajesCrudos = :nuevo, huellasDelDiario = :huellas, " +
             // Lo registrado de un cierre ya terminado aquí no cambia: su evidencia nueva vive en las columnas físicas.
             "creditCents = CASE WHEN estado IN ('EN_CURSO', 'ESPERANDO', 'RESUELTO') THEN :credito ELSE creditCents END, " +
-            "dudaSubida = CASE WHEN estado != 'EN_CURSO' THEN 0 ELSE dudaSubida END " +
+            "dudaSubida = CASE WHEN estado != 'EN_CURSO' THEN 0 ELSE dudaSubida END, " +
+            "conflicto = CASE WHEN estado != 'EN_CURSO' AND respuestaServidor IS NULL THEN NULL ELSE conflicto END " +
             "WHERE referenceCC = :referenceCC AND mensajesCrudos = :anterior AND creditCents = :creditoAnterior"
+
+    /**
+     * Codex código POS r8 (F1): el cierre de la fila NO es confiable —la máquina se contradijo, o no hay cierre físico—. La misma condición que
+     * [loQueContoLaMaquina] devuelve sin `cierre` (lo vigila `MaquinaDeEfectivoTest`).
+     */
+    const val SIN_CIERRE_CONFIABLE: String = "(maquinaSeContradijo = 1 OR cierreFisico IS NULL OR cambioFisicoCents IS NULL)"
+
+    /**
+     * Codex código POS r8 #3 y #4 (F1, F2): un cierre terminado aquí que el SERVIDOR todavía no tiene (`subido = 0`: por subir, de OTRA PC o
+     * rechazado) y cuyo cierre ya no es confiable deja de ser un desenlace: vuelve a «Esperando a la máquina» —lo mismo que hace el motor con un
+     * cierre contradictorio— y sube como duda con lo que contó la máquina. La venta limpia del primer cierre nunca se registra; el gerente lo
+     * resuelve en el panel. El conflicto anterior era de otra evidencia: se suelta (la duda lo vuelve a saber). [referenceCC] null = todas.
+     */
+    const val A_DUDA_SIN_CIERRE_CONFIABLE: String =
+        "UPDATE cobros_en_maquina SET estado = 'ESPERANDO', dudaSubida = 0, conflicto = NULL, resueltoPor = NULL " +
+            "WHERE estado IN ('PAGADO', 'CANCELADO', 'GUARDADO') AND subido = 0 AND $SIN_CIERRE_CONFIABLE " +
+            "AND (:referenceCC IS NULL OR referenceCC = :referenceCC)"
 
     const val PEDIR_CANCEL: String =
         "UPDATE cobros_en_maquina SET cancelPedido = :cancelvalue, cancelPedidoEn = :ahora " +
@@ -498,22 +520,30 @@ private fun CobroEnMaquinaEntity.creditoDeLaResolucion(): Int =
     respuestaServidor?.let { runCatching { (JSONObject(it).opt("creditCents") as? Number)?.toInt() }.getOrNull() } ?: 0
 
 /**
- * Codex código POS r7 (decisión del coordinador): «Recibido» y «Cambio» del papel, de las columnas físicas y nunca del diario ni de lo que
- * tecleó un gerente: lo más que contó la máquina y el cambio que confirmó su cierre. null = no consta: sin cierre físico, o la máquina se
- * contradijo (dos cierres distintos, uno imposible o de otro total); entonces esos renglones no salen.
+ * Codex código POS r7 y r8 (F1): LO QUE CONTÓ LA MÁQUINA de un folio. [recibido]: lo más que contó con su `Due`. [cierre]: lo recibido y el
+ * cambio de su cierre, sólo si es confiable (hay cierre físico y la máquina no se contradijo: otro cierre, uno imposible o de otro total, o
+ * más dinero del registrado); null = no consta.
  */
-internal fun CobroEnMaquinaEntity.recibidoYCambioEnPapel(): Pair<Int, Int>? {
-    if (maquinaSeContradijo || cierreFisico == null) return null
-    return creditoFisicoCents to (cambioFisicoCents ?: return null)
-}
+data class LoQueContoLaMaquina(val recibido: Int, val cierre: Pair<Int, Int>?)
+
+/**
+ * Codex código POS r8 (F1): la ÚNICA lectura de lo que contó la máquina, de las columnas físicas y de nada más —nunca del diario (que se
+ * recorta), de un cierre que el motor descartó ni de lo que tecleó un gerente—. La usan TODOS los que dicen «lo que contó la máquina»: el papel
+ * ([porRevisarEnElPanel] y el ticket), la subida (el cierre, la duda y el eco) y el motor al registrar un cierre. Su `cierre == null` es
+ * [CobroEnMaquinaSql.SIN_CIERRE_CONFIABLE] en SQL.
+ */
+fun CobroEnMaquinaEntity.loQueContoLaMaquina(): LoQueContoLaMaquina = LoQueContoLaMaquina(
+    recibido = creditoFisicoCents,
+    cierre = cambioFisicoCents?.takeIf { !maquinaSeContradijo && cierreFisico != null }?.let { creditoFisicoCents to it },
+)
 
 /**
  * Codex código POS r5 #3, r6 y r7: el papel no afirma una deuda que lo físico no respalda. «Revisar en el panel» (ni comprobante ni «Te
- * debemos») si lo físico no consta ([recibidoYCambioEnPapel]) o no coincide con lo registrado —el cierre que aceptó el motor, o la
+ * debemos») si lo físico no consta ([loQueContoLaMaquina]) o no coincide con lo registrado —el cierre que aceptó el motor, o la
  * resolución del gerente—: otro desenlace, otro recibido u otro cambio. Sólo lee columnas que no se recortan.
  */
 fun CobroEnMaquinaEntity.porRevisarEnElPanel(): Boolean {
-    val (recibido, cambio) = recibidoYCambioEnPapel() ?: return true
+    val (recibido, cambio) = loQueContoLaMaquina().cierre ?: return true
     val resuelto = estado == EstadoDelIntento.RESUELTO
     val credito = if (resuelto) creditoDeLaResolucion() else creditCents
     val d = desenlace
