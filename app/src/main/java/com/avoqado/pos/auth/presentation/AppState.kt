@@ -65,8 +65,6 @@ class AppState @Inject constructor(
     private val pendingGrantQueue: com.avoqado.pos.customers.data.PendingGrantQueue? = null,
     /** D72: al volver la red se releen los tiempos de servicio si quedó su aviso. Default para las pruebas de JVM. */
     private val serviceCoursesRepository: com.avoqado.pos.tables.data.ServiceCoursesRepository? = null,
-    /** D17: ¿hay venta a medias? La misma señal del cambio de papel (#325, D3). Default para las pruebas de JVM: nunca. */
-    private val activeCartState: com.avoqado.pos.pos.data.ActiveCartState? = null,
 ) : ViewModel() {
 
     /**
@@ -240,10 +238,10 @@ class AppState @Inject constructor(
             tpvSettingsRepository.refreshSettings()
             if (_isLoggedIn.value) {
                 // D17: rehacer la navegación borra el carrito. Tras `/settings` del arranque o del login sólo se rehace si cambió
-                // algo que la pantalla lee al montarse y no escucha, y nunca con una venta a medias (como refreshPaidAccess y el
-                // papel de vales del #325). Iguales, sin red o con error: la venta empezada en esos segundos se queda.
-                val rehacer = rebuildNavigation && loQueLaPantallaNoEscucha() != antes && activeCartState?.hasItems != true
-                if (rehacer) refreshTabs() else {
+                // algo que la pantalla lee al montarse y no escucha; iguales, sin red o con error, la venta empezada en esos
+                // segundos se queda. Si cambió, como siempre (con venta a medias también: no rehacer ahí no basta, ver la promesa
+                // en docs/audit/2026-11-21-venta-borrada-al-iniciar-sesion/).
+                if (rebuildNavigation && loQueLaPantallaNoEscucha() != antes) refreshTabs() else {
                     _reservationsEnabled.value = secureStorage.reservationsEnabled
                     _accessVersion.value += 1
                 }

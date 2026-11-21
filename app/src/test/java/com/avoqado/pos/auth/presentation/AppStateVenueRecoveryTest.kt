@@ -276,11 +276,10 @@ class AppStateVenueRecoveryTest {
 
     private fun kotlinx.coroutines.test.TestScope.recienIniciada(
         ajustes: AjustesQueTardan,
-        carrito: com.avoqado.pos.pos.data.ActiveCartState? = null,
         configurarSesion: SecureStorage.() -> Unit = {},
     ): AppState {
         val appState = createAppState(
-            true, {}, {}, {}, onOutboxStart = {}, tpvSettingsRepository = ajustes.repo, activeCartState = carrito,
+            true, {}, {}, {}, onOutboxStart = {}, tpvSettingsRepository = ajustes.repo,
             planManager = ajustes.planManager, configurarSesion = { ajustes.sesion(this); configurarSesion() },
         )
         runCurrent()
@@ -299,57 +298,72 @@ class AppStateVenueRecoveryTest {
             planManager = ajustes.planManager,
         )
         runCurrent()
-        val antes = appState.mainNavigation.value.contentKey // la cajera ya empezó a vender
+        val antes = appState.mainNavigation.value // la cajera ya empezó a vender
 
         ajustes.contesta()
         advanceUntilIdle()
 
-        assertEquals("ajustes iguales: la venta empezada no se borra", antes, appState.mainNavigation.value.contentKey)
+        assertEquals("ajustes iguales: la venta empezada no se borra", antes, appState.mainNavigation.value)
     }
 
     @Test
-    fun `D17 al iniciar sesion con ajustes iguales o sin red o con error la pantalla no se rehace`() = runTest {
-        // Sin red, 30 s de espera o un 4xx: el repositorio se traga el error y conserva permisos y plan (los 4xx sólo mueven la
-        // terminal, que es del #325). Para AppState es lo mismo que «contestó igual».
+    fun `D17 al iniciar sesion sin cambio de permisos ni plan la pantalla no se rehace`() = runTest {
+        // Iguales, sin red, 30 s de espera o un 4xx: en todos el repositorio deja permisos y plan como estaban (escribe sólo
+        // en la respuesta buena; el 4xx mueve la terminal, que es del #325). Llave Y pestaña de inicio iguales: cambiar la de
+        // inicio también rehace el NavHost (Codex r1 #1). Con reservas prendidas y pagadas, para que haya Calendario.
         val ajustes = AjustesQueTardan()
-        val appState = recienIniciada(ajustes)
-        val antes = appState.mainNavigation.value.contentKey
+        val appState = recienIniciada(ajustes, configurarSesion = { every { reservationsEnabled } returns true })
+        val antes = appState.mainNavigation.value
+        assertTrue(com.avoqado.pos.navigation.MainTab.CALENDAR in appState.visibleTabs.value)
 
         ajustes.contesta()
         advanceUntilIdle()
 
-        assertEquals(antes, appState.mainNavigation.value.contentKey)
+        assertEquals(antes, appState.mainNavigation.value)
     }
 
     @Test
     fun `D17 el plan leido otra vez con su hora nueva no cuenta como cambio`() = runTest {
         val ajustes = AjustesQueTardan()
         val appState = recienIniciada(ajustes)
-        val antes = appState.mainNavigation.value.contentKey
+        val antes = appState.mainNavigation.value
 
         // storePlanSnapshot guarda cada lectura más nueva: la hora cambia en CADA `/settings` aunque el plan sea el mismo.
         ajustes.alContestar = { ajustes.plan = ajustes.plan?.copy(accessObservedAt = "2026-11-21T10:00:20Z") }
         ajustes.contesta()
         advanceUntilIdle()
 
-        assertEquals(antes, appState.mainNavigation.value.contentKey)
+        assertEquals(antes, appState.mainNavigation.value)
     }
 
     @Test
-    fun `D17 permisos distintos sin venta rehacen la pantalla como hoy`() = runTest {
+    fun `D17 los mismos permisos en otro orden no cuentan como cambio`() = runTest {
         val ajustes = AjustesQueTardan()
-        val appState = recienIniciada(ajustes, carrito = com.avoqado.pos.pos.data.ActiveCartState())
+        val appState = recienIniciada(ajustes)
+        val antes = appState.mainNavigation.value
+
+        ajustes.alContestar = { ajustes.permisos = ajustes.permisos.reversed() }
+        ajustes.contesta()
+        advanceUntilIdle()
+
+        assertEquals(antes, appState.mainNavigation.value)
+    }
+
+    @Test
+    fun `D17 permisos distintos rehacen la pantalla como hoy`() = runTest {
+        val ajustes = AjustesQueTardan()
+        val appState = recienIniciada(ajustes)
         val antes = appState.mainNavigation.value.contentKey
 
         ajustes.alContestar = { ajustes.permisos = ajustes.permisos + "inventory:read" }
         ajustes.contesta()
         advanceUntilIdle()
 
-        assertTrue("sin venta, un permiso nuevo repinta la pantalla", antes != appState.mainNavigation.value.contentKey)
+        assertTrue("un permiso nuevo repinta la pantalla", antes != appState.mainNavigation.value.contentKey)
     }
 
     @Test
-    fun `D17 plan distinto sin venta rehace la pantalla como hoy`() = runTest {
+    fun `D17 plan distinto rehace la pantalla como hoy`() = runTest {
         val ajustes = AjustesQueTardan()
         val appState = recienIniciada(ajustes)
         val antes = appState.mainNavigation.value.contentKey
@@ -362,34 +376,10 @@ class AppStateVenueRecoveryTest {
     }
 
     @Test
-    fun `D17 permisos y plan distintos con venta a medias no la borran y las pestanas se ponen al dia`() = runTest {
-        val ajustes = AjustesQueTardan().apply { plan = plan?.copy(grantedFeatureCodes = listOf("GIFT_CARDS")) }
-        val carrito = com.avoqado.pos.pos.data.ActiveCartState()
-        val appState = recienIniciada(ajustes, carrito, configurarSesion = { every { reservationsEnabled } returns true })
-        carrito.update(2, "$80.00") // la cajera empezó la venta mientras `/settings` viajaba
-        val antes = appState.mainNavigation.value.contentKey
-        assertTrue(com.avoqado.pos.navigation.MainTab.CALENDAR !in appState.visibleTabs.value)
-
-        ajustes.alContestar = {
-            ajustes.permisos = ajustes.permisos + "inventory:read"
-            ajustes.plan = ajustes.plan?.copy(grantedFeatureCodes = listOf("GIFT_CARDS", "RESERVATIONS"))
-        }
-        ajustes.contesta()
-        advanceUntilIdle()
-
-        assertEquals("con venta a medias la pantalla no se rehace", antes, appState.mainNavigation.value.contentKey)
-        assertTrue(
-            "las pestañas sí se ponen al día: ${appState.visibleTabs.value}",
-            com.avoqado.pos.navigation.MainTab.CALENDAR in appState.visibleTabs.value,
-        )
-    }
-
-    @Test
-    fun `D17 el relevo por PIN y el cambio de sucursal siguen rehaciendo la pantalla aunque haya venta`() = runTest {
+    fun `D17 el relevo por PIN y el cambio de sucursal siguen rehaciendo la pantalla`() = runTest {
         // Fuera de D17 a propósito: rehacen al tocar (rol o sucursal nuevos), no cuando llega `/settings`.
         val ajustes = AjustesQueTardan()
-        val carrito = com.avoqado.pos.pos.data.ActiveCartState().apply { update(1, "$40.00") }
-        val appState = recienIniciada(ajustes, carrito)
+        val appState = recienIniciada(ajustes)
         ajustes.contesta()
         advanceUntilIdle()
         val antes = appState.mainNavigation.value.contentKey
@@ -921,7 +911,6 @@ class AppStateVenueRecoveryTest {
         /** D40: se llama cada vez que `AppState` pide recontar la cola del cajón. */
         alRecontarCaja: () -> Unit = {},
         savedCartsRepository: com.avoqado.pos.pos.data.SavedCartsRepository? = null,
-        activeCartState: com.avoqado.pos.pos.data.ActiveCartState? = null,
         modo: MutableStateFlow<PosMode> = MutableStateFlow(PosMode.RETAIL),
         planManager: PlanManager = mockk(relaxed = true),
         /** D34: cobros fallidos sin revisar (lo que `blockingWorkCount` suma y `sinEnviarCount` no). */
@@ -1018,7 +1007,6 @@ class AppStateVenueRecoveryTest {
             printConfigRepository = printConfigRepository,
             savedCartsRepository = savedCartsRepository,
             serviceCoursesRepository = serviceCoursesRepository,
-            activeCartState = activeCartState,
         )
         if (resolverReal == null) return plantilla
         // La fábrica generada ejecuta también la inyección de miembros de Hilt.
