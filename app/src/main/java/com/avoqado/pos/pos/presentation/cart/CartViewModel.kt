@@ -1550,6 +1550,10 @@ class CartViewModel @Inject constructor(
 
     /** Lo que la recarga de vendedores hace con la venta en pantalla. Una venta a medias (con abono) nunca se vacía aquí. */
     private fun aplicarVendedores(staff: List<StaffMember>, alCerrarElCobro: Boolean = false) {
+        // D7 (Codex r2): toda recarga reintenta borrar una selección guardada que ya no está, aunque el carrito ya muestre a
+        // alguien válido (en WINDOWS el borrado pudo fallar antes; si no, el siguiente `clearCart()` la revivía).
+        val guardado = secureStorage.selectedStaffIdForCurrentVenue
+        if (!guardado.isNullOrBlank() && staff.none { it.id == guardado }) secureStorage.clearSelectedStaffForCurrentVenue()
         val selectedId = _cartState.value.selectedStaffId
         val selected = staff.firstOrNull { it.id == selectedId }
         if (selected != null && selected.fullName != _cartState.value.selectedStaffName) {

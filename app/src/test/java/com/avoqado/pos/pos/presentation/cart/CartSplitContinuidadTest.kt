@@ -354,6 +354,52 @@ class CartSplitContinuidadTest {
         assertEquals("Ana Caja", vm.cartState.value.selectedStaffName)
     }
 
+    /**
+     * P1 (D7, Codex r2 del PR #319). El borrado falla una vez y el carrito queda con el de la sesión, pero el disco sigue
+     * con Beto. Si la recarga siguiente (ya con el disco sano) no lo vuelve a borrar porque el vendedor del carrito sí está en
+     * la lista, el siguiente abono rearma el saldo con `clearCart()`, relee a Beto del disco y el SERVIDOR rechaza (400).
+     */
+    @Test
+    fun `P1 la recarga siguiente vuelve a borrar al dado de baja del disco y el siguiente abono no lo revive`() = runTest {
+        var discoId: String? = "staff-fantasma"
+        var discoNombre: String? = "Beto"
+        var discoSano = false
+        every { secureStorage.selectedStaffIdForCurrentVenue } answers { discoId }
+        every { secureStorage.selectedStaffNameForCurrentVenue } answers { discoNombre }
+        every { secureStorage.clearSelectedStaffForCurrentVenue() } answers { if (discoSano) { discoId = null; discoNombre = null } }
+        every { secureStorage.userId } returns "user-1"
+        every { secureStorage.userFirstName } returns "Ana"
+        every { secureStorage.userLastName } returns "Caja"
+        coEvery { staffRepository.getActiveStaff() } returns Result.success(
+            listOf(com.avoqado.pos.pos.data.StaffMember(id = "user-1", firstName = "Ana", lastName = "Caja")),
+        )
+        val vm = createViewModel()
+        // (1) Venta a medias a nombre de Beto.
+        vm.setSelectedCustomer("cli-1", "Ana Cliente")
+        vm.sembrarSaldoPendiente("order-a", cents = 6_000)
+        assertEquals("montaje: la venta va a nombre de Beto", "staff-fantasma", vm.cartState.value.selectedStaffId)
+
+        // (2) La lista llega sin Beto y el borrado falla: el carrito queda con la sesión, el disco sigue con Beto.
+        vm.fetchStaff()
+        advanceUntilIdle()
+        assertEquals("user-1", vm.cartState.value.selectedStaffId)
+        assertEquals("montaje: el borrado falló", "staff-fantasma", discoId)
+
+        // (3) El disco se recupera y llega otra recarga; el vendedor del carrito (Ana) sí está en la lista.
+        discoSano = true
+        vm.fetchStaff()
+        advanceUntilIdle()
+        assertNull("la recarga vuelve a borrar la selección vieja", discoId)
+
+        // (4) Otro abono parcial: el saldo se rearma con clearCart() y no revive a Beto.
+        vm.aplicarCobroConfirmado(splitType = null, paidItemIds = emptySet(), remainingBalanceCents = 3_000)
+        vm.markPendingSplitOrder("order-a")
+
+        assertEquals("user-1", vm.cartState.value.selectedStaffId)
+        assertEquals(3_000, vm.cartState.value.totalCents)
+        assertEquals("order-a", vm.resolvePendingSplitOrderForCharge())
+    }
+
     // ── Membresías capturadas al abrir el cobro ────────────────────────────────
 
     private val membresia = com.avoqado.pos.articles.data.model.CreditPack(
