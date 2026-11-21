@@ -227,6 +227,11 @@ class TpvSettingsRepository internal constructor(
     private val receiptLogoCache: com.avoqado.pos.printing.data.ReceiptLogoCache? = null,
     /** D5 · B2b: al leer el plan con el piloto apagado, se borran las fotos de mesas de ESA sucursal. */
     private val fotosDeMesas: com.avoqado.pos.core.data.sync.FotosDeMesas? = null,
+    /**
+     * Encargo ec5b28 (founder «A», 21-nov): ¿hay una venta a medias? La MISMA señal que ya usa el cambio de papel desde el
+     * aparato (`PapelDelAparatoGateViewModel.ventaAMediasAhora`). null (pruebas viejas) = nunca hay venta a medias.
+     */
+    private val activeCartState: com.avoqado.pos.pos.data.ActiveCartState? = null,
 ) {
     @Inject
     constructor(
@@ -239,6 +244,7 @@ class TpvSettingsRepository internal constructor(
         displayModeAuthorityGate: DisplayModeAuthorityGate,
         receiptLogoCache: com.avoqado.pos.printing.data.ReceiptLogoCache,
         fotosDeMesas: com.avoqado.pos.core.data.sync.FotosDeMesas,
+        activeCartState: com.avoqado.pos.pos.data.ActiveCartState,
     ) : this(
         secureStorage = secureStorage,
         client = client,
@@ -249,6 +255,7 @@ class TpvSettingsRepository internal constructor(
         displayModeAuthorityGate = displayModeAuthorityGate,
         receiptLogoCache = receiptLogoCache,
         fotosDeMesas = fotosDeMesas,
+        activeCartState = activeCartState,
     )
 
     // `coerceInputValues`: un server NUEVO con un modo de panel que esta versión
