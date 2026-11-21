@@ -64,6 +64,11 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.repeatOnLifecycle
+// D14: aquí y no en orden alfabético, para no chocar con los imports de la rama de D17.
+import com.avoqado.pos.onlineorders.data.VentanaALaVista
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.onEach
 import com.avoqado.pos.designsystem.components.AvoqadoDialog
 import com.avoqado.pos.designsystem.components.AvoqadoSuccessToast
 import com.avoqado.pos.designsystem.components.CircleBackButton
@@ -93,14 +98,22 @@ import kotlinx.coroutines.delay
  * exista la composición — Compose la conserva con la app en segundo plano o la pantalla apagada. Nadie mira el tablero
  * ahí: en `ON_STOP` se cancela (el `finally` apaga el receptor ⇒ sin acuse, la caja imprime papel) y en `ON_START`
  * vuelve a empezar, con línea base nueva (M3). Fuera del Composable para poder probarlo.
+ *
+ * D14 (Flautas, 20-nov): en WINDOWS minimizar NO baja el ciclo de vida (`RaizDeEscritorio` sigue RESUMED), así que la ventana
+ * minimizada ([ventana] en `false`) cuenta como el mismo «oculto» que `ON_STOP`. En ANDROID [ventana] siempre es `true`.
  */
-internal suspend fun KDSViewModel.mientrasEsteALaVista(owner: LifecycleOwner) {
+internal suspend fun KDSViewModel.mientrasEsteALaVista(owner: LifecycleOwner, ventana: StateFlow<Boolean> = VentanaALaVista.aLaVista) {
     // Codex 3.6 (#6): el `finally` de `mientrasSeVe` puede tardar (una lectura colgada no se cancela a medias): `ON_STOP`
     // apaga el receptor YA, sin esperarlo.
     val alParar = LifecycleEventObserver { _, evento -> if (evento == Lifecycle.Event.ON_STOP) alOcultarse() }
     owner.lifecycle.addObserver(alParar)
     try {
-        owner.repeatOnLifecycle(Lifecycle.State.STARTED) { mientrasSeVe() }
+        owner.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            // El mismo orden que ANDROID: minimizar apaga en el acto (como `alParar` con `ON_STOP`) y restaurar abre otra vez
+            // sólo cuando la apertura anterior terminó de desenrollarse (como `ON_START`, que espera al bloque anterior). Con
+            // una lectura colgada, restaurar espera a que termine (hasta ~30 s), igual que volver del fondo en ANDROID.
+            ventana.onEach { visible -> if (!visible) alOcultarse() }.collectLatest { visible -> if (visible) mientrasSeVe() }
+        }
     } finally {
         owner.lifecycle.removeObserver(alParar)
     }
