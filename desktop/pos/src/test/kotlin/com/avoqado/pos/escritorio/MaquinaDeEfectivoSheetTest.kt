@@ -105,6 +105,20 @@ class MaquinaDeEfectivoSheetTest {
         onNodeWithText("Probar conexión").assertIsEnabled()
     }
 
+    @Test fun `P1 Codex r2 Ajustes ofrece los tickets sin imprimir con la maquina apagada y las dudas del negocio con Ver mas`() = runComposeUiTest {
+        val estado = EstadoDeLaMaquina(
+            cargado = true, ip = "192.168.1.50", ipGuardada = "192.168.1.50", activa = false, ticketsSinImprimir = 2,
+            enEspera = listOf(com.avoqado.pos.maquina.CobroEnEspera("AQ0000000KIOS1", 9_000, 1, version = 2, evidencia = "Entró \$100.00")),
+            enEsperaTotal = 103, siguienteDeDudas = "c-2",
+        )
+        setContent { Hoja(estado) }
+
+        onNodeWithText("Hay 2 tickets sin imprimir").assertIsDisplayed()
+        onNodeWithText("Imprimir").assertIsEnabled()
+        onNodeWithText("Folio AQ0000000KIOS1", substring = true).assertIsDisplayed()
+        onNodeWithText("Ver más (102)").assertIsDisplayed()
+    }
+
     @Test fun `sin emparejar la hoja deja emparejar una IP bien escrita`() = runComposeUiTest {
         setContent { Hoja(EstadoDeLaMaquina(cargado = true, ip = "192.168.1.50")) }
 

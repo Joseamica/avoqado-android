@@ -166,13 +166,64 @@ class MaquinaDeEfectivoViewModelTest {
         val resolucion = ResolucionDelGerente(Desenlace.CANCELADO, 5_000, 5_000, null, "1", "pantalla: devolvió todo")
         io.mockk.coEvery { maquina.resolver("AQ00000000000D", resolucion) } returns ResultadoDeResolver.Resuelto(Desenlace.CANCELADO, 5_000, 5_000)
         val vm = vm(maquina).abierta()
-        assertEquals(listOf(CobroEnEspera("AQ00000000000D", 18_000, 1)), vm.estado.value.enEspera)
+        assertEquals(listOf("AQ00000000000D" to 18_000), vm.estado.value.enEspera.map { it.referenceCC to it.dueCents })
         assertTrue(vm.estado.value.puedeResolver)
 
         vm.resolver("AQ00000000000D", resolucion)
 
         vm.esperar("resuelta, ya no está") { it.enEspera.isEmpty() && it.listo == "¡Cobro resuelto!" }
         io.mockk.coVerify(exactly = 1) { maquina.resolver("AQ00000000000D", resolucion) }
+    }
+
+    @Test
+    fun `P1 Codex r2 H6 la bandeja del gerente lista las dudas del NEGOCIO desde el servidor, con total y Ver mas, mas las de esta PC`() {
+        val maquina = mockk<MaquinaDeEfectivo>(relaxed = true)
+        val delKiosco = CobroEnEspera("AQ0000000KIOS1", 9_000, 1, version = 2, evidencia = "Entró \$100.00")
+        val siguiente = CobroEnEspera("AQ0000000KIOS2", 5_000, 2)
+        io.mockk.coEvery { maquina.dudasDelNegocio(null) } returns PaginaDeDudas(listOf(delKiosco), total = 103, siguiente = "c-2")
+        io.mockk.coEvery { maquina.dudasDelNegocio("c-2") } returns PaginaDeDudas(listOf(siguiente), total = 103, siguiente = null)
+        io.mockk.coEvery { maquina.dudasEnEspera() } returns listOf(fila("AQ00000000000D", EstadoDelIntento.ESPERANDO))
+        val vm = vm(maquina).abierta()
+
+        assertEquals(listOf("AQ0000000KIOS1", "AQ00000000000D"), vm.estado.value.enEspera.map { it.referenceCC })
+        assertEquals("las del servidor más la de esta PC que él todavía no tiene", 104, vm.estado.value.enEsperaTotal)
+        assertEquals("c-2", vm.estado.value.siguienteDeDudas)
+
+        vm.verMasDudas()
+
+        vm.esperar("trajo la siguiente página") { it.enEspera.size == 3 && it.siguienteDeDudas == null }
+        assertEquals("AQ0000000KIOS2", vm.estado.value.enEspera.last().referenceCC)
+    }
+
+    @Test
+    fun `P1 Codex r2 H7 la bandeja firma la version que enseña, y con evidencia nueva enseña la del servidor`() {
+        val maquina = mockk<MaquinaDeEfectivo>(relaxed = true)
+        val vista = CobroEnEspera("AQ0000000KIOS1", 9_000, 1, version = 2, evidencia = "Entró \$100.00")
+        val alDia = vista.copy(version = 3, evidencia = "Entró \$150.00")
+        io.mockk.coEvery { maquina.dudasDelNegocio(null) } returns PaginaDeDudas(listOf(vista), total = 1, siguiente = null)
+        val resolucion = ResolucionDelGerente(Desenlace.PAGADO, 10_000, 1_000, null, null, "comprobante", version = 2)
+        io.mockk.coEvery { maquina.resolver("AQ0000000KIOS1", resolucion) } returns ResultadoDeResolver.EvidenciaNueva("Llegó evidencia nueva", alDia)
+        io.mockk.every { maquina.puedeResolver() } returns true
+        val vm = vm(maquina).abierta()
+
+        vm.resolver("AQ0000000KIOS1", resolucion)
+
+        vm.esperar("enseña la nueva") { it.enEspera.single() == alDia && it.avisoDeResolver == "Llegó evidencia nueva" && !it.resolviendo }
+    }
+
+    @Test
+    fun `P1 Codex r2 #12 los tickets que no salieron tambien se imprimen desde Ajustes, con la maquina apagada`() {
+        val maquina = mockk<MaquinaDeEfectivo>(relaxed = true)
+        io.mockk.coEvery { maquina.cuantosTicketsSinImprimir() } returns 2 andThen 0
+        io.mockk.coEvery { maquina.dudasDelNegocio(any()) } returns null
+        io.mockk.coEvery { maquina.imprimirTicketsPendientes() } returns 2
+        prefs.guardar("192.168.1.50", activa = false, venueId = "venue-1")
+        val vm = vm(maquina).abierta()
+        assertEquals(2, vm.estado.value.ticketsSinImprimir)
+
+        vm.imprimirTicketsPendientes()
+
+        vm.esperar("salieron") { it.ticketsSinImprimir == 0 && it.listo == "¡2 tickets impresos!" }
     }
 
     @Test
@@ -209,6 +260,8 @@ class MaquinaDeEfectivoViewModelTest {
         listOf(
             fila("AQ00000000000A", EstadoDelIntento.EN_CURSO),
             fila("AQ00000000000B", EstadoDelIntento.ESPERANDO),
+            // Codex código r2 H1: una duda que el SERVIDOR ya tiene sigue frenando: con el dinero en duda, la PC conserva su máquina.
+            fila("AQ00000000000E", EstadoDelIntento.ESPERANDO, dudaSubida = true),
             fila("AQ00000000000C", EstadoDelIntento.PAGADO),
         ).forEach { pendiente ->
             cobros.db.createStatement().use { it.executeUpdate("DELETE FROM cobros_en_maquina") }

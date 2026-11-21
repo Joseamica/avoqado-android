@@ -8,6 +8,7 @@ import com.avoqado.pos.maquina.CobroEnMaquinaDao
 import com.avoqado.pos.maquina.EmparejamientoDeLaMaquina
 import com.avoqado.pos.maquina.MaquinaDeEfectivoPrefs
 import com.avoqado.pos.maquina.TEXTO_IP_INVALIDA
+import com.avoqado.pos.maquina.comoDuda
 import com.avoqado.pos.maquina.TEXTO_PENDIENTES_DE_LA_MAQUINA
 import com.avoqado.pos.maquina.TEXTO_SIN_RED_DESEMPAREJAR
 import com.avoqado.pos.maquina.TEXTO_SIN_RED_EMPAREJAR
@@ -28,6 +29,8 @@ import java.io.IOException
 import javax.inject.Inject
 
 enum class PruebaDeConexion { PROBANDO, CONECTADA, NO_RESPONDE }
+
+const val TEXTO_SIN_MAS_DUDAS = "No se pudieron leer más cobros en duda: revisa la conexión"
 
 /** C7 (R5#9, R3#11): un cobro de la máquina que le debe dinero a un cliente, con su comprobante reimprimible. */
 data class ComprobantePorImprimir(val referenceCC: String, val debeCents: Int)
@@ -51,13 +54,21 @@ data class EstadoDeLaMaquina(
     val comprobantes: List<ComprobantePorImprimir> = emptyList(),
     /** Codex código r1 #13: cuántos cobros le deben algo a clientes en la sucursal (la lista enseña los más nuevos; «Ver más»). */
     val comprobantesTotal: Int = 0,
-    /** Codex código r1 #7: los cobros de esta PC «Esperando a la máquina» en la sucursal, con «Resolver con gerente». */
+    /**
+     * Codex código r1 #7 y r2 H6: los cobros «Esperando a la máquina» del NEGOCIO (los que guarda el SERVIDOR, de cualquier PC) y los
+     * de esta PC que el SERVIDOR todavía no tiene, con «Resolver con gerente».
+     */
     val enEspera: List<com.avoqado.pos.maquina.CobroEnEspera> = emptyList(),
+    /** Codex código r2 H6: cuántos hay en total (la lista enseña los primeros; «Ver más» trae la siguiente página). */
+    val enEsperaTotal: Int = 0,
+    val siguienteDeDudas: String? = null,
     val puedeResolver: Boolean = false,
     val resolviendo: Boolean = false,
     val avisoDeResolver: String? = null,
     /** Codex código r1 #10: la sucursal con que está emparejada esta PC cuando la sesión está en OTRA (la máquina no cobra aquí). */
     val emparejadaConOtra: String? = null,
+    /** Codex código r2 #12: los cobros pagados de la sucursal cuyo papel no salió; aquí se llega aunque la máquina esté apagada. */
+    val ticketsSinImprimir: Int = 0,
 ) {
     val emparejada: Boolean get() = activa && conCredencial
 
@@ -104,6 +115,27 @@ class MaquinaDeEfectivoViewModel @Inject constructor(
     fun verMasComprobantes() {
         limiteDeComprobantes += COMPROBANTES_POR_PAGINA
         viewModelScope.launch { refrescar() }
+    }
+
+    /** Codex código r2 H6: la siguiente página de las dudas del negocio. */
+    fun verMasDudas() {
+        val maquina = maquinaDeEfectivo ?: return
+        val cursor = _estado.value.siguienteDeDudas ?: return
+        viewModelScope.launch {
+            val pagina = try {
+                maquina.dudasDelNegocio(cursor)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                null
+            } ?: return@launch _estado.update { it.copy(aviso = TEXTO_SIN_MAS_DUDAS) }
+            _estado.update { e ->
+                e.copy(
+                    enEspera = e.enEspera + pagina.dudas.filter { n -> e.enEspera.none { it.referenceCC == n.referenceCC } },
+                    siguienteDeDudas = pagina.siguiente,
+                )
+            }
+        }
     }
 
     /** Seam de pruebas. */
@@ -194,14 +226,38 @@ class MaquinaDeEfectivoViewModel @Inject constructor(
             } catch (e: Exception) {
                 com.avoqado.pos.maquina.ResultadoDeResolver.NoSe(e.message ?: "No se pudo resolver")
             }
+            // Codex código r2 H7: con evidencia nueva se enseña la del SERVIDOR (y su versión) y el gerente vuelve a confirmar.
+            val nueva = (resultado as? com.avoqado.pos.maquina.ResultadoDeResolver.EvidenciaNueva)?.duda
             val aviso = (resultado as? com.avoqado.pos.maquina.ResultadoDeResolver.NoSe)?.texto
-            _estado.update { it.copy(resolviendo = false, avisoDeResolver = aviso) }
+                ?: (resultado as? com.avoqado.pos.maquina.ResultadoDeResolver.EvidenciaNueva)?.texto
+            _estado.update { e ->
+                e.copy(
+                    resolviendo = false, avisoDeResolver = aviso,
+                    enEspera = if (nueva == null) e.enEspera else e.enEspera.map { if (it.referenceCC == nueva.referenceCC) nueva else it },
+                )
+            }
             if (aviso == null) refrescar(listo = "¡Cobro resuelto!")
         }
     }
 
     /** El diálogo de resolver se cerró: su aviso no se queda para el siguiente. */
     fun avisoDeResolverVisto() = _estado.update { it.copy(avisoDeResolver = null) }
+
+    /** Codex código r2 #12: imprime los papeles pendientes (reclamados uno por uno; con incidencia, el comprobante del dinero). */
+    fun imprimirTicketsPendientes() {
+        val maquina = maquinaDeEfectivo ?: return
+        viewModelScope.launch {
+            val salieron = try {
+                maquina.imprimirTicketsPendientes()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                0
+            }
+            if (salieron > 0) refrescar(listo = if (salieron == 1) "¡Ticket impreso!" else "¡$salieron tickets impresos!")
+            else refrescar(aviso = "No salió ningún ticket: revisa la impresora")
+        }
+    }
 
     /** C7: (re)imprime el comprobante de [referenceCC] con el mismo folio; el resultado real de la impresora se dice. */
     fun imprimirComprobante(referenceCC: String) {
@@ -249,16 +305,23 @@ class MaquinaDeEfectivoViewModel @Inject constructor(
         val comprobantes = runCatching { maquinaDeEfectivo?.comprobantes(limiteDeComprobantes).orEmpty() }.getOrDefault(emptyList())
             .map { (fila, debe) -> ComprobantePorImprimir(fila.referenceCC, debe) }
         val comprobantesTotal = runCatching { maquinaDeEfectivo?.cuantosComprobantes() ?: 0 }.getOrDefault(comprobantes.size)
-        val enEspera = runCatching { maquinaDeEfectivo?.dudasEnEspera().orEmpty() }.getOrDefault(emptyList())
-            .map { com.avoqado.pos.maquina.CobroEnEspera(it.referenceCC, it.dueCents, it.creadoEn) }
+        // Codex código r2 H6: las del NEGOCIO según el SERVIDOR (de cualquier PC), y las de esta PC que él todavía no tiene.
+        val pagina = runCatching { maquinaDeEfectivo?.dudasDelNegocio() }.getOrNull()
+        val locales = runCatching { maquinaDeEfectivo?.dudasEnEspera().orEmpty() }.getOrDefault(emptyList())
+            .map { it.comoDuda() }
+        val delServidor = pagina?.dudas.orEmpty()
+        val soloAqui = locales.filter { l -> delServidor.none { it.referenceCC == l.referenceCC } }
+        val enEspera = delServidor + soloAqui
+        val ticketsSinImprimir = runCatching { maquinaDeEfectivo?.cuantosTicketsSinImprimir() ?: 0 }.getOrDefault(0)
         val emparejadaConOtra = (prefs.nombreDeLaSucursal ?: "otra sucursal")
             .takeIf { activa && prefs.venueId != emparejamiento.sucursalDeLaSesion }
         _estado.update {
             it.copy(
                 cargado = true, ocupado = false, ip = if (campo) ip.orEmpty() else it.ip, ipGuardada = ip, activa = activa,
                 conCredencial = conCredencial, hayPendientes = pendientes, aviso = aviso, listo = listo, comprobantes = comprobantes,
-                enEspera = enEspera, puedeResolver = maquinaDeEfectivo?.puedeResolver() == true, emparejadaConOtra = emparejadaConOtra,
-                comprobantesTotal = maxOf(comprobantesTotal, comprobantes.size),
+                enEspera = enEspera, enEsperaTotal = (pagina?.total ?: 0) + soloAqui.size, siguienteDeDudas = pagina?.siguiente,
+                puedeResolver = maquinaDeEfectivo?.puedeResolver() == true, emparejadaConOtra = emparejadaConOtra,
+                comprobantesTotal = maxOf(comprobantesTotal, comprobantes.size), ticketsSinImprimir = ticketsSinImprimir,
             )
         }
     }

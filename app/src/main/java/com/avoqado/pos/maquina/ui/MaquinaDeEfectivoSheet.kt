@@ -67,6 +67,8 @@ fun MaquinaDeEfectivoSheet(onDismiss: () -> Unit, viewModel: MaquinaDeEfectivoVi
                 onResolver = viewModel::resolver,
                 onResolverCerrado = viewModel::avisoDeResolverVisto,
                 onVerMasComprobantes = viewModel::verMasComprobantes,
+                onImprimirTickets = viewModel::imprimirTicketsPendientes,
+                onVerMasDudas = viewModel::verMasDudas,
             )
             estado.listo?.let { AvoqadoSuccessToast(message = it, onDismiss = viewModel::toastVisto) }
         }
@@ -86,6 +88,8 @@ internal fun ContenidoDeLaMaquina(
     onResolver: (String, com.avoqado.pos.maquina.ResolucionDelGerente) -> Unit = { _, _ -> },
     onResolverCerrado: () -> Unit = {},
     onVerMasComprobantes: () -> Unit = {},
+    onImprimirTickets: () -> Unit = {},
+    onVerMasDudas: () -> Unit = {},
 ) {
     var resolviendoFolio by remember { mutableStateOf<String?>(null) }
     // Al resolverse, la duda sale de la lista: el diálogo se cierra solo.
@@ -164,9 +168,16 @@ internal fun ContenidoDeLaMaquina(
             estado.aviso?.takeUnless { it == TEXTO_PENDIENTES_DE_LA_MAQUINA && estado.hayPendientes && estado.activa }
                 ?.let { Nota(it, error = true) }
 
-            // Codex código r1 #7: los cobros de esta PC «Esperando a la máquina», con «Resolver con gerente».
+            // Codex código r2 #12: los papeles que no salieron, también con la máquina apagada (Cobrar sólo los enseña con ella activa).
+            TicketsSinImprimirDeLaMaquina(estado.ticketsSinImprimir, onImprimirTickets)
+
+            // Codex código r1 #7 y r2 H6: los cobros del negocio «Esperando a la máquina», con «Resolver con gerente».
             if (estado.enEspera.isNotEmpty()) {
-                Text(com.avoqado.pos.maquina.TEXTO_COBROS_EN_ESPERA, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Text(
+                    "${com.avoqado.pos.maquina.TEXTO_COBROS_EN_ESPERA} (${maxOf(estado.enEsperaTotal, estado.enEspera.size)})",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                )
                 estado.enEspera.forEach { c ->
                     androidx.compose.foundation.layout.Row(
                         Modifier.fillMaxWidth(),
@@ -178,6 +189,12 @@ internal fun ContenidoDeLaMaquina(
                             modifier = Modifier.weight(1f),
                         )
                         OutlinedButton(onClick = { resolviendoFolio = c.referenceCC }) { Text("Resolver con gerente") }
+                    }
+                }
+                // Codex código r2 H6: ninguna duda del negocio se queda fuera por el tope de la página.
+                if (estado.siguienteDeDudas != null) {
+                    OutlinedButton(onClick = onVerMasDudas, modifier = Modifier.fillMaxWidth()) {
+                        Text("Ver más (${(estado.enEsperaTotal - estado.enEspera.size).coerceAtLeast(1)})")
                     }
                 }
             }
@@ -222,6 +239,8 @@ private fun DialogoDeResolver(
 ) = ResolverAMano(
     estado.puedeResolver, estado.resolviendo, estado.avisoDeResolver, estado.enEspera.firstOrNull { it.referenceCC == folio }?.creadoEn,
     onResolver = { onResolver(folio, it) }, onCerrar = onCerrar,
+    // Codex código r2 H7: la evidencia y la versión de la lista; un 409 la reemplaza por la del SERVIDOR.
+    duda = estado.enEspera.firstOrNull { it.referenceCC == folio },
 )
 
 @Composable
