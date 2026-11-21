@@ -557,6 +557,56 @@ class MaquinaDeEfectivoTest {
             .put("creditCents", credit).put("changeDispensedCents", change).put("owedCents", 0).apply(extra).toString()
 
     @Test
+    fun `P1 r6-4 resolver manda la version que tiene la PC y si llego evidencia nueva lo dice y pide confirmar otra vez`() = runTest {
+        val m = maquina()
+        val ref = dudaDe(m)
+        dao.marcarDudaAbierta(ref, 3)
+        val cuerpos = mutableListOf<JSONObject>()
+        coEvery { api.resolverDuda("venue-1", ref, capture(cuerpos)) } returns
+            RespuestaDelServidor(
+                409,
+                JSONObject().put("message", "Llegó evidencia nueva").put("code", "CASH_MACHINE_DOUBT_CHANGED")
+                    .put("details", JSONObject().put("version", 4)).toString(),
+            ) andThen RespuestaDelServidor(200, ecoDelGerente(ref, "PAGADO", 20_000, 1_250))
+        val resolucion = ResolucionDelGerente(Desenlace.PAGADO, 20_000, 1_250, null, null, "Ticket 0042")
+
+        val primera = m.resolver(ref, resolucion)
+
+        assertTrue(primera is ResultadoDeResolver.NoSe && primera.texto.startsWith("Llegó evidencia nueva de este cobro"))
+        assertEquals(3, cuerpos[0].getInt("version"))
+        assertEquals("no se escribió nada", EstadoDelIntento.ESPERANDO, dao.fila(ref)!!.estado)
+        assertEquals(4, dao.fila(ref)!!.versionDeLaDuda)
+
+        assertEquals(ResultadoDeResolver.Resuelto(Desenlace.PAGADO, 20_000, 1_250), m.resolver(ref, resolucion))
+        assertEquals("confirmó otra vez, ya con la versión nueva", 4, cuerpos[1].getInt("version"))
+    }
+
+    @Test
+    fun `r6-1 una resolucion que el servidor RECIBIO sin terminar se dice y la subida la reanuda`() = runTest {
+        val m = maquina()
+        val ref = dudaDe(m)
+        coEvery { api.resolverDuda(any(), any(), any()) } returns RespuestaDelServidor(
+            202, JSONObject().put("success", true).put("ack", "RECIBIDO").put("referenceCC", ref).put("outcome", "PAGADO").toString(),
+        )
+
+        assertEquals(ResultadoDeResolver.NoSe(TEXTO_RESOLUCION_RECIBIDA), m.resolver(ref, ResolucionDelGerente(Desenlace.PAGADO, 20_000, 0, null, null, "x")))
+        assertEquals(EstadoDelIntento.ESPERANDO, dao.fila(ref)!!.estado)
+        verify { subida.disparar() }
+    }
+
+    @Test
+    fun `r6-6 cada cobro congela el emparejamiento vigente al empezar`() = runTest {
+        prefs.guardar("192.168.1.50", activa = true, venueId = "venue-1", bindingId = "cbind0000000000000000000a")
+        coEvery { api.cotizar(any(), any()) } returns cotizacion(18_000, 750)
+        val m = maquina()
+
+        val ref = (m.cobrar(venta()) as InicioEnLaMaquina.Iniciado).referenceCC
+        prefs.guardar("192.168.1.50", activa = true, venueId = "venue-1", bindingId = "cbind0000000000000000000b")
+
+        assertEquals("cbind0000000000000000000a", dao.fila(ref)!!.bindingId)
+    }
+
+    @Test
     fun `P1 Codex r1 #11 un PAGADO del gerente que el servidor guardo como incidencia no es venta y lo dice`() = runTest {
         val m = maquina()
         val ref = dudaDe(m)

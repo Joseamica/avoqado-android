@@ -144,6 +144,7 @@ class MaquinaDeEfectivoViewModel @Inject constructor(
         if (actual.emparejada && ip == actual.ipGuardada && actual.emparejadaConOtra == null) return
         _estado.update { it.copy(ocupado = true, aviso = null, listo = null) }
         viewModelScope.launch {
+            var reemplazo: String? = null
             val aviso = intentar {
                 // R5#2 y Codex código r1 #10: cambiar la IP o la sucursal de una máquina activa con cobros sin subir o en duda los
                 // dejaría sin dueño (la credencial nueva no sube lo de la otra sucursal).
@@ -151,10 +152,15 @@ class MaquinaDeEfectivoViewModel @Inject constructor(
                 if (prefs.activa && (ip != prefs.ip || otraSucursal) && cobros.hayPendientesDeLaMaquina()) return@intentar TEXTO_PENDIENTES_DE_LA_MAQUINA
                 val emparejado = emparejamiento.emparejar(ip).getOrElse { return@intentar textoDeFalla(it, TEXTO_SIN_RED_EMPAREJAR) }
                 boveda.guardar(emparejado.credencial)          // primero la credencial: la casilla nunca se prende sin ella
-                prefs.guardar(ip, activa = true, venueId = emparejado.venueId, nombreDeLaSucursal = emparejado.nombreDeLaSucursal)
+                prefs.guardar(
+                    ip, activa = true, venueId = emparejado.venueId, nombreDeLaSucursal = emparejado.nombreDeLaSucursal,
+                    bindingId = emparejado.bindingId,
+                )
+                // Rediseño del SERVIDOR (D3): emparejar dio de baja a la PC anterior; la máquina le sigue obedeciendo si no se desconecta.
+                reemplazo = com.avoqado.pos.maquina.textoDePcReemplazada(emparejado.reemplazadas)
                 null
             }
-            refrescar(aviso = aviso, listo = "¡Máquina emparejada!".takeIf { aviso == null })
+            refrescar(aviso = aviso ?: reemplazo, listo = "¡Máquina emparejada!".takeIf { aviso == null })
         }
     }
 

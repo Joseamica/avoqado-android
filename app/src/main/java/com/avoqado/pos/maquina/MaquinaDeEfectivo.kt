@@ -53,6 +53,12 @@ const val TEXTO_ESCRIBE_LO_QUE_VISTE = "Escribe lo que viste en la máquina"
 const val TEXTO_ES_LA_DE_ESTA_VENTA = "Ese cobro es el de esta venta: resuélvelo en su pantalla"
 const val TEXTO_COBROS_EN_ESPERA = "Cobros esperando a la máquina"
 const val TEXTO_COTIZACION_VENCIDA = "No se pudo confirmar el precio a tiempo: inténtalo otra vez"
+const val TEXTO_RESOLUCION_RECIBIDA = "Quedó registrado: el servidor termina este cobro en un momento"
+
+/** r6-4: «Llegó evidencia nueva» con lo último que vio la PC; hay que revisar y volver a confirmar. */
+fun textoDeEvidenciaNueva(fila: CobroEnMaquinaEntity): String =
+    "Llegó evidencia nueva de este cobro (la PC vio entrar ${com.avoqado.pos.core.util.formatMoneyFromCents(fila.creditCents)}): " +
+        "revísala en la máquina y vuelve a tocar «Resolver»"
 
 /** Codex código r1 #12: «Hay N tickets sin imprimir». */
 fun textoDeTicketsSinImprimir(n: Int): String = if (n == 1) "Hay 1 ticket sin imprimir" else "Hay $n tickets sin imprimir"
@@ -428,7 +434,9 @@ class MaquinaDeEfectivo internal constructor(
                 Cotizacion.SinRed -> Unit
             }
             if (!cobrableEnMaquina(sale + tip)) return InicioEnLaMaquina.NoSeCobra(TEXTO_SIN_CENTAVOS)
-            val venta = VentaParaLaMaquina(v.venueId, v.llaveDeVenta, v.pedidoJson, sale, tip, turno.turnoActual(), quoteId, renglones, vigenteHasta)
+            val venta = VentaParaLaMaquina(
+                v.venueId, v.llaveDeVenta, v.pedidoJson, sale, tip, turno.turnoActual(), quoteId, renglones, vigenteHasta, prefs.bindingId,
+            )
             return when (val r = cobro.cobrar(venta)) {
                 is ResultadoDeInicio.Iniciado -> InicioEnLaMaquina.Iniciado(r.referenceCC)
                 ResultadoDeInicio.NoCobrable -> InicioEnLaMaquina.NoSeCobra(TEXTO_SIN_CENTAVOS)
@@ -488,31 +496,40 @@ class MaquinaDeEfectivo internal constructor(
             .put("occurredAt", r.horaDelComprobante?.toString() ?: JSONObject.NULL)
             .put("evidence", r.evidencia.trim())
             .put("cancelMode", if (r.desenlace == Desenlace.PAGADO) JSONObject.NULL else r.cancelMode)
+            // r6-4: la versión de la evidencia que tenía la PC al resolver; si llegó otra, el SERVIDOR no escribe nada.
+            .put("version", fila.versionDeLaDuda ?: 1)
         val respuesta = try {
             api.resolverDuda(fila.venueId, referenceCC, cuerpo)
         } catch (e: IOException) {
             return ResultadoDeResolver.NoSe(TEXTO_SIN_RED_RESOLVER)
         }
-        return when {
-            respuesta.codigo == 200 || respuesta.codigo == 202 -> {
-                // Codex código r1 #11: lo que contestó se aplica a la fila con la MISMA lectura que la subida; un 202 con incidencia no es
-                // venta (sin ticket ni comanda), sólo el comprobante de lo que se le debe al cliente.
-                val eco = runCatching { JSONObject(respuesta.cuerpo) }.getOrNull()
-                if (eco != null && !dao.resolverConElEco(fila, eco, respuesta.cuerpo)) {
-                    return ResultadoDeResolver.NoSe(TEXTO_RESPUESTA_DISTINTA)
-                }
+        // Lo que contestó se lee con [leerAcuse] y se aplica a la fila con la MISMA lectura que la subida (un solo lugar).
+        return when (val acuse = leerAcuse(respuesta)) {
+            is Acuse.Terminado -> {
+                if (!dao.resolverConElEco(fila, acuse.json, acuse.cuerpo)) return ResultadoDeResolver.NoSe(TEXTO_RESPUESTA_DISTINTA)
                 subida.disparar()
-                val incidencia = eco?.let(::incidenciaDelEco)
-                if (incidencia != null) ResultadoDeResolver.Incidencia(incidencia, eco.optInt("owedCents", 0))
-                else ResultadoDeResolver.Resuelto(r.desenlace, r.creditCents, r.changeDispensedCents)
+                // Codex código r1 #11: un 202 con incidencia no es venta (sin ticket ni comanda): sólo el comprobante de lo que se debe.
+                acuse.incidencia?.let { ResultadoDeResolver.Incidencia(it, acuse.json.optInt("owedCents", 0)) }
+                    ?: ResultadoDeResolver.Resuelto(r.desenlace, r.creditCents, r.changeDispensedCents)
             }
-            respuesta.codigo == 404 -> {
+            // La decisión quedó; la venta la termina la siguiente subida de la duda (la reanuda).
+            is Acuse.Recibido -> {
+                subida.disparar()
+                ResultadoDeResolver.NoSe(TEXTO_RESOLUCION_RECIBIDA)
+            }
+            // r6-4: llegó evidencia nueva: se dice, con lo último que vio la PC, y hay que volver a confirmar (ya con la versión nueva).
+            is Acuse.OtraVersion -> {
+                acuse.version?.let { dao.anotarVersionDeLaDuda(referenceCC, it) }
+                ResultadoDeResolver.NoSe(textoDeEvidenciaNueva(dao.porReferencia(referenceCC) ?: fila))
+            }
+            Acuse.NoExiste -> {
                 subida.disparar()
                 ResultadoDeResolver.NoSe(TEXTO_DUDA_SIN_SUBIR)
             }
-            respuesta.codigo == 403 -> ResultadoDeResolver.NoSe(TEXTO_SIN_PERMISO_RESOLVER)
-            respuesta.codigo >= 500 -> ResultadoDeResolver.NoSe(TEXTO_SIN_RED_RESOLVER)
-            else -> ResultadoDeResolver.NoSe(ServerErrorText.fromResponseBody(respuesta.cuerpo, TEXTO_SIN_RED_RESOLVER))
+            is Acuse.SinEmparejar -> ResultadoDeResolver.NoSe(TEXTO_SIN_PERMISO_RESOLVER)
+            is Acuse.ConIncidencia -> ResultadoDeResolver.NoSe(acuse.texto)
+            is Acuse.Rechazo -> ResultadoDeResolver.NoSe(acuse.texto)
+            Acuse.Reintentar, Acuse.SinSesion -> ResultadoDeResolver.NoSe(TEXTO_SIN_RED_RESOLVER)
         }
     }
 

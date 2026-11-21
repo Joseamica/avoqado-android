@@ -291,6 +291,15 @@ internal object CobroEnMaquinaSql {
         "UPDATE cobros_en_maquina SET conflicto = :conflicto WHERE referenceCC = :referenceCC " +
             "AND ((estado IN ('PAGADO', 'CANCELADO', 'GUARDADO') AND subido = 0) OR estado = 'ESPERANDO')"
 
+    /** Rediseño del SERVIDOR (r6-4): la duda ABIERTA, con la `version` de su evidencia (la que manda el gerente al resolverla). */
+    const val MARCAR_DUDA_ABIERTA: String =
+        "UPDATE cobros_en_maquina SET dudaSubida = 1, versionDeLaDuda = COALESCE(:version, versionDeLaDuda) " +
+            "WHERE referenceCC = :referenceCC AND estado = 'ESPERANDO'"
+
+    /** r6-4: llegó evidencia nueva mientras el gerente resolvía (409 `CASH_MACHINE_DOUBT_CHANGED`): la versión al día. */
+    const val ANOTAR_VERSION_DE_LA_DUDA: String =
+        "UPDATE cobros_en_maquina SET versionDeLaDuda = :version WHERE referenceCC = :referenceCC AND estado = 'ESPERANDO'"
+
     /** `1` = el SERVIDOR ya tiene la duda; `0` = la perdió (404 al consultarla): se vuelve a subir. */
     const val MARCAR_DUDA_SUBIDA: String =
         "UPDATE cobros_en_maquina SET dudaSubida = :subida WHERE referenceCC = :referenceCC AND estado = 'ESPERANDO'"

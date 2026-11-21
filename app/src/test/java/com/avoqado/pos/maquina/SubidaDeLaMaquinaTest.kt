@@ -101,10 +101,15 @@ class SubidaDeLaMaquinaTest {
     private val pagado = final(REF_1, EstadoDelIntento.PAGADO, credit = 20_000, change = 1_250)
 
     private fun evidencia(f: CobroEnMaquinaEntity, outcome: String = f.estado, credit: Int = f.creditCents, change: Int = f.changeDispensedCents) =
-        JSONObject().put("success", true).put("referenceCC", f.referenceCC).put("outcome", outcome).put("resolvedBy", "MAQUINA")
+        JSONObject().put("success", true).put("ack", "TERMINADO").put("deviceId", DISPOSITIVO)
+            .put("referenceCC", f.referenceCC).put("outcome", outcome).put("resolvedBy", "MAQUINA")
             .put("owedKind", JSONObject.NULL).put("orderId", "orden-1").put("paymentId", "pago-1").put("dueCents", f.dueCents)
             .put("saleCents", f.saleCents).put("tipCents", f.tipCents).put("appliedCents", f.saleCents).put("excedenteCents", 0)
             .put("creditCents", credit).put("changeDispensedCents", change).put("owedCents", 0).put("shiftStatus", "EN_TURNO")
+
+    /** Rediseño del SERVIDOR: la duda ABIERTA es un acuse RECIBIDO de ESTA PC, con la `version` de su evidencia. */
+    private fun abierta(version: Int, ref: String = REF_1) = JSONObject().put("success", true).put("status", "ABIERTO").put("ack", "RECIBIDO")
+        .put("referenceCC", ref).put("deviceId", DISPOSITIVO).put("incidentId", "cinc0000000000000000duda1").put("version", version)
 
     private fun ok(cuerpo: JSONObject, codigo: Int = 200) = MockResponse().setResponseCode(codigo).setBody(cuerpo.toString())
 
@@ -208,7 +213,8 @@ class SubidaDeLaMaquinaTest {
     @Test
     fun `202 con su incidencia se marca subido y deja visible que el dinero quedo como incidencia`() = runBlocking {
         insertar(pagado)
-        val sinRegistro = JSONObject().put("success", true).put("referenceCC", REF_1).put("incident", "NO_SE_PUDO_REGISTRAR")
+        val sinRegistro = JSONObject().put("success", true).put("ack", "TERMINADO").put("deviceId", DISPOSITIVO)
+            .put("referenceCC", REF_1).put("incident", "NO_SE_PUDO_REGISTRAR")
             .put("motivo", "VENTA_RECHAZADA").put("outcome", "PAGADO").put("resolvedBy", "MAQUINA").put("dueCents", 18_750)
             .put("saleCents", 18_000).put("tipCents", 750).put("creditCents", 20_000).put("changeDispensedCents", 1_250)
             .put("incidentId", "cinc000000000000000000009")
@@ -348,11 +354,9 @@ class SubidaDeLaMaquinaTest {
     @Test
     fun `la duda sube con su carrito y se consulta hasta que el gerente la resuelve`() = runBlocking {
         insertar(duda(REF_1))
-        val abierta = JSONObject().put("success", true).put("status", "ABIERTO").put("referenceCC", REF_1)
         val resuelta = evidencia(duda(REF_1), outcome = "CANCELADO", credit = 5_000, change = 0)
             .put("status", "RESUELTO").put("resolvedBy", "GERENTE")
-        cuando("POST", ".*/cash-machine/doubts", ok(abierta))
-        cuando("GET", ".*/cash-machine/doubts/$REF_1", ok(abierta), ok(resuelta))
+        cuando("POST", ".*/cash-machine/doubts", ok(abierta(1)), ok(abierta(2)), ok(resuelta))
 
         assertTrue("la duda espera al gerente", subida.subir())
         assertEquals("la primera pasada sólo la sube", 1, servidor.requestCount)
@@ -368,10 +372,15 @@ class SubidaDeLaMaquinaTest {
         assertEquals("turno-1", b.getString("saleShiftId"))
         assertTrue(dao.fila(REF_1)!!.dudaSubida)
         assertEquals(EstadoDelIntento.ESPERANDO, dao.fila(REF_1)!!.estado)
+        assertEquals("r6-4: la versión que mandará el gerente", 1, dao.fila(REF_1)!!.versionDeLaDuda)
+        assertEquals("aprendió qué aparato es esta PC para el SERVIDOR", DISPOSITIVO, MaquinaDeEfectivoPrefs(contexto).dispositivo)
 
         assertTrue("el gerente todavía no decide", subida.subir())
-        assertEquals("GET", pedido().method)
+        val reenvio = pedido()
+        assertEquals("r6-1: la duda se REENVÍA (reanuda un desenlace pendiente y agrega lo nuevo)", "POST", reenvio.method)
+        assertEquals("/api/v1/mobile/venues/venue-1/cash-machine/doubts", reenvio.path)
         assertEquals(EstadoDelIntento.ESPERANDO, dao.fila(REF_1)!!.estado)
+        assertEquals(2, dao.fila(REF_1)!!.versionDeLaDuda)
 
         assertFalse("ya no queda nada", subida.subir())
         val fila = dao.fila(REF_1)!!
@@ -401,7 +410,7 @@ class SubidaDeLaMaquinaTest {
     @Test
     fun `P1 Codex r1 #6 la duda sube lo ultimo que quedo en disco, con lo que entro`() = runBlocking {
         insertar(duda(REF_1).copy(creditCents = 5_000, ultimoCreditoEn = 1_763_639_050_000))
-        cuando("POST", ".*/cash-machine/doubts", ok(JSONObject().put("status", "ABIERTO").put("referenceCC", REF_1)))
+        cuando("POST", ".*/cash-machine/doubts", ok(abierta(1)))
 
         subida.subir()
 
@@ -418,7 +427,7 @@ class SubidaDeLaMaquinaTest {
         )
         insertar(tardia)
         val eco = evidencia(tardia, outcome = "CANCELADO", credit = 5_000, change = 5_000)
-        cuando("POST", ".*/cash-machine/doubts", ok(JSONObject().put("status", "ABIERTO").put("referenceCC", REF_1)))
+        cuando("POST", ".*/cash-machine/doubts", ok(abierta(1)))
         cuando("POST", ".*/cash-machine/sales", ok(eco))
 
         subida.subir()
@@ -461,7 +470,8 @@ class SubidaDeLaMaquinaTest {
             MockResponse().setResponseCode(409).setBody(
                 JSONObject().put("message", "Esta duda de la máquina ya se subió con otros importes o desde otra PC")
                     .put("code", "CASH_MACHINE_DOUBT_CONFLICT")
-                    .put("details", JSONObject().put("motivo", "OTRA_EVIDENCIA").put("incidentId", "cinc000000000000000000004")).toString(),
+                    .put("details", JSONObject().put("motivo", "OTRA_EVIDENCIA").put("deviceId", DISPOSITIVO)
+                        .put("incidentId", "cinc000000000000000000004")).toString(),
             ),
         )
         val resuelta = evidencia(duda(REF_1), outcome = "CANCELADO", credit = 5_000, change = 5_000)
@@ -487,11 +497,9 @@ class SubidaDeLaMaquinaTest {
     @Test
     fun `cada 60 s se consulta sola mientras hay una duda, y sin trabajo no hay reloj`() = runBlocking {
         insertar(duda(REF_1))
-        val abierta = JSONObject().put("success", true).put("status", "ABIERTO").put("referenceCC", REF_1)
         val resuelta = evidencia(duda(REF_1), outcome = "PAGADO", credit = 20_000, change = 1_250)
             .put("status", "RESUELTO").put("resolvedBy", "GERENTE")
-        cuando("POST", ".*/cash-machine/doubts", ok(abierta))
-        cuando("GET", ".*/cash-machine/doubts/$REF_1", ok(abierta), ok(resuelta))
+        cuando("POST", ".*/cash-machine/doubts", ok(abierta(1)), ok(abierta(1)), ok(resuelta))
         subida.cadaMs = 100
 
         subida.start()
@@ -566,8 +574,67 @@ class SubidaDeLaMaquinaTest {
         throw AssertionError("no pasó en 5 s")
     }
 
+    // MARK: - Adaptación al rediseño del SERVIDOR (r3 #7, r6-1, r6-6)
+
+    @Test
+    fun `P1 un 202 RECIBIDO se conserva y se reenvia el MISMO mensaje hasta el TERMINADO`() = runBlocking {
+        insertar(pagado)
+        val recibido = JSONObject().put("success", true).put("ack", "RECIBIDO").put("referenceCC", REF_1).put("deviceId", DISPOSITIVO)
+            .put("outcome", "PAGADO")
+        cuando("POST", ".*/cash-machine/sales", ok(recibido, 202), ok(evidencia(pagado)))
+
+        assertTrue("queda trabajo", subida.subir())
+        assertFalse(dao.fila(REF_1)!!.subido)
+        assertNull(dao.fila(REF_1)!!.conflicto)
+        assertEquals("sigue frenando cerrar sesión", 1, dao.pendientes("venue-1"))
+
+        assertFalse(subida.subir())
+        assertTrue(dao.fila(REF_1)!!.subido)
+        assertEquals("el mismo mensaje", cuerpo(pedido()).toString(), cuerpo(pedido()).toString())
+    }
+
+    @Test
+    fun `P1 r6-6 el cierre y la duda llevan el emparejamiento con que ESTA PC empezo el cobro`() = runBlocking {
+        insertar(pagado.copy(bindingId = "cbind0000000000000000000a"), duda(REF_2).copy(bindingId = "cbind0000000000000000000b"))
+        cuando("POST", ".*/cash-machine/sales", ok(evidencia(pagado)))
+        cuando("POST", ".*/cash-machine/doubts", ok(abierta(1, REF_2)))
+
+        subida.subir()
+
+        val cuerpos = listOf(pedido(), pedido()).associate { it.path!!.substringAfterLast('/') to cuerpo(it) }
+        assertEquals("cbind0000000000000000000a", cuerpos.getValue("sales").getString("bindingId"))
+        assertEquals("cbind0000000000000000000b", cuerpos.getValue("doubts").getString("bindingId"))
+    }
+
+    @Test
+    fun `P1 r3 #7 la consulta de una duda en conflicto solo la retira si el folio es de ESTA PC`() = runBlocking {
+        val conflicto = duda(REF_1).copy(dudaSubida = true, conflicto = "en conflicto", respuestaServidor = "{}")
+        insertar(conflicto)
+        MaquinaDeEfectivoPrefs(contexto).recordarDispositivo(DISPOSITIVO)
+        val deOtra = evidencia(conflicto, outcome = "CANCELADO", credit = 5_000, change = 0).put("status", "RESUELTO").put("deviceId", "otra-pc")
+        val mia = JSONObject(deOtra.toString()).put("deviceId", DISPOSITIVO)
+        cuando("GET", ".*/cash-machine/doubts/$REF_1", ok(deOtra), ok(mia))
+
+        assertTrue(subida.subir())
+        assertEquals("el folio es de otra PC: no se retira", EstadoDelIntento.ESPERANDO, dao.fila(REF_1)!!.estado)
+
+        assertFalse(subida.subir())
+        assertEquals(EstadoDelIntento.RESUELTO, dao.fila(REF_1)!!.estado)
+    }
+
+    @Test
+    fun `un TERMINADO sin el aparato duenio no retira el pendiente`() = runBlocking {
+        insertar(pagado)
+        cuando("POST", ".*/cash-machine/sales", ok(evidencia(pagado).put("deviceId", JSONObject.NULL)))
+
+        assertTrue(subida.subir())
+
+        assertFalse(dao.fila(REF_1)!!.subido)
+    }
+
     private companion object {
         const val REF_1 = "AQ000000000001"
         const val REF_2 = "AQ000000000002"
+        const val DISPOSITIVO = "cterm00000000000000000001"
     }
 }

@@ -119,6 +119,12 @@ interface CobroEnMaquinaDao {
     @Query(CobroEnMaquinaSql.MARCAR_DUDA_EN_CONFLICTO)
     suspend fun marcarDudaEnConflicto(referenceCC: String, conflicto: String, respuesta: String): Int
 
+    @Query(CobroEnMaquinaSql.MARCAR_DUDA_ABIERTA)
+    suspend fun marcarDudaAbierta(referenceCC: String, version: Int?): Int
+
+    @Query(CobroEnMaquinaSql.ANOTAR_VERSION_DE_LA_DUDA)
+    suspend fun anotarVersionDeLaDuda(referenceCC: String, version: Int): Int
+
     @Query(CobroEnMaquinaSql.MARCAR_DUDA_SUBIDA)
     suspend fun marcarDudaSubida(referenceCC: String, subida: Boolean): Int
 

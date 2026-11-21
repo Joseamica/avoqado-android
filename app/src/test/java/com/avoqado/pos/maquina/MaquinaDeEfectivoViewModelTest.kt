@@ -176,6 +176,23 @@ class MaquinaDeEfectivoViewModelTest {
     }
 
     @Test
+    fun `P1 D3 emparejar guarda su emparejamiento y avisa que la PC anterior se dio de baja`() {
+        servidor.enqueue(
+            MockResponse().setResponseCode(201).setBody(
+                """{"success":true,"bindingId":"cbind0000000000000000000a","credential":"cred-1","replaced":[{"deviceId":"cterm1","machineIp":"192.168.1.60"}]}""",
+            ),
+        )
+        val vm = vm().abierta()
+
+        vm.cambiarIp("192.168.1.50")
+        vm.emparejar()
+
+        val fin = vm.esperar("emparejada") { it.emparejada && !it.ocupado }
+        assertEquals("Se dio de baja la PC anterior (192.168.1.60): desconéctala de la máquina", fin.aviso)
+        assertEquals("cbind0000000000000000000a", prefs.bindingId)
+    }
+
+    @Test
     fun `una IP mal escrita no sale al servidor`() {
         val vm = vm().abierta()
 

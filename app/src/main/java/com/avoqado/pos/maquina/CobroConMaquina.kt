@@ -30,6 +30,8 @@ data class VentaParaLaMaquina(
     val renglonesJson: String? = null,
     /** Codex código r1 #14: hasta cuándo vale la cotización para EMPEZAR el cobro (reloj de la PC). null = sin cotización. */
     val vigenteHasta: Long? = null,
+    /** Rediseño del SERVIDOR (r6-6): el emparejamiento vigente al empezar; queda congelado en el intento. */
+    val bindingId: String? = null,
 )
 
 sealed interface ResultadoDeInicio {
@@ -185,6 +187,7 @@ class CobroConMaquina(
             referenceCC = ref, venueId = venta.venueId, llaveDeVenta = venta.llaveDeVenta, pedidoJson = venta.pedidoJson,
             saleCents = venta.saleCents, tipCents = venta.tipCents, dueCents = due, saleShiftId = venta.saleShiftId,
             quoteId = venta.quoteId, creadoEn = ahora, estado = EstadoDelIntento.EN_CURSO, renglonesJson = venta.renglonesJson,
+            bindingId = venta.bindingId,
         )
         if (!dao.abrirIntento(fila)) return@withLock ResultadoDeInicio.VentaConIntento
         val generacion = cliente.generacion.value

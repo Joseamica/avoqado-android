@@ -175,6 +175,12 @@ internal open class CobroEnMaquinaSobreSqlite : CobroEnMaquinaDao, AutoCloseable
     override suspend fun anotarConflicto(referenceCC: String, conflicto: String) =
         actualizar(CobroEnMaquinaSql.ANOTAR_CONFLICTO, "referenceCC" to referenceCC, "conflicto" to conflicto)
 
+    override suspend fun marcarDudaAbierta(referenceCC: String, version: Int?) =
+        actualizar(CobroEnMaquinaSql.MARCAR_DUDA_ABIERTA, "referenceCC" to referenceCC, "version" to version)
+
+    override suspend fun anotarVersionDeLaDuda(referenceCC: String, version: Int) =
+        actualizar(CobroEnMaquinaSql.ANOTAR_VERSION_DE_LA_DUDA, "referenceCC" to referenceCC, "version" to version)
+
     override suspend fun marcarDudaSubida(referenceCC: String, subida: Boolean) =
         actualizar(CobroEnMaquinaSql.MARCAR_DUDA_SUBIDA, "referenceCC" to referenceCC, "subida" to if (subida) 1 else 0)
 

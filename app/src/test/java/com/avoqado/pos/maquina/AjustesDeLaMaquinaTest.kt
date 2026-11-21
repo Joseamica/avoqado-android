@@ -180,7 +180,7 @@ class AjustesDeLaMaquinaTest {
 
         val emparejado = emparejamiento().emparejar("192.168.1.50").getOrThrow()
 
-        assertEquals(Emparejado("cred-1", "venue-1", "La Galeterie"), emparejado)
+        assertEquals("r6-6: con el emparejamiento que congela cada cobro", Emparejado("cred-1", "venue-1", "La Galeterie", bindingId = "b1"), emparejado)
         val pedido = servidor.takeRequest()
         assertEquals("POST", pedido.method)
         assertEquals("/api/v1/mobile/venues/venue-1/cash-machine/binding", pedido.path)

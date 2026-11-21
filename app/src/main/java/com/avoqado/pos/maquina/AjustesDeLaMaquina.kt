@@ -58,11 +58,30 @@ class MaquinaDeEfectivoPrefs @Inject constructor(@ApplicationContext context: Co
     /** Su nombre, para decir «Esta PC está emparejada con <sucursal>» desde otra. */
     val nombreDeLaSucursal: String? get() = prefs.getString(NOMBRE_DE_LA_SUCURSAL, null)
 
-    fun guardar(ip: String?, activa: Boolean, venueId: String? = this.venueId, nombreDeLaSucursal: String? = this.nombreDeLaSucursal) {
+    /** Rediseño del SERVIDOR (r6-6): el emparejamiento que entregó el alta; cada cobro lo congela al empezar. */
+    val bindingId: String? get() = prefs.getString(EMPAREJAMIENTO, null)
+
+    /** r3 #7: el aparato de ESTA PC para el SERVIDOR (`deviceId` de sus acuses); lo dice el primer acuse de un POST de esta PC. */
+    val dispositivo: String? get() = prefs.getString(DISPOSITIVO, null)
+
+    fun guardar(
+        ip: String?,
+        activa: Boolean,
+        venueId: String? = this.venueId,
+        nombreDeLaSucursal: String? = this.nombreDeLaSucursal,
+        bindingId: String? = this.bindingId,
+    ) {
         check(
             prefs.edit().putString(IP, ip).putBoolean(ACTIVA, activa).putString(SUCURSAL, venueId)
-                .putString(NOMBRE_DE_LA_SUCURSAL, nombreDeLaSucursal).commit(),
+                .putString(NOMBRE_DE_LA_SUCURSAL, nombreDeLaSucursal).putString(EMPAREJAMIENTO, bindingId)
+                // Otra sucursal es otro aparato para el SERVIDOR: se vuelve a aprender.
+                .apply { if (venueId != this@MaquinaDeEfectivoPrefs.venueId) putString(DISPOSITIVO, null) }
+                .commit(),
         ) { "No se pudo guardar el ajuste de la máquina" }
+    }
+
+    fun recordarDispositivo(deviceId: String) {
+        if (deviceId != dispositivo) prefs.edit().putString(DISPOSITIVO, deviceId).commit()
     }
 
     /** Codex código r1 #10: emparejada, y con la sesión en la MISMA sucursal del emparejamiento. */
@@ -74,6 +93,8 @@ class MaquinaDeEfectivoPrefs @Inject constructor(@ApplicationContext context: Co
         private const val ACTIVA = "activa"
         private const val SUCURSAL = "sucursal"
         private const val NOMBRE_DE_LA_SUCURSAL = "sucursal_nombre"
+        private const val EMPAREJAMIENTO = "binding_id"
+        private const val DISPOSITIVO = "device_id"
     }
 }
 
@@ -105,8 +126,21 @@ suspend fun probarConexion(ip: String, okHttp: OkHttpClient, puerto: Int = 8080,
     }
 }
 
-/** Lo que deja un emparejamiento: la credencial (DPAPI) y la sucursal en que vale (Codex código r1 #10). */
-data class Emparejado(val credencial: String, val venueId: String, val nombreDeLaSucursal: String?)
+/**
+ * Lo que deja un emparejamiento: la credencial (DPAPI), la sucursal en que vale (Codex código r1 #10), el `bindingId` que congela cada
+ * cobro (r6-6) y las máquinas cuya PC anterior quedó dada de baja ([reemplazadas], sus IP): hay que desconectarlas de la máquina.
+ */
+data class Emparejado(
+    val credencial: String,
+    val venueId: String,
+    val nombreDeLaSucursal: String?,
+    val bindingId: String? = null,
+    val reemplazadas: List<String> = emptyList(),
+)
+
+/** «Se dio de baja la PC anterior (<ip>): desconéctala de la máquina» (la QuickPay acepta comandos de quien sea). */
+fun textoDePcReemplazada(ips: List<String>): String? =
+    ips.distinct().takeIf { it.isNotEmpty() }?.let { "Se dio de baja la PC anterior (${it.joinToString(", ")}): desconéctala de la máquina" }
 
 /**
  * `POST|DELETE /mobile/venues/:venueId/cash-machine/binding` (R4-3). ONLINE-ONLY a propósito: el SERVIDOR revoca y entrega la
@@ -129,8 +163,14 @@ class EmparejamientoDeLaMaquina @Inject constructor(
         val venueId = secureStorage.venueId
         val nombre = secureStorage.venueName
         return llamar(Request.Builder().post(JSONObject().put("machineIp", machineIp).toString().toRequestBody(JSON))) { cuerpo ->
-            val credencial = JSONObject(cuerpo).optString("credential").takeIf { it.isNotBlank() } ?: error("El servidor no mandó la credencial")
-            Emparejado(credencial, requireNotNull(venueId), nombre)
+            val json = JSONObject(cuerpo)
+            val credencial = json.optString("credential").takeIf { it.isNotBlank() } ?: error("El servidor no mandó la credencial")
+            val reemplazadas = json.optJSONArray("replaced")?.let { r -> (0 until r.length()).mapNotNull { r.optJSONObject(it)?.optString("machineIp") } }
+            Emparejado(
+                credencial, requireNotNull(venueId), nombre,
+                bindingId = json.optString("bindingId").takeIf { !json.isNull("bindingId") && it.isNotBlank() },
+                reemplazadas = reemplazadas.orEmpty().filter { it.isNotBlank() },
+            )
         }
     }
 
