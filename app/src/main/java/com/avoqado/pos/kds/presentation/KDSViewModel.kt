@@ -135,11 +135,50 @@ class KDSViewModel @Inject constructor(
     /**
      * D17 (Codex r14 y r15): por qué no se pudo «Deshacer», DENTRO de la hoja de «Recientes» y debajo de ESA comanda (detrás de
      * la hoja o arriba de la lista no se ve). Sólo la respuesta de un toque de la hoja abierta ahora: una que llega después de
-     * cerrarla y volver a abrir no se pinta como si acabara de pasar (`hojaDeRecientes`).
+     * cerrarla y volver a abrir no se pinta como si acabara de pasar (`aperturaDeRecientes`).
      */
-    private val _avisoDeRecientes = MutableStateFlow<AvisoDeDeshacer?>(null)
-    val avisoDeRecientes: StateFlow<AvisoDeDeshacer?> = _avisoDeRecientes.asStateFlow()
-    private var hojaDeRecientes = 0
+    private val _avisoDeRecientes = MutableStateFlow<Map<String, AvisoDeCocina>>(emptyMap())
+    val avisoDeRecientes: StateFlow<Map<String, AvisoDeCocina>> = _avisoDeRecientes.asStateFlow()
+
+    /**
+     * D17 (rediseño tras Codex r19): la hoja de «Recientes» vive AQUÍ, no en la pantalla. Abierta = `estacionDeLaHoja` no nula.
+     * `aperturaDeRecientes` sube al abrir y al cerrar (el porqué de un toque sólo entra a SU apertura); `lecturaDeRecientes` sube con
+     * cada lectura (sólo se publica la última, y sólo si la hoja sigue abierta en esa estación).
+     */
+    private val _recientesAbierta = MutableStateFlow(false)
+    val recientesAbierta: StateFlow<Boolean> = _recientesAbierta.asStateFlow()
+
+    /**
+     * D17 (tercer rediseño tras Codex r20, como Toast): un «Deshacer» a la vez. Mientras va al SERVIDOR, los botones de la hoja se
+     * apagan y «Recientes» no se vuelve a abrir; al confirmarse la hoja se CIERRA y la comanda regresa al tablero. Así ninguna
+     * lectura ni otro toque se cruza con él.
+     */
+    private val _deshaciendo = MutableStateFlow(false)
+    val deshaciendo: StateFlow<Boolean> = _deshaciendo.asStateFlow()
+    private var aperturaDeRecientes = 0
+    private var lecturaDeRecientes = 0
+    private var estacionDeLaHoja: String? = null
+
+    /** Cambiar la vista (otra estación, elegir estación, pantalla apagada) cierra la hoja abierta de otra estación. */
+    private fun ponerVista(v: VistaDeCocina) {
+        val antes = (_vista.value as? VistaDeCocina.Tablero)?.estacion?.id
+        _vista.value = v
+        if (estacionDeLaHoja != null && (v as? VistaDeCocina.Tablero)?.estacion?.id != estacionDeLaHoja) cerrarRecientes()
+        // Codex r20: el porqué de un «Deshacer» de Cocina no se queda en la barra de Barra.
+        if (avisoEsDeDeshacer && (v as? VistaDeCocina.Tablero)?.estacion?.id != antes) {
+            avisoEsDeDeshacer = false
+            _aviso.value = null
+        }
+    }
+
+    /** La barra del tablero trae el porqué de un «Deshacer» (se quita al cambiar de estación). */
+    private var avisoEsDeDeshacer = false
+
+    private fun lecturaVigente(lectura: Int, estacionId: String) = lectura == lecturaDeRecientes && estacionDeLaHoja == estacionId
+
+    /** D17: la hoja de «Recientes» se está leyendo (no enseña «nada se marcó» ni filas de otra apertura). */
+    private val _recientesLeyendo = MutableStateFlow(false)
+    val recientesLeyendo: StateFlow<Boolean> = _recientesLeyendo.asStateFlow()
 
     /** Sin red: el tablero se queda con lo que tenía y lo DICE (neutro, nunca rojo). */
     private val _sinConexion = MutableStateFlow(false)
@@ -203,7 +242,10 @@ class KDSViewModel @Inject constructor(
     /** D11: sin internet pero recibiendo por el WiFi — la banda lo dice distinto. */
     val recibiendoPorWifi: StateFlow<Boolean> get() = receptor.activo
 
-    fun cerrarAviso() { _aviso.value = null }
+    fun cerrarAviso() {
+        _aviso.value = null
+        avisoEsDeDeshacer = false
+    }
 
     fun cerrarExito() { _exito.value = null }
 
@@ -274,12 +316,12 @@ class KDSViewModel @Inject constructor(
         val venueId = kdsRepository.venueIdActual() ?: return
         // Cache-first: primero lo que el aparato ya sabe, sin esperar a la red…
         _config.value = printConfigRepository.getCurrentConfig()
-        if (!eligiendoAMano && _config.value.version.isNotEmpty()) _vista.value = vistaPara(prefs.estacion(venueId))
+        if (!eligiendoAMano && _config.value.version.isNotEmpty()) ponerVista(vistaPara(prefs.estacion(venueId)))
         sincronizarReceptor()
         // …y luego la verdad del servidor.
         printConfigRepository.refresh(venueId)
         _config.value = printConfigRepository.getCurrentConfig()
-        if (!eligiendoAMano) _vista.value = vistaPara(prefs.estacion(venueId))
+        if (!eligiendoAMano) ponerVista(vistaPara(prefs.estacion(venueId)))
         sincronizarReceptor()
         // En el tablero sólo el fetch de comandas decide si hay red (abajo); fuera de él, si nunca vio la config
         // (`version` vacía = sin red desde que se instaló: se dice, en vez de afirmar que no hay estaciones).
@@ -557,7 +599,7 @@ class KDSViewModel @Inject constructor(
         _comandas.value = emptyList()
         previousOrderIds = emptySet()
         hasLoadedFromAPI = false
-        _vista.value = vistaPara(id)
+        ponerVista(vistaPara(id))
         delServidor = emptyList()
         estacionDelServidor = null
         sincronizarReceptor()
@@ -566,7 +608,7 @@ class KDSViewModel @Inject constructor(
 
     fun cambiarEstacion() {
         eligiendoAMano = true
-        _vista.value = VistaDeCocina.ElegirEstacion(estacionesParaElegir(_config.value.stations), laGuardadaYaNoExiste = false)
+        ponerVista(VistaDeCocina.ElegirEstacion(estacionesParaElegir(_config.value.stations), laGuardadaYaNoExiste = false))
         sincronizarReceptor()
     }
 
@@ -687,42 +729,68 @@ class KDSViewModel @Inject constructor(
         }
     }
 
+    /**
+     * D17 (rediseño tras Codex r19, una sola regla y sin filtros en la tablet): la hoja enseña lo que el SERVIDOR contestó a la
+     * ÚLTIMA lectura de la hoja abierta. Abrir y cada «Deshacer» confirmado vuelven a leer (la lista vieja se quita y dice
+     * «Leyendo…»); toda respuesta de una lectura anterior, de una hoja cerrada o de otra estación se descarta.
+     */
     fun abrirRecientes() {
+        if (_deshaciendo.value) return
         val tablero = _vista.value as? VistaDeCocina.Tablero ?: return
-        _avisoDeRecientes.value = null
-        val hoja = ++hojaDeRecientes
+        aperturaDeRecientes++
+        estacionDeLaHoja = tablero.estacion.id
+        _recientesAbierta.value = true
+        _avisoDeRecientes.value = emptyMap()
+        leerHoja()
+    }
+
+    private fun leerHoja() {
+        val estacionId = estacionDeLaHoja ?: return
+        val lectura = ++lecturaDeRecientes
+        _recientes.value = emptyList()
+        _recientesNoLeidas.value = null
+        _recientesLeyendo.value = true
         viewModelScope.launch {
-            val leidas = kdsRepository.fetchRecientes(tablero.estacion.id)
-            // D17 (Codex r16 #2): la lectura de una hoja que ya se cerró no pisa la de la hoja abierta ahora.
-            if (hoja != hojaDeRecientes) return@launch
+            val leidas = kdsRepository.fetchRecientes(estacionId)
+            if (!lecturaVigente(lectura, estacionId)) return@launch
+            _recientesLeyendo.value = false
             leidas
                 .onSuccess {
                     _recientes.value = it
                     _recientesNoLeidas.value = null
                 }
                 .onFailure { e ->
-                    // I2: la UI no puede mentir — sin esto la hoja decía «nada se marcó como listo» cuando en
-                    // realidad no se pudo leer. La barra de atrás se queda igual, por si se cierra la hoja sin leerlo.
-                    val aviso = avisoDeFallo(e, AccionDeCocina.RECIENTES)
-                    _recientesNoLeidas.value = aviso
-                    _aviso.value = aviso
+                    // I2: la UI no puede mentir — la hoja dice que no se pudo leer, nunca «nada se marcó como listo».
+                    _recientesNoLeidas.value = avisoDeFallo(e, AccionDeCocina.RECIENTES)
                 }
         }
     }
 
-    /** «Deshacer»: sin optimismo — la comanda sigue en Recientes hasta que el servidor la regresa. */
+    /** Cerrar la hoja (o perder su estación) la invalida: nada de ella se pinta después. */
+    fun cerrarRecientes() {
+        aperturaDeRecientes++
+        lecturaDeRecientes++
+        estacionDeLaHoja = null
+        _recientesAbierta.value = false
+        _recientesLeyendo.value = false
+        _avisoDeRecientes.value = emptyMap()
+    }
+
+    /** «Deshacer»: sin optimismo — la comanda sigue en Recientes hasta que el servidor la regresa. Uno a la vez. */
     fun deshacer(id: String) {
+        if (_deshaciendo.value) return
         val reciente = _recientes.value.firstOrNull { it.id == id }
         val folio = reciente?.sourceKey
         // D17: con tiempos, el SERVIDOR sólo la regresa si sigue siendo la que se vio terminada (su hora de terminada).
         val terminadaEn = reciente?.takeIf { it.preparationVersion == 1 }?.completedAt
-        val hoja = hojaDeRecientes
+        val estacion = estacionDeLaHoja
+        val apertura = aperturaDeRecientes
+        _deshaciendo.value = true
+        _avisoDeRecientes.value = _avisoDeRecientes.value - id
         viewModelScope.launch {
-            _avisoDeRecientes.value = null
-            kdsRepository.recall(id, terminadaEn)
+            val resultado = kdsRepository.recall(id, terminadaEn)
+            resultado
                 .onSuccess {
-                    // D17 (Codex r16 #3): sólo la fila que se deshizo; si otra tablet la volvió a terminar (otra hora), se queda.
-                    _recientes.value = _recientes.value.filterNot { it.id == id && it.completedAt == reciente?.completedAt }
                     // Ronda 4: LISTO + Deshacer inmediato (antes de que un sondeo confirme el bump) no puede
                     // quedar tapado por el blindaje de M4 — el servidor SÍ va a volver a mandar esta comanda.
                     bumpsRecientes.remove(id)
@@ -732,14 +800,25 @@ class KDSViewModel @Inject constructor(
                         locales = locales.map { if (it.sourceKey == folio) it.copy(listaEnMillis = null) else it }
                         ticketsLocales.quitarLista(folio)
                     }
+                    // La comanda regresó: se cierra la hoja (como Toast) y se ve en el tablero.
+                    if (apertura == aperturaDeRecientes) cerrarRecientes()
                     refrescarTablero()
                 }
                 .onFailure { e ->
-                    if (esSinRed(e)) _sinConexion.value = true
+                    val enSuEstacion = estacion != null && (_vista.value as? VistaDeCocina.Tablero)?.estacion?.id == estacion
+                    // Codex r21 #7: el «sin red» de un intento de otra estación no pinta el banner de ésta.
+                    if (esSinRed(e) && enSuEstacion) _sinConexion.value = true
                     val aviso = avisoDeFallo(e, AccionDeCocina.DESHACER)
-                    _aviso.value = aviso
-                    if (hoja == hojaDeRecientes) _avisoDeRecientes.value = AvisoDeDeshacer(id, aviso)
+                    // El porqué va debajo de SU comanda si su hoja sigue abierta (cada comanda conserva el suyo) y, en la misma
+                    // estación, también en la barra del tablero: cerrar la hoja (aunque sea a media animación) no lo pierde.
+                    if (apertura == aperturaDeRecientes && estacionDeLaHoja != null) _avisoDeRecientes.value = _avisoDeRecientes.value + (id to aviso)
+                    if (enSuEstacion) {
+                        _aviso.value = aviso
+                        avisoEsDeDeshacer = true
+                    }
                 }
+            // Codex r21 #1: los botones vuelven hasta que terminó TODO lo del resultado (también lo guardado en el aparato).
+            _deshaciendo.value = false
         }
     }
 
@@ -884,6 +963,3 @@ class KDSViewModel @Inject constructor(
  * seguro: otro aparato lo intenta.
  */
 internal fun laComandaSalio(estado: EstadoDeComanda?): Boolean = estado is EstadoDeComanda.Salio
-
-/** D17: por qué no se pudo «Deshacer» [comandaId] (se pinta debajo de esa comanda en «Recientes»). */
-data class AvisoDeDeshacer(val comandaId: String, val aviso: AvisoDeCocina)
