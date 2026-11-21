@@ -64,6 +64,8 @@ class KDSRepositoryTest {
         assertEquals(250, page.total); assertEquals(101, page.nextOffset); assertEquals(1, page.items.size)
         val url = server.takeRequest(1, TimeUnit.SECONDS)!!.requestUrl!!
         assertEquals("1", url.queryParameter("urgencyVersion")); assertEquals("100", url.queryParameter("offset"))
+        // Pantalla nueva (D17): sin esto el servidor le manda lo que la cocina terminó y lo archivado al cerrar el día.
+        assertEquals("1", url.queryParameter("kitchenDoneVersion"))
     }
     @Test fun `QA 3 el orden dentro de la tarjeta es el de la ronda, no el que devuelve la base`() = runTest {
         val dos = "{\"id\":\"k1\",\"orderNumber\":\"101\",\"orderType\":\"DINE_IN\",\"orderId\":\"o1\",\"status\":\"NEW\",\"createdAt\":\"2026-11-21T07:00:00.000Z\"," +
