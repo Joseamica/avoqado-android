@@ -6,6 +6,13 @@ import com.avoqado.pos.core.data.local.database.CachedPayloadEntity
 import com.avoqado.pos.kds.domain.*
 import kotlinx.serialization.json.Json
 
+/**
+ * D16 (3.ª pasada con aparatos): el avance es de productos que ESTE aparato no tiene cargados (p. ej. la pantalla de cocina movió
+ * una cuenta que la caja nunca abrió). No es un desacuerdo: quien lo recibe lo toma como recibido en silencio y lo verá con la
+ * siguiente lectura del servidor cuando cargue ese producto. Un tipo propio para no distinguirlo por el texto.
+ */
+class ProductoNoCargadoAqui : IllegalStateException("Carga el producto en este aparato antes de recibir su avance")
+
 /** One SQLite transaction for all known products and the receipt, before the transport may acknowledge. */
 class PreparationPeerPersistence(private val database: AvoqadoDatabase) {
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
@@ -27,15 +34,18 @@ class PreparationPeerPersistence(private val database: AvoqadoDatabase) {
             }
             val keys = command.items.map { "preparation:${command.venueId}:${it.stableKey}" }
             val saved = cache.preparationSnapshots(command.venueId, keys).associateBy { it.cacheKey }
-            val photos = command.items.map { item ->
+            // D16: lo que este aparato no tiene cargado se salta (lo trae la siguiente lectura del servidor); si no tiene NADA, se
+            // dice con su propio tipo y no se guarda el recibo.
+            val photos = command.items.mapNotNull { item ->
                 val key = "preparation:${command.venueId}:${item.stableKey}"
-                val photo = saved[key] ?: error("Carga el producto en este aparato antes de recibir su avance")
+                val photo = saved[key] ?: return@mapNotNull null
                 val local = json.decodeFromString<PreparationLocalLine>(photo.json)
                 check(local.base.unavailableReason == null) { "Revisa la ronda antes de recibir su avance" }
                 val corrected = if (command.phase == "ACKED" && local.base.preparationRevision > item.expectedRevision) local
                     else applyPreparationPeerProgress(local, item, command)
                 photo.copy(json = json.encodeToString(PreparationLocalLine.serializer(), corrected), updatedAt = System.currentTimeMillis())
             }
+            if (photos.isEmpty()) throw ProductoNoCargadoAqui()
             cache.upsertAll(photos + CachedPayloadEntity(receiptKey, command.venueId,
                 json.encodeToString(PreparationPeerProgress.serializer(), command), System.currentTimeMillis()))
             true

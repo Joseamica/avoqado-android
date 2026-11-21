@@ -106,6 +106,16 @@ class KitchenPreparationRepository @Inject constructor(
 
     fun can(action: PreparationAction) = (!action.priority || (_capabilities.value.enabled && _capabilities.value.version == 1 && _capabilities.value.urgencyVersion == 1)) &&
         action.permissions.all { roles.hasVenuePermission(it) }
+
+    /**
+     * D17: «Liberar» DESDE LA PANTALLA DE COCINA con «La cocina puede liberar tiempos» prendido: sólo pide `orders:update` (el rol de
+     * cocina), igual que el SERVIDOR al reproducirlo. Sólo para la pantalla de cocina (Codex r4 B4): «Servicio y entregas» de la caja
+     * sigue pidiendo lo de siempre. El valor es el último confirmado en este aparato (también sin red).
+     */
+    fun permissionsFor(action: PreparationAction): List<String> =
+        if (action == PreparationAction.RELEASE && _capabilities.value.kitchenCanRelease) listOf("orders:update") else action.permissions
+    fun canFromKitchen(action: PreparationAction) = if (action == PreparationAction.RELEASE)
+        _capabilities.value.kitchenCanRelease && permissionsFor(action).all { roles.hasVenuePermission(it) } else can(action)
     fun negotiated(venueId: String) = venue == venueId && _capabilities.value.version == 1 && _capabilities.value.enabled
 
     private data class RoundProof(val localOrderId: String? = null, val reason: String? = null)
@@ -279,7 +289,7 @@ class KitchenPreparationRepository @Inject constructor(
         val ids = local.flatMap { it.effects.map(PreparationEffect::intentId) }.distinct()
         val statuses = ids.chunked(200).flatMap { intents.preparationStatuses(venueId, it) }.associateBy { it.id }
         val rejected = statuses.values.filter { it.status == SyncIntentEntity.STATUS_REJECTED }.map { it.id }.toSet()
-        if (rejected.isNotEmpty()) _notice.value = "Una acción no fue aceptada: ${statuses[rejected.first()]?.message ?: "otro compañero cambió el producto"}. Revisa su estado antes de repetirla."
+        if (rejected.isNotEmpty()) _notice.value = "Una acción no fue aceptada: ${(statuses[rejected.first()]?.message ?: "otro compañero cambió el producto").trimEnd().removeSuffix(".")}. Revisa su estado antes de repetirla."
         val corrected = local.map { saved -> saved.copy(effects = saved.effects.filterNot { it.intentId in rejected }) }
         cache.upsertAll(corrected.map { cached(venueId, it) })
         corrected.map { it.projected() }
@@ -300,13 +310,17 @@ class KitchenPreparationRepository @Inject constructor(
 
     /** Always enqueue, even online: same permission, CAS and replay contract in both modes. */
     suspend fun act(venueId: String, selected: List<PreparationLine>, action: PreparationAction,
-        quantity: Int, from: PreparationState? = null, reason: String? = null): List<PreparationLine> {
+        quantity: Int, from: PreparationState? = null, reason: String? = null,
+        /** D17: la cocina que libera desde su pantalla ya lo está viendo: sin el papel «LIBERAR» de la caja. */
+        withPaper: Boolean = true,
+        /** D17: la acción sale de la pantalla de cocina (su permiso de «Liberar» depende del interruptor del negocio). */
+        fromKitchen: Boolean = false): List<PreparationLine> {
         val actor = storage.userId?.takeIf { it.isNotBlank() } ?: error("Inicia sesión antes de cambiar la preparación.")
         fun checkOrigin() {
             check(storage.userId == actor && storage.venueId == venueId) { "Cambió la sesión o la sucursal. Revisa el producto antes de continuar." }
             check(negotiated(venueId)) { "Conecta para confirmar que esta sucursal admite preparación por producto." }
             check(!action.priority || _capabilities.value.urgencyVersion == 1) { "Conecta y actualiza para confirmar que esta sucursal admite urgencias." }
-            check(can(action)) { "Tu rol no permite ${action.label.lowercase()}" }
+            check(if (fromKitchen) canFromKitchen(action) else can(action)) { "Tu rol no permite ${action.label.lowercase()}" }
         }
         checkOrigin()
         val updated = mutex.withLock {
@@ -324,9 +338,15 @@ class KitchenPreparationRepository @Inject constructor(
             validateDraftOrigins(venueId, selected)
             checkOrigin()
             val id = UUID.randomUUID().toString()
-            val snapshots = selected.map { row ->
-                val saved = cache.get(rowKey(venueId, row))?.let { json.decodeFromString<PreparationLocalLine>(it.json) }
-                    ?: PreparationLocalLine(row)
+            val guardadas = selected.map { row ->
+                cache.get(rowKey(venueId, row))?.let { json.decodeFromString<PreparationLocalLine>(it.json) } ?: PreparationLocalLine(row)
+            }
+            // QA del conjunto 2 (21-nov): la caja y esta pantalla tocaron a la vez el mismo «Liberar»; el de la caja llegó por el WiFi un
+            // instante antes. Si lo pedido ya está hecho igual en todas las filas, termina en silencio (sin aviso y sin mandar nada).
+            val yaHechas = guardadas.map { it.projected() }
+            if (selected.indices.all { mismoAvanceYaHecho(selected[it], yaHechas[it], action, quantity, from) }) return@atomic yaHechas
+            val snapshots = selected.mapIndexed { index, row ->
+                val saved = guardadas[index]
                 check(saved.effects.size < 20) { "Hay 20 acciones de este producto por sincronizar. Conecta antes de continuar." }
                 val projected = saved.projected()
                 check(projected.preparationRevision == row.preparationRevision) { "Este producto cambió. Actualiza su estado." }
@@ -338,6 +358,9 @@ class KitchenPreparationRepository @Inject constructor(
                 localOrderRefs.singleOrNull()?.let { put("localOrderId", it) }
                 selected.first().sourceKey?.let { put("sourceKey", it) }
                 put("action", action.name)
+                // D17 (Codex r5 #4): el SERVIDOR revisa el interruptor de la cocina para TODO «Liberar» que salió de su pantalla,
+                // también si quien lo tocó es gerente.
+                if (fromKitchen && action == PreparationAction.RELEASE) put("origen", "COCINA")
                 reason?.let { put("reason", it) }
                 putJsonArray("items") { selected.forEach { row -> add(buildJsonObject {
                     if (row.id.startsWith("local:")) {
@@ -356,7 +379,7 @@ class KitchenPreparationRepository @Inject constructor(
                 val order = selected.first().orderId ?: return@let null
                 draftStore?.load(venueId, order)?.preparationRouting?.get(round)
             }
-            val job = delivery?.makeJob(venueId, actor, id, selected, action, quantity, from, reason, frozen)
+            val job = delivery?.makeJob(venueId, actor, id, selected, action, quantity, from, reason, frozen, withPaper)
             checkOrigin()
             outbox.enqueue(venueId, SyncIntentTypes.KDS_ITEM_PROGRESS, payload, id = id,
                 preparationSnapshots = snapshots.map { cached(venueId, it) } + listOfNotNull(job), expectedActorStaffId = actor)

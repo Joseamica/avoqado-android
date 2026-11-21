@@ -64,6 +64,25 @@ class KDSRepositoryTest {
         assertEquals(250, page.total); assertEquals(101, page.nextOffset); assertEquals(1, page.items.size)
         val url = server.takeRequest(1, TimeUnit.SECONDS)!!.requestUrl!!
         assertEquals("1", url.queryParameter("urgencyVersion")); assertEquals("100", url.queryParameter("offset"))
+        // Pantalla nueva (D17): sin esto el servidor le manda lo que la cocina terminó y lo archivado al cerrar el día.
+        assertEquals("1", url.queryParameter("kitchenDoneVersion"))
+    }
+    @Test fun `QA 3 el orden dentro de la tarjeta es el de la ronda, no el que devuelve la base`() = runTest {
+        val dos = "{\"id\":\"k1\",\"orderNumber\":\"101\",\"orderType\":\"DINE_IN\",\"orderId\":\"o1\",\"status\":\"NEW\",\"createdAt\":\"2026-11-21T07:00:00.000Z\"," +
+            "\"items\":[{\"id\":\"cmwq2b\",\"productName\":\"Cerveza\",\"quantity\":1,\"modifiers\":[]}," +
+            "{\"id\":\"cmwq2a\",\"productName\":\"Jugo\",\"quantity\":1,\"modifiers\":[]}]}"
+        server.enqueue(MockResponse().setBody(lista(dos)))
+        assertEquals(listOf("Jugo", "Cerveza"), repo.fetchOrders("st-barra").getOrThrow().single().items.map { it.productName })
+    }
+    @Test fun `D15 el renglon anulado en la caja trae removedAt y el viejo no`() = runTest {
+        server.enqueue(MockResponse().setBody(lista(comanda(itemJson = ",\"removedAt\":\"2026-11-20T18:00:00.000Z\""), comanda(itemJson = ",\"removedAt\":null"), comanda())))
+        val items = repo.fetchOrders("st-barra").getOrThrow().map { it.items.single().removedAt }
+        assertEquals(listOf("2026-11-20T18:00:00.000Z", null, null), items)
+    }
+    @Test fun `D17 cada platillo trae en cuantas estaciones se prepara (1 si el servidor no lo dice)`() = runTest {
+        server.enqueue(MockResponse().setBody(lista(comanda(itemJson = ",\"stationCount\":2"), comanda())))
+        val items = repo.fetchOrders("st-barra").getOrThrow().map { it.items.single().stationCount }
+        assertEquals(listOf(2, null), items) // sin el dato no se sabe: la cocina no ofrece «Liberar»
     }
     @Test
     fun `la lista del vigilante pide las mas nuevas sin estacion ni urgencia`() = runTest {
@@ -178,6 +197,15 @@ class KDSRepositoryTest {
     }
 
     @Test
+    fun `D17 deshacer de una comanda con tiempos manda la hora que vio, con milisegundos y en UTC`() = runTest {
+        server.enqueue(MockResponse().setBody("{\"success\":true,\"data\":{}}"))
+        repo.recall("k1", 1_763_669_400_123).getOrThrow()
+        val deshacer = server.takeRequest(1, TimeUnit.SECONDS)!!
+        assertEquals("/api/v1/mobile/venues/v1/kds/orders/k1/recall", deshacer.path)
+        assertEquals("2025-11-20T20:10:00.123Z", JSONObject(deshacer.body.readUtf8()).getString("expectedDoneAt"))
+    }
+
+    @Test
     fun `recientes, deshacer y marcar todas usan sus rutas y sus cuerpos`() = runTest {
         server.enqueue(MockResponse().setBody(lista(comanda())))
         server.enqueue(MockResponse().setBody("{\"success\":true,\"data\":{}}"))
@@ -189,6 +217,7 @@ class KDSRepositoryTest {
 
         val recientes = server.takeRequest(1, TimeUnit.SECONDS)!!
         assertEquals("/api/v1/mobile/venues/v1/kds/orders/recent", recientes.requestUrl!!.encodedPath)
+        assertEquals("1", recientes.requestUrl!!.queryParameter("kitchenDoneVersion"))
         assertEquals("st-barra", recientes.requestUrl!!.queryParameter("stationId"))
         val deshacer = server.takeRequest(1, TimeUnit.SECONDS)!!
         assertEquals("POST", deshacer.method)

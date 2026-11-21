@@ -28,6 +28,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.avoqado.pos.designsystem.components.PrimaryButton
@@ -36,6 +37,7 @@ import com.avoqado.pos.kds.domain.KDSOrder
 import com.avoqado.pos.kds.domain.KDSOrderStatus
 import com.avoqado.pos.kds.domain.TextosDeCocina
 import com.avoqado.pos.kds.domain.gruposPorTiempo
+import com.avoqado.pos.kds.domain.quitado
 
 // MARK: - Color Constants
 
@@ -153,9 +155,15 @@ fun KDSOrderCard(
                     if (order.preparationVersion == 1) {
                         item.preparation?.let { counts ->
                             PreparationBadges(counts, item.pendingPreparation, pulseUrgent = true)
-                            if (!order.needsAcceptance) PreparationControls(item.productName, counts,
-                                listOf(com.avoqado.pos.kds.domain.PreparationAction.START, com.avoqado.pos.kds.domain.PreparationAction.READY, com.avoqado.pos.kds.domain.PreparationAction.ACK_URGENT),
-                                can = canPreparation,
+                            // D15: lo anulado en la caja ya no se prepara (el servidor lo rechaza): sin botones.
+                            if (!order.needsAcceptance && item.quitado() == null) PreparationControls(item.productName, counts,
+                                // D17: «Liberar» sólo aparece si el negocio dejó a la cocina liberar (`canPreparation` lo decide).
+                                listOf(com.avoqado.pos.kds.domain.PreparationAction.RELEASE, com.avoqado.pos.kds.domain.PreparationAction.START,
+                                    com.avoqado.pos.kds.domain.PreparationAction.READY, com.avoqado.pos.kds.domain.PreparationAction.ACK_URGENT),
+                                // D17 (Codex r6 #1): liberar un producto de varias estaciones es de la caja (todas juntas, con su papel).
+                                can = { action -> canPreparation(action) &&
+                                    (action != com.avoqado.pos.kds.domain.PreparationAction.RELEASE ||
+                                        (item.stationCount == 1 && !com.avoqado.pos.kds.domain.esLocal(order.id))) },
                                 onAction = { action, quantity, from, reason -> onPreparation(item, action, quantity, from, reason) })
                         }
                     }
@@ -254,21 +262,38 @@ private fun KDSItemRow(
     item: com.avoqado.pos.kds.domain.KDSOrderItem,
     isLargeFont: Boolean,
 ) {
+    // D15: lo que la caja anuló (o la plataforma retiró) sigue a la vista, tachado, con su etiqueta en rojo sin tachar:
+    // la cocina tiene que ver que cambió (como Toast y Loyverse).
+    val quitado = item.quitado()
+    val tachado = if (quitado != null) TextDecoration.LineThrough else null
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(vertical = AvoqadoTheme.spacing.xxs),
+            .padding(vertical = AvoqadoTheme.spacing.xxs)
+            .testTag(if (quitado != null) "kds-renglon-quitado-${item.id}" else "kds-renglon-${item.id}"),
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
         ) {
+            if (quitado != null) {
+                Text(
+                    text = quitado.etiqueta,
+                    style = if (isLargeFont) MaterialTheme.typography.labelLarge
+                            else MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.padding(end = AvoqadoTheme.spacing.xs),
+                )
+            }
             Text(
-                text = "${item.quantity}x ${item.productName}",
+                text = "${item.quantity}x ${quitado?.nombre ?: item.productName}",
                 style = if (isLargeFont) MaterialTheme.typography.bodyLarge
                         else MaterialTheme.typography.bodyMedium,
                 fontWeight = FontWeight.Medium,
-                color = MaterialTheme.colorScheme.onSurface,
+                color = if (quitado != null) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface,
+                textDecoration = tachado,
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f),
@@ -283,6 +308,7 @@ private fun KDSItemRow(
                     style = if (isLargeFont) MaterialTheme.typography.bodyMedium
                             else MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textDecoration = tachado,
                 )
             }
         }
@@ -295,6 +321,7 @@ private fun KDSItemRow(
                         else MaterialTheme.typography.bodySmall,
                 fontWeight = FontWeight.Medium,
                 color = Color(0xFFFFA000),
+                textDecoration = tachado,
             )
         }
     }

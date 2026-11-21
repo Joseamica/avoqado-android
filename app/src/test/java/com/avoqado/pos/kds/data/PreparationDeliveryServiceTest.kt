@@ -8,6 +8,7 @@ import com.avoqado.pos.pos.data.model.ServiceCourseSnapshot
 import com.avoqado.pos.printing.data.*
 import com.avoqado.pos.printing.routing.*
 import io.mockk.*
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.*
 import org.junit.Assert.*
@@ -22,10 +23,18 @@ class PreparationDeliveryServiceTest {
     private val config = PrintConfig(stations = listOf(StationInfo("s", "Cocina", hasKitchenDisplay = true)))
     private class Fixture(val service: PreparationDeliveryService, val printer: ReintentoDeComanda,
         val client: ClienteDeComandas, val records: MutableMap<String, CachedPayloadEntity>, val origins: MutableMap<String, SyncIntentEntity>,
-        val setVenue: (String) -> Unit, val setAllowed: (Boolean) -> Unit, val cache: CachedPayloadDao) {
+        val setVenue: (String) -> Unit, val setAllowed: (Boolean) -> Unit, val cache: CachedPayloadDao,
+        val setConnected: (Boolean) -> Unit = {}, val restart: () -> PreparationDeliveryService = { service },
+        val acks: MutableSharedFlow<com.avoqado.pos.core.data.sync.SyncAck> = MutableSharedFlow(extraBufferCapacity = 8),
+        val transport: TransporteLan? = null, val storageVenue: (String) -> Unit = {},
+        /** D16 (Codex r3 #3): se llama DESPUÉS de cada lectura del estado de la cola, con su número; sirve para intercalar un ACK. */
+        val afterStatusRead: Array<((Int) -> Unit)?> = arrayOf(null)) {
         fun job(): PreparationDeliveryJob = PreparationPeerProtocol.json.decodeFromString(records.getValue("preparation:v1:delivery:a").json)
     }
-    private fun fixture(scope: kotlinx.coroutines.CoroutineScope, paperState: String = "QUEUED", phase: String = "PENDING", urgent: Boolean = false, urgencyPeer: Boolean = false): Fixture {
+    private fun fixture(scope: kotlinx.coroutines.CoroutineScope, paperState: String = "QUEUED", phase: String = "PENDING", urgent: Boolean = false, urgencyPeer: Boolean = false,
+        /** D16: estaciones que el SERVIDOR confirma como pantalla; `null` = el servicio se arma sin el estado (como antes). */
+        screensFromServer: Set<String>? = null, connected: Boolean = true, ageMs: Long = 0, manualPaper: Boolean = false,
+        urgentHeld: Boolean = false, urgentMixed: Boolean = false, stations: PrintConfig = config): Fixture {
         val db = mockk<AvoqadoDatabase>()
         val cache = mockk<CachedPayloadDao>()
         val intents = mockk<SyncIntentDao>()
@@ -42,9 +51,14 @@ class PreparationDeliveryServiceTest {
         every { db.cachedPayloadDao() } returns cache; every { db.syncIntentDao() } returns intents
         every { transport.deviceId } returns "d1"
         every { transport.peers } returns MutableStateFlow(listOf(LanPeer("kds", "10.0.0.2", 9000, kdsStations = setOf("s"), preparationVersion = 1, urgencyVersion = if (urgencyPeer) 1 else 0)))
-        val action = if (urgent) PreparationAction.URGENT else PreparationAction.RELEASE
-        val selected = if (urgent) row.copy(preparation = PreparationCounts(PENDING = row.quantity)) else row
-        val job = preparationDeliveryJob("v1", "original-waiter", "d1", "a", listOf(selected), action, 1, null, null, config).copy(paperState = paperState)
+        val action = if (urgent || urgentHeld || urgentMixed) PreparationAction.URGENT else PreparationAction.RELEASE
+        val selected = when {
+            urgent -> row.copy(preparation = PreparationCounts(PENDING = row.quantity))
+            urgentMixed -> row.copy(preparation = PreparationCounts(HELD = 2, PENDING = 1))
+            else -> row
+        }
+        val job = preparationDeliveryJob("v1", "original-waiter", "d1", "a", listOf(selected), action, 1, null, null, stations).copy(paperState = paperState,
+            manualPaper = manualPaper, createdAtMillis = System.currentTimeMillis() - ageMs)
         val records = mutableMapOf(
             "preparation_capabilities:v1" to CachedPayloadEntity("preparation_capabilities:v1", "v1", """{"version":1,"enabled":true,"urgencyVersion":1}""", 100),
             "preparation:v1:delivery:a" to CachedPayloadEntity("preparation:v1:delivery:a", "v1", json.encodeToString(PreparationDeliveryJob.serializer(), job), 100),
@@ -67,14 +81,24 @@ class PreparationDeliveryServiceTest {
                 it.cacheKey > thirdArg<String>() && json.decodeFromString<PreparationDeliveryJob>(it.json).paperState in
                 setOf("QUEUED", "PRINTING", "FAILED", "UNCERTAIN", "REVIEW") }.sortedBy { it.cacheKey }.take(21)
         }
-        coEvery { intents.preparationStatuses(any(), any()) } coAnswers { secondArg<List<String>>().mapNotNull { origins[it] } }
+        val afterStatusRead = arrayOf<((Int) -> Unit)?>(null)
+        var statusReads = 0
+        coEvery { intents.preparationStatuses(any(), any()) } coAnswers {
+            secondArg<List<String>>().mapNotNull { origins[it] }.also { afterStatusRead[0]?.invoke(++statusReads) }
+        }
         coEvery { printer.reintentar(any(), any(), any()) } returns EstadoDeComanda.Salio
         coEvery { client.enviar(any(), any(), any()) } coAnswers {
             val command = json.decodeFromString<PreparationPeerProgress>(secondArg())
             json.encodeToString(PreparationPeerAck.serializer(), PreparationPeerAck(status = "ok", deliveryId = command.deliveryId, phase = command.phase))
         }
-        return Fixture(PreparationDeliveryService(db, storage, transport, printer, configRepo, client, roles).also { it.useScopeForTest(scope) },
-            printer, client, records, origins, { venue = it }, { allowed = it }, cache)
+        val screens = screensFromServer?.let { set -> mockk<EstadoDePantallasDeCocina>().also { every { it.esPantallaDelServidor(any()) } answers { firstArg<String>() in set } } }
+        var online = connected
+        val monitor = mockk<com.avoqado.pos.core.util.ConnectivityMonitor>().also { every { it.isFullyConnected } answers { online } }
+        val acks = MutableSharedFlow<com.avoqado.pos.core.data.sync.SyncAck>(extraBufferCapacity = 8)
+        val outbox = mockk<com.avoqado.pos.core.data.sync.SyncOutbox>().also { every { it.acks } returns acks }
+        fun build() = PreparationDeliveryService(db, storage, transport, printer, configRepo, client, roles, screens, monitor, outbox).also { it.useScopeForTest(scope) }
+        return Fixture(build(), printer, client, records, origins, { venue = it }, { allowed = it }, cache, { online = it }, ::build, acks, transport,
+            afterStatusRead = afterStatusRead)
     }
 
 
@@ -255,6 +279,472 @@ class PreparationDeliveryServiceTest {
                 cursor = page.cursor; assertNotNull(cursor)
             } while (true)
             assertEquals(47, ids.size); assertEquals(47, ids.toSet().size); assertFalse("foreign" in ids)
+        } finally { f.service.stop() }
+    }
+
+    // D16 de Flautas (20-nov): liberar un tiempo a una cocina de SOLO pantalla y sin impresora. Con internet, la caja espera el
+    // «sí» del servidor antes de decidir el papel y, con él, no avisa «Esa estación no tiene impresora». En duda, avisa.
+    private fun withoutPrinter(f: Fixture) {
+        coEvery { f.printer.reintentar(any(), any(), any()) } coAnswers {
+            EstadoDeComanda.NoSalio(listOf("Cocina"), ReintentoDeComanda.CAUSA_SIN_IMPRESORA, "24")
+                .also { it.saltados = firstArg<TrabajoPendiente>().planes }
+        }
+    }
+    private fun acked(f: Fixture) { f.origins["a"] = f.origins.getValue("a").copy(status = SyncIntentEntity.STATUS_ACKED) }
+
+    @Test fun `D16 con internet espera el si del servidor y no avisa que falta impresora`() = runTest {
+        val f = fixture(backgroundScope, screensFromServer = setOf("s")); withoutPrinter(f)
+        try {
+            f.service.start("v1"); f.service.pass("v1")
+            assertEquals("sin el si del servidor no se decide el papel", "QUEUED", f.job().paperState)
+            assertNull(f.job().message); assertNull(f.service.notice.value)
+            coVerify(exactly = 0) { f.printer.reintentar(any(), any(), any()) }
+            acked(f); f.service.pass("v1")
+            assertEquals("DONE", f.job().paperState); assertNull(f.job().message); assertNull(f.service.notice.value)
+            assertTrue(f.job().done)
+            assertTrue("no entra a los papeles por revisar", f.service.paperPage("v1").items.isEmpty())
+            coVerify(exactly = 1) { f.printer.reintentar(any(), any(), any()) }
+        } finally { f.service.stop() }
+    }
+    @Test fun `D16 el si de su intent la despierta sin esperar al reloj`() = runTest {
+        val f = fixture(backgroundScope, screensFromServer = setOf("s")); withoutPrinter(f)
+        try {
+            // Sólo el reloj de 30 s y el ACK: la primera pasada la deja esperando; el siguiente turno del reloj es a los 30 s.
+            f.service.start("v1"); runCurrent()
+            assertEquals("QUEUED", f.job().paperState)
+            acked(f); f.acks.emit(com.avoqado.pos.core.data.sync.SyncAck("a", "ACKED")); runCurrent()
+            assertEquals("DONE", f.job().paperState); assertNull(f.service.notice.value)
+        } finally { f.service.stop() }
+    }
+    @Test fun `D16 el rechazo de su intent la despierta y sale como rechazo`() = runTest {
+        val f = fixture(backgroundScope, screensFromServer = setOf("s")); withoutPrinter(f)
+        try {
+            f.service.start("v1"); runCurrent()
+            f.origins["a"] = f.origins.getValue("a").copy(status = SyncIntentEntity.STATUS_REJECTED, message = "Otro aparato cambió el producto")
+            f.acks.emit(com.avoqado.pos.core.data.sync.SyncAck("a", "REJECTED")); runCurrent()
+            assertEquals("CANCELLED", f.job().paperState); assertTrue(f.service.notice.value!!.contains("no fue aceptada"))
+            coVerify(exactly = 0) { f.printer.reintentar(any(), any(), any()) }
+        } finally { f.service.stop() }
+    }
+    @Test fun `D16 sin internet avisa en el acto como hoy`() = runTest {
+        val f = fixture(backgroundScope, screensFromServer = setOf("s"), connected = false); withoutPrinter(f)
+        try {
+            f.service.start("v1"); f.service.pass("v1")
+            assertEquals("FAILED", f.job().paperState)
+            assertEquals(ReintentoDeComanda.CAUSA_SIN_IMPRESORA, f.service.notice.value)
+        } finally { f.service.stop() }
+    }
+    @Test fun `D16 si el envio falla a media espera decide en la siguiente pasada`() = runTest {
+        val f = fixture(backgroundScope, screensFromServer = setOf("s")); withoutPrinter(f)
+        try {
+            f.service.start("v1"); f.service.pass("v1")
+            assertEquals("QUEUED", f.job().paperState)
+            f.setConnected(false); f.service.pass("v1")
+            assertEquals("FAILED", f.job().paperState)
+            assertEquals(ReintentoDeComanda.CAUSA_SIN_IMPRESORA, f.service.notice.value)
+        } finally { f.service.stop() }
+    }
+    @Test fun `D16 pasado el tope avisa aunque el servidor no haya contestado`() = runTest {
+        val f = fixture(backgroundScope, screensFromServer = setOf("s"), ageMs = PreparationDeliveryService.TOPE_DE_LA_ESPERA_MS + 1_000)
+        withoutPrinter(f)
+        try {
+            f.service.start("v1"); f.service.pass("v1")
+            assertEquals("FAILED", f.job().paperState)
+            assertEquals(ReintentoDeComanda.CAUSA_SIN_IMPRESORA, f.service.notice.value)
+        } finally { f.service.stop() }
+    }
+    @Test fun `D16 el tope tambien se cuenta con el reloj monotonico`() = runTest {
+        val f = fixture(backgroundScope, screensFromServer = setOf("s")); withoutPrinter(f)
+        var now = 0L; f.service.nanoTime = { now }
+        try {
+            f.service.start("v1"); f.service.pass("v1")
+            assertEquals("QUEUED", f.job().paperState)
+            // El reloj de pared dice que apenas pasó nada (se atrasó); el monotónico, que ya pasó el tope.
+            now = (PreparationDeliveryService.TOPE_DE_LA_ESPERA_MS + 1_000) * 1_000_000
+            f.service.pass("v1")
+            assertEquals("FAILED", f.job().paperState)
+            assertEquals(ReintentoDeComanda.CAUSA_SIN_IMPRESORA, f.service.notice.value)
+        } finally { f.service.stop() }
+    }
+    @Test fun `D16 un rechazo a media espera sale como rechazo y no imprime`() = runTest {
+        val f = fixture(backgroundScope, screensFromServer = setOf("s")); withoutPrinter(f)
+        try {
+            f.service.start("v1"); f.service.pass("v1")
+            f.origins["a"] = f.origins.getValue("a").copy(status = SyncIntentEntity.STATUS_REJECTED, message = "Otro aparato cambió el producto")
+            f.service.pass("v1")
+            assertEquals("CANCELLED", f.job().paperState)
+            assertTrue(f.service.notice.value!!.contains("no fue aceptada"))
+            coVerify(exactly = 0) { f.printer.reintentar(any(), any(), any()) }
+        } finally { f.service.stop() }
+    }
+    @Test fun `D16 una impresora que truena tras el si sigue avisando`() = runTest {
+        val f = fixture(backgroundScope, phase = "ACKED", screensFromServer = setOf("s"))
+        coEvery { f.printer.reintentar(any(), any(), any()) } coAnswers {
+            // Lo saltado también es de la estación de respaldo confirmada: sólo `trabajo == null` impide callarlo.
+            EstadoDeComanda.NoSalio(listOf("Cocina"), "Sin papel", "24", firstArg()).also { it.saltados = firstArg<TrabajoPendiente>().planes }
+        }
+        try {
+            f.service.start("v1"); f.service.pass("v1")
+            assertEquals("FAILED", f.job().paperState); assertEquals("Sin papel", f.service.notice.value)
+        } finally { f.service.stop() }
+    }
+    @Test fun `D16 una estacion con impresora no espera el si`() = runTest {
+        val withPrinter = PrintConfig(stations = listOf(StationInfo("s", "Cocina", printerId = "p1", hasKitchenDisplay = true)))
+        val f = fixture(backgroundScope, screensFromServer = setOf("s"), stations = withPrinter); withoutPrinter(f)
+        try {
+            f.service.start("v1"); f.service.pass("v1")
+            assertEquals("FAILED", f.job().paperState)
+            coVerify(exactly = 1) { f.printer.reintentar(any(), any(), any()) }
+        } finally { f.service.stop() }
+    }
+    @Test fun `D16 sin confirmacion del servidor avisa en el acto`() = runTest {
+        val f = fixture(backgroundScope, phase = "ACKED", screensFromServer = emptySet()); withoutPrinter(f)
+        try {
+            f.service.start("v1"); f.service.pass("v1")
+            assertEquals("FAILED", f.job().paperState)
+            assertEquals(ReintentoDeComanda.CAUSA_SIN_IMPRESORA, f.service.notice.value)
+        } finally { f.service.stop() }
+    }
+    @Test fun `D16 reimprimir no espera ni calla`() = runTest {
+        val f = fixture(backgroundScope, phase = "ACKED", screensFromServer = setOf("s"), manualPaper = true); withoutPrinter(f)
+        try {
+            f.service.start("v1"); f.service.pass("v1")
+            assertEquals("FAILED", f.job().paperState)
+            assertEquals(ReintentoDeComanda.CAUSA_SIN_IMPRESORA, f.service.notice.value)
+        } finally { f.service.stop() }
+    }
+    @Test fun `D16 la app murio a media espera y al volver decide`() = runTest {
+        val f = fixture(backgroundScope, screensFromServer = setOf("s")); withoutPrinter(f)
+        f.service.start("v1"); f.service.pass("v1"); f.service.stop()
+        assertEquals("QUEUED", f.job().paperState)
+        acked(f)
+        val again = f.restart()
+        try {
+            again.start("v1"); again.pass("v1")
+            assertEquals("con el si, calla", "DONE", f.job().paperState); assertNull(again.notice.value)
+        } finally { again.stop() }
+    }
+    @Test fun `D16 la app murio a media espera y al volver pasado el tope avisa`() = runTest {
+        val f = fixture(backgroundScope, screensFromServer = setOf("s"), ageMs = PreparationDeliveryService.TOPE_DE_LA_ESPERA_MS + 1_000)
+        withoutPrinter(f)
+        val again = f.restart()
+        try {
+            again.start("v1"); again.pass("v1")
+            assertEquals("nunca se queda callada para siempre", "FAILED", f.job().paperState)
+            assertEquals(ReintentoDeComanda.CAUSA_SIN_IMPRESORA, again.notice.value)
+        } finally { again.stop() }
+    }
+    @Test fun `D16 tras el si la copia local refrescada del servidor no manda la liberacion a revisar`() = runTest {
+        val f = fixture(backgroundScope, screensFromServer = setOf("s")); withoutPrinter(f)
+        try {
+            f.service.start("v1"); f.service.pass("v1")
+            assertEquals("QUEUED", f.job().paperState)
+            // Lo que deja `KitchenPreparationRepository.merge` al refrescar del servidor tras el ACK: su fila (revisión +1, la
+            // cuenta ya movida) como base y el efecto local descartado.
+            val key = "preparation:v1:${row.stableKey}"
+            val fromServer = row.copy(preparation = row.preparation.move(PreparationAction.RELEASE, 1, null, null, "a"), preparationRevision = 1)
+            f.records[key] = CachedPayloadEntity(key, "v1", json.encodeToString(PreparationLocalLine.serializer(), PreparationLocalLine(fromServer)), 200)
+            acked(f); f.service.pass("v1")
+            assertEquals("DONE", f.job().paperState); assertNull(f.service.notice.value)
+        } finally { f.service.stop() }
+    }
+    @Test fun `D16 urgente de lo retenido espera el si igual que liberar`() = runTest {
+        val f = fixture(backgroundScope, screensFromServer = setOf("s"), urgentHeld = true); withoutPrinter(f)
+        try {
+            assertNotNull(f.job().paper); assertEquals(false, f.job().urgencyNeedsScreen)
+            f.service.start("v1"); f.service.pass("v1")
+            assertEquals("QUEUED", f.job().paperState)
+            acked(f); f.service.pass("v1")
+            assertEquals("DONE", f.job().paperState); assertNull(f.service.notice.value)
+        } finally { f.service.stop() }
+    }
+
+    @Test fun `D16 una liberacion que espera no se queda atras aunque el cursor avance`() = runTest {
+        val f = fixture(backgroundScope, screensFromServer = setOf("s")); withoutPrinter(f)
+        val original = f.job()
+        for (index in 1..60) {
+            val id = "b-" + index.toString().padStart(3, '0')
+            val key = "preparation:v1:delivery:$id"
+            f.records[key] = CachedPayloadEntity(key, "v1", json.encodeToString(PreparationDeliveryJob.serializer(),
+                original.copy(intentId = id, paperState = "FAILED")), 100)
+        }
+        try {
+            f.service.start("v1"); f.service.pass("v1")
+            assertEquals("QUEUED", f.job().paperState)
+            acked(f); f.service.pass("v1")
+            assertEquals("la siguiente pasada la revisa primero", "DONE", f.job().paperState)
+        } finally { f.service.stop() }
+    }
+    @Test fun `D16 dos liberaciones seguidas del mismo producto piden revisar la primera y no avisan de impresora`() = runTest {
+        val f = fixture(backgroundScope, screensFromServer = setOf("s")); withoutPrinter(f)
+        val key = "preparation:v1:${row.stableKey}"
+        // La segunda liberación (otra unidad del mismo producto) se guardó mientras la primera esperaba el «sí».
+        f.records[key] = CachedPayloadEntity(key, "v1", json.encodeToString(PreparationLocalLine.serializer(), PreparationLocalLine(row,
+            listOf(PreparationEffect("a", 0, PreparationAction.RELEASE, 1), PreparationEffect("b", 1, PreparationAction.RELEASE, 1)))), 100)
+        try {
+            f.service.start("v1"); f.service.pass("v1")
+            assertEquals("QUEUED", f.job().paperState)
+            acked(f); f.service.pass("v1")
+            // Residual declarado (Codex r2 #2 quitó el recorte de la copia): aviso de REVISIÓN, nunca el de impresora.
+            assertEquals("REVIEW", f.job().paperState)
+            assertTrue(f.service.notice.value!!.startsWith("Revisa la liberación"))
+            coVerify(exactly = 0) { f.printer.reintentar(any(), any(), any()) }
+        } finally { f.service.stop() }
+    }
+    @Test fun `D16 la urgencia con productos activos no espera el si`() = runTest {
+        val f = fixture(backgroundScope, screensFromServer = setOf("s"), urgentMixed = true); withoutPrinter(f)
+        try {
+            assertNotNull(f.job().paper); assertEquals(true, f.job().urgencyNeedsScreen)
+            f.service.start("v1"); f.service.pass("v1")
+            coVerify(exactly = 1) { f.printer.reintentar(any(), any(), any()) }
+            assertEquals("FAILED", f.job().paperState)
+        } finally { f.service.stop() }
+    }
+    @Test fun `D16 la urgencia con productos activos no se calla aunque el servidor ya la tenga`() = runTest {
+        val f = fixture(backgroundScope, phase = "ACKED", screensFromServer = setOf("s"), urgentMixed = true); withoutPrinter(f)
+        try {
+            f.service.start("v1"); f.service.pass("v1")
+            assertEquals("FAILED", f.job().paperState)
+            assertEquals(ReintentoDeComanda.CAUSA_SIN_IMPRESORA, f.service.notice.value)
+        } finally { f.service.stop() }
+    }
+    @Test fun `D16 liberar y luego cancelar en la misma caja no imprime un ticket viejo`() = runTest {
+        val f = fixture(backgroundScope, screensFromServer = setOf("s"))
+        val key = "preparation:v1:${row.stableKey}"
+        f.records[key] = CachedPayloadEntity(key, "v1", json.encodeToString(PreparationLocalLine.serializer(), PreparationLocalLine(row,
+            listOf(PreparationEffect("a", 0, PreparationAction.RELEASE, 1),
+                PreparationEffect("c", 1, PreparationAction.CANCEL, 1, PreparationState.PENDING, "Se acabó")))), 100)
+        try {
+            f.service.start("v1"); f.service.pass("v1")
+            acked(f); f.service.pass("v1")
+            assertEquals("REVIEW", f.job().paperState)
+            coVerify(exactly = 0) { f.printer.reintentar(any(), any(), any()) }
+        } finally { f.service.stop() }
+    }
+    @Test fun `D16 si marcan resuelto el intent a media espera se cancela sin papel y avisa`() = runTest {
+        val f = fixture(backgroundScope, screensFromServer = setOf("s")); withoutPrinter(f)
+        try {
+            f.service.start("v1"); f.service.pass("v1")
+            assertEquals("QUEUED", f.job().paperState)
+            f.origins.remove("a") // «Marcar resuelta» sobre su rechazo borra la fila de la cola
+            f.service.pass("v1")
+            assertEquals("CANCELLED", f.job().paperState)
+            assertEquals(PreparationDeliveryService.AVISO_LIBERACION_SIN_CONFIRMAR, f.service.notice.value)
+            coVerify(exactly = 0) { f.printer.reintentar(any(), any(), any()) }
+            f.service.pass("v1")
+            assertEquals("sigue diciendo su aviso", PreparationDeliveryService.AVISO_LIBERACION_SIN_CONFIRMAR, f.service.notice.value)
+            coVerify(exactly = 0) { f.printer.reintentar(any(), any(), any()) }
+        } finally { f.service.stop() }
+    }
+    @Test fun `D16 si marcan resuelto el intent a media espera no imprime aunque haya impresora de respaldo`() = runTest {
+        val f = fixture(backgroundScope, screensFromServer = setOf("s")) // la impresora de respaldo SÍ imprime (Salio)
+        try {
+            f.service.start("v1"); f.service.pass("v1")
+            assertEquals("QUEUED", f.job().paperState)
+            f.origins.remove("a")
+            f.service.pass("v1")
+            assertEquals("CANCELLED", f.job().paperState)
+            assertEquals(PreparationDeliveryService.AVISO_LIBERACION_SIN_CONFIRMAR, f.service.notice.value)
+            coVerify(exactly = 0) { f.printer.reintentar(any(), any(), any()) }
+        } finally { f.service.stop() }
+    }
+    @Test fun `D16 una tarea con su ACK ya visto y el intent limpiado sigue su camino normal`() = runTest {
+        val f = fixture(backgroundScope, screensFromServer = setOf("s")); withoutPrinter(f)
+        val key = "preparation:v1:delivery:a"
+        // Una pasada ya vio el ACK (fase guardada) y después la limpieza de ACKED viejos borró el intent.
+        f.records[key] = f.records.getValue(key).copy(json = json.encodeToString(PreparationDeliveryJob.serializer(), f.job().copy(phase = "ACKED")))
+        f.origins.remove("a")
+        try {
+            f.service.start("v1"); f.service.pass("v1")
+            assertEquals("con el ACK, la regla de D16: sin aviso", "DONE", f.job().paperState)
+            assertNull(f.service.notice.value)
+            coVerify(exactly = 1) { f.printer.reintentar(any(), any(), any()) }
+        } finally { f.service.stop() }
+    }
+    @Test fun `D16 un ACK que cae justo despues de releer el estado la despierta`() = runTest {
+        val f = fixture(backgroundScope, screensFromServer = setOf("s")); withoutPrinter(f)
+        // Lectura 1: la de la pasada. Lectura 2: la relectura antes del papel. El ACK se guarda y se emite justo DESPUÉS de esa:
+        // en ese instante la tarea ya tiene que estar inscrita, o el colector (en otro hilo) lo ignoraría.
+        var inscritaAlReleer = false
+        f.afterStatusRead[0] = { read -> if (read == 2) {
+            inscritaAlReleer = f.service.estaEnEspera("a")
+            acked(f); f.acks.tryEmit(com.avoqado.pos.core.data.sync.SyncAck("a", "ACKED"))
+        } }
+        try {
+            f.service.start("v1"); runCurrent()
+            f.afterStatusRead[0] = null
+            assertTrue("inscrita antes de releer", inscritaAlReleer)
+            assertEquals("DONE", f.job().paperState); assertNull(f.service.notice.value)
+        } finally { f.service.stop() }
+    }
+    @Test fun `D16 un REJECT que cae durante los envios por WiFi se cancela en la siguiente pasada sin esperar al reloj`() = runTest {
+        val f = fixture(backgroundScope, screensFromServer = setOf("s")); withoutPrinter(f)
+        // Tras la lectura de la pasada (todavía PENDING) llega el REJECT, antes de que la tarea se inscriba.
+        f.afterStatusRead[0] = { read -> if (read == 1) {
+            f.origins["a"] = f.origins.getValue("a").copy(status = SyncIntentEntity.STATUS_REJECTED, message = "Otro aparato cambió el producto")
+            f.acks.tryEmit(com.avoqado.pos.core.data.sync.SyncAck("a", "REJECTED"))
+        } }
+        try {
+            f.service.start("v1"); runCurrent()
+            f.afterStatusRead[0] = null
+            assertEquals("CANCELLED", f.job().paperState)
+            assertTrue(f.service.notice.value!!.contains("no fue aceptada"))
+            coVerify(exactly = 0) { f.printer.reintentar(any(), any(), any()) }
+        } finally { f.service.stop() }
+    }
+    @Test fun `D16 una pasada de la sucursal anterior no apaga el receptor de la nueva ni toca sus tareas`() = runTest {
+        val f = fixture(backgroundScope, screensFromServer = setOf("s")); withoutPrinter(f)
+        f.records["preparation_capabilities:v2"] = CachedPayloadEntity("preparation_capabilities:v2", "v2", """{"version":1,"enabled":true,"urgencyVersion":1}""", 100)
+        try {
+            f.service.start("v1"); f.service.pass("v1")
+            assertEquals("QUEUED", f.job().paperState)
+            f.setVenue("v2"); f.service.stop(); f.service.start("v2"); f.service.pass("v2")
+            verify { f.transport!!.activarPreparacion(any(), any(), any()) }
+            clearMocks(f.transport!!, answers = false) // desde aquí, el receptor instalado es el de v2
+            // Llega tarde el ACK de la tarea de v1 y una pasada vieja de v1.
+            acked(f); f.acks.emit(com.avoqado.pos.core.data.sync.SyncAck("a", "ACKED")); runCurrent()
+            f.service.pass("v1")
+            verify(exactly = 0) { f.transport!!.desactivarPreparacion() }
+            assertEquals("la tarea de v1 no se tocó", "QUEUED", f.job().paperState)
+            coVerify(exactly = 0) { f.printer.reintentar(any(), any(), any()) }
+        } finally { f.service.stop() }
+    }
+    @Test fun `D16 si el intent desaparece a media pasada no imprime la liberacion`() = runTest {
+        // Sin confirmación de pantalla (no espera): hoy decidiría el papel en esta misma pasada con la impresora de respaldo.
+        val f = fixture(backgroundScope, screensFromServer = emptySet())
+        f.afterStatusRead[0] = { read -> if (read == 1) f.origins.remove("a") } // «Marcar resuelta» mientras manda por WiFi
+        try {
+            f.service.start("v1"); f.service.pass("v1")
+            f.afterStatusRead[0] = null
+            assertEquals("CANCELLED", f.job().paperState)
+            assertEquals(PreparationDeliveryService.AVISO_LIBERACION_SIN_CONFIRMAR, f.service.notice.value)
+            coVerify(exactly = 0) { f.printer.reintentar(any(), any(), any()) }
+        } finally { f.service.stop() }
+    }
+    @Test fun `D16 reimprimir sin intent no se cancela y sale el papel que se pidio`() = runTest {
+        val f = fixture(backgroundScope, screensFromServer = setOf("s"), manualPaper = true)
+        f.origins.remove("a") // la limpieza de ACKED viejos se llevó su intent
+        try {
+            f.service.start("v1"); f.service.pass("v1")
+            assertEquals("DONE", f.job().paperState)
+            coVerify(exactly = 1) { f.printer.reintentar(any(), any(), any()) }
+        } finally { f.service.stop() }
+    }
+    @Test fun `D16 la cancelacion sin intent vuelve a avisar tras cerrar la app`() = runTest {
+        val f = fixture(backgroundScope, screensFromServer = setOf("s"))
+        val key = "preparation:v1:delivery:a"
+        // La app se cerró justo después de guardar la cancelación, antes de que alguien viera el aviso.
+        f.records[key] = f.records.getValue(key).copy(json = json.encodeToString(PreparationDeliveryJob.serializer(),
+            f.job().copy(paperState = "CANCELLED", message = PreparationDeliveryService.AVISO_LIBERACION_SIN_CONFIRMAR)))
+        f.origins.remove("a")
+        val again = f.restart()
+        try {
+            again.start("v1"); again.pass("v1")
+            assertEquals(PreparationDeliveryService.AVISO_LIBERACION_SIN_CONFIRMAR, again.notice.value)
+            coVerify(exactly = 0) { f.printer.reintentar(any(), any(), any()) }
+        } finally { again.stop() }
+    }
+    // Prueba del conjunto (20-nov, punto 1): el texto del servidor ya trae su punto final.
+    @Test fun `D16 el rechazo no repite el punto final del servidor`() = runTest {
+        val f = fixture(backgroundScope, phase = "REJECTED")
+        f.origins["a"] = f.origins.getValue("a").copy(message = "Otro compañero cambió este producto. Revisa su estado.")
+        try {
+            f.service.start("v1"); f.service.pass("v1")
+            assertEquals("La preparación no fue aceptada: Otro compañero cambió este producto. Revisa su estado. Avisa a cocina.",
+                f.service.notice.value)
+        } finally { f.service.stop() }
+    }
+    // Prueba del conjunto (punto 2): el aviso de un rechazo salía en cada pasada y reaparecía en la hoja de OTRA mesa.
+    @Test fun `D16 el aviso de un rechazo sale una vez, se quita solo y vuelve a salir al reabrir la app`() = runTest {
+        val f = fixture(backgroundScope, phase = "REJECTED")
+        coEvery { f.client.enviar(any(), any(), any()) } returns null // la pantalla no acusa: la tarea no termina
+        var now = 0L; f.service.nanoTime = { now }
+        try {
+            f.service.start("v1"); f.service.pass("v1")
+            assertTrue(f.service.notice.value!!.startsWith("La preparación no fue aceptada"))
+            assertFalse(f.job().done)
+            now = (PreparationDeliveryService.VIGENCIA_DEL_AVISO_MS + 1_000) * 1_000_000
+            f.service.pass("v1")
+            assertNull("ni se vuelve a publicar ni se queda para otra mesa", f.service.notice.value)
+            f.service.pass("v1")
+            assertNull(f.service.notice.value)
+        } finally { f.service.stop() }
+        val again = f.restart()
+        try {
+            again.start("v1"); again.pass("v1")
+            assertTrue("sobrevive a cerrar la app", again.notice.value!!.startsWith("La preparación no fue aceptada"))
+        } finally { again.stop() }
+    }
+    // D15 r5 #4: el SERVIDOR marca `yaAplicada` en cada renglón que otra caja ya había liberado (éxito «sin cambios»).
+    private fun ackedWith(f: Fixture, vararg yaAplicada: Boolean?) {
+        val items = yaAplicada.mapIndexed { i, ya -> """{"id":"k$i","preparationRevision":1""" + (if (ya == null) "" else ""","yaAplicada":$ya""") + "}" }
+        f.origins["a"] = f.origins.getValue("a").copy(status = SyncIntentEntity.STATUS_ACKED,
+            resultJson = """{"orderId":"order","items":[${items.joinToString(",")}]}""")
+    }
+    @Test fun `D16 si todo el ACK trae yaAplicada otra caja ya libero e imprimio - sin papel y sin aviso`() = runTest {
+        val f = fixture(backgroundScope); ackedWith(f, true)
+        try {
+            f.service.start("v1"); f.service.pass("v1")
+            assertEquals("DONE", f.job().paperState); assertNull(f.service.notice.value)
+            coVerify(exactly = 0) { f.printer.reintentar(any(), any(), any()) }
+        } finally { f.service.stop() }
+    }
+    @Test fun `D16 un ACK mixto con yaAplicada imprime como hoy`() = runTest {
+        val f = fixture(backgroundScope); ackedWith(f, true, null)
+        try {
+            f.service.start("v1"); f.service.pass("v1")
+            assertEquals("DONE", f.job().paperState)
+            coVerify(exactly = 1) { f.printer.reintentar(any(), any(), any()) }
+        } finally { f.service.stop() }
+    }
+    @Test fun `D16 un ACK sin el campo yaAplicada imprime como hoy`() = runTest {
+        val f = fixture(backgroundScope); ackedWith(f, null)
+        try {
+            f.service.start("v1"); f.service.pass("v1")
+            coVerify(exactly = 1) { f.printer.reintentar(any(), any(), any()) }
+        } finally { f.service.stop() }
+    }
+    // 2.ª pasada con aparatos (A2): el D3 recibió por el WiFi del local SU PROPIO «Preparar» y lo rechazó («Un avance de otro
+    // aparato no coincide»). Un avance de este mismo aparato ya está aplicado aquí: se toma como recibido, sin tocar nada.
+    @Test fun `D16 el receptor por WiFi toma como recibido el avance de este mismo aparato sin aviso`() = runTest {
+        val f = fixture(backgroundScope)
+        val receptor = slot<suspend (PreparationPeerProgress) -> Boolean>()
+        every { f.transport!!.activarPreparacion(capture(receptor), any(), any()) } just Runs
+        try {
+            f.service.start("v1"); f.service.pass("v1")
+            val propio = f.job().commands.first()
+            assertEquals("d1", propio.deviceId)
+            assertTrue(receptor.captured(propio))
+            assertNull(f.service.notice.value)
+        } finally { f.service.stop() }
+    }
+    // 3.ª pasada con aparatos: la pantalla de cocina trabajó sin red sobre una cuenta que la caja nunca abrió; al volver la red,
+    // la caja avisaba «Un avance de otro aparato no coincide» por cada avance de un producto que ni tiene cargado.
+    private fun receptorDe(f: Fixture): CapturingSlot<suspend (PreparationPeerProgress) -> Boolean> {
+        val receptor = slot<suspend (PreparationPeerProgress) -> Boolean>()
+        every { f.transport!!.activarPreparacion(capture(receptor), any(), any()) } just Runs
+        return receptor
+    }
+    @Test fun `D16 un avance por WiFi de un producto que este aparato no tiene cargado se toma como recibido sin aviso`() = runTest {
+        val f = fixture(backgroundScope); val receptor = receptorDe(f)
+        f.service.persistence = mockk<PreparationPeerPersistence>().also { coEvery { it.receive(any()) } throws ProductoNoCargadoAqui() }
+        try {
+            f.service.start("v1"); f.service.pass("v1")
+            val deLaPantalla = f.job().commands.first().copy(deviceId = "pantalla")
+            assertTrue("recibido: el emisor deja de reenviarlo", receptor.captured(deLaPantalla))
+            assertNull(f.service.notice.value)
+        } finally { f.service.stop() }
+    }
+    @Test fun `D16 un avance por WiFi que choca de verdad sigue avisando`() = runTest {
+        val f = fixture(backgroundScope); val receptor = receptorDe(f)
+        f.service.persistence = mockk<PreparationPeerPersistence>().also {
+            coEvery { it.receive(any()) } throws IllegalArgumentException("El estado cambió en otro aparato. Actualiza el producto antes de continuar.")
+        }
+        try {
+            f.service.start("v1"); f.service.pass("v1")
+            val deLaPantalla = f.job().commands.first().copy(deviceId = "pantalla")
+            assertFalse(receptor.captured(deLaPantalla))
+            assertEquals("Un avance de otro aparato no coincide. Actualiza los productos de cocina.", f.service.notice.value)
         } finally { f.service.stop() }
     }
 }

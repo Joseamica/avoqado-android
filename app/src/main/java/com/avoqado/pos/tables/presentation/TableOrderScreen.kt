@@ -871,6 +871,7 @@ fun TableOrderScreen(
                     message = mensaje,
                     subtitle = actionHint,
                     onDismiss = { viewModel.consumeActionMessage() },
+                    durationMs = TableOrderViewModel.duracionDelAvisoDeError(actionHint),
                 )
             } else if (mensaje == mensajeSinRed) {
                 // D14: «Sin conexión… necesita internet» es un estado normal: gris con el wifi, y con tiempo para leerlo.
@@ -1576,10 +1577,16 @@ fun TableOrderScreen(
     }
 
     compTarget?.let { target ->
-        CortesiaDialog(
+        // Flautas (20-nov): lo enviado se anula o se regala, en la misma ventana.
+        RenglonEnviadoDialog(
             productName = target.productName ?: "Artículo",
+            sinAnular = motivoParaNoAnular(target, check),
             onDismiss = { compTarget = null },
-            onConfirm = { reason ->
+            onAnular = { reason ->
+                compTarget = null
+                viewModel.voidSentItem(target.id, reason)
+            },
+            onCortesia = { reason ->
                 compTarget = null
                 viewModel.compSentItem(target.id, reason)
             },
