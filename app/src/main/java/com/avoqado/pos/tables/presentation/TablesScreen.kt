@@ -61,6 +61,7 @@ import com.avoqado.pos.designsystem.components.AvoqadoSuccessToast
 import com.avoqado.pos.designsystem.components.AvoqadoErrorToast
 import com.avoqado.pos.designsystem.components.PlanGateScreen
 import com.avoqado.pos.designsystem.components.PrimaryButton
+import com.avoqado.pos.designsystem.components.clicDerecho
 import com.avoqado.pos.designsystem.components.sinTeclasDeClic
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.designsystem.theme.OnSurfaceDark
@@ -674,6 +675,7 @@ internal fun TableCard(table: DiningTable, onTap: () -> Unit, onLongPress: () ->
                 color = if (selected) Success else if (table.isReserved) ReservedColor else colors.border,
                 shape = RoundedCornerShape(AvoqadoTheme.cornerRadius.md),
             )
+            .clicDerecho(onLongPress)   // mouse: clic derecho = mantener presionado (D9, 20-nov)
             .combinedClickable(onClick = onTap, onLongClick = onLongPress)
             .padding(AvoqadoTheme.spacing.md),
         horizontalAlignment = Alignment.CenterHorizontally,

@@ -244,6 +244,17 @@ interface ApiService {
     @GET("mobile/venues/{venueId}/print-config")
     suspend fun getPrintConfig(@Path("venueId") venueId: String): PrintConfigResponse
 
+    /**
+     * D6 de Flautas (opción B): las pantallas de cocina del negocio que NO están conectadas a internet, decidido por el
+     * servidor (`kitchenDisplayStations.ts` → `pantallasDesconectadas`). Va como petición de FONDO (Codex r6 #3): un 403 (sin
+     * `orders:read`) no abre el diálogo global ni pide PIN en cada sondeo.
+     */
+    @Headers("${com.avoqado.pos.core.data.network.ForbiddenInterceptor.BACKGROUND_HEADER}: 1")
+    @GET("mobile/venues/{venueId}/kds/pantallas-desconectadas")
+    suspend fun pantallasDesconectadas(
+        @Path("venueId") venueId: String,
+    ): com.avoqado.pos.kds.data.PantallasDesconectadasResponse
+
     @POST("mobile/venues/{venueId}/print-jobs/sync")
     suspend fun syncPrintJobs(
         @Path("venueId") venueId: String,

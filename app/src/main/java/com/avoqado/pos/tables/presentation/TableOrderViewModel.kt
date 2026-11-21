@@ -1626,6 +1626,11 @@ class TableOrderViewModel @Inject constructor(
      */
     private fun avisarComandaDeRonda(estado: com.avoqado.pos.printing.data.EstadoDeComanda) {
         if (estado !is com.avoqado.pos.printing.data.EstadoDeComanda.NoSalio) return
+        // D6 de Flautas (20-nov): la ronda llegó EN LÍNEA (el servidor le armó su comanda de pantalla) y lo único sin papel es
+        // una estación «sólo pantalla» sin impresora: la pantalla ya la tiene. Avisar en cada ronda era falso; la franja de la
+        // racha dice fijo si la pantalla no se alcanza por el WiFi. (La marca D2 de «negocio sin cocina» NO calla la mesa:
+        // Codex r1 #4, una caja sin la config descargada la pondría y perdería un aviso real.)
+        if (estado.pantallaLaRecibe) return
         // m-2 (Task 9 review, ronda 1): `despacharEnFondo` vive en el ámbito de la app y puede seguir insistiendo
         // minutos después de que el mesero cambie de sucursal. 🔴 D1 (Codex r3 #3): la libreta ya separa por sucursal
         // (un trabajo de la sucursal VIEJA queda suspendido: no se enseña ni se imprime en la nueva, y vuelve al
