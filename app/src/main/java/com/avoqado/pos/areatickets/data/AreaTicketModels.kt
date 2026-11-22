@@ -323,7 +323,8 @@ private fun mercancia(lineas: List<IssueAreaTicketLineRequest>) =
             discountReason = null, discountReasonComment = null,
         )
     }
-        .sortedBy { it.toString() }
+        // D40 (Codex r4 #2): se ordena por su JSON, que escapa el texto: una nota que contenga «, b=…» ya no empata con otra línea.
+        .sortedBy { kotlinx.serialization.json.Json.encodeToString(IssueAreaTicketLineRequest.serializer(), it) }
 
 /** D4 (18-nov): el motivo del descuento que viaja con la línea, con la regla de Mostrador (`OrderRepository`): nunca en cortesía ni en blanco. */
 internal fun CartItem.motivoQueViaja(): String? = discountReason?.takeIf { !isCortesia && it.isNotBlank() }

@@ -91,6 +91,11 @@ class OrderPayloadNotaPorParteTest {
         val dos = listOf(paquete(consome, cochinita).copy(id = "a"), paquete(agua).copy(id = "b"))
         val alReves = listOf(paquete(cochinita, consome).copy(id = "c"), paquete(agua).copy(id = "d"))
         assertTrue(intentoDeVale(CartState(items = dos)).mismaMercanciaQue(intentoDeVale(CartState(items = alReves)).lineas))
+        // Codex r4 #2: notas con texto que imita el mapa («x, b=y») no hacen empatar renglones distintos al ordenar.
+        val a = SelectedModifier("g", "G", "a", "A", 0); val b = SelectedModifier("g", "G", "b", "B", 0)
+        val uno = listOf(paquete(a.copy(note = "x, b=y"), b.copy(note = "z")).copy(id = "1"), paquete(a.copy(note = "x"), b.copy(note = "y, b=z")).copy(id = "2"))
+        val otro = listOf(paquete(b.copy(note = "y, b=z"), a.copy(note = "x")).copy(id = "3"), paquete(b.copy(note = "z"), a.copy(note = "x, b=y")).copy(id = "4"))
+        assertTrue(intentoDeVale(CartState(items = uno)).mismaMercanciaQue(intentoDeVale(CartState(items = otro)).lineas))
         val sinNotas = intentoDeVale(CartState(items = listOf(paquete(consome.copy(note = null), agua))))
         assertFalse(jsonDeRetrofit.encodeToJsonElement(IssueAreaTicketLineRequest.serializer(), sinNotas.lineas.single()).jsonObject.containsKey("modifierNotes"))
     }
