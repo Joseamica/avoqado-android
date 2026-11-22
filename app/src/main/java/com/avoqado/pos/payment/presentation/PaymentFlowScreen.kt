@@ -510,6 +510,7 @@ fun PaymentFlowScreen(
                         )
                     }
                     val sincronizacion by viewModel.sincronizacionDelCobro.collectAsState()
+                    val deudaDeLaMaquina by viewModel.deudaDeLaMaquina.collectAsState()
 
                     PaymentResultScreen(
                         accionesDeRedHabilitadas = accionesDeRedHabilitadas,
@@ -522,6 +523,7 @@ fun PaymentFlowScreen(
                         changeCents = currentState.changeAmount,
                         isQueued = currentState.isQueued,
                         sincronizacion = sincronizacion,
+                        avisoDeLaMaquina = deudaDeLaMaquina,
                         paymentId = currentState.paymentId,
                         canSendReceipt = !currentState.paymentId.isNullOrBlank() || !currentState.receiptAccessKey.isNullOrBlank(),
                         isSendingWhatsApp = whatsAppSending,

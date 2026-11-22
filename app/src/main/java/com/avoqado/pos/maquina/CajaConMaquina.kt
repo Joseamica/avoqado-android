@@ -67,6 +67,8 @@ data class VistaDeLaMaquina(
     val incidencia: String? = null,
     /** Codex código r1 #12: ventas pagadas de la sucursal cuyo ticket no salió. */
     val ticketsSinImprimir: Int = 0,
+    /** E1: la deuda del folio de esta pantalla, de su fila en vivo y decidida como su papel ([deudaEnPantalla]). */
+    val deuda: String? = null,
 )
 
 /**
@@ -142,11 +144,15 @@ class CajaConMaquina(
         local.update { if (it.apertura == mia) cambio(it) else it }
     }
 
+    /** E1: la deuda del folio de esta pantalla, junto con su folio (la de otro folio no se pinta en ésta). */
+    private val deudaDeMiFolio = local.map { it.miFolio }.distinctUntilChanged()
+        .flatMapLatest { f -> f?.let { maquina.deudaDelFolio(it).map { d -> f to d } } ?: flowOf(null) }
+
     val vista: StateFlow<VistaDeLaMaquina?> =
         combine(
-            local, maquina.ahora, maquina.cobro.estado, maquina.avisoDeSubida,
-            maquina.ticketsSinImprimir(),
-        ) { l, ahora, estado, avisoDeSubida, sinImprimir ->
+            combine(local, deudaDeMiFolio) { l, d -> l to d?.takeIf { it.first == l.miFolio }?.second },
+            maquina.ahora, maquina.cobro.estado, maquina.avisoDeSubida, maquina.ticketsSinImprimir(),
+        ) { (l, deuda), ahora, estado, avisoDeSubida, sinImprimir ->
             val v = l.venta ?: return@combine null
             // El cobro vivo de esta venta; si no lo hay (se reinició la app), su duda guardada (Codex código r1 #7).
             val mio = estado.takeIf { folioDe(it) != null && folioDe(it) == l.miFolio }
@@ -164,6 +170,7 @@ class CajaConMaquina(
                 resuelto = l.resuelto,
                 incidencia = l.incidencia,
                 ticketsSinImprimir = sinImprimir,
+                deuda = deuda,
             )
         }.stateIn(scope, SharingStarted.Eagerly, null)
 

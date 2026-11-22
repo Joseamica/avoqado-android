@@ -343,6 +343,35 @@ class SubidaDeLaMaquinaTest {
         assertFalse(dao.fila(REF_1)!!.subido)
     }
 
+    /**
+     * E1 (recorrido real, obs. 1): «no está emparejada» —del arranque sin credencial o de un 403— deja de ser cierto al emparejar: se quita en
+     * ese momento, sin esperar a que suba algo (sin nada por subir se quedaba para siempre). Un 403 por otra razón no lo arregla emparejar.
+     */
+    @Test
+    fun `P1 E1 al emparejar se quita el aviso de no emparejada aunque no haya nada por subir`() = runBlocking {
+        boveda.credencial = null
+        subida.subir()
+        assertEquals(TEXTO_PC_SIN_EMPAREJAR, subida.aviso.value)
+
+        boveda.credencial = "cred-nueva"
+        subida.alEmparejar()
+
+        assertNull(subida.aviso.value)
+    }
+
+    @Test
+    fun `E1 emparejar no quita un aviso que no es de emparejar`() = runBlocking {
+        insertar(pagado)
+        cuando("POST", ".*/cash-machine/sales", error(403, "Tu rol no puede subir cobros de la máquina", "FORBIDDEN"))
+        subida.subir()
+        val otro = subida.aviso.value
+        assertTrue(otro != null && otro != TEXTO_PC_SIN_EMPAREJAR)
+
+        subida.alEmparejar()
+
+        assertEquals(otro, subida.aviso.value)
+    }
+
     @Test
     fun `sin red no se marca nada y la siguiente pasada la sube`() = runBlocking {
         insertar(pagado)

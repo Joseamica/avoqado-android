@@ -100,6 +100,25 @@ class MaquinaDeEfectivoViewModelTest {
         assertFalse(prefs.activa)
     }
 
+    /** E1 (recorrido real, obs. 1): emparejar le avisa a la subida, que quita «no está emparejada» y sube lo pendiente; si falla, nada. */
+    @Test
+    fun `P1 E1 emparejar le avisa a la subida y un emparejamiento fallido no`() {
+        val maquina = mockk<MaquinaDeEfectivo>(relaxed = true) { every { puedeConfigurar() } returns true }
+        servidor.enqueue(MockResponse().setResponseCode(201).setBody("""{"success":true,"bindingId":"b1","credential":"cred-1"}"""))
+        val vm = vm(maquina).abierta()
+
+        vm.cambiarIp("192.168.1.50")
+        vm.emparejar()
+        vm.esperar("emparejada") { it.emparejada && !it.ocupado }
+        io.mockk.verify(exactly = 1) { maquina.alEmparejar() }
+
+        servidor.shutdown()
+        vm.cambiarIp("192.168.1.51")
+        vm.emparejar()
+        vm.esperar("aviso") { it.aviso != null && !it.ocupado }
+        io.mockk.verify(exactly = 1) { maquina.alEmparejar() }
+    }
+
     @Test
     fun `C7 la hoja enseña lo que la maquina le debe a clientes y reimprime su comprobante`() {
         val maquina = mockk<MaquinaDeEfectivo>()

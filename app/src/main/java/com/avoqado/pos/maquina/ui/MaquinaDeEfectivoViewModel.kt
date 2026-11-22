@@ -162,6 +162,7 @@ class MaquinaDeEfectivoViewModel @Inject constructor(
                 )
                 // Rediseño del SERVIDOR (D3): emparejar dio de baja a la PC anterior; la máquina le sigue obedeciendo si no se desconecta.
                 reemplazo = com.avoqado.pos.maquina.textoDePcReemplazada(emparejado.reemplazadas)
+                maquinaDeEfectivo?.alEmparejar()   // E1 (obs. 1): «no está emparejada» se quita ya, no en la primera subida
                 null
             }
             refrescar(aviso = aviso ?: reemplazo, listo = "¡Máquina emparejada!".takeIf { aviso == null })

@@ -72,6 +72,23 @@ fun textoDeTicketsSinImprimir(n: Int): String = if (n == 1) "Hay 1 ticket sin im
 fun textoDeLaDeuda(cents: Long, referenceCC: String): String =
     "Te debemos ${com.avoqado.pos.core.util.formatMoneyFromCents(cents.toInt())} de cambio: pasa a caja a cobrarlo · Folio $referenceCC"
 
+/**
+ * E1 (recorrido real, 21-nov): lo que la PANTALLA dice de la deuda de [fila] al terminar, decidido como su papel ([conLoFisico] y
+ * [comprobanteDeLaMaquina]): la cifra sale de lo que contó la máquina ([loQueContoLaMaquina]), nunca de lo que tecleó un gerente; si lo
+ * físico no consta o no respalda lo registrado (la máquina se contradijo, o el panel lo resolvió sin su cierre), ninguna cifra: «Revisar en
+ * el panel» con el folio. GUARDADO no enseña monto (C7). null = nada que decir (o el cobro sigue en curso).
+ */
+fun deudaEnPantalla(fila: CobroEnMaquinaEntity): String? {
+    if (fila.estado == EstadoDelIntento.EN_CURSO || fila.desenlace == Desenlace.GUARDADO) return null
+    val (recibido, cambio) = fila.loQueContoLaMaquina().cierre?.takeIf { !fila.porRevisarEnElPanel() }
+        ?: return "$TEXTO_REVISAR_EN_EL_PANEL · Folio ${fila.referenceCC}"
+    // Sin «revisar», el desenlace consta y es el de lo físico.
+    val desenlace = fila.desenlace ?: return null
+    val debe = deudaFisica(desenlace, fila.dueCents, recibido, cambio).takeIf { it > 0 } ?: return null
+    return if (desenlace == Desenlace.PAGADO) textoDeLaDeuda(debe.toLong(), fila.referenceCC)
+    else "Te debemos ${com.avoqado.pos.core.util.formatMoneyFromCents(debe)}: pasa a caja a cobrarlo · Folio ${fila.referenceCC}"
+}
+
 // MARK: - Reglas puras de la caja
 
 /** Lo que la pantalla de cobro sabe de la máquina física, en vivo. */
@@ -705,6 +722,12 @@ class MaquinaDeEfectivo internal constructor(
 
     /** Codex código r3 #7: ¿el permiso de configurar la máquina está en la sesión? (sólo la parte de IP y emparejar lo pide). */
     fun puedeConfigurar(): Boolean = roles.canConfigureCashMachine
+
+    /** E1: la deuda que enseña la pantalla del folio, de su fila en vivo ([deudaEnPantalla], la misma decisión que su papel). */
+    fun deudaDelFolio(referenceCC: String): Flow<String?> = dao.observar(referenceCC).map { it?.let(::deudaEnPantalla) }.distinctUntilChanged()
+
+    /** E1 (obs. 1): recién emparejada, la subida quita «no está emparejada» y sube lo que esperaba. */
+    fun alEmparejar() = subida.alEmparejar()
 
     /** Lo que la pantalla de resultado dice de un cobro de la máquina: su fila, en vivo (Room avisa cuando cambia). */
     fun sincronizacion(referenceCC: String): Flow<SincronizacionDelCobro> = dao.observar(referenceCC).map { f ->

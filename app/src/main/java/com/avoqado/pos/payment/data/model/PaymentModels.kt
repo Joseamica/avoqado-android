@@ -42,6 +42,11 @@ enum class SincronizacionDelCobro {
     /** No se encoló: el servidor lo tiene desde el principio. */
     NINGUNA,
     PENDIENTE,
+    /**
+     * E1 (recorrido real de la máquina, obs. 2): pendiente CON red, subiendo. Sólo lo da la cola de la máquina, que encola siempre (también
+     * con red): ahí «Se sincronizará cuando haya conexión» mentía mientras el `POST` tardaba.
+     */
+    REGISTRANDO,
     SINCRONIZADA,
 
     /** El servidor lo rechazó: está en «Pendientes» y alguien tiene que verlo. */

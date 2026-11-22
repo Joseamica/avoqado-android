@@ -127,7 +127,7 @@ class PaymentFlowViewModelMaquinaTest {
 
     @After fun cerrar() = dao.close()
 
-    private fun TestScope.vm(activa: Boolean = true): PaymentFlowViewModel {
+    private fun TestScope.vm(activa: Boolean = true, red: com.avoqado.pos.core.util.ConnectivityMonitor? = null): PaymentFlowViewModel {
         prefs.guardar("192.168.1.50", activa, venueId = "venue-1")
         prefs.recordarDispositivo(estaPc)
         every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings(showReviewScreen = false, showTipScreen = false)
@@ -170,6 +170,7 @@ class PaymentFlowViewModelMaquinaTest {
             cancelacionDeCobro = mockk(relaxed = true),
             savedStateHandle = androidx.lifecycle.SavedStateHandle(),
             maquinaDeEfectivo = maquina,
+            connectivityMonitor = red,
         )
     }
 
@@ -1013,5 +1014,137 @@ class PaymentFlowViewModelMaquinaTest {
         vm.cobrarConMaquina()
         runCurrent()
         assertNull(canal.paycash())
+    }
+
+    /** La conexión que ve la caja (E1, obs. 2). */
+    private fun red(hay: Boolean) = mockk<com.avoqado.pos.core.util.ConnectivityMonitor> {
+        every { isConnected } returns kotlinx.coroutines.flow.MutableStateFlow(hay)
+        every { isServerReachable } returns kotlinx.coroutines.flow.MutableStateFlow(hay)
+    }
+
+    /**
+     * E1 (recorrido real, 21-nov, el FAIL): $500 por una venta de $180 y la máquina sin cambio. La pantalla de éxito dice cuánto le debemos,
+     * con su folio, de lo que CONTÓ la máquina (como su papel); si después la máquina se contradice, ya no hay cifra: «Revisar en el panel».
+     */
+    @Test
+    fun `P1 E1 el PAGADO con cambio que la maquina no dio lo dice en la pantalla de exito con su folio`() = runTest {
+        val vm = vm()
+        val ref = pagar(vm, credit = 50_000, change = 0)
+        runCurrent()
+
+        assertTrue(vm.state.value is PaymentFlowState.Success)
+        assertEquals(com.avoqado.pos.maquina.textoDeLaDeuda(32_000, ref), vm.deudaDeLaMaquina.value)
+
+        // La máquina repite el cierre con OTRO cambio: se contradijo. Ninguna cifra (ni la primera): al panel, con su folio.
+        canal.llega(status(ref, 18_000, credit = 50_000, change = 32_000, cobrando = false, estado = "Pago Completado"))
+        runCurrent()
+        assertEquals("${com.avoqado.pos.maquina.TEXTO_REVISAR_EN_EL_PANEL} · Folio $ref", vm.deudaDeLaMaquina.value)
+    }
+
+    @Test
+    fun `E1 el PAGADO con todo su cambio no dice nada de deuda`() = runTest {
+        val vm = vm()
+        pagar(vm, credit = 20_000, change = 2_000)
+        runCurrent()
+
+        assertTrue(vm.state.value is PaymentFlowState.Success)
+        assertNull(vm.deudaDeLaMaquina.value)
+    }
+
+    /** E1: el PAGADO que resolvió un gerente sin que la máquina confirmara el cambio: lo tecleado no se enseña como deuda (como su papel). */
+    @Test
+    fun `P1 E1 el PAGADO del panel sin cierre de la maquina dice Revisar en el panel, nunca la cifra del gerente`() = runTest {
+        val vm = vm()
+        val ref = mandarALaMaquina(vm)
+        advanceTimeBy(3_001)
+        runCurrent()
+
+        elPanelResuelve(ref, ecoDelGerente(ref, credit = 50_000, change = 0) { put("owedCents", 32_000) })
+        runCurrent()
+
+        assertTrue(vm.state.value is PaymentFlowState.Success)
+        assertEquals("${com.avoqado.pos.maquina.TEXTO_REVISAR_EN_EL_PANEL} · Folio $ref", vm.deudaDeLaMaquina.value)
+    }
+
+    /**
+     * E1 (obs. 3 y la misma regla en la pantalla de la máquina): el CANCELADO que no devolvió nada no dice «recoge tu dinero», y su deuda sale de
+     * la fila (lo que contó la máquina), con su folio.
+     */
+    @Test
+    fun `P1 E1 el CANCELADO que no devolvio nada dice Te debemos sin recoge tu dinero`() = runTest {
+        val vm = vm()
+        val ref = mandarALaMaquina(vm)
+        canal.llega(status(ref, 18_000))
+        runCurrent()
+        canal.llega(status(ref, 18_000, credit = 10_000))
+        runCurrent()
+        vm.maquina!!.cancelarPorElCliente()
+        runCurrent()
+        canal.llega(status(ref, 18_000, credit = 10_000, change = 0, cobrando = false, estado = "Transacción Cancelada"))
+        runCurrent()
+
+        val vista = vm.maquina!!.vista.value!!
+        val cierre = vista.cobro as EstadoDelCobro.Cerrado
+        assertEquals("Cobro cancelado", com.avoqado.pos.maquina.ui.tituloDelCierre(cierre))
+        assertEquals("Te debemos \$100.00: pasa a caja a cobrarlo · Folio $ref", vista.deuda)
+    }
+
+    @Test
+    fun `E1 el CANCELADO que devolvio todo dice recoge tu dinero y no debe nada`() = runTest {
+        val vm = vm()
+        val ref = mandarALaMaquina(vm)
+        canal.llega(status(ref, 18_000))
+        runCurrent()
+        canal.llega(status(ref, 18_000, credit = 5_000))
+        runCurrent()
+        vm.maquina!!.cancelarPorElCliente()
+        runCurrent()
+        canal.llega(status(ref, 18_000, credit = 5_000, change = 5_000, cobrando = false, estado = "Transacción Cancelada"))
+        runCurrent()
+
+        val vista = vm.maquina!!.vista.value!!
+        assertEquals("Cobro cancelado: recoge tu dinero", com.avoqado.pos.maquina.ui.tituloDelCierre(vista.cobro as EstadoDelCobro.Cerrado))
+        assertNull(vista.deuda)
+    }
+
+    /** E1 (C7 sin cambio): GUARDADO no enseña monto ni título de «recoge». */
+    @Test
+    fun `E1 el GUARDADO no ensena monto`() = runTest {
+        val vm = vm()
+        val ref = mandarALaMaquina(vm)
+        canal.llega(status(ref, 18_000))
+        runCurrent()
+        canal.llega(status(ref, 18_000, credit = 5_000))
+        runCurrent()
+        advanceTimeBy(120_001); runCurrent()
+        advanceTimeBy(30_001); runCurrent()
+        canal.llega(status(ref, 18_000, credit = 5_000, change = 0, cobrando = false, estado = "Transacción Cancelada"))
+        runCurrent()
+
+        val vista = vm.maquina!!.vista.value!!
+        assertEquals("Se canceló el cobro", com.avoqado.pos.maquina.ui.tituloDelCierre(vista.cobro as EstadoDelCobro.Cerrado))
+        assertNull(vista.deuda)
+    }
+
+    /**
+     * E1 (obs. 2): la máquina encola SIEMPRE, también con red. Mientras su venta sube (el `POST …/sales` tardó 3.8 s y 16 s), la pantalla no
+     * dice «cuando haya conexión»: con red se está registrando. Sin red, sí lo dice.
+     */
+    @Test
+    fun `P1 E1 con red la venta de la maquina que sube no dice que espera la conexion`() = runTest {
+        val vm = vm(red = red(true))
+        pagar(vm)
+        runCurrent()
+
+        assertEquals("REGISTRANDO", vm.sincronizacionDelCobro.value.name)
+    }
+
+    @Test
+    fun `E1 sin red la venta de la maquina dice que se sincronizara cuando haya conexion`() = runTest {
+        val vm = vm(red = red(false))
+        pagar(vm)
+        runCurrent()
+
+        assertEquals(com.avoqado.pos.payment.data.model.SincronizacionDelCobro.PENDIENTE, vm.sincronizacionDelCobro.value)
     }
 }

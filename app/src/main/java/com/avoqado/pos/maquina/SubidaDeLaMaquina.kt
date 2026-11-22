@@ -111,6 +111,15 @@ class SubidaDeLaMaquina @Inject constructor(
         senal.trySend(Unit)
     }
 
+    /**
+     * E1 (recorrido real, obs. 1): recién emparejada, «no está emparejada» (del arranque sin credencial o de un 403) ya no es cierto: se quita
+     * ahora, sin esperar a que suba algo, y se sube lo que esperaba. Otro aviso (un 403 por otra razón) no lo arregla emparejar: se queda.
+     */
+    fun alEmparejar() {
+        _aviso.compareAndSet(TEXTO_PC_SIN_EMPAREJAR, null)
+        disparar()
+    }
+
     private suspend fun refrescarTurno() {
         try {
             turno.refrescar()

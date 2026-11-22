@@ -131,20 +131,10 @@ fun PantallaDeLaMaquina(vista: VistaDeLaMaquina, caja: CajaConMaquina, onSalir: 
                     Nota(TEXTO_AYUDA)
                 }
                 is EstadoDelCobro.Cerrado -> {
-                    if (c.desenlace == Desenlace.GUARDADO) {
-                        // GUARDADO no enseña monto ni imprime (C7).
-                        Titulo("Se canceló el cobro")
-                    } else {
-                        Titulo(if (c.desenlace == Desenlace.CANCELADO) "Cobro cancelado: recoge tu dinero" else "Pagado")
-                        // Codex código r1 #13: también el cambio que no dio un PAGADO (no sólo lo que no devolvió un CANCELADO).
-                        val debe = com.avoqado.pos.maquina.deudaFisica(c.desenlace, c.dueCents, c.creditCents, c.changeDispensedCents)
-                        if (debe > 0) {
-                            Nota(
-                                if (c.desenlace == Desenlace.PAGADO) com.avoqado.pos.maquina.textoDeLaDeuda(debe.toLong(), c.referenceCC)
-                                else "Te debemos ${formatMoneyFromCents(debe)}: pasa a caja a cobrarlo · Folio ${c.referenceCC}",
-                            )
-                        }
-                    }
+                    Titulo(tituloDelCierre(c))
+                    // Codex código r1 #13 y E1: lo que se le debe (también el cambio que no dio un PAGADO), de la fila y como su papel: de lo
+                    // que contó la máquina, o «Revisar en el panel» si se contradijo. GUARDADO no enseña monto (C7).
+                    vista.deuda?.let { Nota(it) }
                     Spacer(Modifier.height(AvoqadoTheme.spacing.xl))
                     PrimaryButton(text = "Listo", onClick = caja::listo, fullWidth = true)
                 }
@@ -160,6 +150,7 @@ fun PantallaDeLaMaquina(vista: VistaDeLaMaquina, caja: CajaConMaquina, onSalir: 
                     // Codex código r1 #11: el gerente dijo PAGADO, pero el SERVIDOR lo guardó como incidencia: no hay venta.
                     Titulo(vista.incidencia)
                     Nota("No se cobró la venta: el dinero quedó registrado para que el gerente lo revise.")
+                    vista.deuda?.let { Nota(it) }   // E1: con su folio, como su comprobante
                     Spacer(Modifier.height(AvoqadoTheme.spacing.xl))
                     PrimaryButton(text = "Listo", onClick = caja::listo, fullWidth = true)
                 } else vista.resuelto?.let { d ->
@@ -170,6 +161,13 @@ fun PantallaDeLaMaquina(vista: VistaDeLaMaquina, caja: CajaConMaquina, onSalir: 
             }
         }
     }
+}
+
+/** E1 (recorrido real, obs. 3): «recoge tu dinero» sólo si la máquina devolvió algo; si no devolvió nada, la deuda lo dice abajo. */
+internal fun tituloDelCierre(c: EstadoDelCobro.Cerrado): String = when (c.desenlace) {
+    Desenlace.GUARDADO -> "Se canceló el cobro"
+    Desenlace.CANCELADO -> if (c.changeDispensedCents > 0) "Cobro cancelado: recoge tu dinero" else "Cobro cancelado"
+    Desenlace.PAGADO -> "Pagado"
 }
 
 @Composable

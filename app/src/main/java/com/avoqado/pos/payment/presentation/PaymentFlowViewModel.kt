@@ -522,13 +522,30 @@ class PaymentFlowViewModel @Inject constructor(
             .stateIn(viewModelScope, SharingStarted.Eagerly, com.avoqado.pos.payment.data.model.SincronizacionDelCobro.NINGUNA)
 
     /**
+     * E1 (recorrido real, 21-nov, el FAIL): lo que la pantalla de éxito de un cobro de la MÁQUINA dice de su deuda, en vivo y decidido como su
+     * papel ([com.avoqado.pos.maquina.deudaEnPantalla]): «Te debemos $X de cambio… · Folio», o «Revisar en el panel · Folio» si la máquina se
+     * contradijo o el panel lo resolvió sin su cierre. null = no es de la máquina o no se debe nada.
+     */
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    val deudaDeLaMaquina: StateFlow<String?> =
+        _state
+            .map { ((it as? PaymentFlowState.Success)?.colaDelCobro as? ColaDelCobro.Maquina)?.referenceCC }
+            .distinctUntilChanged()
+            .flatMapLatest { ref -> ref?.let { maquinaDeEfectivo?.deudaDelFolio(it) } ?: flowOf(null) }
+            .stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
+    /**
      * El estado de UN cobro encolado según su cola, en vivo. Lo leen el aviso «Venta sincronizada» y el renglón del sello
      * ([cambiarLaPromesaAlSincronizar]): la MISMA señal, para que la pantalla nunca diga dos cosas distintas.
      */
     private fun sincronizacionDe(cola: ColaDelCobro?): Flow<SincronizacionDelCobro> = when (cola) {
         is ColaDelCobro.Pagos -> cashPaymentRepository.observarEstado(cola.id).map(SincronizacionDelCobro::dePago)
         is ColaDelCobro.Outbox -> syncOutbox.observarEstado(cola.intentId).map(SincronizacionDelCobro::deIntent)
-        is ColaDelCobro.Maquina -> maquinaDeEfectivo?.sincronizacion(cola.referenceCC) ?: flowOf(SincronizacionDelCobro.PENDIENTE)
+        // E1 (obs. 2): la máquina encola SIEMPRE, también con red: con red, lo pendiente se está registrando, no espera a la conexión.
+        is ColaDelCobro.Maquina -> combine(
+            maquinaDeEfectivo?.sincronizacion(cola.referenceCC) ?: flowOf(SincronizacionDelCobro.PENDIENTE),
+            connectivityMonitor?.let { m -> combine(m.isConnected, m.isServerReachable) { ruta, servidor -> ruta && servidor } } ?: flowOf(false),
+        ) { s, conRed -> if (s == SincronizacionDelCobro.PENDIENTE && conRed) SincronizacionDelCobro.REGISTRANDO else s }
         // Encolado sin fila que mirar: se queda como hasta hoy, pendiente.
         null -> flowOf(SincronizacionDelCobro.PENDIENTE)
     }
