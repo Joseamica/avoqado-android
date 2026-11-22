@@ -236,6 +236,201 @@ class AppStateVenueRecoveryTest {
         assertEquals(initial + 1, refreshes)
     }
 
+    // ── D17 (hz:248b195b:D17): al arrancar o iniciar sesión, `/settings` (hasta 30 s con red lenta) terminaba en refreshTabs(),
+    //    que sube el contador de la llave SIEMPRE: rehacía toda la pantalla y la venta empezada en esos segundos se borraba
+    //    aunque no hubiera cambiado nada (o aunque `/settings` hubiera fallado). ──
+
+    /** Una sesión cuyos permisos y plan puede cambiar `/settings`, y un `/settings` que contesta cuando la prueba lo suelta. */
+    private class AjustesQueTardan {
+        var permisos = listOf("orders:create", "payments:create")
+        var plan: com.avoqado.pos.core.domain.PlanSnapshot? = com.avoqado.pos.core.domain.PlanSnapshot(
+            tier = "PRO",
+            accessSchemaVersion = 1,
+            accessObservedAt = "2026-11-21T10:00:00Z",
+            grantedFeatureCodes = listOf("RESERVATIONS", "GIFT_CARDS"),
+        )
+        var alContestar: () -> Unit = {}
+        var respuesta = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val sesion: SecureStorage.() -> Unit = {
+            every { userRole } returns "CASHIER"
+            every { venuePermissions } answers { permisos }
+            every { planSnapshot } answers { plan }
+        }
+        val repo = mockk<TpvSettingsRepository>(relaxed = true) {
+            every { terminalNavigation } returns MutableStateFlow(TerminalNavigationSettings.DEFAULT)
+            coEvery { refreshSettings() } coAnswers { respuesta.await(); alContestar() }
+        }
+
+        /** Lo que da el plan guardado, como PlanManager con `accessSchemaVersion = 1`. */
+        val planManager = mockk<PlanManager>(relaxed = true) {
+            every { hasFeature(any()) } answers { firstArg<String>() in plan?.grantedFeatureCodes.orEmpty() }
+        }
+
+        /** `/settings` contesta (lo que haga [alContestar]) y el siguiente vuelve a esperar. */
+        fun contesta() {
+            val esta = respuesta
+            respuesta = kotlinx.coroutines.CompletableDeferred()
+            esta.complete(Unit)
+        }
+    }
+
+    private fun kotlinx.coroutines.test.TestScope.recienIniciada(
+        ajustes: AjustesQueTardan,
+        configurarSesion: SecureStorage.() -> Unit = {},
+        alArrancarLaCola: () -> Unit = {},
+    ): AppState {
+        val appState = createAppState(
+            true, {}, {}, {}, onOutboxStart = alArrancarLaCola, tpvSettingsRepository = ajustes.repo,
+            planManager = ajustes.planManager, configurarSesion = { ajustes.sesion(this); configurarSesion() },
+        )
+        runCurrent()
+        ajustes.contesta() // el refresco del arranque
+        advanceUntilIdle()
+        appState.onLoginSuccess() // refreshTabs() síncrono + `/settings` en vuelo
+        runCurrent()
+        return appState
+    }
+
+    @Test
+    fun `D17 al arrancar con ajustes iguales la pantalla no se rehace`() = runTest {
+        val ajustes = AjustesQueTardan()
+        val appState = createAppState(
+            true, {}, {}, {}, onOutboxStart = {}, tpvSettingsRepository = ajustes.repo, configurarSesion = ajustes.sesion,
+            planManager = ajustes.planManager,
+        )
+        runCurrent()
+        val antes = appState.mainNavigation.value // la cajera ya empezó a vender
+
+        ajustes.contesta()
+        advanceUntilIdle()
+
+        assertEquals("ajustes iguales: la venta empezada no se borra", antes, appState.mainNavigation.value)
+    }
+
+    @Test
+    fun `D17 al iniciar sesion sin cambio de permisos ni plan la pantalla no se rehace`() = runTest {
+        // Iguales, sin red, 30 s de espera o un 4xx: en todos el repositorio deja permisos y plan como estaban (escribe sólo
+        // en la respuesta buena; el 4xx mueve la terminal, que es del #325). Llave Y pestaña de inicio iguales: cambiar la de
+        // inicio también rehace el NavHost (Codex r1 #1). Con reservas prendidas y pagadas, para que haya Calendario.
+        val ajustes = AjustesQueTardan()
+        val appState = recienIniciada(ajustes, configurarSesion = { every { reservationsEnabled } returns true })
+        val antes = appState.mainNavigation.value
+        assertTrue(com.avoqado.pos.navigation.MainTab.CALENDAR in appState.visibleTabs.value)
+
+        ajustes.contesta()
+        advanceUntilIdle()
+
+        assertEquals(antes, appState.mainNavigation.value)
+    }
+
+    @Test
+    fun `D17 el plan leido otra vez con su hora nueva no cuenta como cambio`() = runTest {
+        val ajustes = AjustesQueTardan()
+        val appState = recienIniciada(ajustes)
+        val antes = appState.mainNavigation.value
+
+        // storePlanSnapshot guarda cada lectura más nueva: la hora cambia en CADA `/settings` aunque el plan sea el mismo.
+        ajustes.alContestar = { ajustes.plan = ajustes.plan?.copy(accessObservedAt = "2026-11-21T10:00:20Z") }
+        ajustes.contesta()
+        advanceUntilIdle()
+
+        assertEquals(antes, appState.mainNavigation.value)
+    }
+
+    @Test
+    fun `D17 los mismos permisos en otro orden no cuentan como cambio`() = runTest {
+        val ajustes = AjustesQueTardan()
+        val appState = recienIniciada(ajustes)
+        val antes = appState.mainNavigation.value
+
+        ajustes.alContestar = { ajustes.permisos = ajustes.permisos.reversed() }
+        ajustes.contesta()
+        advanceUntilIdle()
+
+        assertEquals(antes, appState.mainNavigation.value)
+    }
+
+    @Test
+    fun `D17 permisos distintos rehacen la pantalla como hoy`() = runTest {
+        val ajustes = AjustesQueTardan()
+        val appState = recienIniciada(ajustes)
+        val antes = appState.mainNavigation.value.contentKey
+
+        ajustes.alContestar = { ajustes.permisos = ajustes.permisos + "inventory:read" }
+        ajustes.contesta()
+        advanceUntilIdle()
+
+        assertTrue("un permiso nuevo repinta la pantalla", antes != appState.mainNavigation.value.contentKey)
+    }
+
+    @Test
+    fun `D17 plan distinto rehace la pantalla como hoy`() = runTest {
+        val ajustes = AjustesQueTardan()
+        val appState = recienIniciada(ajustes)
+        val antes = appState.mainNavigation.value.contentKey
+
+        ajustes.alContestar = { ajustes.plan = ajustes.plan?.copy(grantedFeatureCodes = listOf("GIFT_CARDS")) }
+        ajustes.contesta()
+        advanceUntilIdle()
+
+        assertTrue(antes != appState.mainNavigation.value.contentKey)
+    }
+
+    @Test
+    fun `D17 sin cambio hace todo lo de refreshTabs menos rehacer la pantalla`() = runTest {
+        // Codex r1 #4 y r2 #3: saltarse refreshTabs() entero dejaba sin arrancar el hub entre cajas cuando llega el plan y sin
+        // el segundo intento de la config de impresión. Ahora corre igual que antes; sólo la llave se queda.
+        val ajustes = AjustesQueTardan()
+        var arranquesDeLaCola = 0
+        val appState = recienIniciada(ajustes, alArrancarLaCola = { arranquesDeLaCola++ })
+        val antes = appState.mainNavigation.value
+        val arranquesAntes = arranquesDeLaCola
+
+        ajustes.contesta()
+        advanceUntilIdle()
+
+        assertEquals(antes, appState.mainNavigation.value)
+        assertEquals("startOfflineOutbox() corre como antes", arranquesAntes + 1, arranquesDeLaCola)
+    }
+
+    @Test
+    fun `D17 un plan que llego por otro camino antes de settings si rehace la pantalla`() = runTest {
+        // Codex r2 #1 y r3: al arrancar, el sondeo de la pantalla del cliente puede guardar el plan nuevo MIENTRAS el arranque
+        // renueva el token, antes de pedir `/settings`. La comparación es contra lo que tenía la pantalla al montarse, no contra
+        // lo guardado justo antes de pedir (con eso, B contra B, no se rehacía y las pestañas atrasadas cambiaban la de inicio).
+        val ajustes = AjustesQueTardan().apply { plan = plan?.copy(grantedFeatureCodes = listOf("GIFT_CARDS")) }
+        val reparacion = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val appState = createAppState(
+            true, {}, {}, {}, onOutboxStart = {}, tpvSettingsRepository = ajustes.repo, planManager = ajustes.planManager,
+            configurarSesion = { ajustes.sesion(this); every { reservationsEnabled } returns true }, reparacion = reparacion,
+        )
+        runCurrent() // la pantalla ya se montó con el plan A; el arranque espera la renovación del token
+        val antes = appState.mainNavigation.value.contentKey
+        ajustes.plan = ajustes.plan?.copy(grantedFeatureCodes = listOf("GIFT_CARDS", "RESERVATIONS")) // el sondeo guarda B
+        reparacion.complete(Unit)
+        runCurrent() // ahora sí sale `/settings`, con B ya guardado
+
+        ajustes.contesta() // contesta B, lo mismo que ya estaba guardado
+        advanceUntilIdle()
+
+        assertTrue(antes != appState.mainNavigation.value.contentKey)
+    }
+
+    @Test
+    fun `D17 el relevo por PIN y el cambio de sucursal siguen rehaciendo la pantalla`() = runTest {
+        // Fuera de D17 a propósito: rehacen al tocar (rol o sucursal nuevos), no cuando llega `/settings`.
+        val ajustes = AjustesQueTardan()
+        val appState = recienIniciada(ajustes)
+        ajustes.contesta()
+        advanceUntilIdle()
+        val antes = appState.mainNavigation.value.contentKey
+
+        appState.refreshTabs() // lo que llaman SwitchUserSheet y VenueSwitcherSheet (onTabsShouldRefresh)
+        runCurrent()
+
+        assertTrue(antes != appState.mainNavigation.value.contentKey)
+    }
+
     /**
      * D72 (D3, 13-nov): «No se pudieron actualizar los tiempos» seguía en la mesa con la red de vuelta: los tiempos sólo se
      * releían al abrir la cuenta. Al volver la red se releen si hay ese aviso; sin aviso no se gasta la petición.
@@ -790,6 +985,8 @@ class AppStateVenueRecoveryTest {
         serviceCoursesRepository: com.avoqado.pos.tables.data.ServiceCoursesRepository? = null,
         /** R5#2: filas de `cobros_en_maquina` sin subir o en duda de la sucursal activa. */
         cobrosEnMaquina: Int = 0,
+        /** D17: si viene, el arranque espera aquí (renovación del token) antes de pedir `/settings`. */
+        reparacion: kotlinx.coroutines.CompletableDeferred<Unit>? = null,
     ): AppState {
         val secureStorage = storageReal ?: mockk<SecureStorage>(relaxed = true) {
             every { isLoggedIn } returns true
@@ -803,6 +1000,7 @@ class AppStateVenueRecoveryTest {
         }
         val authRepository = mockk<AuthRepository>(relaxed = true) {
             coEvery { repairCurrentVenueBinding() } coAnswers {
+                reparacion?.await()
                 onRepair()
                 repairResult
             }
