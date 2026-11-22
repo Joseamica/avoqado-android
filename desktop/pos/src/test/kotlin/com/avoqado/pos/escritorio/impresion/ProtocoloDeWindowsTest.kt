@@ -1,5 +1,6 @@
 package com.avoqado.pos.escritorio.impresion
 
+import com.avoqado.pos.printing.data.PermisoParaImprimirVencido
 import com.avoqado.pos.printing.data.model.PrinterException
 import com.sun.jna.LastErrorException
 import java.io.ByteArrayOutputStream
@@ -32,8 +33,14 @@ class ProtocoloDeWindowsTest {
         var cancela = true
         var fallaAlCancelar: Throwable? = null
         var error = 0
+        /** Lo que pasa mientras StartDocPrinter espera al spooler (Ruling 81: ahí vence el reclamo). */
+        var alIniciarDocumento: () -> Unit = {}
         override fun abrir(nombre: String): String? { llamadas += "OpenPrinter"; return if (abre) "h-$nombre" else null }
-        override fun iniciarDocumento(h: String, documento: String): Boolean { llamadas += "StartDocPrinter"; return iniciaDocumento }
+        override fun iniciarDocumento(h: String, documento: String): Boolean {
+            llamadas += "StartDocPrinter"
+            alIniciarDocumento()
+            return iniciaDocumento
+        }
         override fun iniciarPagina(h: String): Boolean { llamadas += "StartPagePrinter"; return iniciaPagina }
         override fun escribir(h: String, bytes: ByteArray): Int {
             llamadas += "WritePrinter"
@@ -88,6 +95,36 @@ class ProtocoloDeWindowsTest {
         assertTrue(e.message!!.contains("La impresora «POS-80» no recibió el ticket completo. Revisa que esté encendida y vuelve a intentar."), e.message)
         assertFalse("bytes" in e.message!!, "el detalle técnico va a la bitácora, no al cajero")
         assertEquals(listOf("OpenPrinter", "StartDocPrinter", "StartPagePrinter", "WritePrinter", "AbortPrinter", "ClosePrinter"), w.llamadas)
+    }
+
+    /**
+     * D661 · Ruling 81: una comanda de tarjeta de «Nadie» llega a la cola con su reclamo de 70 s y el spooler detiene StartDocPrinter 25 s:
+     * el reclamo vence mientras. Con el documento y la página ya abiertos, lo último antes del primer byte es preguntar: ni un WritePrinter,
+     * el documento vacío se cancela y se cierra, y sale «permiso vencido» (no «no salió»), aunque Windows no pueda cancelar el vacío.
+     */
+    @Test fun `cola - Ruling 81 el reclamo vence mientras StartDocPrinter espera - cero WritePrinter y el documento vacio se cancela`() {
+        var edadDelReclamo = 70_000L
+        val w = ColaFalsa().apply { alIniciarDocumento = { edadDelReclamo += 25_000 } }
+        assertFailsWith<PermisoParaImprimirVencido> {
+            imprimirTrabajoCrudo(w, "POS-80", "Avoqado POS", ticket, antesDelPrimerByte = { edadDelReclamo < 75_000 })
+        }
+        assertEquals(listOf("OpenPrinter", "StartDocPrinter", "StartPagePrinter", "AbortPrinter", "ClosePrinter"), w.llamadas)
+        assertEquals(0, w.recibido.size())
+
+        val sinCancelar = ColaFalsa().apply { cancela = false }
+        assertFailsWith<PermisoParaImprimirVencido> {
+            imprimirTrabajoCrudo(sinCancelar, "POS-80", "Avoqado POS", ticket, antesDelPrimerByte = { false })
+        }
+        assertFalse("WritePrinter" in sinCancelar.llamadas)
+    }
+
+    /** Ruling 81: se pregunta UNA vez, después de StartPagePrinter y antes del primer WritePrinter; con el reclamo a tiempo, sale todo. */
+    @Test fun `cola - Ruling 81 el permiso se pregunta tras abrir el documento y la pagina, justo antes del primer byte`() {
+        val w = ColaFalsa()
+        val preguntadoTras = mutableListOf<String>()
+        imprimirTrabajoCrudo(w, "POS-80", "Avoqado POS", ticket, antesDelPrimerByte = { preguntadoTras += w.llamadas.last(); true })
+        assertEquals(listOf("StartPagePrinter"), preguntadoTras)
+        assertContentEquals(ticket, w.recibido.toByteArray())
     }
 
     @Test fun `cola - WritePrinter que falla tambien se intenta cancelar`() {

@@ -799,19 +799,35 @@ class PrinterService @Inject constructor(
             printer = conectarOEncontrar(printer)
         }
 
+        // D661 · Rulings 50 y 81: lo último antes del primer byte. Una comanda de tarjeta de «Nadie» cuyo reclamo se hizo viejo esperando no
+        // manda nada (la siguiente vuelta la reclama otra vez). Sin guarda (todo lo demás), nada cambia. El permiso se queda con su primer
+        // «sí», así que se pregunta UNA vez y donde ya no queda espera: aquí para WiFi y Bluetooth (escriben enseguida); la USB y la integrada
+        // lo preguntan ellas, tras su propia preparación (la cola de WINDOWS abre el documento; la Sunmi inicia el cabezal y reintenta).
+        val puedeEscribir = kotlinx.coroutines.currentCoroutineContext()[GuardaDelPrimerByte]?.puedeEscribir ?: { true }
+        val tipo = printer.connectionTypeEnum
+        if ((tipo == PrinterConnectionType.WIFI || tipo == PrinterConnectionType.BLUETOOTH) && !puedeEscribir()) {
+            if (tipo == PrinterConnectionType.WIFI) releaseWifiConnection(printer.id)
+            throw PermisoParaImprimirVencido()
+        }
+
         updateStatus(printer.id, PrinterStatus.Printing)
 
         try {
-            when (printer.connectionTypeEnum) {
+            when (tipo) {
                 PrinterConnectionType.WIFI -> sendDataWiFi(data, printer, requierePapel)
                 PrinterConnectionType.BLUETOOTH -> sendDataBluetooth(data, printer)
-                PrinterConnectionType.USB -> sendDataUsb(data, printer)
-                PrinterConnectionType.INTERNAL -> innerPrinter.printRaw(data)
+                PrinterConnectionType.USB -> sendDataUsb(data, printer, puedeEscribir)
+                PrinterConnectionType.INTERNAL -> innerPrinter.printRaw(data, puedeEscribir)
             }
-            if (printer.connectionTypeEnum == PrinterConnectionType.WIFI) {
+            if (tipo == PrinterConnectionType.WIFI) {
                 releaseWifiConnection(printer.id)
             }
             updateStatus(printer.id, PrinterStatus.Connected)
+        } catch (e: PermisoParaImprimirVencido) {
+            // Ruling 81: no salió ni un byte y la impresora no está caída: la negativa sale tal cual (ComandaPrinter la suelta entera).
+            if (tipo == PrinterConnectionType.WIFI) releaseWifiConnection(printer.id)
+            updateStatus(printer.id, PrinterStatus.Connected)
+            throw e
         } catch (e: Exception) {
             if (printer.connectionTypeEnum == PrinterConnectionType.WIFI) {
                 releaseWifiConnection(printer.id)
@@ -1257,8 +1273,8 @@ class PrinterService @Inject constructor(
         connectionEndpoints.remove(printerId)
     }
 
-    private suspend fun sendDataUsb(data: ByteArray, printer: SavedPrinter) = withContext(Dispatchers.IO) {
-        usbPrinters.write(printer.id, data)
+    private suspend fun sendDataUsb(data: ByteArray, printer: SavedPrinter, antesDelPrimerByte: () -> Boolean) = withContext(Dispatchers.IO) {
+        usbPrinters.write(printer.id, data, antesDelPrimerByte)
     }
 
     private suspend fun sendDataBluetooth(data: ByteArray, printer: SavedPrinter) = withContext(Dispatchers.IO) {

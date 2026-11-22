@@ -1,5 +1,7 @@
 package com.avoqado.pos.payment.presentation
 
+import com.avoqado.pos.pos.domain.notasPorExtra
+import com.avoqado.pos.pos.domain.etiquetasEnCocina
 import com.avoqado.pos.giftcards.data.*
 import com.avoqado.pos.giftcards.domain.*
 import kotlinx.serialization.json.*
@@ -6443,7 +6445,7 @@ class PaymentFlowViewModel @Inject constructor(
                         categoryId = item.categoryId,
                         productName = item.nombreEnCocina,
                         quantity = item.quantity,
-                        modifiers = item.selectedModifiers.map { it.modifierName },
+                        modifiers = item.selectedModifiers.etiquetasEnCocina(), // D40: con la nota de cada parte
                         notes = item.itemNote,
                         // COMBOS — el nombre viaja con la línea para que cada estación
                         // pueda encabezar SUS productos con el combo al que pertenecen.
@@ -6467,7 +6469,7 @@ class PaymentFlowViewModel @Inject constructor(
                             tag to KitchenItem(
                                 name = item.nombreEnCocina,
                                 quantity = item.quantity,
-                                modifiers = item.selectedModifiers.map { it.modifierName }.ifEmpty { null },
+                                modifiers = item.selectedModifiers.etiquetasEnCocina().ifEmpty { null }, // D40
                                 note = item.itemNote,
                                 category = item.subtitle,
                             )
@@ -7275,6 +7277,7 @@ class PaymentFlowViewModel @Inject constructor(
                         quantity = item.quantity,
                         notes = item.itemNote,
                         modifierIds = item.selectedModifiers.map { it.modifierId },
+                        modifierNotes = item.selectedModifiers.notasPorExtra().ifEmpty { null }, // D40 (Codex r1 #4)
                         discountId = item.itemDiscountId,
                         weightQuantity = item.weightKg,
                         discountReason = item.motivoDelSuelto(),

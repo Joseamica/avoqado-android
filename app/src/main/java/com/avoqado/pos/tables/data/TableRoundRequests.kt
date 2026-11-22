@@ -3,6 +3,8 @@ package com.avoqado.pos.tables.data
 import com.avoqado.pos.pos.data.model.CartItem
 import com.avoqado.pos.pos.data.model.CartItemType
 import com.avoqado.pos.pos.data.model.promotionRefDe
+import com.avoqado.pos.pos.domain.etiquetasEnCocina
+import com.avoqado.pos.pos.domain.notasPorExtra
 
 /** One package reference, with independent choices per group. Never also send its products. */
 fun buildTableRoundRequests(
@@ -25,6 +27,7 @@ fun buildTableRoundRequests(
             quantity = item.quantity,
             notes = item.itemNote,
             modifierIds = item.selectedModifiers.map { it.modifierId }.ifEmpty { null },
+            modifierNotes = item.selectedModifiers.notasPorExtra().ifEmpty { null },
             course = item.serviceCourse?.legacyCourse ?: legacyCourses[item.id].takeIf { item.serviceCourse == null },
             serviceCourse = item.serviceCourse,
             customName = item.name.takeUnless { item.type is CartItemType.ProductItem },
@@ -55,7 +58,9 @@ fun buildRepeatedTableLines(items: List<OrderDetailItem>): List<CartItem> {
         val productId = item.productId ?: return@mapNotNull null
         CartItem(type = CartItemType.ProductItem(productId), name = item.productName ?: "Artículo",
             unitPrice = kotlin.math.round(item.unitPrice * 100).toInt(), quantity = item.quantity,
-            selectedModifiers = item.modifiers.map { com.avoqado.pos.pos.data.model.SelectedModifier("", "", it.id, it.name, kotlin.math.round(it.price * 100).toInt()) },
+            selectedModifiers = item.modifiers.map {
+                com.avoqado.pos.pos.data.model.SelectedModifier("", "", it.id, it.name, kotlin.math.round(it.price * 100).toInt(), note = it.notes)
+            },
             itemNote = item.notes, serviceCourse = item.serviceCourse)
     }
 }
@@ -89,7 +94,7 @@ fun seedTableRoundPreparation(
     val inputs = stamped.mapNotNull { line ->
         val product = line.item.type as? CartItemType.ProductItem ?: return@mapNotNull null
         com.avoqado.pos.printing.routing.RoutableItem(line.item.id, product.productId, line.item.categoryId,
-            line.item.name, line.item.quantity, line.item.selectedModifiers.map { it.modifierName }, line.item.itemNote,
+            line.item.name, line.item.quantity, line.item.selectedModifiers.etiquetasEnCocina(), line.item.itemNote,
             line.item.promotionName, line.item.serviceCourse, line.externalId, line.item.promotionInstanceId)
     }
     // «No lleva comanda»: lo de estaciones sin comanda nunca se siembra (ni en «Servicio y entregas» ni en papel).
@@ -104,7 +109,7 @@ fun seedTableRoundPreparation(
                     stationId = plan.stationId, orderNumber = orderNumber, productName = line.item.name,
                     quantity = line.item.quantity, serviceCourse = line.item.serviceCourse,
                     orderPromotionId = line.item.promotionInstanceId,
-                    modifiers = line.item.selectedModifiers.map { it.modifierName }, notes = line.item.itemNote,
+                    modifiers = line.item.selectedModifiers.etiquetasEnCocina(), notes = line.item.itemNote,
                     preparation = com.avoqado.pos.kds.domain.PreparationCounts.initial(line.item.quantity,
                         line.item.serviceCourse?.kind == "STANDARD"),
                 )

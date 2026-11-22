@@ -73,6 +73,9 @@ class MoreMenuViewModel @Inject constructor(
     /** Tienda híbrida: folios que esperan pago en caja; se suman a la insignia (`numeroDelMenu`). */
     val foliosPorPagar = vigilanteDePedidos.foliosPorPagar
 
+    /** D661: pagados con tarjeta en línea que esperan que una caja los abra; también se suman a la insignia. */
+    val tarjetasPorAbrir = vigilanteDePedidos.tarjetasPorAbrir
+
     /** `pendientes + activos > 0`: con eso la entrada se atiende aunque el plan haya vencido (R14). */
     val hayPedidosEnLineaAbiertos = vigilanteDePedidos.hayPedidosAbiertos
 

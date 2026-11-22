@@ -149,14 +149,17 @@ class SunmiInnerPrinter @Inject constructor(
      * Manda ESC/POS crudo y ESPERA el resultado del hardware. Suspende hasta que
      * el servicio confirma: si devolviéramos antes, un ticket sin papel o con la
      * tapa abierta se reportaría como impreso.
+     *
+     * D661 · Ruling 81: [antesDelPrimerByte] se pregunta ya con el cabezal preparado (`printerInit` y su estado, también en el reintento),
+     * justo antes de `sendRAWData`. Si dice que no, no sale nada: [PermisoParaImprimirVencido].
      */
-    suspend fun printRaw(data: ByteArray) {
+    suspend fun printRaw(data: ByteArray, antesDelPrimerByte: () -> Boolean = { true }) {
         // Liga a demanda: si el servicio se cayó o nunca se bindeó esta sesión,
         // lo intenta ahora en vez de fallar de una. Esta era la causa raíz de
         // "no hay impresora de recibos configurada" tras reiniciar la app.
         ensureBound()
         try {
-            printRawInternal(data)
+            printRawInternal(data, antesDelPrimerByte)
         } catch (e: PrinterException) {
             // 🔴 AUTO-RECUPERACIÓN. El servicio AIDL de Sunmi se cuelga solo en
             // estado 3 y deja de imprimir en silencio; re-ligarlo lo devuelve a
@@ -170,7 +173,7 @@ class SunmiInnerPrinter @Inject constructor(
             Log.w(tag, "Impresora en mal estado (${e.message}) — re-ligo el servicio y reintento")
             unbind()
             if (!ensureBound()) throw e
-            printRawInternal(data)
+            printRawInternal(data, antesDelPrimerByte)
         }
     }
 
@@ -200,7 +203,7 @@ class SunmiInnerPrinter @Inject constructor(
         else -> "La impresora no responde (estado $state)."
     }
 
-    private suspend fun printRawInternal(data: ByteArray): Unit = suspendCancellableCoroutine { cont ->
+    private suspend fun printRawInternal(data: ByteArray, antesDelPrimerByte: () -> Boolean): Unit = suspendCancellableCoroutine { cont ->
         val svc = service
         if (svc == null) {
             cont.resumeWithException(PrinterException.ConnectionFailed("La impresora integrada no está disponible"))
@@ -219,6 +222,11 @@ class SunmiInnerPrinter @Inject constructor(
             // papel, no hay excepción y el ticket se da por impreso.
             stateProblem(state)?.let { motivo ->
                 cont.resumeWithException(PrinterException.ConnectionFailed(motivo))
+                return@runCatching
+            }
+            // D661 · Ruling 81: lo último antes del primer byte, con el cabezal ya preparado.
+            if (!antesDelPrimerByte()) {
+                cont.resumeWithException(PermisoParaImprimirVencido())
                 return@runCatching
             }
             svc.sendRAWData(

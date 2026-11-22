@@ -1,5 +1,7 @@
 package com.avoqado.pos.pos.presentation.product
 
+import com.avoqado.pos.pos.domain.notaDelExtra
+import com.avoqado.pos.pos.domain.ponerNotaAlExtra
 import android.os.SystemClock
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
@@ -113,6 +115,8 @@ fun ProductDetailPanel(
     onDismiss: () -> Unit,
     /** Encargo 1afe04: qué hace la fila «Ajuste de precio» (permiso / PIN del encargado; en Mesas no sale). */
     ajusteDePrecio: AccesoAlAjuste = AccesoAlAjuste.LIBRE,
+    /** D40: ofrecer «+ Nota» en cada parte elegida. false donde la nota no viaja (negocio con vales por área, Codex r1 #3/#4). */
+    conNotaPorParte: Boolean = true,
     /**
      * Las teclas de la hoja del teléfono, que es otra ventana y no pasa por `MainActivity.dispatchKeyEvent`. El cobro pasa
      * el lector de la pistola (`CartViewModel.procesarTecla`): sin él, un código leído con la hoja abierta se perdía en
@@ -157,6 +161,7 @@ fun ProductDetailPanel(
                     onAddToCart = onAddToCart,
                     onDismiss = onDismiss,
                     ajusteDePrecio = ajusteDePrecio,
+                    conNotaPorParte = conNotaPorParte,
                 )
             }
         }
@@ -178,6 +183,7 @@ fun ProductDetailPanel(
                 onAddToCart = onAddToCart,
                 onDismiss = onDismiss,
                 ajusteDePrecio = ajusteDePrecio,
+                conNotaPorParte = conNotaPorParte,
                 // En Windows la hoja ya trae su X, que sigue a la vista en Nota, Cortesía, Precio y Descuentos (Codex r1 #3).
                 conX = !com.avoqado.pos.designsystem.components.LocalEsEscritorio.current,
             )
@@ -189,6 +195,8 @@ fun ProductDetailPanel(
 
 private enum class DetailSubView {
     MAIN, DISCOUNTS, PRICE_ADJUST, CORTESIA, NOTE, MOTIVO,
+    /** D40: la nota de UNA parte (opción elegida de un grupo). */
+    NOTA_DE_PARTE,
 }
 
 // MARK: - Main content (shared between side panel and bottom sheet)
@@ -204,6 +212,7 @@ private fun ProductDetailContent(
     onDismiss: () -> Unit,
     conX: Boolean = true,
     ajusteDePrecio: AccesoAlAjuste = AccesoAlAjuste.LIBRE,
+    conNotaPorParte: Boolean = true,
 ) = key(product.id) {
     val addToCartTapThrottleMs = 800L
     val selectedModifiers = remember { mutableStateListOf<SelectedModifier>() }
@@ -215,6 +224,8 @@ private fun ProductDetailContent(
     var cortesiaReason by remember { mutableStateOf<String?>(null) }
     var selectedDiscountId by remember { mutableStateOf<String?>(null) }
     var currentSubView by remember { mutableStateOf(DetailSubView.MAIN) }
+    // D40: a qué parte (grupo + opción) se le está escribiendo la nota.
+    var parteConNota by remember { mutableStateOf<Pair<com.avoqado.pos.pos.data.model.ProductModifierGroup, com.avoqado.pos.pos.data.model.Modifier>?>(null) }
 
     // Calculate display price
     val modifiersCents = selectedModifiers.sumOf { it.priceInCents }
@@ -288,6 +299,10 @@ private fun ProductDetailContent(
                             selectedModifiers.addAll(nueva)
                         },
                         onNavigate = { currentSubView = it },
+                        onNotaDeParte = if (!conNotaPorParte) null else ({ modifier, group ->
+                            parteConNota = group to modifier
+                            currentSubView = DetailSubView.NOTA_DE_PARTE
+                        }),
                         onAddToCart = {
                             val now = SystemClock.elapsedRealtime()
                             if (now - lastAddToCartTapAt < addToCartTapThrottleMs) {
@@ -347,6 +362,31 @@ private fun ProductDetailContent(
                         },
                         onBack = { currentSubView = DetailSubView.MAIN },
                     )
+                }
+                DetailSubView.NOTA_DE_PARTE -> {
+                    val (grupo, opcion) = parteConNota ?: (null to null)
+                    if (grupo == null || opcion == null) {
+                        androidx.compose.runtime.LaunchedEffect(Unit) { currentSubView = DetailSubView.MAIN }
+                    } else {
+                        val guardar = { nueva: String? ->
+                            val lista = ponerNotaAlExtra(selectedModifiers.toList(), grupo.id, opcion.id, nueva)
+                            selectedModifiers.clear()
+                            selectedModifiers.addAll(lista)
+                            parteConNota = null
+                            currentSubView = DetailSubView.MAIN
+                        }
+                        NoteSubView(
+                            currentNote = notaDelExtra(selectedModifiers, grupo.id, opcion.id) ?: "",
+                            title = "Nota de ${opcion.name}",
+                            ayuda = "Se mostrará en la cocina debajo de «${opcion.name}».",
+                            onSave = { guardar(it) },
+                            onClear = { guardar(null) },
+                            onBack = {
+                                parteConNota = null
+                                currentSubView = DetailSubView.MAIN
+                            },
+                        )
+                    }
                 }
                 DetailSubView.CORTESIA -> {
                     CortesiaSubView(
@@ -423,6 +463,8 @@ private fun MainDetailView(
     onSumarExtra: (com.avoqado.pos.pos.data.model.Modifier, com.avoqado.pos.pos.data.model.ProductModifierGroup) -> Unit,
     onRestarExtra: (com.avoqado.pos.pos.data.model.Modifier, com.avoqado.pos.pos.data.model.ProductModifierGroup) -> Unit,
     onNavigate: (DetailSubView) -> Unit,
+    /** D40: abrir la nota de una parte elegida. null = esta ficha no ofrece nota por parte. */
+    onNotaDeParte: ((com.avoqado.pos.pos.data.model.Modifier, com.avoqado.pos.pos.data.model.ProductModifierGroup) -> Unit)?,
     onAddToCart: () -> Unit,
 ) {
     var showMissingRequired by remember { mutableStateOf(false) }
@@ -518,6 +560,8 @@ private fun MainDetailView(
                     },
                     onSumar = { modifier -> onSumarExtra(modifier, group) },
                     onRestar = { modifier -> onRestarExtra(modifier, group) },
+                    // D40: «+ Nota» debajo de cada opción elegida («sin cebolla» sólo al Consomé).
+                    onNota = onNotaDeParte?.let { abrir -> { modifier -> abrir(modifier, group) } },
                 )
             }
 
@@ -792,6 +836,9 @@ internal fun NoteSubView(
     onSave: (String) -> Unit,
     onClear: () -> Unit,
     onBack: () -> Unit,
+    /** D40: la misma pantalla sirve para la nota de una parte («Nota de Consomé»). */
+    title: String = "Nota del artículo",
+    ayuda: String = "Agrega una nota para este artículo. Se mostrará en el ticket y en la cocina.",
 ) {
     var text by remember { mutableStateOf(currentNote) }
     val maxChars = 200
@@ -806,7 +853,7 @@ internal fun NoteSubView(
     // pusiera otra vez, se sumaria dos veces dentro de una hoja.
     Column(modifier = Modifier.fillMaxSize()) {
         SubViewHeader(
-            title = "Nota del artículo",
+            title = title,
             onBack = onBack,
             actionLabel = if (text.isNotEmpty()) "Eliminar" else null,
             onAction = onClear,
@@ -821,7 +868,7 @@ internal fun NoteSubView(
             Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
 
             Text(
-                text = "Agrega una nota para este artículo. Se mostrará en el ticket y en la cocina.",
+                text = ayuda,
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

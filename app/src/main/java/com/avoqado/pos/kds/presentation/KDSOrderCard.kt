@@ -1,6 +1,7 @@
 package com.avoqado.pos.kds.presentation
 
 import com.avoqado.pos.pos.domain.juntarExtrasRepetidos
+import com.avoqado.pos.pos.domain.separarNotaDelExtra
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -303,13 +304,25 @@ private fun KDSItemRow(
         // Modifiers
         if (item.modifiers.isNotEmpty()) {
             juntarExtrasRepetidos(item.modifiers).forEach { mod ->
+                // D40: la nota de la parte, en su propia línea DEBAJO de su parte (como la nota del artículo, en ámbar).
+                val (parte, nota) = separarNotaDelExtra(mod)
                 Text(
-                    text = "  - $mod",
+                    text = "  - $parte",
                     style = if (isLargeFont) MaterialTheme.typography.bodyMedium
                             else MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     textDecoration = tachado,
                 )
+                if (nota != null) {
+                    Text(
+                        text = "      Nota: $nota",
+                        style = if (isLargeFont) MaterialTheme.typography.bodyMedium
+                                else MaterialTheme.typography.bodySmall,
+                        fontWeight = FontWeight.Medium,
+                        color = Color(0xFFFFA000),
+                        textDecoration = tachado,
+                    )
+                }
             }
         }
 

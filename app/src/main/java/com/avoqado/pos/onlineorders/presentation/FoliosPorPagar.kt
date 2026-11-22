@@ -6,6 +6,7 @@ import com.avoqado.pos.onlineorders.domain.HuellaDeFolio
 import com.avoqado.pos.onlineorders.domain.ListaPorPagar
 import com.avoqado.pos.onlineorders.domain.OnlineOrder
 import com.avoqado.pos.onlineorders.domain.OnlineOrderStatus
+import com.avoqado.pos.onlineorders.domain.TarjetaPorAbrir
 import java.text.Normalizer
 import java.time.Duration
 import java.time.Instant
@@ -24,8 +25,28 @@ internal fun yaPagadoCents(pedido: OnlineOrder): Long = (pedido.totalCents - ped
  */
 fun numeroDeSeccion(conteo: Int, mostrados: Int, hayMas: Boolean): Int = if (hayMas) max(conteo, mostrados) else mostrados
 
-/** La insignia de «Pedidos en línea» en «Más»: lo que espera una persona (aceptar o cobrar). */
-fun numeroDelMenu(porAceptar: Int, porPagar: Int): Int = porAceptar + porPagar
+/** La insignia de «Pedidos en línea» en «Más»: lo que espera una persona (aceptar, cobrar o, D661, abrir un pagado en línea). */
+fun numeroDelMenu(porAceptar: Int, porPagar: Int, porAbrir: Int = 0): Int = porAceptar + porPagar + porAbrir
+
+/**
+ * La sección de folios sale si el servidor la tiene (un «no disponible» la esconde aunque haya algo guardado) y hay algo que decir.
+ * D661: un pagado en línea por abrir la mantiene a la vista aunque el negocio cambie a «Mi equipo» o apague la tienda. PURA.
+ */
+fun seccionDeFoliosVisible(lista: ListaPorPagar): Boolean =
+    lista.disponible &&
+        (lista.showTile || lista.porPagar.isNotEmpty() || lista.porEntregar.isNotEmpty() || lista.tarjetasPorAbrir.isNotEmpty())
+
+/** D661: el botón de un pagado en línea por abrir. Abrir es cobrar una tarjeta: pide conexión, y otra caja no lo está cobrando. PURA. */
+fun sePuedeAbrir(tarjeta: TarjetaPorAbrir, sinConexion: Boolean, ocupado: Boolean): Boolean =
+    !sinConexion && !tarjeta.cobrando && !ocupado
+
+/** D661: lo que dice ese botón (lo que se puede, o por qué no). PURA. */
+fun textoDeAbrir(tarjeta: TarjetaPorAbrir, sinConexion: Boolean, ocupado: Boolean): String = when {
+    tarjeta.cobrando -> TextosPedidosEnLinea.COBRANDO_EN_OTRA_CAJA
+    ocupado -> TextosPedidosEnLinea.ABRIENDO
+    sinConexion -> TextosPedidosEnLinea.ABRIR_NECESITA_CONEXION
+    else -> TextosPedidosEnLinea.ABRIR_Y_COBRAR
+}
 
 private fun normalizar(texto: String): String =
     Normalizer.normalize(texto, Normalizer.Form.NFD).replace(Regex("\\p{Mn}+"), "").lowercase()
@@ -219,3 +240,17 @@ fun textoDeVencimiento(pedido: OnlineOrder, ahora: Instant, sinConexion: Boolean
     val minutos = restante.toMinutes() + if (restante.toMillis() % 60_000 > 0) 1 else 0
     return VencimientoFolio(TextosPedidosEnLinea.venceEn(minutos.toInt()), pronto = minutos <= 5)
 }
+
+/**
+ * D661 · R2-2 (Ruling 36): el cierre de un pedido que ya no se entrega, con la precedencia del SERVIDOR: «Devuelto» > «Devolviendo…» >
+ * «No lo recogió». null = sin marca (o un SERVIDOR viejo): todo como antes. PURA.
+ */
+fun marcaDelPedido(pedido: OnlineOrder): String? = when {
+    pedido.refundedAt != null -> TextosPedidosEnLinea.DEVUELTO
+    pedido.refundRequestedAt != null -> TextosPedidosEnLinea.DEVOLVIENDO
+    pedido.notPickedUpAt != null -> TextosPedidosEnLinea.NO_LO_RECOGIO
+    else -> null
+}
+
+/** R2-2: «Entregado» (y «Listo») sólo sin marca: un pedido devuelto, devolviéndose o no recogido no se entrega desde la caja. PURA. */
+fun sePuedeEntregar(pedido: OnlineOrder): Boolean = marcaDelPedido(pedido) == null
