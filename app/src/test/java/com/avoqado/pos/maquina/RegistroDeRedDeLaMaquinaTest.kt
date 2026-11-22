@@ -46,7 +46,9 @@ class RegistroDeRedDeLaMaquinaTest {
 
         assertEquals("la credencial sí viajó", "CREDENCIAL-DE-LA-PC", servidor.takeRequest().let { servidor.takeRequest() }.getHeader(CierresDeLaMaquinaApi.CREDENCIAL))
         val registro = lineas.joinToString("\n")
-        assertTrue("el registro sí se escribió", registro.contains("AQ000000000001"))
+        assertTrue("el registro sí se escribió", registro.contains("/cash-machine/sales"))
+        // Codex código POS r10: el cuerpo de un cierre es de un solo envío; el registro no lo lee (ni lo podría reenviar).
+        assertTrue(registro, registro.contains("one-shot body omitted") && !registro.contains("AQ000000000001"))
         assertTrue(registro, !registro.contains("SECRETO-DEL-ALTA"))
         assertTrue(registro, !registro.contains("CREDENCIAL-DE-LA-PC"))
     }

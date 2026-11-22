@@ -145,54 +145,63 @@ class SubidaDeLaMaquina @Inject constructor(
         for (delLote in dao.paraSubir(venueId)) {
             // Codex código POS r9 #1 (F5): el envío se arma de la fila tal como está AHORA, nunca de la foto del lote: mientras subía otro folio
             // la máquina pudo corregir éste (y la PC pasarlo a duda). Si ya no sube, se queda.
-            val fila = dao.paraSubirElFolio(venueId, delLote.referenceCC) ?: continue
-            // Codex código r3 #1 y POS r7: lo que llegó después de la resolución de un gerente, o de un cierre que el SERVIDOR ya tiene, sube
-            // como duda (el SERVIDOR abre su revisión).
-            val esDuda = fila.estado == EstadoDelIntento.ESPERANDO || fila.subeTrasTerminar()
-            // Codex código POS r8: la máquina se contradijo entre la conversión de arriba y esta lectura: la pasada siguiente la sube como duda.
-            if (!esDuda && fila.loQueContoLaMaquina().cierre == null) continue
-            // Codex código r3 #14: el cuerpo siempre se arma; un carrito ilegible sube SIN carrito y el SERVIDOR guarda primero el dinero.
-            val r = try {
-                subirFolio(venueId, credencial, fila, esDuda)
+            val envio = try {
+                enviarFolio(venueId, credencial) { dao.paraSubirElFolio(venueId, delLote.referenceCC) }
             } catch (e: IOException) {
-                return@withContext true   // sin red: la fila se queda tal cual
-            }
-            if (!aplicar(fila, leerAcuse(r), esDuda, porPost = true)) return@withContext true
+                return@withContext true   // sin red: la fila se queda tal cual (y la pasada siguiente la relee)
+            } ?: continue
+            if (!aplicar(envio.fila, leerAcuse(envio.respuesta), envio.esDuda, porPost = true)) return@withContext true
         }
         for (delLote in esperan) {
             // Codex código POS r9 (F5): igual al consultar: la duda tal como está ahora (si trajo evidencia nueva, ya subió arriba).
-            val fila = dao.esperaAlGerenteElFolio(venueId, delLote.referenceCC)?.takeIf(::consultable) ?: continue
+            val leer = suspend { dao.esperaAlGerenteElFolio(venueId, delLote.referenceCC)?.takeIf(::consultable) }
+            val fila = leer() ?: continue
             // Rediseño del SERVIDOR (r6-1): una duda ABIERTA puede tener ya su desenlace sin terminar, y sólo REENVIARLA lo reanuda (y sube
             // lo nuevo que vio la PC, que el SERVIDOR agrega). La que quedó en conflicto ya tiene su incidencia: reenviarla daría el mismo 409,
-            // así que sólo se consulta por su folio (Codex código r1 #9).
+            // así que sólo se consulta por su folio (Codex código r1 #9): un GET sin cuerpo.
             val enConflicto = fila.conflicto != null
-            val r = try {
-                if (enConflicto) api.consultarDuda(venueId, credencial, fila.referenceCC)
-                else subirFolio(venueId, credencial, fila, esDuda = true)
+            val envio = try {
+                if (enConflicto) Envio(fila, esDuda = true, api.consultarDuda(venueId, credencial, fila.referenceCC))
+                else enviarFolio(venueId, credencial, leer)
             } catch (e: IOException) {
                 return@withContext true
-            }
-            val acuse = leerAcuse(r)
-            if (acuse == Acuse.NoExiste) dao.marcarDudaSubida(fila.referenceCC, false)   // el SERVIDOR no la tiene: se sube otra vez
-            else if (!aplicar(fila, acuse, esDuda = true, porPost = !enConflicto)) return@withContext true
+            } ?: continue
+            val acuse = leerAcuse(envio.respuesta)
+            if (acuse == Acuse.NoExiste) dao.marcarDudaSubida(envio.fila.referenceCC, false)   // el SERVIDOR no la tiene: se sube otra vez
+            else if (!aplicar(envio.fila, acuse, esDuda = true, porPost = !enConflicto)) return@withContext true
         }
         hayTrabajo(venueId)
     }
 
+    /** Lo que se mandó de un folio: la lectura de su fila con que se armó, por dónde fue y lo que contestó el SERVIDOR. */
+    private class Envio(val fila: CobroEnMaquinaEntity, val esDuda: Boolean, val respuesta: RespuestaDelServidor)
+
     /**
-     * Codex código POS r5 #4: un folio nunca se queda fuera de la cola ni del panel por pesar de más. Lo esencial (importes, `creditCents`
-     * como número y el diario recortado, [textoDeLoQueVio]) va siempre. Si el cuerpo con el carrito no cabe en [TOPE_DEL_CUERPO], o el
-     * SERVIDOR contesta 413, sale al momento SIN el carrito: el SERVIDOR guarda primero el dinero (D1) y anota lo que falta. Un 413 que
-     * quede nunca es rechazo: [leerAcuse] lo reintenta.
+     * UN folio a su ruta. Codex código POS r9 y r10 (F5): CADA envío —también el segundo, sin el carrito— se arma de una lectura fresca de su
+     * fila ([leer]), y la respuesta se aplica a esa lectura; el cliente de red nunca repite un cuerpo ([CierresDeLaMaquinaApi]). null = el folio
+     * ya no sube, o su cierre ya no es confiable (Codex código POS r8: la pasada siguiente lo sube como duda).
+     *
+     * Codex código r3 #1 y POS r7: lo que llegó después de la resolución de un gerente, o de un cierre que el SERVIDOR ya tiene, sube como
+     * duda. Codex código r3 #14: el cuerpo siempre se arma; un carrito ilegible sube SIN carrito y el SERVIDOR guarda primero el dinero. Codex
+     * código POS r5 #4: un folio nunca se queda fuera de la cola ni del panel por pesar de más: si el cuerpo con el carrito no cabe en
+     * [TOPE_DEL_CUERPO], o el SERVIDOR contesta 413, sale al momento SIN el carrito (D1: guarda primero el dinero y anota lo que falta). Un 413
+     * que quede nunca es rechazo: [leerAcuse] lo reintenta.
      */
-    private suspend fun subirFolio(venueId: String, credencial: String, fila: CobroEnMaquinaEntity, esDuda: Boolean): RespuestaDelServidor {
-        suspend fun enviar(cuerpo: JSONObject) =
-            if (esDuda) api.subirDuda(venueId, credencial, cuerpo) else api.subirCierre(venueId, credencial, cuerpo)
-        fun cuerpo(conCarrito: Boolean) = if (esDuda) cuerpoDeLaDuda(fila, conCarrito) else cuerpoDelCierre(fila, conCarrito)
-        val completo = cuerpo(conCarrito = true)
-        if (completo.toString().toByteArray(Charsets.UTF_8).size > TOPE_DEL_CUERPO) return enviar(cuerpo(conCarrito = false))
-        val r = enviar(completo)
-        return if (r.codigo == 413) enviar(cuerpo(conCarrito = false)) else r
+    private suspend fun enviarFolio(venueId: String, credencial: String, leer: suspend () -> CobroEnMaquinaEntity?): Envio? {
+        var conCarrito = true
+        while (true) {
+            val fila = leer() ?: return null
+            val esDuda = fila.estado == EstadoDelIntento.ESPERANDO || fila.subeTrasTerminar()
+            if (!esDuda && fila.loQueContoLaMaquina().cierre == null) return null
+            val cuerpo = if (esDuda) cuerpoDeLaDuda(fila, conCarrito) else cuerpoDelCierre(fila, conCarrito)
+            if (conCarrito && cuerpo.toString().toByteArray(Charsets.UTF_8).size > TOPE_DEL_CUERPO) {
+                conCarrito = false
+                continue
+            }
+            val r = if (esDuda) api.subirDuda(venueId, credencial, cuerpo) else api.subirCierre(venueId, credencial, cuerpo)
+            if (r.codigo != 413 || !conCarrito) return Envio(fila, esDuda, r)
+            conCarrito = false   // Codex código POS r10: el segundo envío, sin el carrito, sale de otra lectura (la máquina pudo corregirlo)
+        }
     }
 
     private suspend fun hayTrabajo(venueId: String) =

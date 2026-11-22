@@ -7,6 +7,7 @@ import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
@@ -30,11 +31,11 @@ class CierresDeLaMaquinaApi @Inject constructor(private val client: OkHttpClient
 
     /** `POST …/cash-machine/sales` (R4-1): 200 evidencia, 202 incidencia, 409/422 con incidencia, 403 sin emparejar. */
     suspend fun subirCierre(venueId: String, credencial: String, cuerpo: JSONObject) =
-        llamar(Request.Builder().post(cuerpo.toString().toRequestBody(JSON)), "/mobile/venues/$venueId/cash-machine/sales", credencial)
+        llamar(Request.Builder().post(deUnSoloEnvio(cuerpo)), "/mobile/venues/$venueId/cash-machine/sales", credencial, subidas)
 
     /** `POST …/cash-machine/doubts` (R5#6): `{ status: 'ABIERTO' }` o la evidencia si el folio ya se resolvió. */
     suspend fun subirDuda(venueId: String, credencial: String, cuerpo: JSONObject) =
-        llamar(Request.Builder().post(cuerpo.toString().toRequestBody(JSON)), "/mobile/venues/$venueId/cash-machine/doubts", credencial)
+        llamar(Request.Builder().post(deUnSoloEnvio(cuerpo)), "/mobile/venues/$venueId/cash-machine/doubts", credencial, subidas)
 
     /** `GET …/cash-machine/doubts/:referenceCC`: lo que la PC pregunta cada 60 s hasta que el panel la resuelve (recorte R2). */
     suspend fun consultarDuda(venueId: String, credencial: String, referenceCC: String) =
@@ -50,6 +51,29 @@ class CierresDeLaMaquinaApi @Inject constructor(private val client: OkHttpClient
      */
     suspend fun cotizar(venueId: String, pedido: JSONObject) =
         llamar(Request.Builder().post(pedido.toString().toRequestBody(JSON)), "/mobile/venues/$venueId/cash-machine/quote", null, rapido)
+
+    /**
+     * 🔴 Codex código POS r10 (F5 · transporte): ningún cuerpo de la máquina se reenvía sin releer su fila. Un cierre o una duda llevan lo que
+     * contó la máquina en el instante en que se leyó su fila; si el cliente de red lo repitiera solo (el reenvío del autenticador tras un 401
+     * con la sesión vencida, un 408, un 503 con `Retry-After: 0`, una conexión que se cae a medio envío), la corrección que llegó mientras
+     * tanto se perdería: el SERVIDOR registraría $0 de adeudo cuando son $20. Dos piezas, verificadas en `RetryAndFollowUpInterceptor` de
+     * OkHttp 4.12:
+     * - el cuerpo es de UN solo envío (`isOneShot`): OkHttp no sigue un 401 (el autenticador renueva la sesión igual, pero su reenvío se
+     *   descarta), un 503, un 421 ni una redirección que conserva el cuerpo, ni reintenta si la conexión se cayó con el envío empezado;
+     * - y sin reintento de conexión (`retryOnConnectionFailure(false)`): tampoco repite un 408 ni prueba otra ruta con el cuerpo ya armado.
+     * La respuesta regresa a la subida (401 y 408/503 = reintentar, una falla de red = sin red), que relee la fila en la pasada siguiente.
+     */
+    private val subidas by lazy { client.newBuilder().retryOnConnectionFailure(false).build() }
+
+    private fun deUnSoloEnvio(cuerpo: JSONObject): RequestBody {
+        val bytes = cuerpo.toString().toRequestBody(JSON)
+        return object : RequestBody() {
+            override fun contentType() = bytes.contentType()
+            override fun contentLength() = bytes.contentLength()
+            override fun writeTo(sink: okio.BufferedSink) = bytes.writeTo(sink)
+            override fun isOneShot() = true
+        }
+    }
 
     /** «Rendirse rápido» de la ruta del dinero (`offline-first-y-hub-lan.md` §2.5): 5 s para conectar, 10 s en total. */
     private val rapido by lazy { client.newBuilder().connectTimeout(5, TimeUnit.SECONDS).callTimeout(10, TimeUnit.SECONDS).build() }

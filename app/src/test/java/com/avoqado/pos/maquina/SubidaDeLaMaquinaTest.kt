@@ -50,6 +50,8 @@ class SubidaDeLaMaquinaTest {
     private lateinit var api: CierresDeLaMaquinaApi
     private lateinit var subida: SubidaDeLaMaquina
 
+    private val urlBase get() = "http://127.0.0.1:${servidor.port}/api/v1"
+
     /** Las respuestas por ruta (el orden entre rutas no importa); sin respuesta preparada, 503 (se reintenta). */
     private val guion = mutableListOf<Pair<(RecordedRequest) -> Boolean, ArrayDeque<MockResponse>>>()
 
@@ -64,8 +66,9 @@ class SubidaDeLaMaquinaTest {
                 guion.firstOrNull { it.first(request) && it.second.isNotEmpty() }?.second?.removeFirst()
             } ?: MockResponse().setResponseCode(503).setBody("""{"message":"sin respuesta preparada"}""")
         }
-        servidor.start()
-        api = CierresDeLaMaquinaApi(okHttp).apply { baseUrl = servidor.url("/api/v1").toString().trimEnd('/') }
+        // Memoria «localhost con dos direcciones»: en la Mac y en GitHub `localhost` es 127.0.0.1 y ::1; el servidor escucha en una sola.
+        servidor.start(java.net.InetAddress.getByName("127.0.0.1"), 0)
+        api = CierresDeLaMaquinaApi(okHttp).apply { baseUrl = urlBase }
         subida = SubidaDeLaMaquina(
             dao, api, boveda, sesion, TurnoDelNegocio(contexto, api, sesion), MaquinaDeEfectivoPrefs(contexto), conectividad,
         )
@@ -1286,6 +1289,98 @@ class SubidaDeLaMaquinaTest {
         assertEquals(EstadoDelIntento.RESUELTO, f.estado)
         assertTrue("entregada", f.dudaSubida)
         assertTrue("ni comprobante ni «Te debemos» en papel", f.porRevisarEnElPanel())
+    }
+
+    // MARK: - Codex código POS r10 (F5 · transporte: ningún cuerpo de la máquina se reenvía sin releer su fila)
+
+    private var renovaciones = 0
+
+    /** La subida con un cliente como el de la app: renueva la sesión en un 401 y deja encendidos los reintentos de OkHttp. */
+    private suspend fun conClienteDeLaApp(bloque: suspend (SubidaDeLaMaquina) -> Unit) {
+        val cliente = OkHttpClient.Builder().authenticator { _, r ->
+            renovaciones++
+            r.request.newBuilder().header("Authorization", "Bearer nuevo").build()
+        }.build()
+        val deLaApp = CierresDeLaMaquinaApi(cliente).apply { baseUrl = urlBase }
+        try {
+            bloque(SubidaDeLaMaquina(dao, deLaApp, boveda, sesion, TurnoDelNegocio(contexto, deLaApp, sesion), MaquinaDeEfectivoPrefs(contexto), conectividad))
+        } finally {
+            cliente.dispatcher.executorService.shutdown()
+            cliente.connectionPool.evictAll()
+        }
+    }
+
+    /**
+     * Venta de $80 por subir. El SERVIDOR contesta el PRIMER envío con [primera] y, en ese mismo instante, la máquina corrige el folio a $100
+     * recibidos y $0 de cambio. Devuelve lo que llegó al SERVIDOR (`ruta:creditCents`) en [pasadas] pasadas de la subida.
+     */
+    private fun laCorreccionLlegaConLaPrimeraRespuesta(pasadas: Int, conLaApp: Boolean, primera: () -> MockResponse): List<String> = runBlocking {
+        val venta = ventaDe80PorSubir(REF_1, creadoEn = 1_000)
+        val envios = mutableListOf<String>()
+        servidor.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val ruta = request.path!!.substringAfterLast('/')
+                val b = JSONObject(request.body.readUtf8())
+                val n = synchronized(envios) {
+                    envios += "$ruta:" + (b.optJSONObject("cierre") ?: b).getInt("creditCents") + (if (b.has("pedido")) "" else ":sin-carrito")
+                    envios.size
+                }
+                if (n == 1) {
+                    runBlocking { dao.anotarMensaje(REF_1, 1, statusDeLaMaquina(REF_1, 8_000, 10_000, 0, "Pago Completado"), 10_000, 8_000) }
+                    return primera()
+                }
+                return if (ruta == "sales") ok(evidencia(venta)) else ok(abierta(1))
+            }
+        }
+        if (conLaApp) conClienteDeLaApp { s -> repeat(pasadas) { s.subir() } } else repeat(pasadas) { subida.subir() }
+        synchronized(envios) { envios.toList() }
+    }
+
+    /**
+     * Codex código POS r10 (c): el SERVIDOR rechaza el primer envío de la venta de $80 por sesión vencida (401). Mientras se renueva la
+     * sesión, la máquina corrige el folio a $100 recibidos y $0 de cambio. OkHttp reenviaba el MISMO cuerpo de $80 sin releer el folio y el
+     * SERVIDOR registraba $0 de adeudo (al cliente le tocaban $20). La sesión se renueva igual; el envío vuelve a la subida y la pasada
+     * siguiente relee el folio: sube como duda con $100.
+     */
+    @Test
+    fun `P1 Codex POS r10 tras un 401 el cierre de 80 nunca se reenvia - la pasada siguiente relee el folio y sube los 100`() {
+        val envios = laCorreccionLlegaConLaPrimeraRespuesta(pasadas = 2, conLaApp = true) {
+            MockResponse().setResponseCode(401).setBody("""{"error":"Unauthorized","message":"Token has expired"}""")
+        }
+        assertEquals(listOf("sales:8000", "doubts:10000"), envios)
+        assertEquals("la sesión sí se renovó", 1, renovaciones)
+        assertEquals(EstadoDelIntento.ESPERANDO, dao.fila(REF_1)!!.estado)
+    }
+
+    /** Codex código POS r10: lo mismo con el 503 y `Retry-After: 0` (OkHttp lo repite solo, sin esperar). */
+    @Test
+    fun `P1 Codex POS r10 un 503 con Retry-After 0 no reenvia el cierre de 80`() {
+        val envios = laCorreccionLlegaConLaPrimeraRespuesta(pasadas = 2, conLaApp = true) {
+            MockResponse().setResponseCode(503).setHeader("Retry-After", "0").setBody("""{"message":"Servicio no disponible"}""")
+        }
+        assertEquals(listOf("sales:8000", "doubts:10000"), envios)
+    }
+
+    /** Codex código POS r10: lo mismo con el 408 (OkHttp lo repite solo con los reintentos encendidos). */
+    @Test
+    fun `P1 Codex POS r10 un 408 no reenvia el cierre de 80`() {
+        val envios = laCorreccionLlegaConLaPrimeraRespuesta(pasadas = 2, conLaApp = true) {
+            MockResponse().setResponseCode(408).setBody("""{"message":"Tiempo agotado"}""")
+        }
+        assertEquals(listOf("sales:8000", "doubts:10000"), envios)
+    }
+
+    /**
+     * Codex código POS r10: el segundo envío tras un 413 (sin el carrito) reutilizaba la lectura del primero: el cierre de $80. Se relee el
+     * folio antes de ese segundo envío: ya es duda, y sube con $100 (sin el carrito, que es lo que no cabía).
+     */
+    @Test
+    fun `P1 Codex POS r10 el segundo envio tras un 413 relee el folio - sube la duda de 100, nunca el cierre de 80`() {
+        val envios = laCorreccionLlegaConLaPrimeraRespuesta(pasadas = 1, conLaApp = false) {
+            MockResponse().setResponseCode(413).setBody("""{"message":"La solicitud excede el tamaño máximo permitido.","code":"PAYLOAD_TOO_LARGE"}""")
+        }
+        assertEquals(listOf("sales:8000", "doubts:10000:sin-carrito"), envios)
+        assertTrue(dao.fila(REF_1)!!.dudaSubida)
     }
 
     /** Codex código POS r8 (F1): el SQL que vuelve duda un cierre sin cierre físico confiable dice lo mismo que [loQueContoLaMaquina]. */
