@@ -241,7 +241,7 @@ class CortesiaAntiguaContinuacionRoomTest {
             pagos.insertRaw(original)
             assertEquals(original, fuente())
             BundledSQLiteDriver().open(carpeta.resolve("databases/avoqado_db").toString()).use {
-                assertEquals(19L, it.leerLargo("PRAGMA user_version"))
+                assertEquals(24L, it.leerLargo("PRAGMA user_version"))   // v20–v24: la tabla de la máquina de efectivo
             }
             return original
         }

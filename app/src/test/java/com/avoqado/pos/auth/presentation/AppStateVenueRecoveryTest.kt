@@ -682,6 +682,25 @@ class AppStateVenueRecoveryTest {
         org.junit.Assert.assertTrue("al suscribirse la banda recuenta la cola guardada (${recuentos.get()} vs $antes)", recuentos.get() > antes)
     }
 
+    /** R5#2: los cobros de la máquina sin subir o en duda suben con la sesión y la credencial de esta PC: no se cierra encima. */
+    @Test
+    fun `cerrar sesion se bloquea con un cobro de la maquina sin subir`() = runTest {
+        var cerro = false
+        val appState = createAppState(
+            true, {}, {}, {}, onOutboxStart = {},
+            configurarSesion = { every { clearSession() } answers { cerro = true } },
+            cobrosEnMaquina = 1,
+        )
+        advanceUntilIdle()
+
+        appState.onLogout()
+        advanceUntilIdle()
+
+        org.junit.Assert.assertFalse(cerro)
+        val aviso = appState.sessionGuardMessage.value.orEmpty()
+        org.junit.Assert.assertTrue("esperaba el aviso de pendientes, llegó «$aviso»", aviso.contains("1 operación offline"))
+    }
+
     @Test
     fun `cerrar sesion se bloquea con llegadas del kiosco pendientes`() = runTest {
         var cerro = false
@@ -964,6 +983,8 @@ class AppStateVenueRecoveryTest {
         pagosReales: PaymentSyncService? = null,
         colaReal: SyncOutbox? = null,
         serviceCoursesRepository: com.avoqado.pos.tables.data.ServiceCoursesRepository? = null,
+        /** R5#2: filas de `cobros_en_maquina` sin subir o en duda de la sucursal activa. */
+        cobrosEnMaquina: Int = 0,
         /** D17: si viene, el arranque espera aquí (renovación del token) antes de pedir `/settings`. */
         reparacion: kotlinx.coroutines.CompletableDeferred<Unit>? = null,
     ): AppState {
@@ -1051,6 +1072,9 @@ class AppStateVenueRecoveryTest {
             printConfigRepository = printConfigRepository,
             savedCartsRepository = savedCartsRepository,
             serviceCoursesRepository = serviceCoursesRepository,
+            cobrosEnMaquinaDao = mockk<com.avoqado.pos.maquina.CobroEnMaquinaDao> {
+                coEvery { pendientes(any()) } returns cobrosEnMaquina
+            },
         )
         if (resolverReal == null) return plantilla
         // La fábrica generada ejecuta también la inyección de miembros de Hilt.

@@ -106,7 +106,17 @@ fun PaymentMethodSelectionScreen(
     motivoDeshabilitado: String? = null,
     conductaDeSaldo: com.avoqado.pos.giftcards.domain.ConductaDeTarjeta? = null,
     onSaldoSelected: (() -> Unit)? = null,
+    /**
+     * C5: la máquina de efectivo de esta PC. null = todo como hoy. Con ella (sólo WINDOWS), el punto común de cobro sólo ofrece
+     * «Efectivo en la máquina» y la tarjeta: el efectivo a mano, «Personalizado», F5, «Ya pagó de otra forma» y el saldo no
+     * aparecen (R4-5).
+     */
+    maquina: com.avoqado.pos.maquina.VistaDeLaMaquina? = null,
+    onCobrarConMaquina: () -> Unit = {},
+    /** Codex código r1 #12: «Imprimir» los tickets de la máquina que no salieron. */
+    onImprimirTicketsDeLaMaquina: () -> Unit = {},
 ) {
+    val conMaquina = maquina != null && LocalEsEscritorio.current
     val metodosVigentes by rememberUpdatedState(metodosHabilitados)
     val gris = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
     val amountCents = paymentContext.totalCents
@@ -124,7 +134,7 @@ fun PaymentMethodSelectionScreen(
     LaunchedEffect(metodosHabilitados) {
         if (!metodosHabilitados) { showCustomCashSheet = false; showManualMethodSheet = false; tarjetaPorConfirmar = null }
     }
-    AtajoDeTeclado(Key.F5, activo = metodosHabilitados) {
+    AtajoDeTeclado(Key.F5, activo = metodosHabilitados && !conMaquina) {
         if (!metodosVigentes) return@AtajoDeTeclado
         if (onCashCustomSelected != null) {
             efectivoConTotal = true
@@ -133,7 +143,9 @@ fun PaymentMethodSelectionScreen(
             onMethodSelected(PaymentMethod.CASH)
         }
     }
-    AtajoDeTeclado(Key.F4, activo = metodosHabilitados && !terminalsUnavailable && !saldoSinActualizar) { if (metodosVigentes) onMethodSelected(PaymentMethod.CARD) }
+    // R2#1: con un intento de ESTA venta en la máquina, la tarjeta tampoco sale (el ViewModel lo vuelve a revisar en disco).
+    val tarjetaBloqueada = conMaquina && maquina?.ventaEnDuda == true
+    AtajoDeTeclado(Key.F4, activo = metodosHabilitados && !terminalsUnavailable && !saldoSinActualizar && !tarjetaBloqueada) { if (metodosVigentes) onMethodSelected(PaymentMethod.CARD) }
     AtajoDeTeclado(Key.Escape) { onCancel() }
     val enWindows = LocalEsEscritorio.current
 
@@ -225,6 +237,16 @@ fun PaymentMethodSelectionScreen(
             }
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
 
+            if (conMaquina && maquina != null) {
+                com.avoqado.pos.maquina.ui.FilaEfectivoEnLaMaquina(
+                    fila = maquina.fila,
+                    aviso = maquina.aviso,
+                    avisoDeSubida = maquina.avisoDeSubida,
+                    habilitada = metodosHabilitados,
+                    onClick = { if (metodosVigentes) onCobrarConMaquina() },
+                )
+                com.avoqado.pos.maquina.ui.TicketsSinImprimirDeLaMaquina(maquina.ticketsSinImprimir, onImprimirTicketsDeLaMaquina)
+            } else
             // Efectivo row: label + suggested amounts + Personalizado
             Row(
                 modifier = Modifier
@@ -302,8 +324,8 @@ fun PaymentMethodSelectionScreen(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clickable(enabled = metodosHabilitados && !terminalsUnavailable && !saldoSinActualizar) {
-                        if (metodosVigentes && !terminalsUnavailable && !saldoSinActualizar) onMethodSelected(PaymentMethod.CARD)
+                    .clickable(enabled = metodosHabilitados && !terminalsUnavailable && !saldoSinActualizar && !tarjetaBloqueada) {
+                        if (metodosVigentes && !terminalsUnavailable && !saldoSinActualizar && !tarjetaBloqueada) onMethodSelected(PaymentMethod.CARD)
                     }
                     .padding(vertical = AvoqadoTheme.spacing.md),
                 verticalAlignment = Alignment.CenterVertically,
@@ -316,7 +338,10 @@ fun PaymentMethodSelectionScreen(
                         color = if (!metodosHabilitados) gris else if (terminalsUnavailable || saldoSinActualizar) MaterialTheme.colorScheme.onSurfaceVariant
                         else MaterialTheme.colorScheme.onSurface,
                     )
-                    if (saldoSinActualizar && metodosHabilitados) {
+                    if (tarjetaBloqueada && metodosHabilitados) {
+                        Text(com.avoqado.pos.maquina.TEXTO_VENTA_EN_DUDA,
+                            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    } else if (saldoSinActualizar && metodosHabilitados) {
                         Text(textoSoloEfectivo,
                             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     } else if (terminalsUnavailable && metodosHabilitados) {
@@ -352,7 +377,7 @@ fun PaymentMethodSelectionScreen(
 
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
 
-            if (conductaDeSaldo?.visible == true && onSaldoSelected != null) {
+            if (!conMaquina && conductaDeSaldo?.visible == true && onSaldoSelected != null) {
                 Column(Modifier.fillMaxWidth().clickable(enabled = conductaDeSaldo.habilitada && metodosHabilitados, onClick = onSaldoSelected)
                     .padding(AvoqadoTheme.spacing.lg)) {
                     Text(com.avoqado.pos.giftcards.domain.TextosDeTarjetas.FILA_COBRO, style = MaterialTheme.typography.titleMedium,
@@ -365,7 +390,7 @@ fun PaymentMethodSelectionScreen(
             // "Ya me pagó de otra forma": el dinero NO pasó por Avoqado.
             // Antes el mesero sólo podía marcarlo como efectivo, y el corte
             // terminaba pidiendo dinero que nunca entró al cajón.
-            if (onManualMethodSelected != null && !saldoSinActualizar) {
+            if (!conMaquina && onManualMethodSelected != null && !saldoSinActualizar) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()

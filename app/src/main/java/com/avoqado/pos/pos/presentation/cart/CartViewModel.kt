@@ -147,6 +147,21 @@ data class CartState(
     val creacionIncierta: String? = null,
     /** Identidad de la venta en memoria; guardar una copia no la cambia. */
     val identidadDeVenta: String = UUID.randomUUID().toString(),
+    /** Máquina de efectivo (Codex código r1 #2): la de la copia restaurada ([SavedCart.llaveDeLaMaquina]); null = [identidadDeVenta]. */
+    val llaveDeLaMaquina: String? = null,
+    /**
+     * 🔴 DINERO. Máquina de efectivo (Codex código POS r7 #1, regla pegajosa): esta venta mandó alguna vez un cobro con tarjeta a la
+     * terminal. Nace al mandarlo ([CartViewModel.marcarIntentoConTarjeta]), viaja con la copia guardada y con la foto, y nunca vence: la
+     * máquina no la cobra (esa tarjeta pudo aprobarse tarde, también pasados los 10 min del aviso).
+     */
+    val intentoConTarjeta: Boolean = false,
+    /**
+     * 🔴 DINERO. Máquina de efectivo (Codex código POS r8 #2): este carrito nació vacío en esta caja ([CartViewModel] lo crea así al empezar
+     * cada venta) y todo lo que tiene se tecleó aquí. Por omisión NO: cualquier otro camino que arma un carrito —una copia guardada, «Venta por
+     * recuperar», la foto de un rechazo de saldo, una mesa, una cuenta, el formato de una versión anterior— es «restaurado» y la máquina no lo
+     * cobra (su tarjeta pudo salir con otra versión). No viaja en la copia guardada ni en la foto: al volver, nunca es nuevo.
+     */
+    val nacioEnEstaCaja: Boolean = false,
     /**
      * 🔴 DINERO. «Se cobra el precio que vio el cliente» (17-oct): el descuento de CUENTA que viajó en la orden cuyo servidor
      * corrigió precios. Mientras el carrito siga siendo esa venta ([DescuentoCongelado.vigentePara]), [orderDiscountCents] usa
@@ -173,6 +188,9 @@ data class CartState(
     /** D2: clientes (por id) a los que en ESTA venta se les quitó su descuento («Quitar» u otro descuento encima): no vuelve solo. */
     val descuentosDeClienteQuitados: Set<String> = emptySet(),
 ) {
+    /** La venta para la máquina de efectivo (Codex código r1 #2): sobrevive a «Restaurar» la copia guardada. */
+    val llaveParaLaMaquina: String get() = llaveDeLaMaquina ?: identidadDeVenta
+
     /** D2: el descuento de cuenta es el que el negocio le asignó al cliente ([DESCUENTO_DEL_CLIENTE_SOURCE]). */
     val descuentoEsDelCliente: Boolean get() = orderDiscount?.source == DESCUENTO_DEL_CLIENTE_SOURCE
 
@@ -1244,7 +1262,9 @@ class CartViewModel @Inject constructor(
         // copia no se retiraba y se podía restaurar y cobrar otra vez).
         _cartState.update {
             it.copy(identidadDeVenta = actual.identidadDeVenta, creacionIncierta = actual.creacionIncierta,
-                vinoDeCarritoGuardado = actual.vinoDeCarritoGuardado, carritoGuardadoId = actual.carritoGuardadoId)
+                vinoDeCarritoGuardado = actual.vinoDeCarritoGuardado, carritoGuardadoId = actual.carritoGuardadoId,
+                llaveDeLaMaquina = actual.llaveDeLaMaquina, intentoConTarjeta = actual.intentoConTarjeta,
+                nacioEnEstaCaja = actual.nacioEnEstaCaja)
         }
         addCustomAmount(name = "Saldo pendiente", amountCents = saldo)
         markPendingSplitOrder(orden)
@@ -1513,6 +1533,7 @@ class CartViewModel @Inject constructor(
         return CartState(
             selectedStaffId = storedStaffId ?: secureStorage.userId.orEmpty(),
             selectedStaffName = storedStaffName ?: loggedInStaffName,
+            nacioEnEstaCaja = true,   // Codex código POS r8 #2: la ÚNICA venta nueva; todo lo demás es «restaurado»
         )
     }
 
@@ -2385,6 +2406,8 @@ class CartViewModel @Inject constructor(
             llavePagarDespues = state.llavePagarDespues,
             // D8: el carrito se enseña sólo en su sucursal.
             venueId = venueId,
+            llaveDeLaMaquina = state.llaveParaLaMaquina,
+            intentoConTarjeta = state.intentoConTarjeta,
         )
 
     fun clearCart() = vaciarCarrito(soltarApartado = true)
@@ -2541,6 +2564,8 @@ class CartViewModel @Inject constructor(
         val identidadOriginal = _cartState.value.identidadDeVenta
         val creacionOriginal = _cartState.value.creacionIncierta
         val vinoDeGuardado = _cartState.value.vinoDeCarritoGuardado
+        val conTarjeta = _cartState.value.intentoConTarjeta
+        val nacioAqui = _cartState.value.nacioEnEstaCaja   // Codex código POS r8 #2: el saldo de una venta restaurada sigue siendo restaurado
         // El recibo retira su copia; una respuesta tardía no puede tocar la venta siguiente.
         carritoGuardadoDelCobro?.let {
             if (!savedCartsRepository.deleteCart(it)) Log.w("🛒", "No se confirmó el retiro de la copia marcada $it")
@@ -2586,7 +2611,7 @@ class CartViewModel @Inject constructor(
                 // un descuento fijo de toda la cuenta se quedaría entero en los renglones que quedan.
                 if (remainingBalanceCents > 0 && _cartState.value.totalCents != remainingBalanceCents) {
                     clearCart()
-                    _cartState.update { it.copy(identidadDeVenta = identidadOriginal, creacionIncierta = creacionOriginal, vinoDeCarritoGuardado = vinoDeGuardado) }
+                    _cartState.update { it.copy(identidadDeVenta = identidadOriginal, creacionIncierta = creacionOriginal, vinoDeCarritoGuardado = vinoDeGuardado, intentoConTarjeta = conTarjeta, nacioEnEstaCaja = nacioAqui) }
                     addCustomAmount(name = "Saldo pendiente", amountCents = remainingBalanceCents)
                 }
                 RamaCobro.RENGLONES_PAGADOS
@@ -2594,7 +2619,7 @@ class CartViewModel @Inject constructor(
             remainingBalanceCents > 0 -> {
                 // El cliente sobrevive: `clearCart()` no lo toca, a propósito.
                 clearCart()
-                _cartState.update { it.copy(identidadDeVenta = identidadOriginal, creacionIncierta = creacionOriginal, vinoDeCarritoGuardado = vinoDeGuardado) }
+                _cartState.update { it.copy(identidadDeVenta = identidadOriginal, creacionIncierta = creacionOriginal, vinoDeCarritoGuardado = vinoDeGuardado, intentoConTarjeta = conTarjeta, nacioEnEstaCaja = nacioAqui) }
                 addCustomAmount(name = "Saldo pendiente", amountCents = remainingBalanceCents)
                 RamaCobro.QUEDA_SALDO
             }
@@ -3610,6 +3635,9 @@ class CartViewModel @Inject constructor(
             llavePagarDespues = savedCart.llavePagarDespues,
             autorizacionDelDescuento = savedCart.autorizacionDelDescuento,
             descuentosDeClienteQuitados = savedCart.descuentosDeClienteQuitados,
+            // Codex código r1 #2: la misma venta para la máquina en cada restauración (un cobro en duda sigue frenando la tarjeta).
+            llaveDeLaMaquina = savedCart.llaveDeLaMaquina ?: "carrito:${savedCart.id}",
+            intentoConTarjeta = savedCart.intentoConTarjeta,
         )
         // D13 (IVA por producto, plan 7a): «Agregar impuesto» ya no existe — en México el precio ya trae el IVA (LFPC 7 Bis).
         // Un carrito guardado con impuesto aparte se restaura SIN él, y se dice; uno sin impuesto limpia el aviso anterior
@@ -4017,6 +4045,11 @@ class CartViewModel @Inject constructor(
         _referralCode.value = s.referralCode
         _referralValidation.value = s.referralValidation
         return motivo
+    }
+
+    /** Codex código POS r7 #1: la venta [identidad] mandó un cobro con tarjeta a la terminal; desde aquí la máquina nunca la cobra. */
+    fun marcarIntentoConTarjeta(identidad: String) {
+        _cartState.update { if (it.identidadDeVenta == identidad) it.copy(intentoConTarjeta = true) else it }
     }
 
     fun marcarCreacionIncierta(identidad: String, externalId: String) {

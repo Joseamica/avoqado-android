@@ -9,6 +9,7 @@ import com.avoqado.pos.core.di.DatabaseModule
 import com.avoqado.pos.core.di.NetworkModule
 import com.avoqado.pos.core.di.StorageModule
 import com.avoqado.pos.inventory.di.InventoryModule
+import com.avoqado.pos.maquina.di.MaquinaModule
 import com.avoqado.pos.payment.di.CancelacionDeCobroModule
 import com.avoqado.pos.referrals.di.ReferralsModule
 import com.avoqado.pos.reservations.di.ReservationModule
@@ -22,11 +23,12 @@ import com.google.inject.spi.ProvisionListener
 import dagger.hilt.android.qualifiers.ApplicationContext
 import okhttp3.OkHttpClient
 
-/** Los 7 @Module de Hilt de la app (DatabaseModule = el reemplazo de escritorio con el mismo nombre) + el contexto. */
+/** Los 8 @Module de Hilt de la app (DatabaseModule y MaquinaModule = reemplazos de escritorio con el mismo nombre) + el contexto. */
 object Inyector {
     val modulosDeLaApp: Array<Class<*>> = arrayOf(
         NetworkModule::class.java, DatabaseModule::class.java, StorageModule::class.java, ReservationModule::class.java,
         CancelacionDeCobroModule::class.java, ReferralsModule::class.java, InventoryModule::class.java,
+        MaquinaModule::class.java,
     )
 
     /** Los dos clientes de la API que la app arma POR SU CUENTA (no salen de un @Provides): reciben la guarda al crearse. */

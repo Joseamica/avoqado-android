@@ -2175,6 +2175,7 @@ fun CheckoutScreen(
                     cuentaConSaldoVisible = id
                 },
                 onCreacionIncierta = cartViewModel::marcarCreacionIncierta,
+                onIntentoConTarjeta = cartViewModel::marcarIntentoConTarjeta,
                 onCreacionResuelta = cartViewModel::limpiarCreacionIncierta,
                 // El cliente del encabezado del carrito se lleva al cobro: la
                 // orden nace con `customerId` y la pantalla de recibo ya lo

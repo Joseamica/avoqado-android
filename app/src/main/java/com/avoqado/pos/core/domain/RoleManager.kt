@@ -393,6 +393,13 @@ class RoleManager @Inject constructor(
         get() = hasVenuePermission("orders:comp", fallbackRoles = MANAGER_UP)
 
     /**
+     * Máquina de efectivo (R5#10): configurarla en esta PC (`cash-machine:configure`; de fábrica gerente, admin y dueño). Es de la
+     * SESIÓN: un gerente entra con su PIN (cambio de usuario); no hay override de PIN para esto. El juez sigue siendo el SERVIDOR.
+     */
+    val canConfigureCashMachine: Boolean
+        get() = hasVenuePermission("cash-machine:configure", fallbackRoles = MANAGER_UP)
+
+    /**
      * D2: aplicar un descuento a la cuenta (`discounts:apply`; de fábrica mesero, cajero y gerente para arriba). Lo pide el descuento
      * que el negocio le asignó al cliente: sin él, el carrito avisa y pide el PIN de un gerente. El juez sigue siendo el SERVIDOR.
      */

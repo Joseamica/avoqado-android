@@ -147,6 +147,11 @@ fun PaymentResultScreen(
      * paso (`onDone`). En vez de «Venta nueva», que no lo sugiere, va un botón que lo dice.
      */
     entregarTarjeta: Boolean = false,
+    /**
+     * E1 (recorrido real de la máquina, el FAIL): lo que la máquina le quedó a deber al cliente, con su folio («Te debemos $X de cambio…» o
+     * «Revisar en el panel»). Sin esto la pantalla sólo decía «$280.00 Efectivo» y, sin papel, el cliente se iba sin saberlo.
+     */
+    avisoDeLaMaquina: String? = null,
 ) {
     var showWhatsAppInput by remember { mutableStateOf(false) }
     var whatsAppPhoneDigits by remember { mutableStateOf("") }
@@ -239,6 +244,8 @@ fun PaymentResultScreen(
                 SincronizacionDelCobro.NINGUNA -> null
                 SincronizacionDelCobro.PENDIENTE ->
                     Triple(Icons.Filled.CloudOff, Warning, "Se sincronizará cuando haya conexión")
+                SincronizacionDelCobro.REGISTRANDO ->
+                    Triple(Icons.Filled.Info, com.avoqado.pos.designsystem.theme.Info, "Registrando la venta…")
                 SincronizacionDelCobro.SINCRONIZADA ->
                     Triple(Icons.Filled.CheckCircle, com.avoqado.pos.designsystem.theme.Success, "Venta sincronizada")
                 SincronizacionDelCobro.RECHAZADA ->
@@ -307,6 +314,8 @@ fun PaymentResultScreen(
                     color = Success,
                 )
             }
+
+            avisoDeLaMaquina?.let { com.avoqado.pos.maquina.ui.AvisoDeLaDeuda(it) }
 
             if (entregarTarjeta) {
                 Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))

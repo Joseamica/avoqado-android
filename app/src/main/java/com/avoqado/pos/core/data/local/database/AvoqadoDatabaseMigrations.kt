@@ -5,6 +5,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 import com.avoqado.pos.inventory.waste.data.PendingWasteSql
 import com.avoqado.pos.inventory.waste.data.WasteSql
 import com.avoqado.pos.kds.data.local.KdsLanSql
+import com.avoqado.pos.maquina.CobroEnMaquinaSql
 
 object AvoqadoDatabaseMigrations {
     // v1 only persisted pending payments. v2 added cash drawer offline state.
@@ -295,6 +296,65 @@ object AvoqadoDatabaseMigrations {
     val MIGRATION_18_19 = object : Migration(18, 19) {
         override fun migrate(db: SupportSQLiteDatabase) {
             db.execSQL("ALTER TABLE pending_payments ADD COLUMN lineasDelTicketJson TEXT")
+        }
+    }
+
+    /**
+     * v20 — máquina de efectivo (fase 1a, R4-1): una tabla nueva, nada que migrar. Cada intento de cobro en la QuickPay se
+     * guarda ANTES del `paycash`, y su desenlace con `subido = false` en un solo `UPDATE`: la tabla es la cola propia de la
+     * máquina (no toca `pending_payments`).
+     *
+     * 🔴 El `CREATE TABLE` sale de [CobroEnMaquinaSql], la MISMA constante que ejecutan las pruebas contra SQLite de verdad, y
+     * `CobroEnMaquinaMigracionTest` la compara contra el esquema que Room exporta. Sin índices: el «un intento abierto por
+     * venta» lo cuida `CobroEnMaquinaDao.abrirIntento` en una transacción.
+     */
+    val MIGRATION_19_20 = object : Migration(19, 20) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL(CobroEnMaquinaSql.CREAR_TABLA_V20)
+        }
+    }
+
+    /**
+     * v21 — máquina de efectivo (C4): `cobros_en_maquina.respuestaServidor`, la última respuesta final del SERVIDOR (el eco del
+     * cierre, la decisión del gerente o el 409/422 con su incidencia). Columna nula: una fila vieja no la tiene y nada se migra.
+     * Deja de sobrecargar `cancelPedido`, que vuelve a ser sólo lo que pidió la PC.
+     */
+    val MIGRATION_20_21 = object : Migration(20, 21) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL(CobroEnMaquinaSql.MIGRAR_20_21)
+        }
+    }
+
+    /**
+     * v22 — máquina de efectivo (Codex código r1 y la adaptación al rediseño del SERVIDOR): seis columnas en `cobros_en_maquina`
+     * (emparejamiento del intento, renglones congelados, desenlace del SERVIDOR, cierre tardío, lo que se le debe al cliente y la
+     * versión de la duda). El SQL sale de [CobroEnMaquinaSql.MIGRAR_21_22]; `CobroEnMaquinaMigracionTest` lo corre sobre SQLite.
+     */
+    val MIGRATION_21_22 = object : Migration(21, 22) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            CobroEnMaquinaSql.MIGRAR_21_22.forEach(db::execSQL)
+        }
+    }
+
+    /**
+     * v23 — máquina de efectivo (Codex código r3 #13 y #6): dos columnas en `cobros_en_maquina`, las huellas de TODO lo que llegó de
+     * cada folio (el texto del diario se recorta; esto no) y la comanda de cocina congelada al empezar. El SQL sale de
+     * [CobroEnMaquinaSql.MIGRAR_22_23]; `CobroEnMaquinaMigracionTest` lo corre sobre SQLite.
+     */
+    val MIGRATION_22_23 = object : Migration(22, 23) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            CobroEnMaquinaSql.MIGRAR_22_23.forEach(db::execSQL)
+        }
+    }
+
+    /**
+     * v24 — máquina de efectivo (Codex código POS r7): la evidencia FÍSICA de cada folio en cuatro columnas de `cobros_en_maquina` que sólo
+     * crecen (lo más que contó la máquina, su primer cierre, el cambio que confirmó y si alguna vez se contradijo). El papel ya no lee el
+     * diario, que se recorta. El SQL sale de [CobroEnMaquinaSql.MIGRAR_23_24]; `CobroEnMaquinaMigracionTest` lo corre sobre SQLite.
+     */
+    val MIGRATION_23_24 = object : Migration(23, 24) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            CobroEnMaquinaSql.MIGRAR_23_24.forEach(db::execSQL)
         }
     }
 

@@ -49,6 +49,11 @@ object DatabaseModule {
                 AvoqadoDatabaseMigrations.MIGRATION_16_17,
                 AvoqadoDatabaseMigrations.MIGRATION_17_18,
                 AvoqadoDatabaseMigrations.MIGRATION_18_19,
+                AvoqadoDatabaseMigrations.MIGRATION_19_20,
+                AvoqadoDatabaseMigrations.MIGRATION_20_21,
+                AvoqadoDatabaseMigrations.MIGRATION_21_22,
+                AvoqadoDatabaseMigrations.MIGRATION_22_23,
+                AvoqadoDatabaseMigrations.MIGRATION_23_24,
         )
             .build()
     }
@@ -101,5 +106,8 @@ object DatabaseModule {
     }
     @Provides
     fun provideSalesNoticeDao(database: AvoqadoDatabase): com.avoqado.pos.sync.data.SalesNoticeDao = database.salesNoticeDao()
+
+    @Provides
+    fun provideCobrosEnMaquinaDao(database: AvoqadoDatabase): com.avoqado.pos.maquina.CobroEnMaquinaDao = database.cobrosEnMaquinaDao()
 
 }

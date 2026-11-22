@@ -40,6 +40,10 @@ class CajonDeDineroTest {
     fun `tarjeta no abre el cajon`() = assertFalse(abre(method = PaymentMethod.CARD))
 
     @Test
+    fun `C5 el efectivo de la maquina no abre el cajon`() =
+        assertFalse(CajonDeDinero.debeAbrirse(PaymentMethod.CASH, null, null, 18_000, enMaquina = true))
+
+    @Test
     fun `sin metodo no abre el cajon`() = assertFalse(abre(method = null))
 
     @Test

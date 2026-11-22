@@ -82,6 +82,8 @@ fun PaymentFlowScreen(
     viewModel: PaymentFlowViewModel = hiltViewModel(),
     cuentaDeTarjetas: Boolean = false,
     onCreacionIncierta: (String, String) -> Unit = { _, _ -> },
+    /** Codex código POS r7 #1: la venta mandó un cobro con tarjeta; ver `PaymentFlowViewModel.startPaymentFlow`. */
+    onIntentoConTarjeta: (String) -> Unit = {},
     onCreacionResuelta: (String) -> Unit = {},
     ventaViva: () -> CartState = { cartState },
     fotoDeLaVenta: (() -> FotoDeLaVenta)? = null,
@@ -108,6 +110,9 @@ fun PaymentFlowScreen(
     saldoLeidoDeLaCuenta: Int? = null,
 ) {
     val scopeDeSaldo = rememberCoroutineScope()
+    // C5: la máquina de efectivo de esta PC (sólo WINDOWS). null = todo como hoy.
+    val vistaDeLaMaquina = viewModel.maquina?.vista?.collectAsState()?.value
+        ?.takeIf { com.avoqado.pos.designsystem.components.LocalEsEscritorio.current }
     val filaDeSaldo by viewModel.conductaDelSaldo.collectAsState()
     val conexionDelSaldo by viewModel.conexionDelSaldo.collectAsState()
     val servidorDelSaldo by viewModel.servidorDelSaldo.collectAsState()
@@ -142,6 +147,8 @@ fun PaymentFlowScreen(
         }
     }
     val metodosHabilitados by viewModel.metodosHabilitados.collectAsState()
+    // Codex código r2 H1: con la máquina apagada o desemparejada, una venta con su efectivo en duda se ve en gris y dice por qué.
+    val enDudaSinMaquina = viewModel.maquina?.bloqueadaSinMaquina?.collectAsState()?.value == true
     // Doble pantalla: cambia QUIÉN captura propina y calificación.
     val customerDisplayActive by viewModel.customerDisplayActive.collectAsState()
     // D68 #12: el gris «No hay terminales conectadas» sólo con red; sin red la fila lleva al aviso «Sin conexión».
@@ -214,6 +221,7 @@ fun PaymentFlowScreen(
             apertura = aperturaDelCobro,
             cuentaDeTarjetas = cuentaDeTarjetas,
             onCreacionIncierta = onCreacionIncierta,
+            onIntentoConTarjeta = onIntentoConTarjeta,
             onCreacionResuelta = onCreacionResuelta,
             origen = origen,
             textoSiLaCuentaSeCancelo = textoSiLaCuentaSeCancelo,
@@ -323,8 +331,9 @@ fun PaymentFlowScreen(
                     // Sin pantalla de cliente: método de pago con la hoja de
                     // propina encima, como siempre.
                     PaymentMethodSelectionScreen(
-                        metodosHabilitados = metodosHabilitados,
-                        motivoDeshabilitado = if (!metodosHabilitados) com.avoqado.pos.giftcards.domain.TextosDeTarjetas.CUENTA_SIN_RED else null,
+                        metodosHabilitados = metodosHabilitados && !enDudaSinMaquina,
+                        motivoDeshabilitado = if (enDudaSinMaquina) com.avoqado.pos.maquina.TEXTO_VENTA_EN_DUDA
+                        else if (!metodosHabilitados) com.avoqado.pos.giftcards.domain.TextosDeTarjetas.CUENTA_SIN_RED else null,
                         paymentContext = paymentContext.copy(totalCents = currentState.amount),
                         onMethodSelected = { viewModel.selectPaymentMethod(it) },
                         onCashPresetSelected = { viewModel.confirmCashPreset(it) },
@@ -340,6 +349,9 @@ fun PaymentFlowScreen(
                         sinRed = sinRedEnElCobro,
                         // Toque explícito del cajero: si el server dice que no, tiene que verse.
                         onRetryTerminals = { viewModel.probeTerminalAvailability(background = false) },
+                        maquina = vistaDeLaMaquina,
+                        onCobrarConMaquina = viewModel::cobrarConMaquina,
+                        onImprimirTicketsDeLaMaquina = { viewModel.maquina?.imprimirTicketsPendientes() },
                     )
                     TipSelectionSheet(
                         amountCents = currentState.amount,
@@ -352,9 +364,16 @@ fun PaymentFlowScreen(
                 }
             }
             is PaymentFlowState.SelectingPaymentMethod -> {
-                PaymentMethodSelectionScreen(
-                    metodosHabilitados = metodosHabilitados,
-                    motivoDeshabilitado = if (!metodosHabilitados) com.avoqado.pos.giftcards.domain.TextosDeTarjetas.CUENTA_SIN_RED else null,
+                val caja = viewModel.maquina
+                if (caja != null && vistaDeLaMaquina != null &&
+                    (vistaDeLaMaquina.cobro != null || vistaDeLaMaquina.resuelto != null || vistaDeLaMaquina.incidencia != null)
+                ) {
+                    // C5: el cobro de ESTA venta en la máquina (o lo que decidió el gerente en el panel).
+                    com.avoqado.pos.maquina.ui.PantallaDeLaMaquina(vista = vistaDeLaMaquina, caja = caja, onSalir = cancelarElCobro)
+                } else PaymentMethodSelectionScreen(
+                    metodosHabilitados = metodosHabilitados && !enDudaSinMaquina,
+                    motivoDeshabilitado = if (enDudaSinMaquina) com.avoqado.pos.maquina.TEXTO_VENTA_EN_DUDA
+                    else if (!metodosHabilitados) com.avoqado.pos.giftcards.domain.TextosDeTarjetas.CUENTA_SIN_RED else null,
                     paymentContext = paymentContext.copy(totalCents = currentState.amount),
                     onMethodSelected = { viewModel.selectPaymentMethod(it) },
                     onCashPresetSelected = { viewModel.confirmCashPreset(it) },
@@ -374,6 +393,9 @@ fun PaymentFlowScreen(
                     // A1: el ViewModel decide (`conOrigen`): el cobro de siempre y un folio la ofrecen; plataforma y «Mi equipo», no.
                     conductaDeSaldo = filaDeSaldo,
                     onSaldoSelected = { scopeDeSaldo.launch { viewModel.actualizarFilaDeSaldo(); if (viewModel.conductaDelSaldo.value.habilitada) { identificadaDeSaldo = null; muestraSaldo = true } } },
+                    maquina = vistaDeLaMaquina,
+                    onCobrarConMaquina = viewModel::cobrarConMaquina,
+                    onImprimirTicketsDeLaMaquina = { viewModel.maquina?.imprimirTicketsPendientes() },
                 )
             }
             is PaymentFlowState.CollectingCashAmount -> {
@@ -488,6 +510,10 @@ fun PaymentFlowScreen(
                         )
                     }
                     val sincronizacion by viewModel.sincronizacionDelCobro.collectAsState()
+                    val cierreDeLaMaquina by viewModel.cierreQueSeEnsena.collectAsState()
+                    // Full-testing WARN 1: de un cobro de la máquina, el cambio sólo si la máquina lo respalda (nunca el de un cierre
+                    // desmentido ni el que tecleó un gerente); sin él no hay línea de «Cambio».
+                    val esDeLaMaquina = currentState.colaDelCobro is com.avoqado.pos.payment.data.model.ColaDelCobro.Maquina
 
                     PaymentResultScreen(
                         accionesDeRedHabilitadas = accionesDeRedHabilitadas,
@@ -497,9 +523,10 @@ fun PaymentFlowScreen(
                         methodLabel = viewModel.manualMethodLabel,
                         saldoPagado = (resultadoDeSaldo as? DesenlaceDeCobro.Cobrado)?.cobro,
                         method = currentState.method,
-                        changeCents = currentState.changeAmount,
+                        changeCents = if (esDeLaMaquina) cierreDeLaMaquina?.cambioCents ?: 0 else currentState.changeAmount,
                         isQueued = currentState.isQueued,
                         sincronizacion = sincronizacion,
+                        avisoDeLaMaquina = cierreDeLaMaquina?.deuda,
                         paymentId = currentState.paymentId,
                         canSendReceipt = !currentState.paymentId.isNullOrBlank() || !currentState.receiptAccessKey.isNullOrBlank(),
                         isSendingWhatsApp = whatsAppSending,

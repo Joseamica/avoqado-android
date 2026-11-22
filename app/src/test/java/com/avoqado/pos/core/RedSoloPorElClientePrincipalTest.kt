@@ -27,6 +27,9 @@ class RedSoloPorElClientePrincipalTest {
         "com/avoqado/pos/printing/data/ReceiptLogoCache.kt" to "baja el logo del recibo (GET)",
         "com/avoqado/pos/core/util/ConnectivityMonitor.kt" to "la sonda de conexión (GET)",
         "com/avoqado/pos/printing/data/BuscadorDeImpresora.kt" to "habla con impresoras del local, no con el servidor",
+        // Máquina de efectivo (fase 1a): el WebSocket con la QuickPay de la red local; a la máquina no se le manda la sesión.
+        "com/avoqado/pos/maquina/MaquinaDeEfectivo.kt" to "habla con la máquina de efectivo del local, no con el servidor",
+        "com/avoqado/pos/maquina/ui/MaquinaDeEfectivoViewModel.kt" to "«Probar conexión» con la máquina de efectivo del local",
     )
 
     @Test fun `ningun cliente HTTP nuevo fuera del principal y la lista conocida`() {

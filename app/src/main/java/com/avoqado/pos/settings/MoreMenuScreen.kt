@@ -50,6 +50,7 @@ import androidx.compose.material.icons.outlined.Groups
 import androidx.compose.material.icons.outlined.HourglassEmpty
 import androidx.compose.material.icons.outlined.Key
 import androidx.compose.material.icons.outlined.KeyboardArrowDown
+import androidx.compose.material.icons.outlined.LocalAtm
 import androidx.compose.material.icons.outlined.LocalFireDepartment
 import androidx.compose.material.icons.outlined.LocalOffer
 import androidx.compose.material.icons.outlined.Lock
@@ -184,6 +185,7 @@ fun MoreMenuScreen(
     var showScreenPinning by remember { mutableStateOf(false) }
     var showSettingsHub by remember { mutableStateOf(false) }
     var showCustomizeMenu by remember { mutableStateOf(false) }
+    var showCashMachine by remember { mutableStateOf(false) }
     val screenPinned by viewModel.screenPinningManager.enabled.collectAsState()
     val customerDisplayDetected by viewModel.customerDisplayState.isPresenting.collectAsState()
     val mermaBloqueada by viewModel.mermaBloqueada.collectAsState()
@@ -216,6 +218,7 @@ fun MoreMenuScreen(
         showPreparationService = false
         showCustomerDisplay = false
         showScreenPinning = false
+        showCashMachine = false
     }
 
     LaunchedEffect(moreTabReselectionTick) {
@@ -1155,6 +1158,11 @@ fun MoreMenuScreen(
                 showSettingsHub = false
                 showCustomizeMenu = true
             },
+            puedeConfigurarMaquina = viewModel.puedeConfigurarMaquina,
+            onOpenCashMachine = {
+                showSettingsHub = false
+                showCashMachine = true
+            },
             enlacesDe = { grupo ->
                 EnElPanelWeb.entries
                     .filter { it.grupo == grupo }
@@ -1264,6 +1272,11 @@ fun MoreMenuScreen(
             },
             onDismiss = { showSwitchUser = false },
         )
+    }
+
+    // Máquina de efectivo (sólo WINDOWS; la fila ya pidió el permiso de la sesión)
+    if (showCashMachine) {
+        com.avoqado.pos.maquina.ui.MaquinaDeEfectivoSheet(onDismiss = { showCashMachine = false })
     }
 
     // Esconder barras de Android (fijar la app + salida explícita)
@@ -1890,9 +1903,12 @@ private fun SettingsHubSheet(
     onOpenCustomerDisplay: () -> Unit,
     onOpenScreenPinning: () -> Unit,
     onOpenCustomizeMenu: () -> Unit,
+    puedeConfigurarMaquina: Boolean,
+    onOpenCashMachine: () -> Unit,
     enlacesDe: (GrupoDelPanel) -> List<MenuEntry>,
     onDismiss: () -> Unit,
 ) {
+    val esEscritorio = com.avoqado.pos.designsystem.components.LocalEsEscritorio.current
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
@@ -2001,6 +2017,16 @@ private fun SettingsHubSheet(
                         },
                         onClick = onOpenScreenPinning,
                     ),
+                ) + listOfNotNull(
+                    // C6: la QuickPay sólo se conecta a la PC (WINDOWS). Sin `cash-machine:configure` en la sesión se ve en gris y dice
+                    // cómo entrar; no se ofrece el PIN de gerente aquí (R5#10). Las dudas se resuelven en el panel (recorte R2).
+                    MenuEntry(
+                        icon = Icons.Outlined.LocalAtm,
+                        label = "Máquina de efectivo",
+                        subtitle = if (puedeConfigurarMaquina) "QuickPay Mini: IP y emparejar esta PC" else com.avoqado.pos.maquina.TEXTO_SIN_PERMISO,
+                        enabled = puedeConfigurarMaquina,
+                        onClick = onOpenCashMachine,
+                    ).takeIf { esEscritorio },
                 ),
             )
 
