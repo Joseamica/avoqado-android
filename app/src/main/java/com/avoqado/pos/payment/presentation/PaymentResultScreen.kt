@@ -20,6 +20,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Block
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.CloudOff
@@ -380,6 +381,18 @@ fun PaymentResultScreen(
                     .widthIn(max = 400.dp)
                     .fillMaxWidth(),
             ) {
+                // D39 (Flautas, 21-nov): con sólo el enlace «Venta nueva» la cajera creía que tenía que imprimir. «Sin
+                // recibo» va PRIMERO, como el «No receipt» de Toast, y hace lo mismo que «Venta nueva». En la venta de
+                // tarjetas de regalo no: ahí la salida es «Entregar tarjeta».
+                if (!entregarTarjeta) {
+                    ReceiptOptionRow(
+                        icon = rememberVectorPainter(Icons.Filled.Block),
+                        title = "Sin recibo",
+                        onClick = onDone,
+                    )
+                    HorizontalDivider(modifier = Modifier.padding(start = 48.dp))
+                }
+
                 ReceiptOptionRow(
                     icon = rememberVectorPainter(Icons.Filled.Print),
                     title = if (isPrintingReceipt) "Imprimiendo..." else "Imprimir recibo",
@@ -401,7 +414,7 @@ fun PaymentResultScreen(
                 )
                 HorizontalDivider(modifier = Modifier.padding(start = 48.dp))
 
-                // «Ofrecer recibo» apagado: sin envío. Imprimir y «Venta nueva» siguen (igual que iOS).
+                // «Ofrecer recibo» apagado: sin envío. «Sin recibo», imprimir y «Venta nueva» siguen (igual que iOS).
                 if (offerReceipt) {
                     ReceiptOptionRow(
                         icon = rememberVectorPainter(Icons.Filled.Email),
