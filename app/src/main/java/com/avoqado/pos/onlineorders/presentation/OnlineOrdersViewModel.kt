@@ -201,6 +201,11 @@ class OnlineOrdersViewModel internal constructor(
     /** La última lectura falló por falta de red: banner neutro «Sin conexión: no llegan pedidos nuevos». */
     val sinConexion: StateFlow<Boolean> = _sinConexion.asStateFlow()
 
+    private val _pausadaSola = MutableStateFlow(false)
+
+    /** D662 parte 2: la tienda se pausó sola (2 pedidos seguidos sin aceptar), según la última lectura buena de la Bandeja. */
+    val pausadaSola: StateFlow<Boolean> = _pausadaSola.asStateFlow()
+
     private val _aviso = MutableStateFlow<String?>(null)
 
     /** Texto neutro de lo último que pasó con una acción (ya no disponible, reintenta, error del servidor). */
@@ -744,6 +749,7 @@ class OnlineOrdersViewModel internal constructor(
             if (completa) soltarMarcasDeMiEquipo(venueDeLaLectura, ordenes)
             _hayMas.value = cursor != null
             _hoyRecortado.value = inbox.truncated
+            inbox.autoPaused?.let { _pausadaSola.value = it } // sin `store` en la respuesta se conserva lo último (Codex p2-r7 #3)
             _sinConexion.value = false
             _leyoAlgunaVez.value = true
             _noSePudoLeer.value = false
@@ -1291,7 +1297,8 @@ class OnlineOrdersViewModel internal constructor(
                 // Siempre se relee: el servidor es el que dice dónde quedó el pedido.
                 // El pedido salió de «por aceptar» (o ya no estaba): el aviso global para en ESTA petición, no en el siguiente compás.
                 if (resultado is AccionResultado.Hecho || resultado is AccionResultado.YaNoDisponible) {
-                    if (clave != CLAVE_PAUSA && sonidoCambia) sondearVigilante()
+                    // D662 parte 2: tras pausar o «Reanudar», el banner global también relee (puede quitar «se pausó sola» ya).
+                    if (clave == CLAVE_PAUSA || sonidoCambia) sondearVigilante()
                 }
                 // Los pendientes de impresión los maneja cada acción por su cuenta (aceptar, abajo) o el siguiente latido.
                 refrescar(imprimirPendientes = false)

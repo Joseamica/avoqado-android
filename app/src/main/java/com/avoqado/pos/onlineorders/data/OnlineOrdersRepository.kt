@@ -22,6 +22,7 @@ import com.avoqado.pos.onlineorders.domain.OnlineOrderStatus
 import com.avoqado.pos.onlineorders.domain.PedidoPorCobrar
 import com.avoqado.pos.onlineorders.domain.SaldoDelPedido
 import com.avoqado.pos.onlineorders.domain.PrecioDeRenglon
+import com.avoqado.pos.onlineorders.presentation.TextosPedidosEnLinea
 import com.avoqado.pos.onlineorders.presentation.ocultosQueSiguen
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.sync.Mutex
@@ -187,6 +188,8 @@ class OnlineOrdersRepository @Inject constructor(
             storeOff = data.optJSONObject("store")?.textoONulo("status") == "DISABLED",
             truncated = data.optBoolean("truncated", false),
             nextCursor = data.textoONulo("nextCursor"),
+            // Codex p2-r7 #3: sin `store` (el SERVIDOR no pudo leer el estado) no se sabe: null, y la caja conserva lo último.
+            autoPaused = data.optJSONObject("store")?.let { it.textoONulo("autoPausedAt") != null },
         )
     }
 
@@ -277,7 +280,12 @@ class OnlineOrdersRepository @Inject constructor(
     suspend fun pause(minutes: Int?): AccionResultado {
         val (venueId, token) = sesion() ?: return AccionResultado.Error("Sin sesión o sin sucursal")
         val cuerpo = JSONObject().put("minutes", minutes ?: JSONObject.NULL)
-        return resultado(ejecutar(post(ruta(venueId, "online-orders/pause"), token, cuerpo, errorLocal = false)), quiso = null)
+        val r = ejecutar(post(ruta(venueId, "online-orders/pause"), token, cuerpo, errorLocal = false))
+        // D662: «Reanudar» con la pausa del gerente (Configuración) puesta no reabre la tienda: se dice, no «reanudados».
+        val sigueLaDelGerente = minutes == null &&
+            r.getOrNull()?.let { runCatching { JSONObject(it).optJSONObject("data")?.optBoolean("manualPause") == true }.getOrDefault(false) } == true
+        if (sigueLaDelGerente) return AccionResultado.Error(TextosPedidosEnLinea.SIGUE_PAUSA_DEL_GERENTE)
+        return resultado(r, quiso = null)
     }
 
     /** [quiso]: el estado al que llevaba la acción. Un 409 `ORDER_STATE_CHANGED` que ya está ahí cuenta como hecho (OP-D6). */
