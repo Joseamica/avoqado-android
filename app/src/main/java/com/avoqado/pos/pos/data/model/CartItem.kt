@@ -1,5 +1,7 @@
 package com.avoqado.pos.pos.data.model
 
+import com.avoqado.pos.pos.domain.enUnRenglon
+import com.avoqado.pos.pos.domain.etiquetasEnCocina
 import com.avoqado.pos.pos.domain.juntarExtrasRepetidos
 import java.util.UUID
 import kotlin.math.roundToInt
@@ -181,6 +183,16 @@ data class CartItem(
         get() {
             // «2x Flautas Cochinita» si se eligió dos veces (grupo que deja repetir, encargo a508f4).
             val names = juntarExtrasRepetidos(selectedModifiers.map { it.modifierName })
+            return if (names.isEmpty()) null else names.joinToString(", ")
+        }
+
+    /**
+     * D40: lo mismo para la CAJA, con la nota de cada parte («Consomé (Nota: sin cebolla), 2x Flautas Cochinita»). El cliente
+     * (pantalla del cliente, ticket) sigue viendo [modifiersSummary], sin notas.
+     */
+    val modifiersSummaryEnCaja: String?
+        get() {
+            val names = juntarExtrasRepetidos(selectedModifiers.etiquetasEnCocina()).map(::enUnRenglon)
             return if (names.isEmpty()) null else names.joinToString(", ")
         }
 

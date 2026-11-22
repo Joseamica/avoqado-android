@@ -1,5 +1,6 @@
 package com.avoqado.pos.printing.routing
 
+import com.avoqado.pos.pos.domain.sinNota
 import com.avoqado.pos.core.data.lan.KdsComanda
 import com.avoqado.pos.core.data.lan.KdsComandaItem
 
@@ -60,6 +61,13 @@ object KitchenDeliveryPolicy {
     fun planesConPantalla(plans: List<TicketPlan>, config: PrintConfig): List<TicketPlan> =
         plans.filter { p -> p.stationId != null && config.stations.any { it.id == p.stationId && it.active && it.hasKitchenDisplay } }
 
+    /**
+     * D40 (Codex r2 #1, r3 #1): lo más que puede pesar el mensaje `comanda` CON las notas de las partes, medido con el mismo
+     * serializador del envío (`ClienteDeComandas` manda `KdsLanProtocol.encode` tal cual). El receptor acepta hasta
+     * `LineaAcotada.MAX_BYTES` sin contar el salto de línea; más que eso lo corta sin acuse.
+     */
+    val TOPE_DEL_MENSAJE_CON_NOTAS_BYTES = com.avoqado.pos.core.data.lan.LineaAcotada.MAX_BYTES
+
     /** El mensaje `comanda` de UN plan (D4). El folio es el del servidor; el id de cada renglón, el del carrito o uno sintético. */
     fun mensajeParaPantalla(
         plan: TicketPlan,
@@ -72,8 +80,47 @@ object KitchenDeliveryPolicy {
         createdAtMillis: Long,
         /** KDS 3.6: el tiempo de estos renglones («Aperitivos»); viaja en cada uno porque la pantalla junta los cursos. */
         curso: String? = null,
+        /** D40: el producto de cada renglón del carrito (`orderItemId` → `productId`), para volver a juntar con la regla del ruteo. */
+        productoDe: Map<String, String?> = emptyMap(),
     ): KdsComanda {
         val sourceKey = folio(origen, plan.stationId)
+        // D40 (Codex r1 #6, r2 #1, r3 #1): la nota de cada parte infla el mensaje y el receptor corta arriba de 64 KB sin acuse. Se
+        // mide el mensaje REAL; si con notas no cabe, viaja SIN las notas de las partes y con los renglones que sólo se separaron por
+        // ellas otra vez juntos, con la MISMA regla del ruteo: queda idéntico al de antes de D40 (el papel y la comanda que arma el
+        // SERVIDOR sí las llevan). Si aun así no cabe, es el mismo mensaje que ya no cabía antes.
+        val conNotas = armarComanda(plan, venueId, deviceId, sourceKey, orderNumber, orderType, orderId, createdAtMillis, curso)
+        if (plan.lines.none { l -> l.modifiers.any { sinNota(it) != it } } ||
+            com.avoqado.pos.core.data.lan.KdsLanProtocol.encode(conNotas).toByteArray(Charsets.UTF_8).size <= TOPE_DEL_MENSAJE_CON_NOTAS_BYTES
+        ) return conNotas
+        val sinNotas = plan.copy(lines = juntarSinNotas(plan.lines, productoDe))
+        return armarComanda(sinNotas, venueId, deviceId, sourceKey, orderNumber, orderType, orderId, createdAtMillis, curso)
+    }
+
+    /**
+     * D40: los renglones sin las notas de sus partes, juntos otra vez con la regla de `PrintRoutingEngine.consolidationKey` (el
+     * producto por id —o por nombre si no tiene—, el conjunto de extras ordenado y la nota del artículo), en el orden en que
+     * aparecieron. Los de preparación por producto no se juntan: el ruteo ya los separa uno por renglón del carrito.
+     */
+    internal fun juntarSinNotas(lineas: List<ConsolidatedLine>, productoDe: Map<String, String?>): List<ConsolidatedLine> {
+        val juntas = LinkedHashMap<Any, ConsolidatedLine>()
+        lineas.forEachIndexed { i, l ->
+            val sinNotas = l.copy(modifiers = l.modifiers.map(::sinNota).sorted())
+            if (l.serviceCourse?.preparationVersion == 1) {
+                juntas["prep#$i"] = sinNotas
+                return@forEachIndexed
+            }
+            val producto = l.orderItemIds.firstNotNullOfOrNull { productoDe[it] }
+            val llave = Triple(if (!producto.isNullOrEmpty()) "id:$producto" else "nm:${l.productName}", sinNotas.modifiers, l.notes)
+            juntas[llave] = juntas[llave]?.let { j -> j.copy(quantity = j.quantity + l.quantity, orderItemIds = j.orderItemIds + l.orderItemIds) }
+                ?: sinNotas
+        }
+        return juntas.values.toList()
+    }
+
+    private fun armarComanda(
+        plan: TicketPlan, venueId: String, deviceId: String, sourceKey: String, orderNumber: String, orderType: String,
+        orderId: String?, createdAtMillis: Long, curso: String?,
+    ): KdsComanda {
         return KdsComanda(
             venueId = venueId,
             deviceId = deviceId,

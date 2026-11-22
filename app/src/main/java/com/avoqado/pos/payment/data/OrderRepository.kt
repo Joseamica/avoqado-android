@@ -699,6 +699,11 @@ class OrderRepository @Inject constructor(
                                                 },
                                             )
                                         }
+                                        // D40: la nota de cada parte. Sólo con notas (sin ellas el cuerpo queda byte a byte como antes);
+                                        // la cola sin red guarda este mismo JSON antes de tocar la red.
+                                        item.modifierNotes?.filterKeys { it in modifierIds }?.takeIf { it.isNotEmpty() }?.let { notas ->
+                                            put("modifierNotes", buildJsonObject { notas.forEach { (id, nota) -> put(id, nota) } })
+                                        }
                                         // El precio de catálogo que vio el cliente y la hora de ese catálogo: sólo juntos.
                                         val displayed = item.displayedUnitPrice
                                         val horaDelCatalogo = item.catalogAt

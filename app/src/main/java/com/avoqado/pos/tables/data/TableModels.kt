@@ -225,6 +225,7 @@ data class OpenedOrder(val id: String, val orderNumber: String? = null, val vers
 
 /** One line of a round to append to an open order (mirror of the server's AddOrderItemInput). */
 @Serializable
+@OptIn(kotlinx.serialization.ExperimentalSerializationApi::class)
 data class AddOrderItemRequest(
     /** Catalog product — null for a custom-amount line (customName + customUnitPriceCents). */
     val productId: String? = null,
@@ -233,6 +234,12 @@ data class AddOrderItemRequest(
     val notes: String? = null,
     /** Modifier ids picked with the normal product detail panel. */
     val modifierIds: List<String>? = null,
+    /**
+     * D40: la nota de cada parte, `{ modifierId: nota }`. Null = sin notas y la llave NO viaja (tampoco por Retrofit, que manda los
+     * nulos explícitos: Codex r2 #5), así que una ronda sin notas sale byte a byte como antes. El SERVIDOR sin D40 la ignora.
+     */
+    @kotlinx.serialization.EncodeDefault(kotlinx.serialization.EncodeDefault.Mode.NEVER)
+    val modifierNotes: Map<String, String>? = null,
     /** TABLE_SERVICE course/tiempo ("Aperitivos"...). Null = preparar de inmediato. */
     val course: String? = null,
     val serviceCourse: com.avoqado.pos.pos.data.model.ServiceCourseSnapshot? = null,
@@ -466,6 +473,8 @@ data class OrderDetailModifier(
     val id: String = "",
     val name: String = "",
     val price: Double = 0.0,
+    /** D40: la nota de esta parte; el SERVIDOR sólo la manda si la tiene. */
+    val notes: String? = null,
 )
 
 // MARK: - Recompensas (lealtad, LOYALTY_PROGRAM / PRO)

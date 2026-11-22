@@ -1,6 +1,9 @@
 package com.avoqado.pos.pos.presentation.product
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -33,6 +36,7 @@ import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.pos.data.model.ProductModifierGroup
 import com.avoqado.pos.pos.data.model.SelectedModifier
 import com.avoqado.pos.pos.domain.dejaRepetir
+import com.avoqado.pos.pos.domain.notaDelExtra
 import com.avoqado.pos.pos.domain.puedeSumar
 import com.avoqado.pos.pos.domain.vecesElegida
 import com.avoqado.pos.pos.data.model.Modifier as ProductModifier
@@ -48,6 +52,11 @@ fun ModifierGroupSection(
      */
     onSumar: ((ProductModifier) -> Unit)? = null,
     onRestar: ((ProductModifier) -> Unit)? = null,
+    /**
+     * D40: nota de cada parte. Con esto, debajo de cada opción elegida sale «+ Nota» (o la nota ya puesta) y al tocarla se escribe.
+     * Sin esto (piezas de un combo) se ve como siempre.
+     */
+    onNota: ((ProductModifier) -> Unit)? = null,
 ) {
     val conContador = group.dejaRepetir && onSumar != null && onRestar != null
     val requiredCount = if (group.required) {
@@ -88,13 +97,17 @@ fun ModifierGroupSection(
 
         if (conContador) {
             group.modifiers.forEach { modifier ->
+                val veces = vecesElegida(selectedModifiers, group, modifier)
                 FilaConContador(
                     modifier = modifier,
-                    veces = vecesElegida(selectedModifiers, group, modifier),
+                    veces = veces,
                     puedeSumar = puedeSumar(selectedModifiers, group, modifier),
                     onSumar = { onSumar!!(modifier) },
                     onRestar = { onRestar!!(modifier) },
                 )
+                if (veces > 0 && onNota != null) {
+                    FilaDeNotaDeLaParte(nota = notaDelExtra(selectedModifiers, group.id, modifier.id), onClick = { onNota(modifier) })
+                }
             }
         } else group.modifiers.forEach { modifier ->
             val isSelected = selectedModifiers.any {
@@ -144,10 +157,34 @@ fun ModifierGroupSection(
                     )
                 }
             }
+            if (isSelected && onNota != null) {
+                FilaDeNotaDeLaParte(nota = notaDelExtra(selectedModifiers, group.id, modifier.id), onClick = { onNota(modifier) })
+            }
         }
 
         Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))
     }
+}
+
+/**
+ * D40: debajo de una opción elegida, «+ Nota» o la nota que ya tiene («Nota: sin cebolla»). Toda la fila responde al dedo (48dp de
+ * alto, como las demás filas) y no cambia lo elegido.
+ */
+@Composable
+private fun FilaDeNotaDeLaParte(nota: String?, onClick: () -> Unit) {
+    Text(
+        text = nota?.let { "Nota: $it" } ?: "+ Nota",
+        style = MaterialTheme.typography.labelMedium,
+        fontWeight = if (nota != null) FontWeight.SemiBold else null,
+        color = if (nota != null) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+        maxLines = 2,
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(role = Role.Button, onClickLabel = if (nota != null) "Cambiar la nota" else "Agregar una nota", onClick = onClick)
+            .heightIn(min = 40.dp)
+            .wrapContentHeight(Alignment.CenterVertically)
+            .padding(start = AvoqadoTheme.spacing.xxxl + AvoqadoTheme.spacing.sm, top = AvoqadoTheme.spacing.xs, bottom = AvoqadoTheme.spacing.xs),
+    )
 }
 
 /**

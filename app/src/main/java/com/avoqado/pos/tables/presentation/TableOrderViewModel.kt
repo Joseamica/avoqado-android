@@ -1,5 +1,6 @@
 package com.avoqado.pos.tables.presentation
 
+import com.avoqado.pos.pos.domain.etiquetaEnCocina
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -2528,7 +2529,7 @@ class TableOrderViewModel @Inject constructor(
                             categoryId = item.productId?.let { productsRepository.getProduct(it)?.categoryId },
                             productName = item.productName ?: "Artículo",
                             quantity = item.quantity,
-                            modifiers = item.modifiers.map { it.name },
+                            modifiers = item.modifiers.map { etiquetaEnCocina(it.name, it.notes) }, // D40
                             notes = item.notes,
                         )
                     }
@@ -2665,7 +2666,7 @@ class TableOrderViewModel @Inject constructor(
                     categoryId = item.productId?.let { productsRepository.getProduct(it)?.categoryId }, // D18, como reimprimir
                     productName = item.productName ?: "Artículo",
                     quantity = item.quantity,
-                    modifiers = item.modifiers.map { it.name },
+                    modifiers = item.modifiers.map { etiquetaEnCocina(it.name, it.notes) }, // D40
                     notes = item.notes,
                 )
             }

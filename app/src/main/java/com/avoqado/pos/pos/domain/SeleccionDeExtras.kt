@@ -40,6 +40,8 @@ fun sumarExtra(actuales: List<SelectedModifier>, grupo: ProductModifierGroup, ex
         modifierId = extra.id,
         modifierName = extra.name,
         priceInCents = extra.priceInCents,
+        // D40: la nota es de la opción, no de cada vez: la vez nueva lleva la que ya tenía.
+        note = notaDelExtra(actuales, grupo.id, extra.id),
     )
 }
 
