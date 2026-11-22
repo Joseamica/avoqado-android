@@ -1,6 +1,7 @@
 package com.avoqado.pos.escritorio.impresion
 
 import android.util.Log
+import com.avoqado.pos.printing.data.PermisoParaImprimirVencido
 import com.avoqado.pos.printing.data.model.PrinterException
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -30,6 +31,8 @@ internal inline fun <T> sinErroresSueltos(momento: Momento, bloque: () -> T): T 
         bloque()
     } catch (e: PrinterException) {
         throw e
+    } catch (e: PermisoParaImprimirVencido) {
+        throw e   // D661 · Ruling 81: no es una falla de la impresora; no salió nada y PrinterService la deja pasar tal cual.
     } catch (t: Throwable) {
         throw comoFallaDeImpresora(t, momento)
     }
@@ -74,8 +77,18 @@ internal interface LlamadasDeCola<H : Any> {
  * Si algo falla después de StartDoc —también EndDoc—, se INTENTA cancelar con AbortPrinter. Eso no promete que no haya
  * salido papel: Windows puede ir imprimiendo mientras recibe, y con impresión directa AbortPrinter no hace nada. Si
  * Windows dice que no pudo cancelarlo, el cajero lo sabe: tiene que revisar la cola antes de reimprimir.
+ *
+ * D661 · Ruling 81: [antesDelPrimerByte] se pregunta con el documento y la página ya abiertos (StartDoc/StartPage pueden esperar a la
+ * cola de Windows) y antes del primer WritePrinter. Si dice que no, el documento vacío se cancela y sale [PermisoParaImprimirVencido]
+ * tal cual, aunque Windows no lo cancele: no se escribió ni un byte.
  */
-internal fun <H : Any> imprimirTrabajoCrudo(w: LlamadasDeCola<H>, nombre: String, documento: String, bytes: ByteArray) {
+internal fun <H : Any> imprimirTrabajoCrudo(
+    w: LlamadasDeCola<H>,
+    nombre: String,
+    documento: String,
+    bytes: ByteArray,
+    antesDelPrimerByte: () -> Boolean = { true },
+) {
     sinErroresSueltos(Momento.IMPRIMIR) {
         val h = w.abrir(nombre) ?: run {
             val error = w.ultimoError()
@@ -98,12 +111,15 @@ internal fun <H : Any> imprimirTrabajoCrudo(w: LlamadasDeCola<H>, nombre: String
             }
             try {
                 if (!w.iniciarPagina(h)) fallaDelTrabajo(w, nombre, "StartPagePrinter")
+                if (!antesDelPrimerByte()) throw PermisoParaImprimirVencido()
                 escribirTodo(w, h, nombre, bytes)
                 if (!w.terminarPagina(h)) fallaDelTrabajo(w, nombre, "EndPagePrinter")
                 if (!w.terminarDocumento(h)) fallaDelTrabajo(w, nombre, "EndDocPrinter")
             } catch (t: Throwable) {
                 // El trabajo sólo queda «completo» si EndDocPrinter respondió bien: cualquier otra salida intenta cancelarlo.
-                if (!cancelarTrabajo(w, h, nombre)) {
+                val cancelado = cancelarTrabajo(w, h, nombre)
+                if (t is PermisoParaImprimirVencido) throw t
+                if (!cancelado) {
                     Log.w(TAG, "El trabajo de «$nombre» falló y Windows no lo canceló", t)
                     throw PrinterException.PrintFailed(TEXTO_NO_SE_PUDO_CANCELAR)
                 }

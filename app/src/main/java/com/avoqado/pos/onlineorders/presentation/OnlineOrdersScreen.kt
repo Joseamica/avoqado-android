@@ -146,9 +146,13 @@ fun OnlineOrdersScreen(
     val puedeCancelar = viewModel.puedeCancelar
     val dialogo = rememberDialogoDePedido()
     // La sección sale si el servidor la tiene (aunque haya algo guardado, un «no disponible» la esconde) y hay algo que decir.
-    val seccionFolios = folios?.takeIf { it.disponible && (it.showTile || it.porPagar.isNotEmpty() || it.porEntregar.isNotEmpty()) }
-    val foliosEnPantalla = remember(seccionFolios, cobradosEnElAparato, cobradosConTarjeta, ocultos) {
+    // D661: también mientras haya pagados en línea por abrir, aunque el negocio haya cambiado de modo (`seccionDeFoliosVisible`).
+    val seccionFolios = folios?.takeIf { seccionDeFoliosVisible(it) }
+    // R2-6: un pagado en línea con el «confirmando» del SERVIDOR sigue «Cobrándose en otra caja…» hasta que una lectura buena diga dónde quedó.
+    val cobrandoEnOtraCaja by viewModel.cobrandoEnOtraCaja.collectAsState()
+    val foliosEnPantalla = remember(seccionFolios, cobradosEnElAparato, cobradosConTarjeta, ocultos, cobrandoEnOtraCaja) {
         seccionFolios?.let { conLoCobradoEnElAparato(sinLosYaAtendidos(it, ocultos), cobradosEnElAparato.keys + cobradosConTarjeta.keys) }
+            ?.let { l -> l.copy(tarjetasPorAbrir = l.tarjetasPorAbrir.map { conCobrandoEnOtraCaja(it, cobrandoEnOtraCaja) }) }
     }
 
     Box(Modifier.fillMaxSize()) {
@@ -259,6 +263,7 @@ fun OnlineOrdersScreen(
                                         puedeCancelar = puedeCancelar,
                                         onCobrar = viewModel::cobrarFolio,
                                         onCancelar = { dialogo.abrir(it, TipoDeDialogo.CANCELAR_FOLIO) },
+                                        onAbrirYCobrar = viewModel::abrirYCobrar,
                                     )
                                 }
                             },

@@ -45,6 +45,10 @@ internal fun esTarjetaEnLinea(pedido: OnlineOrder): Boolean = pedido.paymentMode
 /** «Cobrar» nunca se ofrece en un pedido de tarjeta en línea (la tarjeta se cobra sola al aceptar); en los demás, sólo con saldo. */
 internal fun sePuedeCobrar(pedido: OnlineOrder, permiso: Boolean): Boolean = permiso && !esTarjetaEnLinea(pedido) && !estaPagado(pedido)
 
+/** «Listo» sólo en preparación y sin marca de «Devolviendo…»/«Devuelto»/«No recogido» (como la tarjeta del folio): ese pedido no se entrega. */
+internal fun muestraListo(pedido: OnlineOrder, seccion: SeccionDePedido): Boolean =
+    seccion == SeccionDePedido.EN_PREPARACION && sePuedeEntregar(pedido)
+
 /** «Aceptar» se apaga mientras el banco confirma el pago de una tarjeta. */
 internal fun sePuedeAceptar(pedido: OnlineOrder): Boolean = pedido.cardStatus != "CONFIRMING"
 
@@ -52,8 +56,11 @@ private val CERRADOS_SIN_COMPLETAR = setOf(
     OnlineOrderStatus.REJECTED, OnlineOrderStatus.EXPIRED, OnlineOrderStatus.CANCELLED_BY_CUSTOMER, OnlineOrderStatus.CANCELLED_BY_STAFF,
 )
 
-/** Lo que dice el renglón de dinero de la tarjeta: «Pagado», «Cobrar al recoger $X» o, en tarjeta en línea, su propio texto. */
-internal fun textoDeDinero(pedido: OnlineOrder): String = when {
+/**
+ * Lo que dice el renglón de dinero de la tarjeta: «Pagado», «Cobrar al recoger $X» o, en tarjeta en línea, su propio texto. R2-2: un pedido
+ * devuelto, devolviéndose o no recogido dice eso, nunca «Pagado».
+ */
+internal fun textoDeDinero(pedido: OnlineOrder): String = marcaDelPedido(pedido) ?: when {
     !esTarjetaEnLinea(pedido) -> textoDeDineroEnLocal(pedido)
     pedido.status in CERRADOS_SIN_COMPLETAR ->
         when (pedido.cardChargeStatus) {
@@ -165,7 +172,7 @@ fun OnlineOrderCard(
                             }
                         }
                         SeccionDePedido.EN_PREPARACION, SeccionDePedido.LISTOS -> {
-                            if (seccion == SeccionDePedido.EN_PREPARACION) {
+                            if (muestraListo(pedido, seccion)) {
                                 Button(onClick = onListo, enabled = enLinea, modifier = Modifier.testTag("listo-${pedido.orderId}")) {
                                     Text(TextosPedidosEnLinea.LISTO)
                                 }
@@ -179,8 +186,20 @@ fun OnlineOrderCard(
                             OutlinedButton(onClick = onReimprimir, enabled = !ocupado, modifier = Modifier.testTag("reimprimir-${pedido.orderId}")) {
                                 Text(TextosPedidosEnLinea.REIMPRIMIR)
                             }
-                            OutlinedButton(onClick = onEntregado, enabled = enLinea, modifier = Modifier.testTag("entregado-${pedido.orderId}")) {
-                                Text(TextosPedidosEnLinea.ENTREGADO)
+                            // Ronda 3: la comanda de un pedido marcado se puede reimprimir (lo pide una persona), pero junto al botón se dice qué es.
+                            marcaDelPedido(pedido)?.let { marca ->
+                                Text(
+                                    marca,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.error,
+                                    modifier = Modifier.align(Alignment.CenterVertically).testTag("marca-${pedido.orderId}"),
+                                )
+                            }
+                            // R2-2: un pedido devuelto, devolviéndose o no recogido no se entrega.
+                            if (sePuedeEntregar(pedido)) {
+                                OutlinedButton(onClick = onEntregado, enabled = enLinea, modifier = Modifier.testTag("entregado-${pedido.orderId}")) {
+                                    Text(TextosPedidosEnLinea.ENTREGADO)
+                                }
                             }
                             if (puedeCancelar && sinDinero(pedido)) {
                                 TextButton(onClick = { onPedirDialogo(TipoDeDialogo.CANCELAR) }, enabled = enLinea, modifier = Modifier.testTag("cancelar-${pedido.orderId}")) {

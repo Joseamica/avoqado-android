@@ -230,6 +230,26 @@ class ComandaPrinterTest {
         assertEquals(2, goodTicketSlot.size)
     }
 
+    /**
+     * D661 · Ruling 50: el «no» del permiso del primer byte no es una impresora caída. El trabajo entero se suelta —ninguna otra estación
+     * recibe nada— y no llega a «la libreta» (que le avisaría al gerente «no salió» de una comanda que la siguiente vuelta sí saca).
+     */
+    @Test
+    fun `R3 Family 3 a refused first byte drops the whole job and reports nothing to the libreta`() = runTest {
+        coEvery { printerService.printKitchenTicket(any(), any()) } throws PermisoParaImprimirVencido()
+        val libreta = mockk<ReporteDeComandas>(relaxed = true)
+        val reintento = ReintentoDeComanda(comandaPrinter, esperar = { }, reporteDeComandas = libreta)
+        val plans = listOf(plan("st_cocina", listOf(tacoLine)), plan("st_barra", listOf(cervezaLine)))
+
+        val error = runCatching {
+            reintento.insistir(plans, config, "T-1", "Para recoger", null, emptyMap(), maxIntentos = 1, venueId = "v1", orderId = "o1")
+        }.exceptionOrNull()
+
+        assertTrue("se suelta, no es «no salió»: $error", error is PermisoParaImprimirVencido)
+        coVerify(exactly = 1) { printerService.printKitchenTicket(any(), any()) }
+        coVerify(exactly = 0) { libreta.reportar(any(), any(), any(), any(), any(), any(), any()) }
+    }
+
     // MARK: - Bluetooth / unsupported-transport connectionType mapping
 
     @Test

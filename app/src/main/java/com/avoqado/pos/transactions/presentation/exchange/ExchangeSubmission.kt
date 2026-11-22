@@ -115,7 +115,8 @@ class ExchangeSubmission(private val repository: ExchangeRepository, private val
             e.statusCode in setOf(400, 404) ||
             (e.statusCode == 422 && e.code in setOf("EXCHANGES_DISABLED", "EXCHANGE_ITEM_NOT_RETURNABLE",
                 "EXCHANGE_TAKEN_NOT_SELLABLE", "EXCHANGE_SETTLEMENT_UNAVAILABLE")) ||
-            (e.statusCode == 409 && e.code in setOf("EXCHANGE_DIFFERENCE_CHANGED", "IDEMPOTENCY_KEY_REUSED")))
+            // D661: un pedido pagado con tarjeta en línea nunca admite Cambio; con saldo a favor llega como STORE_CREDIT_REJECTED.
+            (e.statusCode == 409 && e.code in setOf("EXCHANGE_DIFFERENCE_CHANGED", "IDEMPOTENCY_KEY_REUSED", "EXCHANGE_NOT_FOR_ONLINE_CARD")))
         // Con saldo a favor, la diferencia que cambió llega envuelta en STORE_CREDIT_REJECTED con su `calculation`.
         val calculation = if (e?.code == "EXCHANGE_DIFFERENCE_CHANGED" || e?.code == "STORE_CREDIT_REJECTED") runCatching {
             jsonReembolsos.decodeFromJsonElement<ExchangeServerCalculation>(e.details!!.jsonObject.getValue("calculation"))

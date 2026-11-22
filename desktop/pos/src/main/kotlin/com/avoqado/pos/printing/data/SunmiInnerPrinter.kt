@@ -24,8 +24,8 @@ class SunmiInnerPrinter @Inject constructor() {
 
     suspend fun ensureBound(): Boolean = false
 
-    /** El mismo error que el original cuando no hay servicio ligado. */
-    suspend fun printRaw(data: ByteArray) {
+    /** El mismo error que el original cuando no hay servicio ligado (sin cabezal no hay primer byte que proteger). */
+    suspend fun printRaw(data: ByteArray, @Suppress("UNUSED_PARAMETER") antesDelPrimerByte: () -> Boolean = { true }) {
         throw PrinterException.ConnectionFailed("La impresora integrada no está disponible")
     }
 }

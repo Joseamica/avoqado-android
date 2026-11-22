@@ -79,6 +79,13 @@ fun entradaDePedidosEnLinea(
 fun debeAbrirBandeja(solicitada: Boolean, entrada: EntradaPedidosEnLinea): Boolean =
     solicitada && entrada != EntradaPedidosEnLinea.OCULTA
 
+/**
+ * D661 · R2-6: un pagado en línea al que el SERVIDOR contestó «confirmando el pago» ([marcas]) se pinta «Cobrándose en otra caja…» aunque la
+ * lista de la pantalla sea la de antes del 409 (la relectura falló). PURA.
+ */
+fun conCobrandoEnOtraCaja(tarjeta: com.avoqado.pos.onlineorders.domain.TarjetaPorAbrir, marcas: Set<String>) =
+    if (tarjeta.orderId in marcas && !tarjeta.cobrando) tarjeta.copy(cobrando = true) else tarjeta
+
 /** Dinero para pintar: `$185.50`, siempre con el formato del negocio (no el del idioma del aparato). */
 fun formatoPesos(centavos: Long): String = formatMoney(BigDecimal.valueOf(centavos, 2).toDouble())
 
@@ -145,6 +152,8 @@ class OnlineOrdersViewModel internal constructor(
     private val guardarOcultos: suspend (Map<String, HuellaDeFolio>) -> Unit = {},
     /** A1 (e): un cobro con saldo de esta orden mandado y sin confirmar (`SolicitudesDeTarjeta.cuentaTrabada`). */
     private val saldoEnDuda: (orderId: String) -> Boolean = { false },
+    /** D661: tras abrir un pagado en línea, el vigilante relee «Por pagar» ya (el sonido para sin esperar su compás). */
+    private val sondearFoliosDelVigilante: () -> Unit = {},
 ) : ViewModel() {
 
     @Inject
@@ -167,6 +176,7 @@ class OnlineOrdersViewModel internal constructor(
         tienePlan = { planManager.hasFeature("ONLINE_ORDERING") },
         hayPedidosAbiertos = { vigilante.hayPedidosAbiertos.value },
         sondearVigilante = vigilante::sondearYa,
+        sondearFoliosDelVigilante = vigilante::sondearFoliosYa,
         // El deviceId del outbox, NO uno nuevo (regla de offline-first): sin él no se reclama nada.
         imprimirSiToca = { pedido ->
             val deviceId = try { syncOutbox.get().deviceId } catch (e: Exception) { null }
@@ -215,6 +225,17 @@ class OnlineOrdersViewModel internal constructor(
 
     /** Pedidos con una acción en vuelo: sus botones se apagan y un segundo toque no hace nada. */
     val ocupados: StateFlow<Set<String>> = _ocupados.asStateFlow()
+
+    private val _cobrandoEnOtraCaja = MutableStateFlow<Set<String>>(emptySet())
+
+    /**
+     * D661 · R2-6: pagados en línea a los que el SERVIDOR dijo «confirmando el pago» (otra caja los cobra) y que ninguna lectura buena
+     * POSTERIOR ha vuelto a ver. Su botón dice «Cobrándose en otra caja…» ([conCobrandoEnOtraCaja]) y «Abrir y cobrar» no los abre.
+     */
+    val cobrandoEnOtraCaja: StateFlow<Set<String>> = _cobrandoEnOtraCaja.asStateFlow()
+
+    /** R2-6: orderId -> la última lectura de «Por pagar» que ya había salido cuando llegó el 409 (sólo una posterior suelta la marca). */
+    private val confirmandoFolio = mutableMapOf<String, Long>()
 
     private val _hayMas = MutableStateFlow(false)
 
@@ -398,6 +419,8 @@ class OnlineOrdersViewModel internal constructor(
             return
         }
         primera.onSuccess { lista ->
+            // R2-6: esta lectura salió después del «confirmando»: ya dice dónde quedó el pedido.
+            if (confirmandoFolio.entries.removeAll { (_, antes) -> generacion > antes }) _cobrandoEnOtraCaja.value = confirmandoFolio.keys.toSet()
             // R105 (c) (Codex r7 #1): la página 1 se publica YA, sin esperar a las extras (un folio nuevo por cobrar no espera a una
             // página de «Por entregar»). Lo que ya se veía de las extras se conserva mientras se releen aparte (regla A2).
             val previa = _porPagar.value
@@ -862,6 +885,38 @@ class OnlineOrdersViewModel internal constructor(
         confirmando[orderId] = lecturasIniciadas
         val s = _secciones.value
         _secciones.value = s.copy(porAceptar = s.porAceptar.map { if (it.orderId == orderId) it.copy(cardStatus = "CONFIRMING") else it })
+        // R2-6: si es un pagado en línea, también espera; antes el botón viejo volvía si la relectura fallaba.
+        if (_porPagar.value?.tarjetasPorAbrir?.any { it.orderId == orderId } == true) {
+            confirmandoFolio[orderId] = generacionDeFolios
+            _cobrandoEnOtraCaja.value = confirmandoFolio.keys.toSet()
+        }
+    }
+
+    /**
+     * D661 (Task 11): «Abrir y cobrar» un pedido pagado con tarjeta en línea en «No, entran solos». Abrir ES cobrar (el SERVIDOR cobra la
+     * tarjeta apartada y lo pasa a «Por entregar»), así que sale SÓLO de este toque: entrar a la pantalla, releer o «Cargar más» nunca abren
+     * nada. Sólo un pedido que la lista de ahora trae por abrir, que otra caja no está cobrando y con `orders:update`. Sólo en línea: nunca
+     * se encola. Pase lo que pase se relee: el SERVIDOR dice dónde quedó (otra caja lo abrió = ya está en «Por entregar»; se está cobrando =
+     * «Cobrándose en otra caja…»; se liberó = «ya no está disponible»). La comanda NO sale de la respuesta: la saca el vigilante de una
+     * lectura fresca (`comandasPorImprimir`), y el vigilante relee ya para que el sonido pare en esta lectura.
+     */
+    fun abrirYCobrar(orderId: String) {
+        val tarjeta = _porPagar.value?.takeIf { it.disponible }?.tarjetasPorAbrir?.firstOrNull { it.orderId == orderId } ?: return
+        if (tarjeta.cobrando || orderId in _cobrandoEnOtraCaja.value) return
+        ejecutar(
+            orderId, permisoActualizar(),
+            textoExito = TextosPedidosEnLinea.abiertoEnPorEntregar(tarjeta.orderNumber),
+            textoSinConexion = TextosPedidosEnLinea.ABRIR_SIN_CONEXION,
+            // Menor 1 de la revisión del PR #308: el 409 STALE de la segunda caja dice dónde quedó el pedido.
+            textoYaNoDisponible = { estado ->
+                when (estado) {
+                    OnlineOrderStatus.ACCEPTED, OnlineOrderStatus.READY -> TextosPedidosEnLinea.abiertoEnPorEntregar(tarjeta.orderNumber)
+                    OnlineOrderStatus.COMPLETED -> TextosPedidosEnLinea.pedidoYaCerrado(tarjeta.orderNumber)
+                    else -> TextosPedidosEnLinea.YA_NO_DISPONIBLE
+                }
+            },
+            alResponder = sondearFoliosDelVigilante,
+        ) { repositorio.abrirPagadoEnLinea(orderId) }
     }
 
     /** [motivo] es el código del servidor (`OUT_OF_ITEMS`, `CLOSED`, `TOO_BUSY`, `OTHER`). */
@@ -1259,6 +1314,12 @@ class OnlineOrdersViewModel internal constructor(
         alHechoYReleido: () -> Unit = {},
         /** R100: la huella del folio tomada ANTES de la petición; con la acción confirmada se esconde hasta que el SERVIDOR cambie. */
         huella: HuellaDeFolio? = null,
+        /** El texto neutro de «sin red» de esta acción. */
+        textoSinConexion: String = TextosPedidosEnLinea.REINTENTA,
+        /** El texto de un pedido que ya está en otro estado (409 STALE), según dónde quedó. */
+        textoYaNoDisponible: (OnlineOrderStatus) -> String = { TextosPedidosEnLinea.YA_NO_DISPONIBLE },
+        /** Lo que corre en cuanto llega la respuesta, sea cual sea (D661: el vigilante relee «Por pagar»). */
+        alResponder: () -> Unit = {},
         llamada: suspend () -> AccionResultado,
     ) {
         if (!permitido) return
@@ -1289,11 +1350,12 @@ class OnlineOrdersViewModel internal constructor(
                 }
                 _aviso.value = when (resultado) {
                     AccionResultado.Hecho -> textoExito
-                    is AccionResultado.YaNoDisponible -> TextosPedidosEnLinea.YA_NO_DISPONIBLE
-                    AccionResultado.SinConexion -> TextosPedidosEnLinea.REINTENTA
+                    is AccionResultado.YaNoDisponible -> textoYaNoDisponible(resultado.status)
+                    AccionResultado.SinConexion -> textoSinConexion
                     is AccionResultado.ConfirmandoPago -> resultado.mensaje
                     is AccionResultado.Error -> resultado.mensaje
                 }
+                alResponder()
                 // Siempre se relee: el servidor es el que dice dónde quedó el pedido.
                 // El pedido salió de «por aceptar» (o ya no estaba): el aviso global para en ESTA petición, no en el siguiente compás.
                 if (resultado is AccionResultado.Hecho || resultado is AccionResultado.YaNoDisponible) {

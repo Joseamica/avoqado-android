@@ -135,6 +135,50 @@ class PorPagarTest {
     }
 
     @Test
+    fun `D661 to-pay sends the card-alert header and reads tarjetasPorAbrir in pesos and comandasPorImprimir`() = runTest {
+        val d661 = ""","tarjetasPorAbrir":[
+            {"orderId":"t1","orderNumber":"T-0042","customerName":"Ana N.","total":250.5,"createdAt":"2026-11-20T18:00:00.000Z","cobrando":false},
+            {"orderNumber":"roto"},
+            {"orderId":"t2","orderNumber":"T-0043","customerName":"","total":0.29,"createdAt":"2026-11-20T18:01:00.000Z","cobrando":true}],
+            "comandasPorImprimir":[{"orderId":"c1","orderNumber":"T-0040"},{"orderNumber":"sin id"}]"""
+        server.enqueue(MockResponse().setBody(cuerpo().replace("\"pollSeconds\":30", "\"pollSeconds\":30$d661")))
+        server.enqueue(MockResponse().setBody(cuerpo()))
+        val lista = repo.porPagar(conLatido = false, avisaTarjetas = { true }).getOrThrow()
+        // R2-1: el compás del vigilante a la vista se anuncia como caja que avisa (el SERVIDOR revisa orders:update).
+        assertEquals("1", server.takeRequest(1, TimeUnit.SECONDS)!!.getHeader("x-online-orders-card-alert"))
+        // Ruling 13: el total llega en PESOS y aquí va en centavos exactos; un renglón dañado se salta.
+        assertEquals(listOf("t1", "t2"), lista.tarjetasPorAbrir.map { it.orderId })
+        val t1 = lista.tarjetasPorAbrir[0]
+        assertEquals("T-0042", t1.orderNumber); assertEquals("Ana N.", t1.customerName); assertEquals(25050L, t1.totalCents)
+        assertEquals(Instant.parse("2026-11-20T18:00:00Z"), t1.createdAt); assertFalse(t1.cobrando)
+        val t2 = lista.tarjetasPorAbrir[1]
+        assertNull("sin nombre es null, no una cadena vacía", t2.customerName); assertEquals(29L, t2.totalCents); assertTrue(t2.cobrando)
+        assertEquals(listOf("c1"), lista.comandasPorImprimir.map { it.orderId })
+        assertEquals("T-0040", lista.comandasPorImprimir.single().orderNumber)
+        // La copia guardada las trae igual (para enseñarlas sin red; nunca para sonar).
+        assertEquals(listOf("t1", "t2"), repo.porPagarGuardado()!!.tarjetasPorAbrir.map { it.orderId })
+        // Un SERVIDOR viejo no las manda: listas vacías, sin error.
+        val vieja = repo.porPagar(conLatido = true).getOrThrow()
+        assertTrue(vieja.tarjetasPorAbrir.isEmpty()); assertTrue(vieja.comandasPorImprimir.isEmpty())
+        // R2-1: la lectura de la pantalla (con el latido de folios) ya no se anuncia.
+        assertNull(server.takeRequest(1, TimeUnit.SECONDS)!!.getHeader("x-online-orders-card-alert"))
+    }
+
+    /** R2-1 (Ruling 35): una visita a la bandeja o «Cargar más» nunca le dicen al SERVIDOR que esta caja avisa. */
+    @Test
+    fun `R2-1 only the watcher read sends the card-alert header - the screen and its pagination never do`() = runTest {
+        repeat(4) { server.enqueue(MockResponse().setBody(cuerpo(cursorPagar = "c1"))) }
+        repo.porPagar(conLatido = true).getOrThrow() // la bandeja visible de quien cobra
+        repo.porPagar(conLatido = false).getOrThrow() // la bandeja de quien no cobra
+        repo.porPagar(conLatido = false, seccion = "toPay", cursor = "c1").getOrThrow() // «Cargar más»
+        repo.porPagar(conLatido = true, avisaTarjetas = { true }).getOrThrow() // el compás del vigilante, a la vista
+        val pedidas = List(4) { server.takeRequest(1, TimeUnit.SECONDS)!! }
+        assertEquals(listOf(null, null, null, "1"), pedidas.map { it.getHeader("x-online-orders-card-alert") })
+        // El latido de folios sigue igual que antes.
+        assertEquals(listOf("1", null, null, "1"), pedidas.map { it.getHeader("x-online-orders-to-pay") })
+    }
+
+    @Test
     fun `porPagar manda seccion y cursor y no pisa lo guardado con otra pagina`() = runTest {
         server.enqueue(MockResponse().setBody(cuerpo(folio("o1"), cursorPagar = "c1")))
         server.enqueue(MockResponse().setBody(cuerpo(folio("o7"))))
@@ -252,6 +296,44 @@ class PorPagarBandejaTest {
         vm.marcarListo("e1")
         advanceUntilIdle()
         coVerify(exactly = 1) { repo.ready("e1") }
+    }
+
+    /**
+     * Ruling 71: un «Entregado» que el SERVIDOR rechaza con `ORDER_CLOSED_NOT_DELIVERED` (devuelto o «No lo recogió») llega como
+     * `Error` con su texto (`OnlineOrdersRepositoryTest › R71 …`). En los DOS caminos —la tarjeta del folio y la de la bandeja— se dice
+     * ese texto, la tarjeta se queda (nada se esconde) y se relee.
+     */
+    @Test
+    fun `R71 a delivery refused as closed not delivered keeps the card in both paths and rereads`() = runTest(dispatcher) {
+        val texto = "Este pedido ya se devolvió («Devuelto»): no se marca entregado. No se aplicó nada."
+        val leo = folio("e1", "W8M2C", "Leo", OnlineOrderStatus.ACCEPTED, 6900, 0, "PAID")
+        val marcado = folio("r1", "R1AAA", "Ana", OnlineOrderStatus.READY, 6900, 0, "PAID", requiere = null)
+            .copy(refundedAt = Instant.parse("2026-11-21T10:00:05Z"))
+        respuesta = Result.success(lista(porEntregar = listOf(leo)))
+        coEvery { repo.inbox(any(), any(), any()) } returns Result.success(inbox(marcado))
+        coEvery { repo.delivered(any()) } returns AccionResultado.Error(texto)
+        val vm = armar()
+        vm.refrescar()
+        assertEquals(listOf("r1"), vm.secciones.value.listos.map { it.orderId })
+
+        // La tarjeta del folio.
+        val lecturas = llamadas.size
+        vm.entregarFolio(leo)
+        advanceUntilIdle()
+        assertEquals(texto, vm.aviso.value)
+        assertTrue("nada se esconde", vm.ocultos.value.isEmpty())
+        assertEquals(listOf("e1"), sinLosYaAtendidos(vm.porPagar.value!!, vm.ocultos.value).porEntregar.map { it.orderId })
+        assertTrue("se relee", llamadas.size > lecturas)
+
+        // La tarjeta de la bandeja.
+        vm.cerrarAviso()
+        vm.marcarEntregado("r1")
+        advanceUntilIdle()
+        assertEquals(texto, vm.aviso.value)
+        assertTrue(vm.ocultos.value.isEmpty())
+        assertEquals(listOf("r1"), vm.secciones.value.listos.map { it.orderId })
+        coVerify(exactly = 2) { repo.delivered(any()) }
+        coVerify(atLeast = 3) { repo.inbox(any(), any(), any()) }
     }
 
     @Test
@@ -573,6 +655,12 @@ class PorPagarBandejaTest {
     fun `the menu number adds por aceptar and por pagar`() {
         assertEquals(5, numeroDelMenu(porAceptar = 2, porPagar = 3))
         assertEquals(0, numeroDelMenu(0, 0))
+    }
+
+    @Test
+    fun `D661 the menu number adds the paid orders to open`() {
+        assertEquals(6, numeroDelMenu(porAceptar = 2, porPagar = 3, porAbrir = 1))
+        assertEquals(1, numeroDelMenu(0, 0, porAbrir = 1))
     }
 
     @Test

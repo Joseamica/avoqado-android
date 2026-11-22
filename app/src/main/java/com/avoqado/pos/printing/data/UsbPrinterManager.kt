@@ -227,9 +227,14 @@ internal class UsbPrinterManager(private val context: Context) {
         }
     }
 
-    /** Writes raw ESC/POS bytes to the printer's bulk-OUT endpoint, chunked. */
-    fun write(printerId: String, data: ByteArray) {
+    /**
+     * Writes raw ESC/POS bytes to the printer's bulk-OUT endpoint, chunked.
+     * D661 · Ruling 81: [antesDelPrimerByte] se pregunta justo antes del primer `bulkTransfer` (aquí no hay preparación que espere); si dice
+     * que no, no sale nada ([PermisoParaImprimirVencido]) y la impresora sigue abierta. En WINDOWS lo pregunta su cola, tras abrir el documento.
+     */
+    fun write(printerId: String, data: ByteArray, antesDelPrimerByte: () -> Boolean = { true }) {
         val open = openPrinters[printerId] ?: throw PrinterException.NotConnected()
+        if (!antesDelPrimerByte()) throw PermisoParaImprimirVencido()
         var offset = 0
         while (offset < data.size) {
             val length = minOf(USB_CHUNK_SIZE, data.size - offset)

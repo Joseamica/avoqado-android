@@ -1,5 +1,6 @@
 package com.avoqado.pos.escritorio.impresion
 
+import com.avoqado.pos.printing.data.PermisoParaImprimirVencido
 import com.avoqado.pos.printing.data.UsbPrinterManager
 import com.avoqado.pos.printing.data.model.PrinterException
 import kotlinx.coroutines.runBlocking
@@ -65,8 +66,10 @@ class UsbPrinterManagerDeEscritorioTest {
         override fun colas(): List<ColaInfo> { consulta(); return fallaAlListar?.let { throw it } ?: colasHoy.toList() }
         override fun cola(nombre: String): ColaInfo? { consulta(); return fallaAlLeerCola?.let { throw it } ?: colasHoy.firstOrNull { it.nombre == nombre } }
         override fun puertos(): List<PuertoInfo> { consulta(); return fallaAlListar?.let { throw it } ?: puertosHoy.toList() }
-        override fun imprimirEnCola(nombre: String, documento: String, bytes: ByteArray) {
+        override fun imprimirEnCola(nombre: String, documento: String, bytes: ByteArray, antesDelPrimerByte: () -> Boolean) {
             fallaAlImprimir?.let { throw it }
+            // Como imprimirTrabajoCrudo (Ruling 81): con el documento abierto, se pregunta antes del primer byte.
+            if (!antesDelPrimerByte()) throw PermisoParaImprimirVencido()
             trabajos += nombre to bytes
         }
         override fun abrirPuerto(puerto: String, baudios: Int?): CanalAbierto {
@@ -203,6 +206,28 @@ class UsbPrinterManagerDeEscritorioTest {
         assertNull(usb.findDevice("usb:1208:514"))
         assertNull(usb.findDevice("192.168.1.50"))
         assertEquals(0, falso.consultas.get(), "findDevice consultó a Windows")
+    }
+
+    /**
+     * D661 · Ruling 81: el permiso del primer byte llega hasta la cola (que lo pregunta con el documento ya abierto) y su negativa sale tal
+     * cual: ni «falla de la impresora», ni se cierra la impresora. El siguiente trabajo sale.
+     */
+    @Test fun `cola - Ruling 81 la negativa del permiso sale de la cola tal cual y la impresora sigue abierta`() = runBlocking<Unit> {
+        usb.open("p1", "usb:cola:POS-80")
+        assertFailsWith<PermisoParaImprimirVencido> { usb.write("p1", byteArrayOf(1, 2, 3), antesDelPrimerByte = { false }) }
+        assertTrue(falso.trabajos.isEmpty())
+        assertTrue(usb.isOpen("p1"), "no es una falla de la impresora: no se cierra")
+        usb.write("p1", byteArrayOf(4))
+        assertEquals(1, falso.trabajos.size)
+    }
+
+    /** Ruling 81: en un COM la espera es el candado de la impresora; se pregunta después de tomarlo, justo antes del primer WriteFile. */
+    @Test fun `com - Ruling 81 sin permiso no se escribe ni un byte y el puerto sigue abierto`() = runBlocking<Unit> {
+        usb.open("p2", "usb:com:COM3")
+        assertFailsWith<PermisoParaImprimirVencido> { usb.write("p2", byteArrayOf(1, 2, 3), antesDelPrimerByte = { false }) }
+        assertNull(falso.escritoEnPuerto["COM3"])
+        assertTrue(usb.isOpen("p2"))
+        usb.close("p2")
     }
 
     @Test fun `com - abre una vez, escribe y cierra`() = runBlocking<Unit> {
