@@ -233,6 +233,11 @@ data class AddOrderItemRequest(
     val notes: String? = null,
     /** Modifier ids picked with the normal product detail panel. */
     val modifierIds: List<String>? = null,
+    /**
+     * D40: la nota de cada parte, `{ modifierId: nota }`. Null = sin notas. Por Retrofit viaja como `null` (explicitNulls) y en la
+     * cola sin red se omite: el SERVIDOR (con o sin D40) acepta las dos.
+     */
+    val modifierNotes: Map<String, String>? = null,
     /** TABLE_SERVICE course/tiempo ("Aperitivos"...). Null = preparar de inmediato. */
     val course: String? = null,
     val serviceCourse: com.avoqado.pos.pos.data.model.ServiceCourseSnapshot? = null,
@@ -466,6 +471,8 @@ data class OrderDetailModifier(
     val id: String = "",
     val name: String = "",
     val price: Double = 0.0,
+    /** D40: la nota de esta parte; el SERVIDOR sólo la manda si la tiene. */
+    val notes: String? = null,
 )
 
 // MARK: - Recompensas (lealtad, LOYALTY_PROGRAM / PRO)

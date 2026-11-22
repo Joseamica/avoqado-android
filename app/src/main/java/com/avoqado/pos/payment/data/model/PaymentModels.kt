@@ -300,6 +300,11 @@ data class OrderItemRequest(
     val quantity: Int,
     val unitPrice: Int,
     val modifiers: List<OrderModifierRequest> = emptyList(),
+    /**
+     * D40: la nota de cada parte, `{ modifierId: nota }` (todas las veces de una opción llevan la misma). Null = sin notas: la llave
+     * no viaja y el cuerpo queda como antes. Un SERVIDOR sin D40 la ignora (no valida llaves de más en el renglón).
+     */
+    val modifierNotes: Map<String, String>? = null,
     val note: String? = null,
     val isCortesia: Boolean = false,
     /** ITEM/CATEGORY-scoped discount selected from the product panel — mirrors

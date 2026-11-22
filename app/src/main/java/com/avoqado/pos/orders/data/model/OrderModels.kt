@@ -325,6 +325,8 @@ data class OrderDetailItem(
 data class OrderItemModifier(
     val name: String = "",
     val price: Double = 0.0,
+    /** D40: la nota de esta parte; el SERVIDOR sólo la manda si la tiene. */
+    val notes: String? = null,
 )
 
 // MARK: - Payment Info

@@ -1,5 +1,6 @@
 package com.avoqado.pos.printing.routing
 
+import com.avoqado.pos.core.data.lan.KdsComanda
 import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -111,6 +112,27 @@ class KitchenDeliveryPolicyTest {
         val m = KitchenDeliveryPolicy.mensajeParaPantalla(plan, "venue-1", "tablet-1", "round:rk-1", "1234", "Mesa 8", "ord-1", 5L, "Aperitivos")
         assertEquals("Mesa 8", m.orderType)
         assertEquals(listOf("Aperitivos"), m.items.map { it.course })
+    }
+
+    @Test
+    fun `P1 D40 la nota de cada parte viaja por WiFi y una comanda enorme viaja sin ellas antes que no llegar`() {
+        val chica = TicketPlan(
+            stationId = "st_barra", unrouted = false,
+            lines = listOf(ConsolidatedLine("Paquete Completo", 1, listOf("Consomé\nNota: sin cebolla", "Agua"), null, listOf("oi_1"))),
+        )
+        val m = KitchenDeliveryPolicy.mensajeParaPantalla(chica, "venue-1", "tablet-1", "sale:ext-1", "1234", "En tienda", "ord-1", 5L)
+        assertEquals(listOf("Consomé\nNota: sin cebolla", "Agua"), m.items[0].modifiers)
+
+        // Codex r1 #6: 50 renglones × 8 partes con notas largas pasaban el tope de 64 KB del receptor (corta sin acuse).
+        val nota = "x".repeat(200)
+        val enorme = TicketPlan(
+            stationId = "st_barra", unrouted = false,
+            lines = List(50) { i -> ConsolidatedLine("Paquete $i", 1, List(8) { "Parte $it\nNota: $nota" }, "nota del artículo", listOf("oi_$i")) },
+        )
+        val sinNotas = KitchenDeliveryPolicy.mensajeParaPantalla(enorme, "venue-1", "tablet-1", "sale:ext-2", "1235", "En tienda", "ord-2", 5L)
+        assertEquals(List(8) { "Parte $it" }, sinNotas.items[0].modifiers)
+        assertEquals("nota del artículo", sinNotas.items[0].notes) // la del artículo no se toca
+        assertTrue(Json.encodeToString(KdsComanda.serializer(), sinNotas).toByteArray().size < 65_536)
     }
 
     @Test

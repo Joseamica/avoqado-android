@@ -1,5 +1,6 @@
 package com.avoqado.pos.orders.presentation
 
+import com.avoqado.pos.pos.domain.etiquetaEnCocina
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -263,7 +264,8 @@ class OrdersViewModel @Inject constructor(
                     categoryId = item.productId?.let { categoriaPorProducto[it] },
                     productName = item.productName.ifBlank { "Artículo" },
                     quantity = item.quantity,
-                    modifiers = item.modifiers?.map { modifier -> modifier.name } ?: emptyList(),
+                    // D40 (Codex r1 #1): reimprimir desde Pedidos conserva la nota de cada parte.
+                    modifiers = item.modifiers?.map { modifier -> etiquetaEnCocina(modifier.name, modifier.notes) } ?: emptyList(),
                     notes = item.notes,
                 )
             }

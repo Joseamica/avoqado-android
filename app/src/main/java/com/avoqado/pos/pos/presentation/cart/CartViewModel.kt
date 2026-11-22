@@ -2345,6 +2345,7 @@ class CartViewModel @Inject constructor(
                             modifierId = mod.modifierId,
                             modifierName = mod.modifierName,
                             priceInCents = mod.priceInCents,
+                            note = mod.note,
                         )
                     },
                     note = item.itemNote,
@@ -3551,6 +3552,7 @@ class CartViewModel @Inject constructor(
                         modifierId = mod.modifierId,
                         modifierName = mod.modifierName,
                         priceInCents = mod.priceInCents,
+                        note = mod.note,
                     )
                 },
                 itemNote = savedItem.note,

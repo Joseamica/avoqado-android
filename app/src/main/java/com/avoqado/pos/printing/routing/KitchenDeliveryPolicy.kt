@@ -1,5 +1,6 @@
 package com.avoqado.pos.printing.routing
 
+import com.avoqado.pos.pos.domain.sinNota
 import com.avoqado.pos.core.data.lan.KdsComanda
 import com.avoqado.pos.core.data.lan.KdsComandaItem
 
@@ -60,6 +61,9 @@ object KitchenDeliveryPolicy {
     fun planesConPantalla(plans: List<TicketPlan>, config: PrintConfig): List<TicketPlan> =
         plans.filter { p -> p.stationId != null && config.stations.any { it.id == p.stationId && it.active && it.hasKitchenDisplay } }
 
+    /** D40: lo más que pueden pesar las etiquetas de los extras de una comanda por WiFi con sus notas (el tope del mensaje es 64 KB). */
+    const val PRESUPUESTO_DE_ETIQUETAS_BYTES = 24_000
+
     /** El mensaje `comanda` de UN plan (D4). El folio es el del servidor; el id de cada renglón, el del carrito o uno sintético. */
     fun mensajeParaPantalla(
         plan: TicketPlan,
@@ -74,6 +78,10 @@ object KitchenDeliveryPolicy {
         curso: String? = null,
     ): KdsComanda {
         val sourceKey = folio(origen, plan.stationId)
+        // D40 (Codex r1 #6): la nota de cada parte infla el mensaje y el receptor corta arriba de 64 KB sin acuse
+        // (`LineaAcotada.MAX_BYTES`). Si las etiquetas no caben en su presupuesto, esta comanda viaja por WiFi SIN las notas de las
+        // partes: el papel y la comanda que arma el SERVIDOR sí las llevan. Lo de siempre (sin notas) no cambia.
+        val conNotas = plan.lines.sumOf { l -> l.modifiers.sumOf { it.toByteArray(Charsets.UTF_8).size } } <= PRESUPUESTO_DE_ETIQUETAS_BYTES
         return KdsComanda(
             venueId = venueId,
             deviceId = deviceId,
@@ -87,7 +95,7 @@ object KitchenDeliveryPolicy {
             items = plan.lines.mapIndexed { i, l ->
                 KdsComandaItem(
                     id = l.orderItemIds.firstOrNull() ?: "$sourceKey#$i", productName = l.productName, quantity = l.quantity,
-                    modifiers = l.modifiers, notes = l.notes, course = curso,
+                    modifiers = if (conNotas) l.modifiers else l.modifiers.map(::sinNota), notes = l.notes, course = curso,
                     serviceCourse = l.serviceCourse, externalId = l.externalId, orderPromotionId = l.orderPromotionId,
                     preparation = if (l.serviceCourse?.preparationVersion == 1)
                         com.avoqado.pos.kds.domain.PreparationCounts.initial(l.quantity, l.serviceCourse.kind == "STANDARD") else null,
