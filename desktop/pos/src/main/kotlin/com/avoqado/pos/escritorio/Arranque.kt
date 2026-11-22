@@ -17,6 +17,7 @@ import com.avoqado.pos.kiosk.domain.KioskDriver
 import com.avoqado.pos.kiosk.domain.KioskPrefs
 import com.avoqado.pos.kiosk.domain.KioskState
 import com.avoqado.pos.payment.data.CancelacionDeCobroCoordinator
+import com.avoqado.pos.onlineorders.data.VentanaActiva
 import com.avoqado.pos.onlineorders.data.VigilanteDePedidosEnLinea
 import com.avoqado.pos.pos.data.RefrescoDelCatalogo
 import com.avoqado.pos.printing.data.VigilanteDeImpresoras
@@ -65,6 +66,9 @@ object Arranque {
 
     /** 🔴 Espejo de AvoqadoApp.onCreate (Android): si aquel cambia, éste también. Es parte del costo de mantener la copia. */
     fun iniciar(inyector: Injector, ciclo: Lifecycle) {
+        // D661 · Ruling 78: el vigilante se registra (y lee) antes de que exista la ventana: hasta que ella diga que es la activa, la caja
+        // no le anuncia a la tienda que aquí avisan los pagados en línea. La prende `PublicarSiLaCajaEsLaVentanaActiva` (Main.kt).
+        VentanaActiva.publicar(false)
         ciclo.addObserver(inyector.getInstance(DeviceCapabilitySyncCoordinator::class.java))
         // «Se cobra el precio que vio el cliente»: el catálogo se baja solo al volver a primer plano, cada 5 min y al volver la red.
         ciclo.addObserver(inyector.getInstance(RefrescoDelCatalogo::class.java))

@@ -1,5 +1,7 @@
 package com.avoqado.pos.areatickets.presentation
 
+import com.avoqado.pos.pos.domain.notasPorExtra
+import com.avoqado.pos.pos.domain.etiquetasEnCocina
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -1007,6 +1009,7 @@ internal fun intentoDeVale(cart: CartState, ahora: Long = System.currentTimeMill
             weightKg = item.weightKg?.let { String.format(Locale.US, "%.3f", it) },
             notes = item.itemNote,
             modifierIds = item.selectedModifiers.map { it.modifierId },
+            modifierNotes = item.selectedModifiers.notasPorExtra().ifEmpty { null },
             discountId = item.itemDiscountId,
             discountReason = item.motivoQueViaja(),
             discountReasonComment = item.comentarioQueViaja(),
@@ -1019,7 +1022,7 @@ internal fun intentoDeVale(cart: CartState, ahora: Long = System.currentTimeMill
             categoryId = item.categoryId,
             nombre = item.nombreEnCocina,
             cantidad = item.quantity,
-            modificadores = item.selectedModifiers.map { it.modifierName },
+            modificadores = item.selectedModifiers.etiquetasEnCocina(), // D40: la comanda del vale lleva la nota de cada parte
             notas = item.itemNote,
         )
     },

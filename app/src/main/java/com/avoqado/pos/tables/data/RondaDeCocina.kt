@@ -1,5 +1,6 @@
 package com.avoqado.pos.tables.data
 
+import com.avoqado.pos.pos.domain.etiquetasEnCocina
 import com.avoqado.pos.core.domain.printing.ComandaDispatcher
 import com.avoqado.pos.pos.data.model.CartItemType
 import com.avoqado.pos.printing.routing.PrintConfig
@@ -13,7 +14,7 @@ fun renglonDeCocinaDeRonda(line: PendingLine) = RoutableItem(
     categoryId = line.item.categoryId,
     productName = line.item.name,
     quantity = line.item.quantity,
-    modifiers = line.item.selectedModifiers.map { it.modifierName },
+    modifiers = line.item.selectedModifiers.etiquetasEnCocina(), // D40: con la nota de cada parte
     notes = line.item.itemNote,
     comboName = line.item.promotionName,
     serviceCourse = line.item.serviceCourse,

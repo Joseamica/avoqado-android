@@ -32,6 +32,7 @@ object ExchangeEntry {
         "NOT_PAID" -> TextosCambio.NOT_PAID
         "NOTHING_LEFT_TO_REFUND" -> TextosCambio.NOTHING_LEFT_TO_REFUND
         "SERIALIZED_ITEM" -> TextosCambio.SERIALIZED_ITEM
+        "ONLINE_CARD" -> TextosCambio.ONLINE_CARD
         else -> TextosCambio.NOT_A_SALE
     }
 

@@ -225,12 +225,16 @@ data class AddTicketRequest(val code: String, val idempotencyKey: String)
 data class CheckoutData(val checkout: AreaTicketCheckout)
 
 @Serializable
+@OptIn(kotlinx.serialization.ExperimentalSerializationApi::class)
 data class NormalCheckoutItem(
     /** null = importe libre: viaja con [name] y [unitPrice] (centavos), como en una venta normal. */
     val productId: String?,
     val quantity: Int,
     val notes: String? = null,
     val modifierIds: List<String> = emptyList(),
+    /** D40 (Codex r1 #4): la nota de cada parte del producto suelto cobrado con vales; el SERVIDOR la guarda como en Mostrador. */
+    @kotlinx.serialization.EncodeDefault(kotlinx.serialization.EncodeDefault.Mode.NEVER)
+    val modifierNotes: Map<String, String>? = null,
     val discountId: String? = null,
     val weightQuantity: Double? = null,
     val name: String? = null,
@@ -250,6 +254,7 @@ data class MaterializeCheckoutRequest(
 )
 
 @Serializable
+@OptIn(kotlinx.serialization.ExperimentalSerializationApi::class)
 data class IssueAreaTicketLineRequest(
     val clientLineId: String,
     val productId: String,
@@ -257,6 +262,13 @@ data class IssueAreaTicketLineRequest(
     val weightKg: String? = null,
     val notes: String? = null,
     val modifierIds: List<String> = emptyList(),
+    /**
+     * D40 (Codex r1 #3): la nota de cada parte. El vale del SERVIDOR no la guarda (la comanda del vale sale de este aparato con
+     * ella); va aquí para que «Recuperar» ([IntentoDeVale.mismaMercanciaQue]) no tome por igual un carrito que sólo cambió la nota.
+     * Sin notas la llave no viaja.
+     */
+    @kotlinx.serialization.EncodeDefault(kotlinx.serialization.EncodeDefault.Mode.NEVER)
+    val modifierNotes: Map<String, String>? = null,
     val discountId: String? = null,
     /** D4 (18-nov): el SERVIDOR los congela en el renglón del vale y la fila espejo los copia al cobrar («Descuentos»). */
     val discountReason: String? = null,
@@ -304,8 +316,15 @@ data class IntentoDeVale(
 
 private fun mercancia(lineas: List<IssueAreaTicketLineRequest>) =
     // D4: el motivo no cambia la mercancía (la copia guardada del carrito no lo trae).
-    lineas.map { it.copy(clientLineId = "", modifierIds = it.modifierIds.sorted(), discountReason = null, discountReasonComment = null) }
-        .sortedBy { it.toString() }
+    // D40 (Codex r3 #2): el mapa de notas se ordena, como los ids: el orden en que se eligieron los extras no cambia la mercancía.
+    lineas.map {
+        it.copy(
+            clientLineId = "", modifierIds = it.modifierIds.sorted(), modifierNotes = it.modifierNotes?.toSortedMap(),
+            discountReason = null, discountReasonComment = null,
+        )
+    }
+        // D40 (Codex r4 #2): se ordena por su JSON, que escapa el texto: una nota que contenga «, b=…» ya no empata con otra línea.
+        .sortedBy { kotlinx.serialization.json.Json.encodeToString(IssueAreaTicketLineRequest.serializer(), it) }
 
 /** D4 (18-nov): el motivo del descuento que viaja con la línea, con la regla de Mostrador (`OrderRepository`): nunca en cortesía ni en blanco. */
 internal fun CartItem.motivoQueViaja(): String? = discountReason?.takeIf { !isCortesia && it.isNotBlank() }

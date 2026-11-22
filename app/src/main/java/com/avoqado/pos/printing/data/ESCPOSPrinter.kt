@@ -1,6 +1,7 @@
 package com.avoqado.pos.printing.data
 
 import com.avoqado.pos.pos.domain.juntarExtrasRepetidos
+import com.avoqado.pos.pos.domain.separarNotaDelExtra
 import com.avoqado.pos.inventory.data.ConteoNoAplicado
 import com.avoqado.pos.printing.data.model.AreaTicketData
 import com.avoqado.pos.printing.data.model.KitchenTicketData
@@ -744,7 +745,14 @@ class ESCPOSPrinter(
             setDoubleHeight(false)
 
             item.modifiers?.let(::juntarExtrasRepetidos)?.forEach { modifier ->
-                printLine("   -> $modifier")
+                // D40: la nota de la parte, en negritas DEBAJO de su parte (como «Nota:» del artículo).
+                val (parte, nota) = separarNotaDelExtra(modifier)
+                printLine("   -> $parte")
+                if (nota != null) {
+                    setBold(true)
+                    printLine("      Nota: $nota")
+                    setBold(false)
+                }
             }
             item.note?.let {
                 setBold(true)

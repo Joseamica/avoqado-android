@@ -220,6 +220,10 @@ class ExchangeRepositoryHttpTest {
     @Test fun `422 unavailable settlement releases pending`()=runBlocking {
         assertDefinitiveRejection(422,"EXCHANGE_SETTLEMENT_UNAVAILABLE")
     }
+    // D661 (traspaso de la Task 7 del SERVIDOR): el Cambio de un pedido pagado con tarjeta en línea nunca se va a escribir.
+    @Test fun `409 not for online card releases pending`()=runBlocking {
+        assertDefinitiveRejection(409,"EXCHANGE_NOT_FOR_ONLINE_CARD")
+    }
     @Test fun `server errors and nondefinitive conflict codes retain the exact pending body`()=runBlocking {
         for ((status,code) in listOf(500 to "INTERNAL_ERROR",503 to "UNAVAILABLE",
             409 to "OTHER",422 to "OTHER",404 to "ACTOR_MISMATCH")) {

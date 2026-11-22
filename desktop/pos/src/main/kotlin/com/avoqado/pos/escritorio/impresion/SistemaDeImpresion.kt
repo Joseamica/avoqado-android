@@ -8,7 +8,7 @@ interface SistemaDeImpresion {
     fun colas(): List<ColaInfo>
     fun cola(nombre: String): ColaInfo?
     fun puertos(): List<PuertoInfo>
-    fun imprimirEnCola(nombre: String, documento: String, bytes: ByteArray)
+    fun imprimirEnCola(nombre: String, documento: String, bytes: ByteArray, antesDelPrimerByte: () -> Boolean)
     /** `baudios` null = la velocidad que Windows tiene configurada en ese puerto. */
     fun abrirPuerto(puerto: String, baudios: Int?): CanalAbierto
 }
@@ -18,7 +18,7 @@ object SistemaFueraDeWindows : SistemaDeImpresion {
     override fun colas() = emptyList<ColaInfo>()
     override fun cola(nombre: String): ColaInfo? = null
     override fun puertos() = emptyList<PuertoInfo>()
-    override fun imprimirEnCola(nombre: String, documento: String, bytes: ByteArray) =
+    override fun imprimirEnCola(nombre: String, documento: String, bytes: ByteArray, antesDelPrimerByte: () -> Boolean) =
         throw PrinterException.ConnectionFailed(SOLO_EN_WINDOWS)
     override fun abrirPuerto(puerto: String, baudios: Int?): CanalAbierto =
         throw PrinterException.ConnectionFailed(SOLO_EN_WINDOWS)

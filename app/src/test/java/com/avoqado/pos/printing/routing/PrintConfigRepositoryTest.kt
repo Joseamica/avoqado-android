@@ -52,6 +52,60 @@ class PrintConfigRepositoryTest {
         coVerify(exactly = 0) { apiService.getPrintConfig("venue-2") }
     }
 
+    /** D661 · R2-5 / Ruling 49: sólo una descarga del SERVIDOR en este arranque hace confiable un «no hay impresora de cocina». */
+    @Test fun `R2-5 descargadaDelServidor tells a failed first load apart from a downloaded config without kitchen printer`() = runTest {
+        coEvery { payloadCache.load(any(), any()) } returns null
+        coEvery { apiService.getPrintConfig("venue-1") } throws RuntimeException("sin red")
+        assertFalse("nada pedido todavía", repository.descargadaDelServidor("venue-1"))
+        repository.refresh("venue-1")
+        assertFalse("sin red y sin copia: nunca se descargó", repository.descargadaDelServidor("venue-1"))
+        coEvery { apiService.getPrintConfig("venue-1") } returns PrintConfigResponse(true, PrintConfig())
+        repository.refresh("venue-1")
+        assertTrue("descargada, aunque no tenga estaciones", repository.descargadaDelServidor("venue-1"))
+        assertFalse("otra sucursal no cuenta", repository.descargadaDelServidor("venue-2"))
+    }
+
+    /** Ronda 3 · Familia 2: la copia del aparato imprime sin red, pero su «no hay cocina» puede estar viejo (Codex r2 #5). */
+    @Test fun `R3 Family 2 a config hydrated from the device copy is not a server download`() = runTest {
+        val encoded = kotlinx.serialization.json.Json.encodeToString(PrintConfig.serializer(), configConEstacion())
+        coEvery { payloadCache.load(PayloadCache.TYPE_PRINT_CONFIG, "venue-1") } returns PayloadCache.Cached(encoded, 100)
+        coEvery { apiService.getPrintConfig("venue-1") } throws RuntimeException("sin red")
+        repository.refresh("venue-1")
+        assertEquals("la copia sí se usa para imprimir", 1, repository.getCurrentConfig().stations.size)
+        assertFalse(repository.descargadaDelServidor("venue-1"))
+    }
+
+    /** Ronda 3 · Familia 2: volver a la sucursal desde otra, sin red, deja en memoria la copia del aparato: su «no» se vuelve a preguntar. */
+    @Test fun `R3 Family 2 coming back from another venue without network is the device copy again`() = runTest {
+        val sinEstaciones = kotlinx.serialization.json.Json.encodeToString(PrintConfig.serializer(), PrintConfig())
+        coEvery { payloadCache.load(PayloadCache.TYPE_PRINT_CONFIG, any()) } returns PayloadCache.Cached(sinEstaciones, 100)
+        coEvery { apiService.getPrintConfig("venue-1") } returns PrintConfigResponse(true, PrintConfig())
+        repository.refresh("venue-1")
+        coEvery { apiService.getPrintConfig(any()) } throws RuntimeException("sin red")
+        repository.refresh("venue-2")
+        repository.refresh("venue-1")
+        assertFalse("de vuelta sin red: es la copia del aparato", repository.descargadaDelServidor("venue-1"))
+    }
+
+    /**
+     * Ronda 5 · Familia 2 (Ruling 80): la procedencia sigue al contenido EN USO. Volver a hidratar la MISMA sucursal de la copia del aparato
+     * (sin estaciones en memoria y sin red) pone la copia en memoria: eso ya no es la descarga, aunque la descarga fuera de esa sucursal.
+     */
+    @Test fun `R5 Family 2 a same-venue hydrate from the device copy does not count as downloaded`() = runTest {
+        val sinEstaciones = kotlinx.serialization.json.Json.encodeToString(PrintConfig.serializer(), PrintConfig())
+        coEvery { payloadCache.load(PayloadCache.TYPE_PRINT_CONFIG, any()) } returns PayloadCache.Cached(sinEstaciones, 100)
+        coEvery { apiService.getPrintConfig("venue-1") } returns PrintConfigResponse(true, PrintConfig())
+        repository.refresh("venue-1")
+        assertTrue("recién descargada", repository.descargadaDelServidor("venue-1"))
+        coEvery { apiService.getPrintConfig(any()) } throws RuntimeException("sin red")
+        repository.refresh("venue-1") // sin estaciones en memoria y sin red: se hidrata la copia de la MISMA sucursal
+        assertFalse("lo que se usa ahora es la copia del aparato", repository.descargadaDelServidor("venue-1"))
+        // Una descarga buena la vuelve a marcar.
+        coEvery { apiService.getPrintConfig("venue-1") } returns PrintConfigResponse(true, PrintConfig())
+        repository.refresh("venue-1")
+        assertTrue(repository.descargadaDelServidor("venue-1"))
+    }
+
     @Test
     fun `getCurrentConfig starts as safe empty default`() {
         val config = repository.getCurrentConfig()

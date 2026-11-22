@@ -1,10 +1,12 @@
 package com.avoqado.pos.onlineorders
 
+import androidx.lifecycle.LifecycleOwner
 import com.avoqado.pos.core.data.local.PayloadCache
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.onlineorders.data.FolioCobradoConTarjeta
 import com.avoqado.pos.onlineorders.data.FoliosCobradosConTarjeta
 import com.avoqado.pos.onlineorders.data.OnlineOrdersRepository
+import com.avoqado.pos.onlineorders.data.VigilanteDePedidosEnLinea
 import com.avoqado.pos.onlineorders.domain.HuellaDeFolio
 import com.avoqado.pos.onlineorders.domain.OnlineOrderStatus
 import com.avoqado.pos.onlineorders.presentation.OnlineOrdersViewModel
@@ -17,9 +19,13 @@ import java.net.InetAddress
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
@@ -441,6 +447,68 @@ class CopiaGuardadaDeFoliosTest {
         tras.descubrirPorPagar()
         assertTrue(tras.porPagar.value!!.porPagar.none { it.orderId == "f1" })
         assertEquals(listOf("f1"), tras.porPagar.value!!.porEntregar.map { it.orderId })
+    }
+
+    /**
+     * D661 · Ruling 93 (Codex ANDROID r4, regresión del 78): el sondeo de regreso decidía anunciarse ANTES de esperar el candado de la
+     * página 1. Con la bandeja leyendo, la cajera vuelve a la caja (el vigilante despierta y espera su turno) y la vuelve a tapar: la
+     * petición que sale al soltarse la lectura de la bandeja ya NO lleva la cabecera. Si la caja se queda al frente, el regreso sí la lleva.
+     */
+    @Test
+    fun `R93 the wake-up read decides the card-alert header when it is built - covered again while it waited, it goes without it`() = runBlocking {
+        toPay = cuerpo()
+        // El mismo repositorio para la bandeja y el vigilante (comparten el candado), con un plazo de lectura que aguanta la espera del
+        // regreso (≤ 3 s): con el de 2 s de las demás pruebas, la lectura retenida de la bandeja vencía y soltaba el candado antes.
+        val compartido = OnlineOrdersRepository(secureStorage, OkHttpClient.Builder().readTimeout(15, TimeUnit.SECONDS).retryOnConnectionFailure(false)
+            .dns(object : okhttp3.Dns {
+                override fun lookup(hostname: String) = listOf(InetAddress.getByName("127.0.0.1"))
+            }).build(), cache)
+        val activa = AtomicBoolean(false) // la caja de WINDOWS, tapada al arrancar
+        val intentos = AtomicInteger()
+        val alcance = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        val vigilante = VigilanteDePedidosEnLinea(
+            consultar = { _, _ -> Result.failure(java.io.IOException("la bandeja de «Mi equipo» no entra en esta prueba")) },
+            puedeLeer = { true }, tienePlan = { true }, sonar = {}, scope = alcance, venueActual = { "v1" },
+            // El cableado de producción, contando cuándo llama el vigilante.
+            consultarPorPagar = { conLatido, avisa -> intentos.incrementAndGet(); compartido.porPagar(conLatido, avisaTarjetas = avisa) },
+            seVe = { true }, ventanaActiva = { activa.get() },
+        )
+        val owner = mockk<LifecycleOwner>(relaxed = true)
+        try {
+            vigilante.onStart(owner)
+            esperarLlegadas(1) // su primera lectura, tapada: sin cabecera
+
+            // La bandeja lee y el servidor le tarda: tiene el candado de la página 1.
+            val compuerta = CountDownLatch(1)
+            retenidas.add(compuerta to cuerpo())
+            val deLaBandeja = async(Dispatchers.IO) { compartido.porPagar(conLatido = true) }
+            esperarLlegadas(2)
+
+            // La cajera vuelve a la caja: el vigilante despierta (≤ 3 s) y espera su turno detrás de la bandeja.
+            activa.set(true)
+            withTimeout(5_000) { while (intentos.get() < 2) delay(10) }
+            delay(100)
+            assertEquals("todavía no sale: espera el candado de la página 1", 2, llegadasToPay.get())
+
+            // La vuelve a tapar antes de que se suelte la lectura de la bandeja.
+            activa.set(false)
+            compuerta.countDown()
+            deLaBandeja.await().getOrThrow()
+            esperarLlegadas(3)
+            val pedidas = List(3) { server.takeRequest(1, TimeUnit.SECONDS)!! }
+            assertEquals(
+                "la del regreso salió con la caja tapada otra vez: sin cabecera",
+                listOf<String?>(null, null, null), pedidas.map { it.getHeader("x-online-orders-card-alert") },
+            )
+
+            // Si la caja se queda al frente, el siguiente regreso sí se anuncia.
+            activa.set(true)
+            esperarLlegadas(4)
+            assertEquals("1", server.takeRequest(1, TimeUnit.SECONDS)!!.getHeader("x-online-orders-card-alert"))
+        } finally {
+            vigilante.onStop(owner)
+            alcance.cancel()
+        }
     }
 
     /** R103: una lectura que se abandona (cancelada) suelta el candado al instante y nunca se aplica. */

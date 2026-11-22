@@ -271,6 +271,8 @@ data class SelectedModifier(
     val modifierId: String,
     val modifierName: String,
     val priceInCents: Int,
+    /** D40: la nota de ESTA parte («sin cebolla» al Consomé), la misma en todas sus veces. null = sin nota (lo de siempre). */
+    val note: String? = null,
 )
 
 // Product catalog response

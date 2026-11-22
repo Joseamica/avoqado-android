@@ -1153,6 +1153,8 @@ fun CheckoutScreen(
             isTablet = isTablet,
             discounts = discounts,
             motivos = cartViewModel.motivosDeDescuento,
+            // D40 (Codex r1 #3/#4): con vales por área la venta puede salir por el vale, que no lleva la nota de cada parte.
+            conNotaPorParte = areaOperationsState.settings?.areaTickets?.let { it.entitled && it.enabled } != true,
             onAddToCart = { quantity, modifiers, note, isCortesia, cortesiaReason, priceAdj, discountId, motivo ->
                 // D8 (Codex r1): si el cobro ya se abrió (el «No, gracias» del cliente ganó por un instante a este toque), lo
                 // de la ficha no entra al carrito ya fotografiado para cobrar: la ficha se cierra y se agrega al terminar.
@@ -2984,7 +2986,7 @@ private fun CartItemDetailContent(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-                item.modifiersSummary?.let { summary ->
+                item.modifiersSummaryEnCaja?.let { summary ->
                     Text(
                         text = summary,
                         style = MaterialTheme.typography.bodySmall,

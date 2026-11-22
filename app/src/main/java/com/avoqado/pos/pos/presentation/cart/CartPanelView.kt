@@ -890,7 +890,7 @@ private fun CartItemRow(
             }
 
             // Modifiers summary
-            item.modifiersSummary?.let { summary ->
+            item.modifiersSummaryEnCaja?.let { summary ->
                 Text(
                     text = summary,
                     style = MaterialTheme.typography.bodySmall,

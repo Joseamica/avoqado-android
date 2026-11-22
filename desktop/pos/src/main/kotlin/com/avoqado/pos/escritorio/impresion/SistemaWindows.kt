@@ -88,8 +88,8 @@ class SistemaWindows internal constructor(
             .mapNotNull { (dispositivo, valor) -> (valor as? String)?.let { PuertoInfo(it, dispositivo) } }
     }.getOrDefault(emptyList())   // sin puertos COM la llave no existe: no es un error
 
-    override fun imprimirEnCola(nombre: String, documento: String, bytes: ByteArray) =
-        imprimirTrabajoCrudo(ColaDeWindows, nombre, documento, bytes)
+    override fun imprimirEnCola(nombre: String, documento: String, bytes: ByteArray, antesDelPrimerByte: () -> Boolean) =
+        imprimirTrabajoCrudo(ColaDeWindows, nombre, documento, bytes, antesDelPrimerByte)
 
     override fun abrirPuerto(puerto: String, baudios: Int?): CanalAbierto = abrirCanalCom(PuertoDeWindows, puerto, baudios)
 

@@ -110,4 +110,6 @@ data class SavedModifier(
     val modifierId: String,
     val modifierName: String,
     val priceInCents: Int,
+    /** D40: la nota de esta parte. Nula en carritos guardados antes. */
+    val note: String? = null,
 )

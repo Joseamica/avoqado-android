@@ -1,5 +1,6 @@
 package com.avoqado.pos.payment.domain
 
+import com.avoqado.pos.pos.domain.etiquetasEnCocina
 import com.avoqado.pos.core.domain.printing.ComandaDispatcher
 import com.avoqado.pos.pos.data.model.CartItem
 import com.avoqado.pos.pos.data.model.CartItemType
@@ -14,7 +15,7 @@ fun buildCounterCoursePedidos(items: List<CartItem>): List<ComandaDispatcher.Ped
             lines = lines.map { item -> RoutableItem(
                 orderItemId = item.id, productId = (item.type as? CartItemType.ProductItem)?.productId,
                 categoryId = item.categoryId, productName = item.nombreEnCocina, quantity = item.quantity,
-                modifiers = item.selectedModifiers.map { it.modifierName }, notes = item.itemNote,
+                modifiers = item.selectedModifiers.etiquetasEnCocina(), notes = item.itemNote, // D40: con la nota de cada parte
                 comboName = item.promotionInstanceId?.let { item.promotionName ?: "Combo" },
                 serviceCourse = item.serviceCourse,
                 externalId = if (item.promotionInstanceId != null) "combo:" + item.promotionInstanceId + ":g:" + item.promotionGroupId else item.id,

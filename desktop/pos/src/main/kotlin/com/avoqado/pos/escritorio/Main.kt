@@ -41,8 +41,11 @@ import com.avoqado.pos.escritorio.teclado.emisorDelBus
 import com.avoqado.pos.escritorio.teclado.TecladoDeLaVentana
 import com.avoqado.pos.kiosk.domain.KioskState
 import com.avoqado.pos.onlineorders.data.VentanaALaVista
+import com.avoqado.pos.onlineorders.data.VentanaActiva
 import com.avoqado.pos.pos.data.LectorHidBus
 import java.awt.GraphicsEnvironment
+import java.awt.KeyboardFocusManager
+import java.beans.PropertyChangeListener
 import java.nio.file.Path
 import java.util.concurrent.atomic.AtomicBoolean
 import javax.imageio.ImageIO
@@ -99,6 +102,7 @@ fun main() {
                 val atajos = remember { AtajosDeLaVentana(AtajosDeTeclado::atender) }
                 val estadoDeLaVentana = rememberWindowState(placement = WindowPlacement.Maximized, size = Arranque.TAMANO_INICIAL)
                 PublicarSiLaVentanaSeVe(estadoDeLaVentana)
+                PublicarSiLaCajaEsLaVentanaActiva()
                 Window(
                     onCloseRequest = ::exitApplication,
                     title = "Avoqado POS",
@@ -171,6 +175,29 @@ internal fun PublicarSiLaVentanaSeVe(estado: WindowState) {
     }
     LaunchedEffect(estado) {
         snapshotFlow { !estado.isMinimized }.collect { VentanaALaVista.publicar(it) }
+    }
+}
+
+/**
+ * D661 · Ruling 48: publica en [VentanaActiva] si la ventana ACTIVA del sistema es de este programa (la caja, uno de sus diálogos o la
+ * pantalla del cliente). Otro programa al frente (un navegador maximizado encima de la caja) = `false`: la caja deja de ofrecer la
+ * tarjeta, aunque no esté minimizada. Devuelve cómo soltarlo; al soltar vuelve al `true` de ANDROID.
+ */
+internal fun escucharVentanaActiva(focos: KeyboardFocusManager = KeyboardFocusManager.getCurrentKeyboardFocusManager()): () -> Unit {
+    val escucha = PropertyChangeListener { e -> VentanaActiva.publicar(e.newValue != null) }
+    focos.addPropertyChangeListener("activeWindow", escucha)
+    VentanaActiva.publicar(focos.activeWindow != null)
+    return {
+        focos.removePropertyChangeListener("activeWindow", escucha)
+        VentanaActiva.publicar(true)
+    }
+}
+
+@Composable
+internal fun PublicarSiLaCajaEsLaVentanaActiva() {
+    DisposableEffect(Unit) {
+        val soltar = escucharVentanaActiva()
+        onDispose { soltar() }
     }
 }
 
