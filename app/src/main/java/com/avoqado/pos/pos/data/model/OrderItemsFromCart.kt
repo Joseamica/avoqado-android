@@ -1,5 +1,6 @@
 package com.avoqado.pos.pos.data.model
 
+import com.avoqado.pos.pos.domain.notasPorExtra
 import com.avoqado.pos.pos.presentation.cart.descuentoPideMotivo
 import com.avoqado.pos.payment.data.model.OrderItemRequest
 import com.avoqado.pos.payment.data.model.OrderModifierRequest
@@ -111,6 +112,7 @@ private fun CartItem.toOrderItemRequest(): OrderItemRequest {
                 price = modifier.priceInCents,
             )
         },
+        modifierNotes = selectedModifiers.notasPorExtra().ifEmpty { null },
         note = itemNote,
         isCortesia = isCortesia,
         cortesiaReason = cortesiaReason?.trim()?.takeIf { isCortesia && it.isNotEmpty() },

@@ -1,5 +1,7 @@
 package com.avoqado.pos.tables.presentation
 
+import com.avoqado.pos.pos.domain.enUnRenglon
+import com.avoqado.pos.pos.domain.etiquetaEnCocina
 import com.avoqado.pos.pos.domain.juntarExtrasRepetidos
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.animateColorAsState
@@ -2049,7 +2051,7 @@ private fun SentCard(
                             Text(item.productName ?: "Artículo", maxLines = 1, overflow = TextOverflow.Ellipsis)
                             if (item.modifiers.isNotEmpty()) {
                                 Text(
-                                    text = juntarExtrasRepetidos(item.modifiers.map { it.name }).joinToString(", "),
+                                    text = juntarExtrasRepetidos(item.modifiers.map { etiquetaEnCocina(it.name, it.notes) }).map(::enUnRenglon).joinToString(", "), // D40
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
@@ -2160,7 +2162,7 @@ private fun PendingCard(
                                         color = Color(0xFFFF9500),
                                     )
                                 }
-                                line.item.modifiersSummary?.let {
+                                line.item.modifiersSummaryEnCaja?.let {
                                     Text(
                                         text = it,
                                         style = MaterialTheme.typography.bodySmall,
@@ -2456,7 +2458,7 @@ internal fun QueuedRoundsCard(queuedLines: List<TableOrderViewModel.PendingLine>
                         text = "${line.item.quantity}× ${line.item.name}" + (com.avoqado.pos.tables.data.kitchenCourseLabel(line.item.serviceCourse, line.course)?.let { " · $it" } ?: ""),
                         style = MaterialTheme.typography.bodyMedium,
                     )
-                    line.item.modifiersSummary?.let {
+                    line.item.modifiersSummaryEnCaja?.let {
                         Text(
                             text = it,
                             style = MaterialTheme.typography.bodySmall,

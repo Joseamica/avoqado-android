@@ -110,6 +110,12 @@ data class Inbox(
     val storeOff: Boolean,
     val truncated: Boolean,
     val nextCursor: String?,
+    /**
+     * D662: la tienda se pausó sola (2 pedidos seguidos sin aceptar) y sigue así hasta «Reanudar». `null` = esta respuesta no trae el
+     * estado de la tienda (el SERVIDOR no lo pudo leer): se conserva lo último que se supo. Un servidor viejo trae `store` sin el campo
+     * ⇒ `false` (no tiene pausa sola).
+     */
+    val autoPaused: Boolean? = false,
 )
 
 /**

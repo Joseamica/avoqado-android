@@ -236,7 +236,11 @@ class AppState @Inject constructor(
         settingsRefreshJob = viewModelScope.launch {
             tpvSettingsRepository.refreshSettings()
             if (_isLoggedIn.value) {
-                if (rebuildNavigation) refreshTabs() else {
+                // D17: rehacer la navegación borra el carrito. Tras `/settings` del arranque o del login se hace todo lo de
+                // refreshTabs(), pero la pantalla sólo se rehace si lo que no escucha cambió desde que se montó; iguales, sin red
+                // o con error, la venta empezada en esos segundos se queda. Si cambió, como siempre (con venta a medias también:
+                // no rehacer ahí no basta, ver docs/audit/2026-11-21-venta-borrada-al-iniciar-sesion/promesa.md).
+                if (rebuildNavigation) refreshTabs(rehacerLaPantalla = loQueLaPantallaNoEscucha() != fotoDeLaPantalla) else {
                     _reservationsEnabled.value = secureStorage.reservationsEnabled
                     _accessVersion.value += 1
                 }
@@ -244,6 +248,24 @@ class AppState @Inject constructor(
             }
         }
     }
+
+    /**
+     * D17: lo que `/settings` (u otro camino, como el sondeo de la pantalla del cliente) puede cambiar y la pantalla sólo lee
+     * al montarse: sucursal, rol, permisos (en cualquier orden), qué funciones da el plan y el interruptor de reservas. Con
+     * esto igual, las pestañas y la de inicio salen iguales. El plan se compara por lo que da, no por la foto guardada: ésta
+     * trae la hora de lectura, que cambia en cada respuesta. La terminal, el papel de vales y el modo no van: ya están en la
+     * llave y la cambian solos.
+     */
+    private fun loQueLaPantallaNoEscucha(): List<Any?> = listOf(
+        secureStorage.venueId,
+        secureStorage.userRole,
+        secureStorage.venuePermissions.toSet(),
+        PlanManager.FEATURE_REQUIRED_TIER.keys.filter(planManager::hasFeature),
+        secureStorage.reservationsEnabled,
+    )
+
+    /** D17: con qué se montó la pantalla: al crearse y en cada reconstrucción de verdad ([refreshTabs]). */
+    private var fotoDeLaPantalla: List<Any?> = loQueLaPantallaNoEscucha()
 
     /**
      * D3: los momentos en que la compuerta del papel del aparato vuelve a preguntar, y sólo ésos: arranque con sesión,
@@ -594,14 +616,22 @@ class AppState @Inject constructor(
         canAccessTransactions = roleManager.canAccessTransactions,
     )
 
-    fun refreshTabs() {
+    fun refreshTabs(
+        /** D17: `false` = todo lo demás igual, pero la llave se queda (la pantalla no se rehace y la venta tampoco se borra). */
+        rehacerLaPantalla: Boolean = true,
+    ) {
         _reservationsEnabled.value = secureStorage.reservationsEnabled
         posModeManager.reloadForCurrentVenue()
         // Un cambio de venue debe rearmar los listeners/timer del outbox con
         // el nuevo contexto; start() reinicia cuando cambia el venue activo.
         startOfflineOutbox()
         startInventorySyncIfNeeded()
-        _roleVersion.value += 1
+        if (rehacerLaPantalla) {
+            fotoDeLaPantalla = loQueLaPantallaNoEscucha()
+            _roleVersion.value += 1
+        } else {
+            _accessVersion.value += 1
+        }
         notifyDeviceSessionChanged()
         // D3: cambio de sucursal (el login y los refrescos piden la suya en refreshPlanAndSettings).
         if (sucursalDelPapel != null && secureStorage.venueId != sucursalDelPapel) pedirConsultaDelPapel()

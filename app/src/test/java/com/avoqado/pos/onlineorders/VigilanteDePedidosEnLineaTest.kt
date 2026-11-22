@@ -45,9 +45,11 @@ class VigilanteDePedidosEnLineaTest {
         totalCents = 10000, remainingCents = 10000, needsPrint = false, items = emptyList(),
     )
 
-    private fun inbox(pendientes: List<OnlineOrder> = emptyList(), active: Int = 0, storeOff: Boolean = false) = Inbox(
+    private fun inbox(
+        pendientes: List<OnlineOrder> = emptyList(), active: Int = 0, storeOff: Boolean = false, autoPaused: Boolean = false,
+    ) = Inbox(
         serverTime = Instant.parse("2026-10-22T10:00:00Z"), pending = pendientes.size, active = active, done = 0,
-        orders = pendientes, storeOff = storeOff, truncated = false, nextCursor = null,
+        orders = pendientes, storeOff = storeOff, truncated = false, nextCursor = null, autoPaused = autoPaused,
     )
 
     /** El repositorio falso: cada llamada se anota (estado, comoBandeja) y responde lo que diga [respuesta]. */
@@ -1226,5 +1228,34 @@ class VigilanteDePedidosEnLineaTest {
         advanceTimeBy(VigilanteDePedidosEnLinea.VISTAZO_AL_VOLVER_MS); runCurrent()
         assertEquals(listOf(false, true, false, true), folios.avisos)
         f.vigilante.onStop(owner)
+    }
+
+    @Test
+    fun `D662 p2 pausadaSola follows the store and survives a network failure`() = runTest {
+        val f = armar(Result.success(inbox(autoPaused = true)))
+        f.vigilante.onStart(owner)
+        runCurrent()
+        assertTrue(f.vigilante.pausadaSola.value)
+        f.falso.respuesta = Result.failure(java.io.IOException("sin red"))
+        advanceTimeBy(10_000); runCurrent()
+        assertTrue("sin red se conserva lo último que dijo el servidor", f.vigilante.pausadaSola.value)
+        f.falso.respuesta = Result.success(inbox().copy(autoPaused = null))
+        advanceTimeBy(10_000); runCurrent()
+        assertTrue("una respuesta sin el estado de la tienda tampoco la borra (Codex p2-r7 #3)", f.vigilante.pausadaSola.value)
+        f.falso.respuesta = Result.success(inbox())
+        advanceTimeBy(10_000); runCurrent()
+        assertFalse("alguien reanudó", f.vigilante.pausadaSola.value)
+        f.vigilante.onStop(owner)
+    }
+
+    @Test
+    fun `D662 p2 banner says the store paused itself first, also with orders waiting`() {
+        assertEquals("Pedidos en línea en pausa: 2 pedidos seguidos sin aceptar", textoDelBanner(emptyList(), pausadaSola = true))
+        assertEquals(
+            "Pedidos en línea en pausa: 2 pedidos seguidos sin aceptar · #W3 por aceptar",
+            textoDelBanner(listOf("W2", "W3"), pausadaSola = true),
+        )
+        assertEquals("Nuevo pedido en línea #W3 (2 por aceptar)", textoDelBanner(listOf("W2", "W3")))
+        assertEquals("", textoDelBanner(emptyList()))
     }
 }

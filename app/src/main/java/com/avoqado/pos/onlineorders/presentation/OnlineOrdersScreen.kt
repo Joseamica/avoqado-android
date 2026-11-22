@@ -130,6 +130,7 @@ fun OnlineOrdersScreen(
 
     val secciones by viewModel.secciones.collectAsState()
     val sinConexion by viewModel.sinConexion.collectAsState()
+    val pausadaSola by viewModel.pausadaSola.collectAsState()
     val aviso by viewModel.aviso.collectAsState()
     val ocupados by viewModel.ocupados.collectAsState()
     val hayMas by viewModel.hayMas.collectAsState()
@@ -185,6 +186,15 @@ fun OnlineOrdersScreen(
                 // Un solo aviso: con folios dice además qué vuelve con la conexión.
                 if (sinConexion) AvisoNeutro(if (seccionFolios != null) TextosPedidosEnLinea.SIN_CONEXION_FOLIOS else TextosPedidosEnLinea.SIN_CONEXION)
                 if (noSePudoLeer) AvisoNeutro(TextosPedidosEnLinea.NO_SE_PUDO_LEER)
+                // D662 parte 2: «Reanudar» es la misma pausa del piso (`online-orders:pause`, o el PIN del gerente si no lo tiene). Sin red
+                // no se ofrece, igual que «Pausar pedidos» (Codex p2-r6 #5): el aviso se queda y el botón vuelve con la conexión.
+                if (pausadaSola && !teaser && muestraTienda) {
+                    AvisoNeutro(
+                        TextosPedidosEnLinea.PAUSADA_SOLA,
+                        accion = if (sinConexion) null else TextosPedidosEnLinea.REANUDAR,
+                        onAccion = { viewModel.pausar(null) },
+                    )
+                }
                 aviso?.let { texto ->
                     AvisoNeutro(texto, accion = TextosPedidosEnLinea.ENTENDIDO, onAccion = viewModel::cerrarAviso)
                 }

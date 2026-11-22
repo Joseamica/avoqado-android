@@ -15,6 +15,7 @@ import io.mockk.mockk
 import kotlinx.coroutines.test.runTest
 import okhttp3.OkHttpClient
 import com.avoqado.pos.onlineorders.domain.PrecioDeRenglon
+import com.avoqado.pos.onlineorders.presentation.TextosPedidosEnLinea
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import okhttp3.mockwebserver.SocketPolicy
@@ -145,6 +146,28 @@ class OnlineOrdersRepositoryTest {
         server.enqueue(MockResponse().setBody(bandeja(orders = "")))
         val inbox = repo.inbox("pending", comoBandeja = false).getOrThrow()
         assertEquals(3, inbox.pending); assertEquals(2, inbox.active)
+    }
+
+    @Test
+    fun `D662 autoPaused comes from store autoPausedAt and an old server without it is not paused`() = runTest {
+        server.enqueue(MockResponse().setBody(bandeja(store = """{"status":"PAUSED","reason":"MANUAL_PAUSE","autoPausedAt":"2026-11-18T20:00:00.000Z"}""")))
+        assertEquals(true, repo.inbox("pending", true).getOrThrow().autoPaused)
+        server.enqueue(MockResponse().setBody(bandeja(store = """{"status":"PAUSED","reason":"MANUAL_PAUSE","autoPausedAt":null}""")))
+        assertEquals(false, repo.inbox("pending", true).getOrThrow().autoPaused)
+        server.enqueue(MockResponse().setBody(bandeja(store = """{"status":"OPEN"}""")))
+        assertEquals(false, repo.inbox("pending", true).getOrThrow().autoPaused)        // Codex p2-r7 #3: el SERVIDOR no pudo leer el estado (`store: null`): no se sabe, y la caja conserva lo último.
+        server.enqueue(MockResponse().setBody(bandeja(store = "null")))
+        assertEquals(null, repo.inbox("pending", true).getOrThrow().autoPaused)
+    }
+
+    @Test
+    fun `D662 Reanudar with the manager pause still on says so instead of resumed`() = runTest {
+        server.enqueue(MockResponse().setBody("""{"success":true,"data":{"pausedUntil":null,"manualPause":true}}"""))
+        assertEquals(AccionResultado.Error(TextosPedidosEnLinea.SIGUE_PAUSA_DEL_GERENTE), repo.pause(null))
+        server.enqueue(MockResponse().setBody("""{"success":true,"data":{"pausedUntil":null,"manualPause":false}}"""))
+        assertEquals(AccionResultado.Hecho, repo.pause(null))
+        server.enqueue(MockResponse().setBody("""{"success":true,"data":{"pausedUntil":"2026-11-18T20:15:00.000Z","manualPause":true}}"""))
+        assertEquals("pausar 15 min no es «reanudar»: no cambia", AccionResultado.Hecho, repo.pause(15))
     }
 
     @Test

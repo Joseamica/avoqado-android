@@ -254,6 +254,7 @@ class ComandaDispatcher @Inject constructor(
                     venueId, PrintRoutingMapper.rutear(p.lines, config, p.omitirSinComanda).plans, config, orderNumber, p.orderType,
                     serverName = null, comboNames = comboNamesDe(p.lines), orderId = orderId, origen = origen,
                     etiquetaPantalla = p.etiquetaPantalla, curso = p.curso,
+                    productoDe = p.lines.associate { it.orderItemId to it.productId },
                 )
             }
             wifi.guardar(entregas)
@@ -419,7 +420,10 @@ class ComandaDispatcher @Inject constructor(
         // mostrador y rondas; Uber y vales no) y hay folio (sin folio no hay `sourceKey` que empujar). La entrega se
         // GUARDA antes de conectar; el acuse por ESTACIÓN es lo que decide el papel de las «sólo pantalla».
         val entregas = if (servidorLaTiene != null && venueId != null && origenDelFolio != null) {
-            entregasPorWifi(venueId, plans, config, orderNumber, orderType, serverName, comboNames, orderId, origenDelFolio, etiquetaPantalla, curso, encabezado)
+            entregasPorWifi(
+                venueId, plans, config, orderNumber, orderType, serverName, comboNames, orderId, origenDelFolio, etiquetaPantalla, curso, encabezado,
+                productoDe = lines.associate { it.orderItemId to it.productId },
+            )
         } else {
             emptyList()
         }
@@ -550,6 +554,8 @@ class ComandaDispatcher @Inject constructor(
         etiquetaPantalla: String? = null,
         curso: String? = null,
         encabezado: List<String>? = null,
+        /** D40: `orderItemId` → `productId` de los renglones ruteados, para volver a juntar sin notas si no caben por WiFi. */
+        productoDe: Map<String, String?> = emptyMap(),
     ): List<EntregaKds> {
         val deviceId = entregaPorWifi?.deviceId ?: return emptyList()
         val ahora = System.currentTimeMillis()
@@ -558,7 +564,7 @@ class ComandaDispatcher @Inject constructor(
             val soloPantalla = config.stations.firstOrNull { it.id == stationId }?.let { KitchenDeliveryPolicy.esSoloPantalla(it) } == true
             EntregaKds(
                 mensaje = KitchenDeliveryPolicy.mensajeParaPantalla(
-                    plan, venueId, deviceId, origen, orderNumber, etiquetaPantalla ?: orderType, orderId, ahora, curso,
+                    plan, venueId, deviceId, origen, orderNumber, etiquetaPantalla ?: orderType, orderId, ahora, curso, productoDe,
                 ),
                 trabajoDeRespaldo = if (soloPantalla || plan.lines.any { it.serviceCourse?.preparationVersion == 1 }) {
                     TrabajoPendiente(
