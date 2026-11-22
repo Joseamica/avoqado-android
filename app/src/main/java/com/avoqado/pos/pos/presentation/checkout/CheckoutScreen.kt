@@ -71,6 +71,7 @@ import com.avoqado.pos.customers.domain.esTextoDeTelefono
 import com.avoqado.pos.customers.presentation.CustomersViewModel
 import com.avoqado.pos.designsystem.components.AtajoDeTeclado
 import com.avoqado.pos.designsystem.components.BarreraDeAtajos
+import com.avoqado.pos.designsystem.components.HojaConAtajo
 import com.avoqado.pos.designsystem.components.CantidadTecleable
 import com.avoqado.pos.designsystem.components.AvoqadoDialog
 import com.avoqado.pos.designsystem.components.TeclaDeAtajo
@@ -1146,7 +1147,8 @@ fun CheckoutScreen(
 
     // Product detail panel overlay
     selectedProduct?.let { product ->
-        BarreraDeAtajos()   // panel propio encima del mostrador: F12/F3 esperan
+        // La barrera la pone la propia ficha (HojaConAtajo): Esc la cierra (D20) y F12/F3 esperan. Otra aquí dejaría dos
+        // barreras y Esc no respondería.
         val discounts by cartViewModel.discountsRepository.discounts.collectAsState()
         ProductDetailPanel(
             product = product,
@@ -1382,7 +1384,7 @@ fun CheckoutScreen(
 
     // Cart item detail overlay (matching iOS: side panel on tablet, sheet on phone)
     selectedCartItem?.let { item ->
-        BarreraDeAtajos()   // panel propio encima del mostrador: F12/F3 esperan
+        // La barrera la pone el propio panel (HojaConAtajo): Esc lo cierra (D20) y F12/F3 esperan.
         CartItemDetailPanel(
             item = item,
             isTablet = isTablet,
@@ -2958,6 +2960,8 @@ private fun CartItemDetailContent(
         )
         return
     }
+    // D20 (WINDOWS): Esc cierra el detalle, como su X. Con la nota abierta, Esc es de la nota (NoteSubView).
+    HojaConAtajo(Key.Escape, activo = true, accion = onDismiss)
 
     Column(modifier = Modifier.fillMaxSize()) {
         // Header

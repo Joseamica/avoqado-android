@@ -2,7 +2,9 @@ package com.avoqado.pos.payment.presentation
 
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -202,7 +204,7 @@ fun PaymentResultScreen(
                         color = MaterialTheme.colorScheme.onSurface,
                         textDecoration = TextDecoration.Underline,
                         modifier = Modifier
-                            .clickable(onClick = onDone)
+                            .salidaConDobleClic(LocalEsEscritorio.current, onClick = onDone)
                             .padding(vertical = AvoqadoTheme.spacing.xs),
                     )
                     TeclaDeAtajo("Esc", Modifier.padding(start = AvoqadoTheme.spacing.sm))
@@ -398,6 +400,7 @@ fun PaymentResultScreen(
                         icon = rememberVectorPainter(Icons.Filled.Block),
                         title = "Sin recibo",
                         onClick = onDone,
+                        esSalida = true,
                     )
                     HorizontalDivider(modifier = Modifier.padding(start = 48.dp))
                 }
@@ -692,6 +695,16 @@ private fun WhatsAppReceiptDialog(
     }
 }
 
+/**
+ * D20 (WINDOWS): «Sin recibo» y «Venta nueva» cierran esta pantalla al primer clic, y el 2.º clic de un doble clic caía en la
+ * venta nueva («+ Nota» del Teclado abría «Agregar nota»). En Windows el botón se queda el doble clic y sale una vez; el clic
+ * suelto espera lo que dura un doble clic (~0.3 s). En Android, el clic de siempre.
+ */
+@OptIn(ExperimentalFoundationApi::class)
+private fun Modifier.salidaConDobleClic(enWindows: Boolean, enabled: Boolean = true, onClick: () -> Unit): Modifier =
+    if (enWindows) combinedClickable(enabled = enabled, onDoubleClick = onClick, onClick = onClick)
+    else clickable(enabled = enabled, onClick = onClick)
+
 // MARK: - Receipt Option Row (matching iOS)
 
 @Composable
@@ -702,6 +715,8 @@ private fun ReceiptOptionRow(
     enabled: Boolean = true,
     /** D2: a la derecha, en ámbar (p. ej. «Sin impresora · Configurar»). */
     detalle: String? = null,
+    /** D20: cierra esta pantalla («Sin recibo»): en Windows se queda con el doble clic. */
+    esSalida: Boolean = false,
 ) {
     val contentColor = if (enabled) {
         MaterialTheme.colorScheme.onSurfaceVariant
@@ -716,7 +731,10 @@ private fun ReceiptOptionRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(enabled = enabled, onClick = onClick)
+            .then(
+                if (esSalida) Modifier.salidaConDobleClic(LocalEsEscritorio.current, enabled, onClick)
+                else Modifier.clickable(enabled = enabled, onClick = onClick),
+            )
             .padding(vertical = AvoqadoTheme.spacing.md),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.md),
