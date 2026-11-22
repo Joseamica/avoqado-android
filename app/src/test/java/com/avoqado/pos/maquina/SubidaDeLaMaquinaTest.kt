@@ -31,8 +31,21 @@ import java.util.concurrent.TimeUnit
 class SubidaDeLaMaquinaTest {
 
     private val servidor = MockWebServer()
+
+    /**
+     * Codex código POS r11 (F6): el servidor de pruebas hace de Avoqado —pone su `X-Correlation-ID`, como `requestLogger` del SERVIDOR en
+     * cada respuesta—, salvo la que se marca con [PUERTA]: ésa la contestó un proxy o una puerta de entrada, no Avoqado.
+     */
+    private val comoAvoqado = okhttp3.Interceptor { chain ->
+        val r = chain.proceed(chain.request())
+        if (r.header(PUERTA) != null || r.header("X-Correlation-ID") != null) r else r.newBuilder().header("X-Correlation-ID", "prueba").build()
+    }
+
+    /** Una respuesta de la puerta de entrada (proxy de Render o Cloudflare), no de Avoqado. */
+    private fun dePuerta(codigo: Int, cuerpo: String) = MockResponse().setResponseCode(codigo).setHeader(PUERTA, "1").setBody(cuerpo)
+
     /** Sin reintento silencioso de OkHttp: un corte de red tiene que llegar como corte, no gastar la respuesta siguiente. */
-    private val okHttp = OkHttpClient.Builder().retryOnConnectionFailure(false).build()
+    private val okHttp = OkHttpClient.Builder().retryOnConnectionFailure(false).addNetworkInterceptor(comoAvoqado).build()
     private val dao = CobroEnMaquinaSobreSqlite()
     private val red = MutableStateFlow(true)
     private val conectividad = mockk<ConnectivityMonitor> {
@@ -1297,7 +1310,7 @@ class SubidaDeLaMaquinaTest {
 
     /** La subida con un cliente como el de la app: renueva la sesión en un 401 y deja encendidos los reintentos de OkHttp. */
     private suspend fun conClienteDeLaApp(bloque: suspend (SubidaDeLaMaquina) -> Unit) {
-        val cliente = OkHttpClient.Builder().authenticator { _, r ->
+        val cliente = OkHttpClient.Builder().addNetworkInterceptor(comoAvoqado).authenticator { _, r ->
             renovaciones++
             r.request.newBuilder().header("Authorization", "Bearer nuevo").build()
         }.build()
@@ -1406,7 +1419,87 @@ class SubidaDeLaMaquinaTest {
         assertEquals("sólo una de las ocho es confiable", 1, filas.count { it.loQueContoLaMaquina().cierre != null })
     }
 
+    // MARK: - Codex código POS r11 (F6 · quién contesta: una respuesta que NO es de Avoqado nunca saca una fila de la cola)
+
+    /**
+     * Codex código POS r11 (a): la máquina recibe $50 de una venta de $80 y se desconecta. En el primer envío de la duda, la puerta de entrada
+     * al SERVIDOR contesta 421 (la conexión llegó al destino equivocado; RFC 9110 permite repetir por otra) antes de llegar a Avoqado. La PC lo
+     * tomaba como rechazo definitivo: 0 reenvíos y 0 consultas, y el panel nunca veía esos $50, ni tras reiniciar. Se reintenta.
+     */
+    @Test
+    fun `P1 Codex POS r11 un 421 de la puerta de entrada no saca la duda de 50 de la cola - sube en la pasada siguiente`() = runBlocking {
+        insertar(duda(REF_1).copy(dueCents = 8_000, saleCents = 8_000, tipCents = 0, creditCents = 5_000, creditoFisicoCents = 5_000))
+        cuando("POST", ".*/cash-machine/doubts", dePuerta(421, "<html><body>421 Misdirected Request</body></html>"), ok(abierta(1)))
+
+        assertTrue(subida.subir())
+
+        val tras421 = dao.fila(REF_1)!!
+        assertNull("no es un rechazo de Avoqado", tras421.conflicto)
+        assertFalse(tras421.dudaSubida)
+        assertEquals("los \$50 siguen por subir", listOf(REF_1), dao.paraSubir("venue-1").map { it.referenceCC })
+        subida.subir()
+        assertEquals(2, servidor.requestCount)
+        assertTrue("ya están en el panel", dao.fila(REF_1)!!.dudaSubida)
+    }
+
+    /**
+     * Codex código POS r11 (F6): un 403 con HTML de un WAF no es «esta PC no está emparejada»: no corta la pasada ni deja ese aviso; el folio
+     * se queda y los demás suben.
+     */
+    @Test
+    fun `P1 Codex POS r11 un 403 con HTML de un WAF no es sin emparejar - la pasada sigue y el folio se queda`() = runBlocking {
+        val otro = final(REF_2, EstadoDelIntento.PAGADO, credit = 18_750, change = 0).copy(creadoEn = 2_000)
+        insertar(pagado, otro)
+        cuando(
+            "POST", ".*/cash-machine/sales",
+            dePuerta(403, "<html><head><title>Attention Required!</title></head><body>Sorry, you have been blocked</body></html>"),
+            ok(evidencia(otro)), ok(evidencia(pagado)),
+        )
+
+        assertTrue(subida.subir())
+
+        assertNull("sin aviso de emparejar", subida.aviso.value)
+        assertFalse(dao.fila(REF_1)!!.subido)
+        assertNull(dao.fila(REF_1)!!.conflicto)
+        assertTrue("la pasada siguió con el otro folio", dao.fila(REF_2)!!.subido)
+        assertFalse(subida.subir())
+        assertTrue(dao.fila(REF_1)!!.subido)
+    }
+
+    /** Codex código POS r11 (F6): un 404 con HTML de una puerta al consultar una duda no es «el SERVIDOR no la tiene»: se sigue consultando. */
+    @Test
+    fun `P1 Codex POS r11 un 404 de una puerta al consultar la duda no la vuelve a subir`() = runBlocking {
+        val enConflicto = duda(REF_1).copy(
+            dudaSubida = true, conflicto = "en conflicto",
+            respuestaServidor = JSONObject().put("details", JSONObject().put("motivo", "OTRA_EVIDENCIA").put("incidentId", "cinc1")).toString(),
+        )
+        insertar(enConflicto)
+        MaquinaDeEfectivoPrefs(contexto).recordarDispositivo(DISPOSITIVO)
+        cuando("GET", ".*/cash-machine/doubts/$REF_1", dePuerta(404, "<html><body>404 Not Found</body></html>"))
+
+        subida.subir()
+
+        assertEquals("GET", pedido().method)
+        assertTrue("la duda sigue en el SERVIDOR: no se vuelve a subir", dao.fila(REF_1)!!.dudaSubida)
+        assertTrue(dao.paraSubir("venue-1").isEmpty())
+    }
+
+    /** Codex código POS r11 (F6): un 409 sin `code` de una puerta no es un rechazo de Avoqado: el cierre se queda y se reintenta. */
+    @Test
+    fun `P1 Codex POS r11 un 409 sin code de una puerta no deja el cierre fuera de la cola`() = runBlocking {
+        insertar(pagado)
+        cuando("POST", ".*/cash-machine/sales", dePuerta(409, """{"message":"Conflict"}"""), ok(evidencia(pagado)))
+
+        assertTrue(subida.subir())
+
+        assertNull(dao.fila(REF_1)!!.conflicto)
+        assertEquals(listOf(REF_1), dao.paraSubir("venue-1").map { it.referenceCC })
+        assertFalse(subida.subir())
+        assertTrue(dao.fila(REF_1)!!.subido)
+    }
+
     private companion object {
+        const val PUERTA = "X-Prueba-Puerta"
         const val REF_1 = "AQ000000000001"
         const val REF_2 = "AQ000000000002"
         const val DISPOSITIVO = "cterm00000000000000000001"

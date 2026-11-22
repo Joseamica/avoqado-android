@@ -405,29 +405,37 @@ sealed interface Acuse {
     data object Reintentar : Acuse
 }
 
-/** El ÚNICO lugar que interpreta lo que contesta el SERVIDOR a la máquina (la subida y la consulta de una duda). */
+/**
+ * El ÚNICO lugar que interpreta lo que contesta el SERVIDOR a la máquina (la subida y la consulta de una duda).
+ *
+ * 🔴 Codex código POS r11 (F6 · quién contesta): una LISTA BLANCA. Sólo una respuesta que demuestra que la contestó Avoqado —su
+ * `X-Correlation-ID` ([RespuestaDelServidor.deAvoqado]) y un cuerpo JSON— puede decidir algo de una fila: rechazarla, darla por entregada,
+ * decir que el SERVIDOR no la tiene, que falta la sesión o el emparejamiento. Cualquier otra —el 421 de la puerta de entrada, el 403 con HTML
+ * de un WAF, el 404 de un proxy, un 409 que no salió de Avoqado— es «reintentar»: la fila se queda, frena salir y la pasada siguiente la relee.
+ */
 fun leerAcuse(r: RespuestaDelServidor): Acuse {
+    // Codex código POS r5 #4: 413 = «demasiado grande», nunca un rechazo: el folio sigue en la cola (la subida ya mandó lo más chico).
+    if (r.codigo >= 500 || r.codigo == 408 || r.codigo == 429 || r.codigo == 413) return Acuse.Reintentar
     val json = runCatching { JSONObject(r.cuerpo) }.getOrNull()
-    val codigo = json?.optString("code")
+    if (!r.deAvoqado || json == null) return Acuse.Reintentar
+    val codigo = json.optString("code")
     return when {
         r.codigo == 401 -> Acuse.SinSesion
         r.codigo == 403 -> Acuse.SinEmparejar(
             if ("CASH_MACHINE_NOT_PAIRED" in r.cuerpo) TEXTO_PC_SIN_EMPAREJAR else ServerErrorText.fromResponseBody(r.cuerpo, TEXTO_PC_SIN_EMPAREJAR),
         )
         r.codigo == 404 -> Acuse.NoExiste
-        // Codex código POS r5 #4: 413 = «demasiado grande», nunca un rechazo: el folio sigue en la cola (la subida ya mandó lo más chico).
-        r.codigo >= 500 || r.codigo == 408 || r.codigo == 429 || r.codigo == 413 -> Acuse.Reintentar
         // «Otro registro de este folio estaba en curso»: el SERVIDOR no escribió nada y pide repetir el MISMO folio.
         r.codigo == 409 && codigo == "CASH_MACHINE_CLOSE_RETRY" -> Acuse.Reintentar
         r.codigo in 400..499 -> {
             val texto = ServerErrorText.fromResponseBody(r.cuerpo, "El servidor rechazó este cobro (${r.codigo})")
-            val detalles = json?.optJSONObject("details")
+            val detalles = json.optJSONObject("details")
             val motivo = detalles?.optString("motivo")?.takeIf { it.isNotBlank() && it != "null" }
             val dueno = detalles?.takeIf { !it.isNull("deviceId") }?.optString("deviceId")?.takeIf { it.isNotBlank() }
             val delDueno = dueno.takeIf { motivo == "OTRA_EVIDENCIA" }
             if (incidenciaDe(r.cuerpo) != null) Acuse.ConIncidencia(texto, r.cuerpo, delDueno, motivo, dueno) else Acuse.Rechazo(texto)
         }
-        (r.codigo == 200 || r.codigo == 202) && json != null -> {
+        r.codigo == 200 || r.codigo == 202 -> {
             val deviceId = json.optString("deviceId").takeIf { !json.isNull("deviceId") && it.isNotBlank() }
             val terminado = when (json.optString("ack")) {
                 "TERMINADO" -> true

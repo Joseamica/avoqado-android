@@ -14,8 +14,12 @@ import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 import javax.inject.Singleton
 
-/** Lo que contestó el SERVIDOR, tal cual: quien llama decide qué significa. */
-data class RespuestaDelServidor(val codigo: Int, val cuerpo: String)
+/**
+ * Lo que contestó el SERVIDOR, tal cual: quien llama decide qué significa. Codex código POS r11 (F6): [deAvoqado] = la contestó Avoqado (trae
+ * su `X-Correlation-ID`, que el SERVIDOR pone en su primer middleware a toda respuesta: `src/config/middleware.ts`, `requestLogger.ts`), y no
+ * un proxy o la puerta de entrada de Render o Cloudflare. Sin saberlo, false: nada que no se sepa de Avoqado saca una fila de la cola.
+ */
+data class RespuestaDelServidor(val codigo: Int, val cuerpo: String, val deAvoqado: Boolean = false)
 
 /**
  * Las rutas de la máquina que usa la subida (C4, contrato FINAL del SERVIDOR en `mobile.routes.ts`). Con el cliente de la
@@ -87,11 +91,15 @@ class CierresDeLaMaquinaApi @Inject constructor(private val client: OkHttpClient
         withContext(Dispatchers.IO) {
             pedido.url(baseUrl + ruta).header(ForbiddenInterceptor.LOCAL_ERROR_HEADER, "1")
             credencial?.let { pedido.header(CREDENCIAL, it) }
-            cliente.newCall(pedido.build()).execute().use { RespuestaDelServidor(it.code, it.body?.string().orEmpty()) }
+            cliente.newCall(pedido.build()).execute().use {
+                RespuestaDelServidor(it.code, it.body?.string().orEmpty(), deAvoqado = it.header(CORRELACION) != null)
+            }
         }
 
     companion object {
         const val CREDENCIAL = "X-Cash-Machine-Credential"
+        /** Codex código POS r11 (F6): el encabezado con que el SERVIDOR firma TODA respuesta suya (`requestLoggerMiddleware`). */
+        const val CORRELACION = "X-Correlation-ID"
         private val JSON = "application/json; charset=utf-8".toMediaType()
     }
 }
