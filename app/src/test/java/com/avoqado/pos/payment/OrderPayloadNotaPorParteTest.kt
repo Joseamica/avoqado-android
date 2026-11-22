@@ -10,6 +10,10 @@ import com.avoqado.pos.tables.data.buildRepeatedTableLines
 import com.avoqado.pos.tables.data.buildTableRoundRequests
 import com.avoqado.pos.tables.data.OrderDetailItem
 import com.avoqado.pos.tables.data.OrderDetailModifier
+import com.avoqado.pos.tables.data.AddOrderItemRequest
+import com.avoqado.pos.areatickets.data.IssueAreaTicketLineRequest
+import com.avoqado.pos.areatickets.presentation.intentoDeVale
+import com.avoqado.pos.pos.presentation.cart.CartState
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonArray
@@ -59,11 +63,30 @@ class OrderPayloadNotaPorParteTest {
         assertFalse(renglon.containsKey("modifierNotes"))
     }
 
+    /** El `Json` del Retrofit compartido (`NetworkModule.provideJson`): manda los nulos y los default explícitos. */
+    private val jsonDeRetrofit = Json { ignoreUnknownKeys = true; isLenient = true; encodeDefaults = true }
+
     @Test
-    fun `P1 Mesas manda la nota de cada parte en la ronda`() {
+    fun `P1 Mesas manda la nota de cada parte en la ronda y sin notas la llave no viaja ni como null (Codex r2 #5)`() {
         val ronda = buildTableRoundRequests(listOf(paquete(consome, agua))).single()
         assertEquals(mapOf("consome" to "sin cebolla"), ronda.modifierNotes)
-        assertNull(buildTableRoundRequests(listOf(paquete(agua))).single().modifierNotes)
+        val conNota = jsonDeRetrofit.encodeToJsonElement(AddOrderItemRequest.serializer(), ronda).jsonObject
+        assertEquals("sin cebolla", conNota["modifierNotes"]!!.jsonObject["consome"]!!.jsonPrimitive.content)
+
+        val sinNotas = buildTableRoundRequests(listOf(paquete(agua))).single()
+        assertNull(sinNotas.modifierNotes)
+        assertFalse(jsonDeRetrofit.encodeToJsonElement(AddOrderItemRequest.serializer(), sinNotas).jsonObject.containsKey("modifierNotes"))
+    }
+
+    @Test
+    fun `P1 vales - la comanda del vale lleva la nota y Recuperar no toma por igual un carrito que solo cambio la nota (Codex r1 #3)`() {
+        val conNota = intentoDeVale(CartState(items = listOf(paquete(consome, agua))))
+        assertEquals(listOf("Consomé\nNota: sin cebolla", "Agua"), conNota.comanda.single().modificadores)
+        assertEquals(mapOf("consome" to "sin cebolla"), conNota.lineas.single().modifierNotes)
+        val otraNota = intentoDeVale(CartState(items = listOf(paquete(consome.copy(note = "con cebolla"), agua))))
+        assertFalse(conNota.mismaMercanciaQue(otraNota.lineas))
+        val sinNotas = intentoDeVale(CartState(items = listOf(paquete(consome.copy(note = null), agua))))
+        assertFalse(jsonDeRetrofit.encodeToJsonElement(IssueAreaTicketLineRequest.serializer(), sinNotas.lineas.single()).jsonObject.containsKey("modifierNotes"))
     }
 
     @Test

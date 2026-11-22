@@ -61,8 +61,11 @@ object KitchenDeliveryPolicy {
     fun planesConPantalla(plans: List<TicketPlan>, config: PrintConfig): List<TicketPlan> =
         plans.filter { p -> p.stationId != null && config.stations.any { it.id == p.stationId && it.active && it.hasKitchenDisplay } }
 
-    /** D40: lo más que pueden pesar las etiquetas de los extras de una comanda por WiFi con sus notas (el tope del mensaje es 64 KB). */
-    const val PRESUPUESTO_DE_ETIQUETAS_BYTES = 24_000
+    /**
+     * D40 (Codex r2 #1): lo más que puede pesar el mensaje `comanda` CON las notas de las partes, medido con el mismo serializador
+     * del envío. El receptor corta arriba de `LineaAcotada.MAX_BYTES` sin acuse; se deja aire para el salto de línea y el sobre.
+     */
+    val TOPE_DEL_MENSAJE_CON_NOTAS_BYTES = com.avoqado.pos.core.data.lan.LineaAcotada.MAX_BYTES - 2_048
 
     /** El mensaje `comanda` de UN plan (D4). El folio es el del servidor; el id de cada renglón, el del carrito o uno sintético. */
     fun mensajeParaPantalla(
@@ -78,10 +81,20 @@ object KitchenDeliveryPolicy {
         curso: String? = null,
     ): KdsComanda {
         val sourceKey = folio(origen, plan.stationId)
-        // D40 (Codex r1 #6): la nota de cada parte infla el mensaje y el receptor corta arriba de 64 KB sin acuse
-        // (`LineaAcotada.MAX_BYTES`). Si las etiquetas no caben en su presupuesto, esta comanda viaja por WiFi SIN las notas de las
-        // partes: el papel y la comanda que arma el SERVIDOR sí las llevan. Lo de siempre (sin notas) no cambia.
-        val conNotas = plan.lines.sumOf { l -> l.modifiers.sumOf { it.toByteArray(Charsets.UTF_8).size } } <= PRESUPUESTO_DE_ETIQUETAS_BYTES
+        // D40 (Codex r1 #6, r2 #1): la nota de cada parte infla el mensaje y el receptor corta arriba de 64 KB sin acuse. Se mide el
+        // mensaje REAL; si con notas no cabe, viaja SIN las notas de las partes, idéntico al de antes de D40 (el papel y la comanda
+        // que arma el SERVIDOR sí las llevan).
+        val conNotas = armarComanda(plan, venueId, deviceId, sourceKey, orderNumber, orderType, orderId, createdAtMillis, curso) { it }
+        if (com.avoqado.pos.core.data.lan.KdsLanProtocol.encode(conNotas).toByteArray(Charsets.UTF_8).size <= TOPE_DEL_MENSAJE_CON_NOTAS_BYTES ||
+            plan.lines.none { l -> l.modifiers.any { sinNota(it) != it } }
+        ) return conNotas
+        return armarComanda(plan, venueId, deviceId, sourceKey, orderNumber, orderType, orderId, createdAtMillis, curso, ::sinNota)
+    }
+
+    private fun armarComanda(
+        plan: TicketPlan, venueId: String, deviceId: String, sourceKey: String, orderNumber: String, orderType: String,
+        orderId: String?, createdAtMillis: Long, curso: String?, etiqueta: (String) -> String,
+    ): KdsComanda {
         return KdsComanda(
             venueId = venueId,
             deviceId = deviceId,
@@ -95,7 +108,7 @@ object KitchenDeliveryPolicy {
             items = plan.lines.mapIndexed { i, l ->
                 KdsComandaItem(
                     id = l.orderItemIds.firstOrNull() ?: "$sourceKey#$i", productName = l.productName, quantity = l.quantity,
-                    modifiers = if (conNotas) l.modifiers else l.modifiers.map(::sinNota), notes = l.notes, course = curso,
+                    modifiers = l.modifiers.map(etiqueta), notes = l.notes, course = curso,
                     serviceCourse = l.serviceCourse, externalId = l.externalId, orderPromotionId = l.orderPromotionId,
                     preparation = if (l.serviceCourse?.preparationVersion == 1)
                         com.avoqado.pos.kds.domain.PreparationCounts.initial(l.quantity, l.serviceCourse.kind == "STANDARD") else null,

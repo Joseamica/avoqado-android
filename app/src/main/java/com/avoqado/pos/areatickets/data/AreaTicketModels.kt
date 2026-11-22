@@ -225,12 +225,16 @@ data class AddTicketRequest(val code: String, val idempotencyKey: String)
 data class CheckoutData(val checkout: AreaTicketCheckout)
 
 @Serializable
+@OptIn(kotlinx.serialization.ExperimentalSerializationApi::class)
 data class NormalCheckoutItem(
     /** null = importe libre: viaja con [name] y [unitPrice] (centavos), como en una venta normal. */
     val productId: String?,
     val quantity: Int,
     val notes: String? = null,
     val modifierIds: List<String> = emptyList(),
+    /** D40 (Codex r1 #4): la nota de cada parte del producto suelto cobrado con vales; el SERVIDOR la guarda como en Mostrador. */
+    @kotlinx.serialization.EncodeDefault(kotlinx.serialization.EncodeDefault.Mode.NEVER)
+    val modifierNotes: Map<String, String>? = null,
     val discountId: String? = null,
     val weightQuantity: Double? = null,
     val name: String? = null,
@@ -250,6 +254,7 @@ data class MaterializeCheckoutRequest(
 )
 
 @Serializable
+@OptIn(kotlinx.serialization.ExperimentalSerializationApi::class)
 data class IssueAreaTicketLineRequest(
     val clientLineId: String,
     val productId: String,
@@ -257,6 +262,13 @@ data class IssueAreaTicketLineRequest(
     val weightKg: String? = null,
     val notes: String? = null,
     val modifierIds: List<String> = emptyList(),
+    /**
+     * D40 (Codex r1 #3): la nota de cada parte. El vale del SERVIDOR no la guarda (la comanda del vale sale de este aparato con
+     * ella); va aquí para que «Recuperar» ([IntentoDeVale.mismaMercanciaQue]) no tome por igual un carrito que sólo cambió la nota.
+     * Sin notas la llave no viaja.
+     */
+    @kotlinx.serialization.EncodeDefault(kotlinx.serialization.EncodeDefault.Mode.NEVER)
+    val modifierNotes: Map<String, String>? = null,
     val discountId: String? = null,
     /** D4 (18-nov): el SERVIDOR los congela en el renglón del vale y la fila espejo los copia al cobrar («Descuentos»). */
     val discountReason: String? = null,

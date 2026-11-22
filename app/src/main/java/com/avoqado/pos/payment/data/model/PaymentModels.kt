@@ -294,6 +294,7 @@ data class PromotionRefRequest(
 )
 
 @Serializable
+@OptIn(kotlinx.serialization.ExperimentalSerializationApi::class)
 data class OrderItemRequest(
     val productId: String? = null,
     val name: String,
@@ -304,6 +305,7 @@ data class OrderItemRequest(
      * D40: la nota de cada parte, `{ modifierId: nota }` (todas las veces de una opción llevan la misma). Null = sin notas: la llave
      * no viaja y el cuerpo queda como antes. Un SERVIDOR sin D40 la ignora (no valida llaves de más en el renglón).
      */
+    @kotlinx.serialization.EncodeDefault(kotlinx.serialization.EncodeDefault.Mode.NEVER)
     val modifierNotes: Map<String, String>? = null,
     val note: String? = null,
     val isCortesia: Boolean = false,

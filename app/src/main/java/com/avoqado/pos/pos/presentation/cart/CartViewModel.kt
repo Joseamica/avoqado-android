@@ -3497,6 +3497,9 @@ class CartViewModel @Inject constructor(
                 weightKg = item.weightKg?.let { String.format(java.util.Locale.US, "%.3f", it) },
                 notes = item.note,
                 modifierIds = item.modifiers.map { it.modifierId },
+                // D40: igual que `intentoDeVale`, para que «Recuperar» compare también la nota de cada parte.
+                modifierNotes = item.modifiers.mapNotNull { m -> com.avoqado.pos.pos.domain.limpiarNotaDelExtra(m.note)?.let { m.modifierId to it } }
+                    .toMap().ifEmpty { null },
                 discountId = item.itemDiscountId,
             )
         }

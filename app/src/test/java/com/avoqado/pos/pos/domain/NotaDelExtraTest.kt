@@ -62,11 +62,20 @@ class NotaDelExtraTest {
     }
 
     @Test
-    fun `P1 un extra que se llama como una nota no se confunde (Codex r1 #5)`() {
+    fun `P1 sin nota el nombre queda byte a byte y el nombre con salto es el riesgo cosmetico aceptado (Codex r2 #2)`() {
         assertEquals("Consomé (Nota: sin cebolla)" to null, separarNotaDelExtra("Consomé (Nota: sin cebolla)"))
-        // Un nombre nunca lleva salto de línea: el «⏎Nota: » sólo lo pone la nota.
-        assertEquals("Consomé Nota: x", etiquetaEnCocina("Consomé\nNota: x", null))
-        assertEquals("Consomé Nota: x" to null, separarNotaDelExtra(etiquetaEnCocina("Consomé\nNota: x", null)))
+        assertEquals("Consomé\n  doble", etiquetaEnCocina("Consomé\n  doble", null)) // el nombre no se toca
+        // Riesgo aceptado (decisión A del founder): un extra cuyo NOMBRE trae «⏎Nota: …» se ve igual que una nota de verdad.
+        assertEquals(etiquetaEnCocina("Consomé", "sin cebolla"), etiquetaEnCocina("Consomé\nNota: sin cebolla", null))
         assertEquals("\nNota: x" to null, separarNotaDelExtra("\nNota: x"))
+    }
+
+    @Test
+    fun `P1 la nota se limpia con la MISMA lista de caracteres que el SERVIDOR (Codex r2 #7)`() {
+        // Vectores compartidos con tests/unit/services/kds/notaDelExtra.test.ts del SERVIDOR: deben dar lo mismo en los dos lados.
+        assertEquals("sin cebolla", limpiarNotaDelExtra("sin\u2028cebolla"))
+        assertEquals("sin cebolla", limpiarNotaDelExtra("sin\u0085cebolla"))
+        assertEquals("sin cebolla", limpiarNotaDelExtra("\uFEFF sin\u00A0\u3000cebolla \u200A"))
+        assertEquals("sin\u200Bcebolla", limpiarNotaDelExtra("sin\u200Bcebolla"))
     }
 }

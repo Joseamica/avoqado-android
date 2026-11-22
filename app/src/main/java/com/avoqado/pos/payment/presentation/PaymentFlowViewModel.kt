@@ -1,5 +1,6 @@
 package com.avoqado.pos.payment.presentation
 
+import com.avoqado.pos.pos.domain.notasPorExtra
 import com.avoqado.pos.pos.domain.etiquetasEnCocina
 import com.avoqado.pos.giftcards.data.*
 import com.avoqado.pos.giftcards.domain.*
@@ -7031,6 +7032,7 @@ class PaymentFlowViewModel @Inject constructor(
                         quantity = item.quantity,
                         notes = item.itemNote,
                         modifierIds = item.selectedModifiers.map { it.modifierId },
+                        modifierNotes = item.selectedModifiers.notasPorExtra().ifEmpty { null }, // D40 (Codex r1 #4)
                         discountId = item.itemDiscountId,
                         weightQuantity = item.weightKg,
                         discountReason = item.motivoDelSuelto(),
