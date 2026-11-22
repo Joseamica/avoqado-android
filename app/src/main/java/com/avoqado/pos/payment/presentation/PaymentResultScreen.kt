@@ -314,16 +314,7 @@ fun PaymentResultScreen(
                 )
             }
 
-            avisoDeLaMaquina?.let {
-                Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
-                Text(
-                    text = it,
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.SemiBold,
-                    color = Warning,
-                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                )
-            }
+            avisoDeLaMaquina?.let { com.avoqado.pos.maquina.ui.AvisoDeLaDeuda(it) }
 
             if (entregarTarjeta) {
                 Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))

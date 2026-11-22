@@ -80,14 +80,25 @@ fun textoDeLaDeuda(cents: Long, referenceCC: String): String =
  */
 fun deudaEnPantalla(fila: CobroEnMaquinaEntity): String? {
     if (fila.estado == EstadoDelIntento.EN_CURSO || fila.desenlace == Desenlace.GUARDADO) return null
-    val (recibido, cambio) = fila.loQueContoLaMaquina().cierre?.takeIf { !fila.porRevisarEnElPanel() }
-        ?: return "$TEXTO_REVISAR_EN_EL_PANEL · Folio ${fila.referenceCC}"
+    val (recibido, cambio) = fila.cierreQueRespalda() ?: return "$TEXTO_REVISAR_EN_EL_PANEL · Folio ${fila.referenceCC}"
     // Sin «revisar», el desenlace consta y es el de lo físico.
     val desenlace = fila.desenlace ?: return null
     val debe = deudaFisica(desenlace, fila.dueCents, recibido, cambio).takeIf { it > 0 } ?: return null
     return if (desenlace == Desenlace.PAGADO) textoDeLaDeuda(debe.toLong(), fila.referenceCC)
     else "Te debemos ${com.avoqado.pos.core.util.formatMoneyFromCents(debe)}: pasa a caja a cobrarlo · Folio ${fila.referenceCC}"
 }
+
+/** Lo que contó la máquina, sólo si respalda lo registrado: la única cifra que una pantalla afirma (como el papel, [conLoFisico]). */
+private fun CobroEnMaquinaEntity.cierreQueRespalda(): Pair<Int, Int>? = loQueContoLaMaquina().cierre?.takeIf { !porRevisarEnElPanel() }
+
+/**
+ * E1 y full-testing (WARN 1): lo que la pantalla de éxito afirma del cierre de un folio, con UNA decisión. [cambioCents]: el cambio que dio
+ * la máquina sólo si su cierre respalda lo registrado; si no, null y no se pinta «Cambio» (ni el de un cierre que la máquina desmintió ni el
+ * que tecleó un gerente). [deuda]: [deudaEnPantalla].
+ */
+data class CierreQueSeEnsena(val cambioCents: Int?, val deuda: String?)
+
+fun cierreQueSeEnsena(fila: CobroEnMaquinaEntity) = CierreQueSeEnsena(fila.cierreQueRespalda()?.second, deudaEnPantalla(fila))
 
 // MARK: - Reglas puras de la caja
 
@@ -723,8 +734,9 @@ class MaquinaDeEfectivo internal constructor(
     /** Codex código r3 #7: ¿el permiso de configurar la máquina está en la sesión? (sólo la parte de IP y emparejar lo pide). */
     fun puedeConfigurar(): Boolean = roles.canConfigureCashMachine
 
-    /** E1: la deuda que enseña la pantalla del folio, de su fila en vivo ([deudaEnPantalla], la misma decisión que su papel). */
-    fun deudaDelFolio(referenceCC: String): Flow<String?> = dao.observar(referenceCC).map { it?.let(::deudaEnPantalla) }.distinctUntilChanged()
+    /** E1: lo que la pantalla afirma del cierre del folio (cambio y deuda), de su fila en vivo y con la misma decisión que su papel. */
+    fun cierreDelFolio(referenceCC: String): Flow<CierreQueSeEnsena?> =
+        dao.observar(referenceCC).map { f -> f?.let { cierreQueSeEnsena(it) } }.distinctUntilChanged()
 
     /** E1 (obs. 1): recién emparejada, la subida quita «no está emparejada» y sube lo que esperaba. */
     fun alEmparejar() = subida.alEmparejar()

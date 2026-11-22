@@ -146,7 +146,7 @@ class CajaConMaquina(
 
     /** E1: la deuda del folio de esta pantalla, junto con su folio (la de otro folio no se pinta en ésta). */
     private val deudaDeMiFolio = local.map { it.miFolio }.distinctUntilChanged()
-        .flatMapLatest { f -> f?.let { maquina.deudaDelFolio(it).map { d -> f to d } } ?: flowOf(null) }
+        .flatMapLatest { f -> f?.let { maquina.cierreDelFolio(it).map { c -> f to c?.deuda } } ?: flowOf(null) }
 
     val vista: StateFlow<VistaDeLaMaquina?> =
         combine(

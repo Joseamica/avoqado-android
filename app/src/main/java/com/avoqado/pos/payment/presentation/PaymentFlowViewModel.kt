@@ -522,16 +522,16 @@ class PaymentFlowViewModel @Inject constructor(
             .stateIn(viewModelScope, SharingStarted.Eagerly, com.avoqado.pos.payment.data.model.SincronizacionDelCobro.NINGUNA)
 
     /**
-     * E1 (recorrido real, 21-nov, el FAIL): lo que la pantalla de éxito de un cobro de la MÁQUINA dice de su deuda, en vivo y decidido como su
-     * papel ([com.avoqado.pos.maquina.deudaEnPantalla]): «Te debemos $X de cambio… · Folio», o «Revisar en el panel · Folio» si la máquina se
-     * contradijo o el panel lo resolvió sin su cierre. null = no es de la máquina o no se debe nada.
+     * E1 (recorrido real, el FAIL) y full-testing (WARN 1): lo que la pantalla de éxito de un cobro de la MÁQUINA afirma de su cierre, en vivo
+     * y decidido como su papel ([com.avoqado.pos.maquina.cierreQueSeEnsena]): el cambio sólo si la máquina lo respalda, y «Te debemos $X de
+     * cambio… · Folio» o «Revisar en el panel · Folio». null = no es un cobro de la máquina.
      */
     @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
-    val deudaDeLaMaquina: StateFlow<String?> =
+    val cierreQueSeEnsena: StateFlow<com.avoqado.pos.maquina.CierreQueSeEnsena?> =
         _state
             .map { ((it as? PaymentFlowState.Success)?.colaDelCobro as? ColaDelCobro.Maquina)?.referenceCC }
             .distinctUntilChanged()
-            .flatMapLatest { ref -> ref?.let { maquinaDeEfectivo?.deudaDelFolio(it) } ?: flowOf(null) }
+            .flatMapLatest { ref -> ref?.let { maquinaDeEfectivo?.cierreDelFolio(it) } ?: flowOf(null) }
             .stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
     /**

@@ -134,7 +134,7 @@ fun PantallaDeLaMaquina(vista: VistaDeLaMaquina, caja: CajaConMaquina, onSalir: 
                     Titulo(tituloDelCierre(c))
                     // Codex código r1 #13 y E1: lo que se le debe (también el cambio que no dio un PAGADO), de la fila y como su papel: de lo
                     // que contó la máquina, o «Revisar en el panel» si se contradijo. GUARDADO no enseña monto (C7).
-                    vista.deuda?.let { Nota(it) }
+                    vista.deuda?.let { AvisoDeLaDeuda(it) }
                     Spacer(Modifier.height(AvoqadoTheme.spacing.xl))
                     PrimaryButton(text = "Listo", onClick = caja::listo, fullWidth = true)
                 }
@@ -150,7 +150,7 @@ fun PantallaDeLaMaquina(vista: VistaDeLaMaquina, caja: CajaConMaquina, onSalir: 
                     // Codex código r1 #11: el gerente dijo PAGADO, pero el SERVIDOR lo guardó como incidencia: no hay venta.
                     Titulo(vista.incidencia)
                     Nota("No se cobró la venta: el dinero quedó registrado para que el gerente lo revise.")
-                    vista.deuda?.let { Nota(it) }   // E1: con su folio, como su comprobante
+                    vista.deuda?.let { AvisoDeLaDeuda(it) }   // E1: con su folio, como su comprobante
                     Spacer(Modifier.height(AvoqadoTheme.spacing.xl))
                     PrimaryButton(text = "Listo", onClick = caja::listo, fullWidth = true)
                 } else vista.resuelto?.let { d ->
@@ -169,6 +169,20 @@ internal fun tituloDelCierre(c: EstadoDelCobro.Cerrado): String = when (c.desenl
     Desenlace.CANCELADO -> if (c.changeDispensedCents > 0) "Cobro cancelado: recoge tu dinero" else "Cobro cancelado"
     Desenlace.PAGADO -> "Pagado"
 }
+
+/**
+ * E1 y full-testing (WARN 2): «Te debemos… pasa a caja» (o «Revisar en el panel») es la misma noticia en la pantalla de la máquina y en la de
+ * éxito: se ve igual en las dos, ámbar y grande.
+ */
+@Composable
+internal fun AvisoDeLaDeuda(texto: String) = Text(
+    texto,
+    style = MaterialTheme.typography.titleMedium,
+    fontWeight = FontWeight.SemiBold,
+    color = com.avoqado.pos.designsystem.theme.Warning,
+    textAlign = TextAlign.Center,
+    modifier = Modifier.padding(top = AvoqadoTheme.spacing.md),
+)
 
 @Composable
 private fun Titulo(texto: String) = Text(

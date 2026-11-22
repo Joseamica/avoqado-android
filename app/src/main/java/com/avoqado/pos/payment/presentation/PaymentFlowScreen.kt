@@ -510,7 +510,10 @@ fun PaymentFlowScreen(
                         )
                     }
                     val sincronizacion by viewModel.sincronizacionDelCobro.collectAsState()
-                    val deudaDeLaMaquina by viewModel.deudaDeLaMaquina.collectAsState()
+                    val cierreDeLaMaquina by viewModel.cierreQueSeEnsena.collectAsState()
+                    // Full-testing WARN 1: de un cobro de la máquina, el cambio sólo si la máquina lo respalda (nunca el de un cierre
+                    // desmentido ni el que tecleó un gerente); sin él no hay línea de «Cambio».
+                    val esDeLaMaquina = currentState.colaDelCobro is com.avoqado.pos.payment.data.model.ColaDelCobro.Maquina
 
                     PaymentResultScreen(
                         accionesDeRedHabilitadas = accionesDeRedHabilitadas,
@@ -520,10 +523,10 @@ fun PaymentFlowScreen(
                         methodLabel = viewModel.manualMethodLabel,
                         saldoPagado = (resultadoDeSaldo as? DesenlaceDeCobro.Cobrado)?.cobro,
                         method = currentState.method,
-                        changeCents = currentState.changeAmount,
+                        changeCents = if (esDeLaMaquina) cierreDeLaMaquina?.cambioCents ?: 0 else currentState.changeAmount,
                         isQueued = currentState.isQueued,
                         sincronizacion = sincronizacion,
-                        avisoDeLaMaquina = deudaDeLaMaquina,
+                        avisoDeLaMaquina = cierreDeLaMaquina?.deuda,
                         paymentId = currentState.paymentId,
                         canSendReceipt = !currentState.paymentId.isNullOrBlank() || !currentState.receiptAccessKey.isNullOrBlank(),
                         isSendingWhatsApp = whatsAppSending,

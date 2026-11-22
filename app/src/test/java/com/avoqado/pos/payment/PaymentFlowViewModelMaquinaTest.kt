@@ -1033,12 +1033,19 @@ class PaymentFlowViewModelMaquinaTest {
         runCurrent()
 
         assertTrue(vm.state.value is PaymentFlowState.Success)
-        assertEquals(com.avoqado.pos.maquina.textoDeLaDeuda(32_000, ref), vm.deudaDeLaMaquina.value)
+        assertEquals(
+            com.avoqado.pos.maquina.CierreQueSeEnsena(cambioCents = 0, deuda = com.avoqado.pos.maquina.textoDeLaDeuda(32_000, ref)),
+            vm.cierreQueSeEnsena.value,
+        )
 
-        // La máquina repite el cierre con OTRO cambio: se contradijo. Ninguna cifra (ni la primera): al panel, con su folio.
+        // La máquina repite el cierre con OTRO cambio: se contradijo. Ninguna cifra (ni la primera): al panel, con su folio. Full-testing
+        // WARN 1: tampoco «Cambio: $X» del primer cierre, que la máquina desmintió.
         canal.llega(status(ref, 18_000, credit = 50_000, change = 32_000, cobrando = false, estado = "Pago Completado"))
         runCurrent()
-        assertEquals("${com.avoqado.pos.maquina.TEXTO_REVISAR_EN_EL_PANEL} · Folio $ref", vm.deudaDeLaMaquina.value)
+        assertEquals(
+            com.avoqado.pos.maquina.CierreQueSeEnsena(cambioCents = null, deuda = "${com.avoqado.pos.maquina.TEXTO_REVISAR_EN_EL_PANEL} · Folio $ref"),
+            vm.cierreQueSeEnsena.value,
+        )
     }
 
     @Test
@@ -1048,7 +1055,7 @@ class PaymentFlowViewModelMaquinaTest {
         runCurrent()
 
         assertTrue(vm.state.value is PaymentFlowState.Success)
-        assertNull(vm.deudaDeLaMaquina.value)
+        assertEquals(com.avoqado.pos.maquina.CierreQueSeEnsena(cambioCents = 2_000, deuda = null), vm.cierreQueSeEnsena.value)
     }
 
     /** E1: el PAGADO que resolvió un gerente sin que la máquina confirmara el cambio: lo tecleado no se enseña como deuda (como su papel). */
@@ -1059,11 +1066,16 @@ class PaymentFlowViewModelMaquinaTest {
         advanceTimeBy(3_001)
         runCurrent()
 
-        elPanelResuelve(ref, ecoDelGerente(ref, credit = 50_000, change = 0) { put("owedCents", 32_000) })
+        elPanelResuelve(ref, ecoDelGerente(ref, credit = 50_000, change = 15_000) { put("owedCents", 17_000) })
         runCurrent()
 
         assertTrue(vm.state.value is PaymentFlowState.Success)
-        assertEquals("${com.avoqado.pos.maquina.TEXTO_REVISAR_EN_EL_PANEL} · Folio $ref", vm.deudaDeLaMaquina.value)
+        // Full-testing WARN 1: ni la deuda ni el cambio que tecleó el gerente ($150): la máquina no los respalda.
+        assertEquals(15_000, (vm.state.value as PaymentFlowState.Success).changeAmount)
+        assertEquals(
+            com.avoqado.pos.maquina.CierreQueSeEnsena(cambioCents = null, deuda = "${com.avoqado.pos.maquina.TEXTO_REVISAR_EN_EL_PANEL} · Folio $ref"),
+            vm.cierreQueSeEnsena.value,
+        )
     }
 
     /**
