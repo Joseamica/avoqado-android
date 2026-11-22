@@ -22,6 +22,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -85,6 +86,11 @@ class OrderPayloadNotaPorParteTest {
         assertEquals(mapOf("consome" to "sin cebolla"), conNota.lineas.single().modifierNotes)
         val otraNota = intentoDeVale(CartState(items = listOf(paquete(consome.copy(note = "con cebolla"), agua))))
         assertFalse(conNota.mismaMercanciaQue(otraNota.lineas))
+        // Codex r3 #2: los mismos renglones con los extras elegidos en otro orden son la misma mercancía.
+        val cochinita = SelectedModifier("g-flautas", "Flautas", "cochinita", "Flautas Cochinita", 0, note = "salsa")
+        val dos = listOf(paquete(consome, cochinita).copy(id = "a"), paquete(agua).copy(id = "b"))
+        val alReves = listOf(paquete(cochinita, consome).copy(id = "c"), paquete(agua).copy(id = "d"))
+        assertTrue(intentoDeVale(CartState(items = dos)).mismaMercanciaQue(intentoDeVale(CartState(items = alReves)).lineas))
         val sinNotas = intentoDeVale(CartState(items = listOf(paquete(consome.copy(note = null), agua))))
         assertFalse(jsonDeRetrofit.encodeToJsonElement(IssueAreaTicketLineRequest.serializer(), sinNotas.lineas.single()).jsonObject.containsKey("modifierNotes"))
     }

@@ -1,6 +1,7 @@
 package com.avoqado.pos.printing.routing
 
 import com.avoqado.pos.core.data.lan.KdsComanda
+import com.avoqado.pos.core.data.lan.KdsLanProtocol
 import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -123,16 +124,41 @@ class KitchenDeliveryPolicyTest {
         val m = KitchenDeliveryPolicy.mensajeParaPantalla(chica, "venue-1", "tablet-1", "sale:ext-1", "1234", "En tienda", "ord-1", 5L)
         assertEquals(listOf("Consomé\nNota: sin cebolla", "Agua"), m.items[0].modifiers)
 
-        // Codex r1 #6: 50 renglones × 8 partes con notas largas pasaban el tope de 64 KB del receptor (corta sin acuse).
-        val nota = "x".repeat(200)
-        val enorme = TicketPlan(
-            stationId = "st_barra", unrouted = false,
-            lines = List(50) { i -> ConsolidatedLine("Paquete $i", 1, List(8) { "Parte $it\nNota: $nota" }, "nota del artículo", listOf("oi_$i")) },
+        // Codex r1 #6, r2 #1, r3 #1: 100 paquetes IGUALES con 100 notas distintas ya no se juntan en un renglón y el mensaje pasa el
+        // tope de 64 KB del receptor (corta sin acuse). Sin notas debe quedar BYTE A BYTE igual al de antes de D40: un renglón ×100.
+        val config = PrintConfig(stations = listOf(barraSoloPantalla.copy(active = true)), defaultStationId = "st_barra")
+        val partes = List(8) { "Parte $it" }
+        fun renglones(conNotas: Boolean) = List(100) { i ->
+            RoutableItem("oi_$i", "paquete", null, "Paquete Completo", 1,
+                partes.map { p -> if (conNotas) com.avoqado.pos.pos.domain.etiquetaEnCocina(p, "nota $i " + "x".repeat(150)) else p }, "sin sal")
+        }
+        fun mensaje(items: List<RoutableItem>) = KitchenDeliveryPolicy.mensajeParaPantalla(
+            PrintRoutingMapper.rutear(items, config, omitirSinComanda = false).plans.single(), "venue-1", "tablet-1", "sale:ext-2",
+            "1235", "En tienda", "ord-2", 5L, productoDe = items.associate { it.orderItemId to it.productId },
         )
-        val sinNotas = KitchenDeliveryPolicy.mensajeParaPantalla(enorme, "venue-1", "tablet-1", "sale:ext-2", "1235", "En tienda", "ord-2", 5L)
-        assertEquals(List(8) { "Parte $it" }, sinNotas.items[0].modifiers)
-        assertEquals("nota del artículo", sinNotas.items[0].notes) // la del artículo no se toca
-        assertTrue(Json.encodeToString(KdsComanda.serializer(), sinNotas).toByteArray().size < 65_536)
+        val conNotas = renglones(true)
+        assertEquals(100, PrintRoutingMapper.rutear(conNotas, config, omitirSinComanda = false).plans.single().lines.size)
+        val enviado = KdsLanProtocol.encode(mensaje(conNotas))
+        assertEquals(KdsLanProtocol.encode(mensaje(renglones(false))), enviado)
+        assertEquals(1, mensaje(conNotas).items.size)
+        assertTrue(enviado.toByteArray().size <= com.avoqado.pos.core.data.lan.LineaAcotada.MAX_BYTES)
+
+        // Si cabe con notas, se manda con notas (sin margen de más: el receptor acepta hasta el tope exacto).
+        val pocas = renglones(true).take(3)
+        assertTrue(mensaje(pocas).items.all { it.modifiers.first().contains("\nNota: ") })
+    }
+
+    @Test
+    fun `P1 D40 juntar sin notas usa el producto por id como el ruteo (dos productos con el mismo nombre no se juntan)`() {
+        val lineas = listOf(
+            ConsolidatedLine("Taco", 1, listOf("Salsa\nNota: verde"), null, listOf("a")),
+            ConsolidatedLine("Taco", 1, listOf("Salsa\nNota: roja"), null, listOf("b")),
+            ConsolidatedLine("Taco", 1, listOf("Salsa\nNota: roja"), null, listOf("c")),
+        )
+        val juntas = KitchenDeliveryPolicy.juntarSinNotas(lineas, mapOf("a" to "taco-1", "b" to "taco-1", "c" to "taco-2"))
+        assertEquals(listOf(2, 1), juntas.map { it.quantity })
+        assertEquals(listOf(listOf("a", "b"), listOf("c")), juntas.map { it.orderItemIds })
+        assertEquals(listOf("Salsa"), juntas.first().modifiers)
     }
 
     @Test
