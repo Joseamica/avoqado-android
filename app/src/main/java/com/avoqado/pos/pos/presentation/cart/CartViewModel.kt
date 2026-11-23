@@ -1966,7 +1966,7 @@ class CartViewModel @Inject constructor(
         val item = CartItem(
             type = CartItemType.CreditPack(pack.id, pack.saleProof),
             name = pack.name,
-            subtitle = if (pack.creditCount > 0) "${pack.creditCount} créditos" else "Membresía",
+            subtitle = if (pack.creditCount > 0) pack.creditsLabel else "Membresía",   // D679: «Ilimitado», nunca 99999
             unitPrice = pack.price.aCentavos(),
         )
         _cartState.update { it.copy(items = it.items + item) }

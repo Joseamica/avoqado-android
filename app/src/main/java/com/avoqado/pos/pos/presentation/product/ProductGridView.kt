@@ -445,7 +445,7 @@ private fun CreditPackTile(
                 overflow = TextOverflow.Ellipsis,
             )
             Text(
-                text = "${pack.creditCount} créditos · ${pack.displayPrice}",
+                text = "${pack.creditsLabel} · ${pack.displayPrice}",
                 style = MaterialTheme.typography.labelSmall,
                 color = fg.copy(alpha = 0.85f),
                 maxLines = 1,

@@ -20,8 +20,10 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.add
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
@@ -112,6 +114,8 @@ class ArticlesViewModel @Inject constructor(
     data class CreditPackItemInput(
         val productId: String,
         val quantity: Int = 1,
+        /** D679: renglón Ilimitado (sólo se conserva: se crea y se cambia en el DASHBOARD). */
+        val unlimited: Boolean = false,
     )
 
     // MARK: - Init
@@ -778,7 +782,6 @@ class ArticlesViewModel @Inject constructor(
         viewModelScope.launch {
             _isSaving.value = true
             try {
-                val filteredItems = items.filter { it.productId.isNotEmpty() }
                 val payload = buildJsonObject {
                     put("name", name)
                     if (description != null) put("description", description)
@@ -786,14 +789,7 @@ class ArticlesViewModel @Inject constructor(
                     if (validityDays != null) put("validityDays", validityDays)
                     if (maxPerCustomer != null) put("maxPerCustomer", maxPerCustomer)
                     put("active", active)
-                    putJsonArray("items") {
-                        filteredItems.forEach { item ->
-                            add(buildJsonObject {
-                                put("productId", item.productId)
-                                put("quantity", item.quantity)
-                            })
-                        }
-                    }
+                    put("items", renglonesDelPaquete(items))
                 }.toString()
                 repository.clearError()
                 val success = repository.createCreditPack(payload)
@@ -819,7 +815,6 @@ class ArticlesViewModel @Inject constructor(
         viewModelScope.launch {
             _isSaving.value = true
             try {
-                val filteredItems = items.filter { it.productId.isNotEmpty() }
                 val payload = buildJsonObject {
                     put("name", name)
                     if (description != null) put("description", description)
@@ -829,14 +824,7 @@ class ArticlesViewModel @Inject constructor(
                     // Vacío = sin límite: va `null` explícito porque, sin el campo, el servidor deja el límite que tenía.
                     put("maxPerCustomer", maxPerCustomer)
                     put("active", active)
-                    putJsonArray("items") {
-                        filteredItems.forEach { item ->
-                            add(buildJsonObject {
-                                put("productId", item.productId)
-                                put("quantity", item.quantity)
-                            })
-                        }
-                    }
+                    put("items", renglonesDelPaquete(items))
                 }.toString()
                 repository.clearError()
                 val success = repository.updateCreditPack(packId, payload)
@@ -905,5 +893,19 @@ class ArticlesViewModel @Inject constructor(
             current[index] = name to abbreviation
             _customUnits.value = current
         }
+    }
+}
+
+/**
+ * D679 (W4): los renglones de un paquete al crear o guardar. Cada uno lleva `unlimited` (también `false`): así el SERVIDOR sabe
+ * que esta app conoce el Ilimitado y no lo trata como un editor viejo. Un renglón Ilimitado va sin cantidad (la pone el SERVIDOR).
+ */
+internal fun renglonesDelPaquete(items: List<ArticlesViewModel.CreditPackItemInput>): JsonArray = buildJsonArray {
+    items.filter { it.productId.isNotEmpty() }.forEach { item ->
+        add(buildJsonObject {
+            put("productId", item.productId)
+            if (!item.unlimited) put("quantity", item.quantity)
+            put("unlimited", item.unlimited)
+        })
     }
 }

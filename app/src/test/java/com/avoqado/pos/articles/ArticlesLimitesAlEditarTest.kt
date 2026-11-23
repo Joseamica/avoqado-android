@@ -16,6 +16,7 @@ import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -95,6 +96,29 @@ class ArticlesLimitesAlEditarTest {
     @Test
     fun `editar un paquete con dias de validez los manda`() = runTest {
         assertEquals("30", paqueteAlEditar(validityDays = 30)["validityDays"]?.toString())
+    }
+
+    @Test
+    fun `P1 editar un paquete con un Ilimitado manda unlimited en cada renglon y el Ilimitado sin cantidad (D679 W4)`() = runTest {
+        val payload = slot<String>()
+        coEvery { repository.updateCreditPack("pack-1", capture(payload)) } returns true
+        createViewModel().updateCreditPack(
+            packId = "pack-1",
+            name = "Mensual",
+            price = 1500.0,
+            validityDays = 30,
+            active = true,
+            items = listOf(
+                ArticlesViewModel.CreditPackItemInput(productId = "lagree", quantity = 99_999, unlimited = true),
+                ArticlesViewModel.CreditPackItemInput(productId = "shake", quantity = 2),
+            ),
+        )
+        advanceUntilIdle()
+
+        val renglones = Json.parseToJsonElement(payload.captured).jsonObject["items"]!!.jsonArray.map { it.jsonObject }
+        assertEquals(listOf("true", "false"), renglones.map { it["unlimited"].toString() })
+        assertFalse("quantity" in renglones[0])
+        assertEquals("2", renglones[1]["quantity"].toString())
     }
 
     @Test
