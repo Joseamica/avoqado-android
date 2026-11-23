@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import com.avoqado.pos.articles.data.ArticlesRepository
 import com.avoqado.pos.articles.data.model.ArticleModifier
 import com.avoqado.pos.articles.data.model.ArticleSection
+import com.avoqado.pos.articles.data.model.CreditPackItem
 import com.avoqado.pos.articles.data.model.DiscountScope
 import com.avoqado.pos.articles.data.model.DiscountType
 import com.avoqado.pos.articles.data.model.PriceType
@@ -809,7 +810,8 @@ class ArticlesViewModel @Inject constructor(
         validityDays: Int? = null,
         maxPerCustomer: Int? = null,
         active: Boolean,
-        items: List<CreditPackItemInput>,
+        /** Null = la persona no tocó los renglones: no se mandan y el SERVIDOR conserva los suyos ([renglonesSiCambiaron]). */
+        items: List<CreditPackItemInput>?,
         onResult: (Boolean) -> Unit = {},
     ) {
         viewModelScope.launch {
@@ -824,7 +826,7 @@ class ArticlesViewModel @Inject constructor(
                     // Vacío = sin límite: va `null` explícito porque, sin el campo, el servidor deja el límite que tenía.
                     put("maxPerCustomer", maxPerCustomer)
                     put("active", active)
-                    put("items", renglonesDelPaquete(items))
+                    if (items != null) put("items", renglonesDelPaquete(items))
                 }.toString()
                 repository.clearError()
                 val success = repository.updateCreditPack(packId, payload)
@@ -909,3 +911,14 @@ internal fun renglonesDelPaquete(items: List<ArticlesViewModel.CreditPackItemInp
         })
     }
 }
+
+/**
+ * D679 (Codex android r1 #1): al editar, los renglones viajan SÓLO si la persona cambió alguno, como en el DASHBOARD. Si no, va
+ * `null` y el SERVIDOR conserva los suyos: así un formulario abierto antes de que el panel volviera Ilimitado el paquete (o al
+ * revés) no manda la marca vieja que leyó al abrir.
+ */
+internal fun renglonesSiCambiaron(
+    leidos: List<CreditPackItem>?,
+    actuales: List<ArticlesViewModel.CreditPackItemInput>,
+): List<ArticlesViewModel.CreditPackItemInput>? =
+    actuales.takeIf { it != leidos.orEmpty().map { r -> ArticlesViewModel.CreditPackItemInput(r.productId, r.quantity, r.unlimited) } }

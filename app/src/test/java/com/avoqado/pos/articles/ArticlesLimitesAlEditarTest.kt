@@ -3,6 +3,7 @@ package com.avoqado.pos.articles
 import com.avoqado.pos.MainDispatcherRule
 import com.avoqado.pos.articles.data.ArticlesRepository
 import com.avoqado.pos.articles.presentation.ArticlesViewModel
+import com.avoqado.pos.articles.presentation.renglonesSiCambiaron
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.domain.PlanManager
 import io.mockk.coEvery
@@ -20,6 +21,7 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
@@ -119,6 +121,36 @@ class ArticlesLimitesAlEditarTest {
         assertEquals(listOf("true", "false"), renglones.map { it["unlimited"].toString() })
         assertFalse("quantity" in renglones[0])
         assertEquals("2", renglones[1]["quantity"].toString())
+    }
+
+    @Test
+    fun `P1 editar sin tocar los renglones no manda items y el SERVIDOR conserva los suyos (D679 Codex r1 1)`() = runTest {
+        val payload = slot<String>()
+        coEvery { repository.updateCreditPack("pack-1", capture(payload)) } returns true
+        createViewModel().updateCreditPack(packId = "pack-1", name = "Otro nombre", price = 1500.0, active = true, items = null)
+        advanceUntilIdle()
+
+        assertFalse("items" in Json.parseToJsonElement(payload.captured).jsonObject)
+    }
+
+    @Test
+    fun `los renglones se mandan solo si la persona cambio alguno (D679 Codex r1 1)`() {
+        val leidos = listOf(
+            com.avoqado.pos.articles.data.model.CreditPackItem(id = "i1", productId = "lagree", quantity = 5),
+            com.avoqado.pos.articles.data.model.CreditPackItem(id = "i2", productId = "shake", quantity = 2),
+        )
+        val iguales = listOf(
+            ArticlesViewModel.CreditPackItemInput("lagree", 5),
+            ArticlesViewModel.CreditPackItemInput("shake", 2),
+        )
+        // Sin cambios: el formulario abierto antes de que el panel lo volviera Ilimitado no manda su `false` viejo.
+        assertNull(renglonesSiCambiaron(leidos, iguales))
+        // Cambió una cantidad, quitó o agregó un renglón: se mandan todos.
+        val otraCantidad = listOf(ArticlesViewModel.CreditPackItemInput("lagree", 6), iguales[1])
+        assertEquals(otraCantidad, renglonesSiCambiaron(leidos, otraCantidad))
+        assertEquals(iguales.take(1), renglonesSiCambiaron(leidos, iguales.take(1)))
+        val conOtro = iguales + ArticlesViewModel.CreditPackItemInput("agua", 1)
+        assertEquals(conOtro, renglonesSiCambiaron(leidos, conOtro))
     }
 
     @Test

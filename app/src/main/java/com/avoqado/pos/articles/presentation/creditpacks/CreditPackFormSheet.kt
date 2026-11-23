@@ -44,6 +44,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.avoqado.pos.articles.data.model.CreditPack
 import com.avoqado.pos.articles.presentation.ArticlesViewModel
+import com.avoqado.pos.articles.presentation.renglonesSiCambiaron
 import com.avoqado.pos.articles.presentation.coupons.soloDigitosDeLimite
 import com.avoqado.pos.designsystem.components.AvoqadoFullScreenModal
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
@@ -133,7 +134,7 @@ fun CreditPackFormSheet(
                     validityDays = validityDays.toIntOrNull(),
                     maxPerCustomer = maxPerCustomer.toIntOrNull(),
                     active = active,
-                    items = packItems,
+                    items = renglonesSiCambiaron(pack.items, packItems),
                     onResult = handle,
                 )
             } else {
