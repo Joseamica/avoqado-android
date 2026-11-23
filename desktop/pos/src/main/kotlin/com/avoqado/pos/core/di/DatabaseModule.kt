@@ -98,4 +98,7 @@ object DatabaseModule {
     @Provides
     fun provideSalesNoticeDao(database: AvoqadoDatabase): com.avoqado.pos.sync.data.SalesNoticeDao = database.salesNoticeDao()
 
+    @Provides
+    fun provideCobrosEnMaquinaDao(database: AvoqadoDatabase): com.avoqado.pos.maquina.CobroEnMaquinaDao = database.cobrosEnMaquinaDao()
+
 }

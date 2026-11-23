@@ -156,6 +156,24 @@ data class AssociatedRefundData(
  * `null`, así que «llave ausente» y «llave nula» ya significaban lo mismo. Lo fija
  * `RefundRequestJsonTest`.
  */
+/**
+ * Rediseño del SERVIDOR (D5): lo que esta entrada no admite (`400 NO_ADMITIDO_EN_ESTA_ENTRADA`) trae a dónde ir en `details.dondeIr`;
+ * se agrega al texto del SERVIDOR para que el cajero sepa qué hacer. Cualquier otro rechazo queda igual.
+ */
+internal fun mensajeDelRechazoDeReembolso(mensaje: String, code: String?, cuerpo: String): String {
+    if (code != "NO_ADMITIDO_EN_ESTA_ENTRADA") return mensaje
+    val destinos = runCatching { org.json.JSONObject(cuerpo).optJSONObject("details")?.optJSONArray("dondeIr") }.getOrNull() ?: return mensaje
+    val textos = (0 until destinos.length()).mapNotNull { DONDE_IR[destinos.optString(it)] }
+    return if (textos.isEmpty()) mensaje else "$mensaje Hazlo ${textos.joinToString(" o ")}."
+}
+
+private val DONDE_IR = mapOf(
+    "POS" to "desde el POS",
+    "PANEL" to "desde el panel",
+    "MISMO_MEDIO" to "por el mismo medio del cobro",
+    "SALDO_A_FAVOR" to "a saldo a favor",
+)
+
 internal val jsonReembolsos = Json {
     ignoreUnknownKeys = true
     encodeDefaults = true
@@ -249,7 +267,8 @@ class RefundRepository @Inject constructor(
             } else {
                 Log.e(TAG, "❌ Associated refund failed: $code - $responseBody")
                 val error = runCatching { jsonReembolsos.decodeFromString<AssociatedRefundResponse>(responseBody) }.getOrNull()
-                Result.failure(RefundApiException(code, error?.message ?: "Error $code", error?.code, delServidor))
+                val mensaje = mensajeDelRechazoDeReembolso(error?.message ?: "Error $code", error?.code, responseBody)
+                Result.failure(RefundApiException(code, mensaje, error?.code, delServidor))
             }
         } catch (e: Exception) {
             Log.e(TAG, "❌ Associated refund error: ${e.message}")

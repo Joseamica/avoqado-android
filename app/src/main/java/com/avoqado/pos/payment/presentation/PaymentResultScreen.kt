@@ -2,7 +2,9 @@ package com.avoqado.pos.payment.presentation
 
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -147,6 +149,11 @@ fun PaymentResultScreen(
      * paso (`onDone`). En vez de «Venta nueva», que no lo sugiere, va un botón que lo dice.
      */
     entregarTarjeta: Boolean = false,
+    /**
+     * E1 (recorrido real de la máquina, el FAIL): lo que la máquina le quedó a deber al cliente, con su folio («Te debemos $X de cambio…» o
+     * «Revisar en el panel»). Sin esto la pantalla sólo decía «$280.00 Efectivo» y, sin papel, el cliente se iba sin saberlo.
+     */
+    avisoDeLaMaquina: String? = null,
 ) {
     var showWhatsAppInput by remember { mutableStateOf(false) }
     var whatsAppPhoneDigits by remember { mutableStateOf("") }
@@ -197,7 +204,7 @@ fun PaymentResultScreen(
                         color = MaterialTheme.colorScheme.onSurface,
                         textDecoration = TextDecoration.Underline,
                         modifier = Modifier
-                            .clickable(onClick = onDone)
+                            .salidaConDobleClic(LocalEsEscritorio.current, onClick = onDone)
                             .padding(vertical = AvoqadoTheme.spacing.xs),
                     )
                     TeclaDeAtajo("Esc", Modifier.padding(start = AvoqadoTheme.spacing.sm))
@@ -239,6 +246,8 @@ fun PaymentResultScreen(
                 SincronizacionDelCobro.NINGUNA -> null
                 SincronizacionDelCobro.PENDIENTE ->
                     Triple(Icons.Filled.CloudOff, Warning, "Se sincronizará cuando haya conexión")
+                SincronizacionDelCobro.REGISTRANDO ->
+                    Triple(Icons.Filled.Info, com.avoqado.pos.designsystem.theme.Info, "Registrando la venta…")
                 SincronizacionDelCobro.SINCRONIZADA ->
                     Triple(Icons.Filled.CheckCircle, com.avoqado.pos.designsystem.theme.Success, "Venta sincronizada")
                 SincronizacionDelCobro.RECHAZADA ->
@@ -307,6 +316,8 @@ fun PaymentResultScreen(
                     color = Success,
                 )
             }
+
+            avisoDeLaMaquina?.let { com.avoqado.pos.maquina.ui.AvisoDeLaDeuda(it) }
 
             if (entregarTarjeta) {
                 Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))
@@ -389,6 +400,7 @@ fun PaymentResultScreen(
                         icon = rememberVectorPainter(Icons.Filled.Block),
                         title = "Sin recibo",
                         onClick = onDone,
+                        esSalida = true,
                     )
                     HorizontalDivider(modifier = Modifier.padding(start = 48.dp))
                 }
@@ -683,6 +695,16 @@ private fun WhatsAppReceiptDialog(
     }
 }
 
+/**
+ * D20 (WINDOWS): «Sin recibo» y «Venta nueva» cierran esta pantalla al primer clic, y el 2.º clic de un doble clic caía en la
+ * venta nueva («+ Nota» del Teclado abría «Agregar nota»). En Windows el botón se queda el doble clic y sale una vez; el clic
+ * suelto espera lo que dura un doble clic (~0.3 s). En Android, el clic de siempre.
+ */
+@OptIn(ExperimentalFoundationApi::class)
+private fun Modifier.salidaConDobleClic(enWindows: Boolean, enabled: Boolean = true, onClick: () -> Unit): Modifier =
+    if (enWindows) combinedClickable(enabled = enabled, onDoubleClick = onClick, onClick = onClick)
+    else clickable(enabled = enabled, onClick = onClick)
+
 // MARK: - Receipt Option Row (matching iOS)
 
 @Composable
@@ -693,6 +715,8 @@ private fun ReceiptOptionRow(
     enabled: Boolean = true,
     /** D2: a la derecha, en ámbar (p. ej. «Sin impresora · Configurar»). */
     detalle: String? = null,
+    /** D20: cierra esta pantalla («Sin recibo»): en Windows se queda con el doble clic. */
+    esSalida: Boolean = false,
 ) {
     val contentColor = if (enabled) {
         MaterialTheme.colorScheme.onSurfaceVariant
@@ -707,7 +731,10 @@ private fun ReceiptOptionRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(enabled = enabled, onClick = onClick)
+            .then(
+                if (esSalida) Modifier.salidaConDobleClic(LocalEsEscritorio.current, enabled, onClick)
+                else Modifier.clickable(enabled = enabled, onClick = onClick),
+            )
             .padding(vertical = AvoqadoTheme.spacing.md),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.md),

@@ -37,6 +37,14 @@ import com.avoqado.pos.designsystem.components.AvoqadoModalBottomSheet
 
 import com.avoqado.pos.designsystem.components.CantidadTecleable
 import com.avoqado.pos.designsystem.components.CircleBackButton
+import com.avoqado.pos.designsystem.components.HojaConAtajo
+import com.avoqado.pos.designsystem.components.LocalEsEscritorio
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.material.icons.automirrored.filled.NoteAdd
 import androidx.compose.material.icons.filled.AttachMoney
 import androidx.compose.material.icons.filled.CardGiftcard
@@ -242,6 +250,14 @@ private fun ProductDetailContent(
         group.required && selectedModifiers.count { it.groupId == group.id } < (group.minSelections ?: 1)
     }.map { it.name }
     val canAddToCart = missingRequiredGroups.isEmpty()
+
+    // D20 (WINDOWS): Esc cierra la ficha; en Cortesía, Precio, Descuentos o Motivo regresa a la ficha, como su flecha. Con una
+    // nota abierta, Esc es de la nota (NoteSubView). Es la barrera del panel: con él encima, F12 y F3 de la venta esperan.
+    if (currentSubView != DetailSubView.NOTE && currentSubView != DetailSubView.NOTA_DE_PARTE) {
+        HojaConAtajo(Key.Escape, activo = true) {
+            if (currentSubView == DetailSubView.MAIN) onDismiss() else currentSubView = DetailSubView.MAIN
+        }
+    }
 
     Box(modifier = Modifier.fillMaxSize()) {
         // Animated content switching between main view and sub-views
@@ -822,8 +838,25 @@ private fun SubViewHeader(
  * se saltaban (D5, mesas40). Un emoji son dos `Char`: el corte nunca deja media pareja suelta.
  */
 internal fun notaConNotaRapida(actual: String, chip: String, max: Int): String {
+    // D20: la nota rápida se prende y se apaga: si ya está, el toque la quita (antes se repetía: «Sin cebolla, Sin cebolla»).
+    if (tieneNotaRapida(actual, chip)) return partesDeLaNota(actual).filterNot { it.equals(chip, ignoreCase = true) }.joinToString(", ")
     val nota = (if (actual.isBlank()) chip else "$actual, $chip").take(max)
     return if (nota.isNotEmpty() && nota.last().isHighSurrogate()) nota.dropLast(1) else nota
+}
+
+private fun partesDeLaNota(nota: String) = nota.split(",").map { it.trim() }.filter { it.isNotEmpty() }
+
+internal fun tieneNotaRapida(nota: String, chip: String) = partesDeLaNota(nota).any { it.equals(chip, ignoreCase = true) }
+
+/**
+ * D20: la nota es de una línea (así sale en el ticket y en la cocina): Enter, o un salto pegado, no entra. Sin saltos el valor
+ * pasa tal cual, con la composición del teclado en pantalla intacta.
+ */
+internal fun sinSaltos(v: TextFieldValue): TextFieldValue {
+    fun esSalto(c: Char) = c == '\n' || c == '\r'
+    if (v.text.none(::esSalto)) return v
+    fun antes(i: Int) = v.text.take(i).count(::esSalto)
+    return TextFieldValue(v.text.filterNot(::esSalto), TextRange(v.selection.start - antes(v.selection.start), v.selection.end - antes(v.selection.end)))
 }
 
 @OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
@@ -840,8 +873,16 @@ internal fun NoteSubView(
     title: String = "Nota del artículo",
     ayuda: String = "Agrega una nota para este artículo. Se mostrará en el ticket y en la cocina.",
 ) {
-    var text by remember { mutableStateOf(currentNote) }
+    // D20: el cursor empieza al final de la nota que ya tenía (con el foco solo, quedaba al principio).
+    var campo by remember { mutableStateOf(TextFieldValue(currentNote, TextRange(currentNote.length))) }
+    val text = campo.text
     val maxChars = 200
+    // D20 (WINDOWS): se escribe sin darle clic al campo. En Android no: el teclado en pantalla saldría encima de las notas rápidas.
+    val foco = remember { FocusRequester() }
+    if (LocalEsEscritorio.current) LaunchedEffect(Unit) { foco.requestFocus() }
+    // D20 (WINDOWS): Esc = la flecha de regresar, salvo con texto SIN GUARDAR: ahí no cierra ni lo borra (D10: la nota no se
+    // pierde por accidente). Es la barrera del panel mientras la nota está abierta.
+    HojaConAtajo(Key.Escape, activo = text == currentNote, accion = onBack)
     val quickNotes = listOf(
         "Sin hielo", "Extra caliente", "Sin azúcar",
         "Para llevar", "Sin cebolla", "Extra picante",
@@ -876,11 +917,12 @@ internal fun NoteSubView(
             Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
 
             OutlinedTextField(
-                value = text,
-                onValueChange = { if (it.length <= maxChars) text = it },
+                value = campo,
+                onValueChange = { nuevo -> sinSaltos(nuevo).let { if (it.text.length <= maxChars) campo = it } },
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(120.dp),
+                    .height(120.dp)
+                    .focusRequester(foco),
                 placeholder = { Text("Escribe una nota...") },
             )
 
@@ -908,16 +950,21 @@ internal fun NoteSubView(
                 verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm),
             ) {
                 quickNotes.forEach { chip ->
+                    // D20: prendida (ya está en la nota) se ve invertida, y otro toque la quita.
+                    val puesta = tieneNotaRapida(text, chip)
                     Text(
                         text = chip,
                         style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurface,
+                        color = if (puesta) MaterialTheme.colorScheme.surface else MaterialTheme.colorScheme.onSurface,
                         modifier = Modifier
                             .background(
-                                MaterialTheme.colorScheme.surfaceVariant,
+                                if (puesta) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.surfaceVariant,
                                 RoundedCornerShape(AvoqadoTheme.cornerRadius.lg),
                             )
-                            .clickable { text = notaConNotaRapida(text, chip, maxChars) }
+                            .clickable {
+                                val nueva = notaConNotaRapida(text, chip, maxChars)
+                                campo = TextFieldValue(nueva, TextRange(nueva.length))
+                            }
                             .padding(
                                 horizontal = AvoqadoTheme.spacing.md,
                                 vertical = AvoqadoTheme.spacing.sm,

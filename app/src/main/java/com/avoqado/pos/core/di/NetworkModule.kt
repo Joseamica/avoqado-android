@@ -108,21 +108,26 @@ object NetworkModule {
 }
 
 /**
- * El log de red de depuración (en release no registra nada). 🔴 Tapa los dos headers que valen algo por sí solos: la sesión y la
- * autorización del gerente, que en un retiro vive 7 días (Codex r3 #11). Y la del descuento del cliente, que vive 7 días y viaja en
- * el CUERPO de la venta (`autorizacionDelDescuento`, D2): la tapa en el texto que se registra, así vale para todo cliente que nace
- * del compartido (crear la venta, «Pagar después», `pay-new-order` y la cola sin red).
+ * El log de red de depuración (en release no registra nada). 🔴 Tapa los headers que valen algo por sí solos: la sesión, la
+ * autorización del gerente, que en un retiro vive 7 días (Codex r3 #11), y la credencial de la máquina de efectivo (Codex código r1 #18:
+ * una copia del registro no puede llevarse lo que DPAPI guarda cifrado). Y lo que viaja en el CUERPO: la autorización del descuento del
+ * cliente (vive 7 días, D2) y la credencial que entrega el emparejamiento de la máquina. Se tapa en el texto que se registra, así vale
+ * para todo cliente que nace del compartido.
  */
 internal fun registroDeRed(
     depuracion: Boolean,
     logger: HttpLoggingInterceptor.Logger = HttpLoggingInterceptor.Logger.DEFAULT,
-): HttpLoggingInterceptor = HttpLoggingInterceptor { linea -> logger.log(taparAutorizacionDelDescuento(linea)) }.apply {
+): HttpLoggingInterceptor = HttpLoggingInterceptor { linea -> logger.log(taparSecretosDelCuerpo(linea)) }.apply {
     redactHeader("Authorization")
     redactHeader(ForbiddenInterceptor.PERMISSION_OVERRIDE_HEADER)
+    redactHeader(com.avoqado.pos.maquina.CierresDeLaMaquinaApi.CREDENCIAL)
     level = if (depuracion) HttpLoggingInterceptor.Level.BODY else HttpLoggingInterceptor.Level.NONE
 }
 
-private val AUTORIZACION_DEL_DESCUENTO = Regex("(\"autorizacionDelDescuento\"\\s*:\\s*)\"(?:[^\"\\\\]|\\\\.)*\"")
+/** Los campos del cuerpo que no se registran nunca (su valor de texto se tapa). */
+private val SECRETOS_DEL_CUERPO = listOf("autorizacionDelDescuento", "credential")
+private val SECRETO_DEL_CUERPO =
+    Regex("(\"(?:${SECRETOS_DEL_CUERPO.joinToString("|")})\"\\s*:\\s*)\"(?:[^\"\\\\]|\\\\.)*\"")
 
-private fun taparAutorizacionDelDescuento(linea: String): String =
-    if ("autorizacionDelDescuento" !in linea) linea else AUTORIZACION_DEL_DESCUENTO.replace(linea, "$1\"██\"")
+private fun taparSecretosDelCuerpo(linea: String): String =
+    if (SECRETOS_DEL_CUERPO.none { it in linea }) linea else SECRETO_DEL_CUERPO.replace(linea, "$1\"██\"")

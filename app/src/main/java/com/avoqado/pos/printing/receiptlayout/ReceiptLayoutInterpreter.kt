@@ -17,12 +17,43 @@ object ReceiptLayoutInterpreter {
     private const val AVOQADO_MARK_WIDTH_PCT = 15
 
     fun interpret(blocks: List<ReceiptBlock>, input: ReceiptInput, width: Int): List<LogicalLine> =
-        if (input.sale.kind == "EXCHANGE") {
-            // Required exchange evidence survives a venue recipe that hides sale blocks or digital QR.
+        if (input.sale.kind == "EXCHANGE" || input.sale.kind == KIND_COMPROBANTE_DE_LA_MAQUINA) {
+            // Required exchange evidence survives a venue recipe that hides sale blocks or digital QR. El comprobante de la máquina
+            // (C7) tampoco es una venta: sólo el encabezado del negocio, su evidencia y la firma.
             blocks.filter { it is ReceiptBlock.Logo || it is ReceiptBlock.BusinessName || it is ReceiptBlock.Fiscal ||
                 it is ReceiptBlock.Address || it is ReceiptBlock.Phone }.flatMap { render(it, input, width) } +
-                exchangeLines(input, width) + blocks.filterIsInstance<ReceiptBlock.Signature>().flatMap { render(it, input, width) }
+                (if (input.sale.kind == "EXCHANGE") exchangeLines(input, width) else comprobanteDeLaMaquina(input, width)) +
+                blocks.filterIsInstance<ReceiptBlock.Signature>().flatMap { render(it, input, width) }
         } else preBillLines(input, width) + blocks.flatMap { render(it, input, width) }
+
+    /** C7 (R3#11, R5#9): lo que la máquina le debe al cliente, con el MISMO folio de la venta. Reimprimible. */
+    private fun comprobanteDeLaMaquina(input: ReceiptInput, width: Int): List<LogicalLine> {
+        val m = requireNotNull(input.sale.cashMachine)
+        fun row(label: String, value: String) = T.twoColumnLines(label, value, width).map { text(it) }
+        return T.wrap(T.force(m.title ?: L.COMPROBANTE_DE_LA_MAQUINA), width).map { text(it, Align.CENTER, bold = true) } +
+            row(L.FOLIO, T.force(m.referenceCC)) +
+            row(L.FECHA, ReceiptFormat.dateTime(input.sale.occurredAt, input.sale.timezone)) +
+            // Codex código POS r4 #10: la copia se marca como cualquier ticket: la misma deuda no se presenta dos veces como original.
+            (input.sale.reprint?.let { row(L.REIMPRESION, ReceiptFormat.dateTime(it.printedAt, input.sale.timezone)) } ?: emptyList()) +
+            (m.owedCents?.takeIf { it > 0L }?.let { T.wrap("Te debemos ${ReceiptFormat.money(it)}: pasa a caja a cobrarlo", width).map { l -> text(l, bold = true) } }
+                ?: emptyList()) +
+            revisarEnElPanel(m, width) +
+            T.wrap("${L.COBRADO_EN_LA_MAQUINA} ${T.force(m.referenceCC)}", width).map { text(it) }
+    }
+
+    /** C7: el pago de un cobro de la máquina: dónde se cobró, si el precio está por confirmar (sin red, R5#9) y lo que se debe. */
+    private fun pagoEnLaMaquina(m: ReceiptCashMachine, width: Int): List<LogicalLine> =
+        T.wrap("${L.COBRADO_EN_LA_MAQUINA} ${T.force(m.referenceCC)}", width).map { text(it) } +
+            (if (m.priceToConfirm) T.wrap(L.PRECIO_POR_CONFIRMAR, width).map { text(it) } else emptyList()) +
+            (m.owedCents?.takeIf { it > 0L }?.let { debe ->
+                T.wrap("Te debemos ${ReceiptFormat.money(debe)} de cambio: pasa a caja a cobrarlo · Folio ${T.force(m.referenceCC)}", width)
+                    .map { text(it, bold = true) }
+            } ?: emptyList()) +
+            revisarEnElPanel(m, width)
+
+    /** Decisión C (Codex código POS r6): lo que dijo la máquina no cuadra; ni deuda ni cambio en papel hasta que lo decida el panel. */
+    private fun revisarEnElPanel(m: ReceiptCashMachine, width: Int): List<LogicalLine> =
+        if (m.revisarEnElPanel) T.wrap(L.REVISAR_EN_EL_PANEL, width).map { text(it, bold = true) } else emptyList()
 
     private fun exchangeLines(input: ReceiptInput, width: Int): List<LogicalLine> {
         val e = requireNotNull(input.sale.exchange)
@@ -206,6 +237,7 @@ object ReceiptLayoutInterpreter {
         if (t.kind == "CASH") {
             t.tenderedCents?.let { lines += row(L.RECIBIDO, ReceiptFormat.money(it)) }
             if (block.showChange && (t.changeCents ?: 0L) > 0L) lines += row(L.CAMBIO, ReceiptFormat.money(t.changeCents!!), bold = true)
+            input.sale.cashMachine?.let { lines += pagoEnLaMaquina(it, width) }
         }
         return lines
     }

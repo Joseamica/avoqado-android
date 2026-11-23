@@ -361,6 +361,8 @@ data class ReceiptData(
     val exchange: com.avoqado.pos.printing.receiptlayout.ReceiptExchange? = null,
     /** La etiqueta del renglón del pago; `null` = «Pago:». La reimpresión de una devolución a saldo dice «Devuelto con:». */
     val paymentRowLabel: String? = null,
+    /** C7: el cobro de la máquina de efectivo (su referencia, lo que se le debe y si el precio está por confirmar). */
+    val cashMachine: com.avoqado.pos.printing.receiptlayout.ReceiptCashMachine? = null,
 ) {
     val isCashPayment: Boolean
         get() = paymentMethod == "Efectivo"

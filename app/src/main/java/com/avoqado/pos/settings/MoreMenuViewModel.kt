@@ -61,6 +61,8 @@ class MoreMenuViewModel @Inject constructor(
     private val pendingGrantQueue: com.avoqado.pos.customers.data.PendingGrantQueue? = null,
     /** Retiro con gerente: la cola del cajón también bloquea el cambio de usuario. Default para las pruebas que lo construyen a mano. */
     private val cashDrawerRepository: com.avoqado.pos.cashdrawer.data.CashDrawerRepository? = null,
+    /** R5#2: los cobros de la máquina sin subir o en duda frenan el cambio de sucursal. Default para las pruebas que lo construyen a mano. */
+    private val cobrosEnMaquinaDao: com.avoqado.pos.maquina.CobroEnMaquinaDao? = null,
 ) : ViewModel() {
 
     // MARK: - Pedidos en línea (A3)
@@ -183,6 +185,10 @@ class MoreMenuViewModel @Inject constructor(
     val canAccessKDS: Boolean
         get() = roleManager.canAccessKDS
 
+    /** R5#10: la fila «Máquina de efectivo» de Ajustes (sólo WINDOWS) se abre con el permiso de la SESIÓN, sin PIN de gerente. */
+    val puedeConfigurarMaquina: Boolean
+        get() = roleManager.canConfigureCashMachine
+
     /**
      * Effective reservations availability: local toggle AND plan gate, so a
      * stale local toggle can't surface reservation entries (waitlist, mode
@@ -265,7 +271,9 @@ class MoreMenuViewModel @Inject constructor(
                 (pendingGrantQueue?.bloqueantes(currentVenueId) ?: 0) +
                 // Retiro con gerente (H6): la cola del cajón sólo se manda con SU sucursal activa; cambiar dejaría el retiro atrás y,
                 // tras un cambio de persona, saldría a nombre de otra.
-                (currentVenueId?.let { cashDrawerRepository?.movimientosSinSubir(it) } ?: 0)
+                (currentVenueId?.let { cashDrawerRepository?.movimientosSinSubir(it) } ?: 0) +
+                // R5#2: un cobro de la máquina sube con SU sucursal y la credencial de esta PC; cambiar lo dejaría atrás.
+                (currentVenueId?.let { cobrosEnMaquinaDao?.pendientes(it) } ?: 0)
             // D34: lo rechazado frena igual, pero el texto dice qué hacer según quién puede resolverlo.
             val rechazadas = if (blocking > 0) {
                 com.avoqado.pos.auth.presentation.rechazadasPorRevisar(paymentSyncService, syncOutbox, pendingGrantQueue, currentVenueId)

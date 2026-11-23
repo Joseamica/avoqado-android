@@ -23,8 +23,10 @@ class CreadoresDeCuentaDeMostradorTest {
             "com/avoqado/pos/giftcards/presentation/VenderTarjetaViewModel.kt:cobrar:vender" to "DIARIO",
             "com/avoqado/pos/payment/presentation/PaymentFlowViewModel.kt:cobrarConSaldo:cobrarNuevaCuenta" to "DIARIO",
             "com/avoqado/pos/payment/presentation/PaymentFlowViewModel.kt:confirmPayment:createOrder" to "C1_C2",
-            "com/avoqado/pos/payment/presentation/PaymentFlowViewModel.kt:processCashPayment:createOrder" to "C1_C2",
-            "com/avoqado/pos/payment/presentation/PaymentFlowViewModel.kt:processCashPayment:recordFastCashPayment" to "T10",
+            // Máquina de efectivo (C5): `processCashPayment` primero revisa que la venta no espere a la máquina; el cobro sigue igual en
+            // `processCashPaymentRevisado`.
+            "com/avoqado/pos/payment/presentation/PaymentFlowViewModel.kt:processCashPaymentRevisado:createOrder" to "C1_C2",
+            "com/avoqado/pos/payment/presentation/PaymentFlowViewModel.kt:processCashPaymentRevisado:recordFastCashPayment" to "T10",
             "com/avoqado/pos/payment/presentation/PaymentFlowViewModel.kt:materializeAreaTicketCheckout:materialize" to "T10",
             // «Pagar después» de develop (27-oct): sin premio la venta sale del carrito ANTES de mandarse; con premio se queda y se marca.
             "com/avoqado/pos/pos/presentation/cart/CartViewModel.kt:pagarDespues:createPayLaterOrder" to "C3",

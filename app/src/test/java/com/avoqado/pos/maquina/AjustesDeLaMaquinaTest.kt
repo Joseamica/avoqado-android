@@ -1,0 +1,293 @@
+package com.avoqado.pos.maquina
+
+import android.content.Context
+import android.content.SharedPreferences
+import com.avoqado.pos.core.data.local.SecureStorage
+import com.avoqado.pos.core.data.network.ForbiddenInterceptor
+import com.avoqado.pos.core.domain.RoleManager
+import io.mockk.every
+import io.mockk.mockk
+import kotlinx.coroutines.runBlocking
+import okhttp3.OkHttpClient
+import okhttp3.Response
+import okhttp3.WebSocket
+import okhttp3.WebSocketListener
+import okhttp3.mockwebserver.MockResponse
+import okhttp3.mockwebserver.MockWebServer
+import org.json.JSONObject
+import org.junit.After
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Test
+import java.io.IOException
+import java.net.ServerSocket
+
+/**
+ * C6 (R5#2, R5#3, R5#10): lo que la hoja «Máquina de efectivo» necesita sin pantalla — la IP, las preferencias del aparato,
+ * el permiso de la sesión, el freno de los cobros sin subir, «Probar conexión» y la llamada de emparejamiento.
+ */
+class AjustesDeLaMaquinaTest {
+
+    private val servidor = MockWebServer()
+    private val okHttp = OkHttpClient()
+
+    @After
+    fun apagar() {
+        runCatching { servidor.shutdown() }
+        okHttp.dispatcher.executorService.shutdown()
+        okHttp.connectionPool.evictAll()
+    }
+
+    // MARK: - IP
+
+    @Test
+    fun `la IP de la maquina es una IPv4 escrita como la pide el servidor`() {
+        listOf("192.168.1.50", " 10.0.0.7 ", "0.0.0.0", "255.255.255.255").forEach { assertTrue(it, esIpv4(it)) }
+        listOf(
+            "", "192.168.1", "192.168.1.256", "192.168.01.5", "a.b.c.d", "192.168.1.50:8080", "1.2.3.4.5", "::1",
+            "192.168.1.-1", "192.168..1", "１９２.168.1.1",
+        ).forEach { assertFalse(it, esIpv4(it)) }
+    }
+
+    // MARK: - Preferencias del aparato
+
+    @Test
+    fun `las preferencias guardan la IP y si la maquina esta activa, y otra instancia las lee`() {
+        val contexto = contextoConPreferencias()
+        val prefs = MaquinaDeEfectivoPrefs(contexto)
+        assertNull(prefs.ip)
+        assertFalse(prefs.activa)
+
+        prefs.guardar("192.168.1.50", activa = true, venueId = "venue-1", nombreDeLaSucursal = "La Galeterie Centro")
+
+        val otra = MaquinaDeEfectivoPrefs(contexto)
+        assertEquals("192.168.1.50", otra.ip)
+        assertTrue(otra.activa)
+        assertEquals("venue-1" to "La Galeterie Centro", otra.venueId to otra.nombreDeLaSucursal)
+        assertTrue("Codex código r1 #10: activa en SU sucursal", otra.activaEn("venue-1"))
+        assertFalse("y no en otra", otra.activaEn("venue-2"))
+        otra.guardar("192.168.1.50", activa = false)
+        assertFalse(MaquinaDeEfectivoPrefs(contexto).activa)
+        assertEquals("apagar no olvida la sucursal", "venue-1", MaquinaDeEfectivoPrefs(contexto).venueId)
+    }
+
+    // MARK: - Permiso (R5#10)
+
+    @Test
+    fun `configurar la maquina pide cash-machine configure de la sesion, sin override de PIN`() {
+        val storage = mockk<SecureStorage>()
+        val roles = RoleManager(storage)
+        every { storage.userRole } returns "CASHIER"
+        every { storage.venuePermissions } returns listOf("payments:create", "cash-machine:configure")
+        assertTrue(roles.canConfigureCashMachine)
+        every { storage.venuePermissions } returns listOf("payments:create", "payment:create-manual")
+        assertFalse(roles.canConfigureCashMachine)
+        every { storage.venuePermissions } returns listOf("cash-machine:*")
+        assertTrue(roles.canConfigureCashMachine)
+    }
+
+    @Test
+    fun `sin la lista de permisos el respaldo es gerente para arriba`() {
+        val storage = mockk<SecureStorage>()
+        val roles = RoleManager(storage)
+        every { storage.venuePermissions } returns emptyList()
+        listOf("MANAGER", "ADMIN", "OWNER", "SUPERADMIN").forEach {
+            every { storage.userRole } returns it
+            assertTrue(it, roles.canConfigureCashMachine)
+        }
+        listOf("CASHIER", "WAITER").forEach {
+            every { storage.userRole } returns it
+            assertFalse(it, roles.canConfigureCashMachine)
+        }
+    }
+
+    // MARK: - Freno (R5#2): el MISMO SQL que compila Room
+
+    @Test
+    fun `P1 frenan los intentos abiertos, las dudas y los cierres sin acuse, y nada mas`() = runBlocking {
+        CobroEnMaquinaSobreSqlite().use { dao ->
+            assertFalse(dao.hayPendientesDeLaMaquina())
+            dao.insertar(fila("AQ000000000001", EstadoDelIntento.PAGADO, subido = true))
+            dao.insertar(fila("AQ000000000002", EstadoDelIntento.CANCELADO, subido = true))
+            dao.insertar(fila("AQ000000000003", EstadoDelIntento.GUARDADO, subido = true))
+            // Codex código POS r4 #4: lo resuelto cuya evidencia ya tiene el SERVIDOR no frena.
+            dao.insertar(fila("AQ000000000004", EstadoDelIntento.RESUELTO, dudaSubida = true))
+            // Codex código r2 H8: el cierre cuyo folio es de OTRA PC tiene su incidencia en el SERVIDOR: no frena (ni la sesión ni la máquina).
+            dao.insertar(fila("AQ000000000007", EstadoDelIntento.PAGADO).copy(conflicto = "otra PC", respuestaServidor = "{}"))
+            // Codex código r3 #3: tampoco la duda que el SERVIDOR atribuye a OTRA PC (409 OTRA_PC con su incidencia).
+            dao.insertar(fila("AQ000000000006", EstadoDelIntento.ESPERANDO, dudaSubida = true).copy(conflicto = "otra PC", respuestaServidor = OTRA_PC))
+            // Codex código POS r4 #5: la duda que el SERVIDOR guardó como incidencia (422 con `incidentId`) ya es suya: no frena.
+            dao.insertar(fila("AQ000000000009", EstadoDelIntento.ESPERANDO, dudaSubida = true).copy(conflicto = "imposible", respuestaServidor = IMPOSIBLE))
+            assertEquals(0, dao.pendientes(null))
+            assertEquals(0, dao.pendientes("venue-1"))
+            assertFalse("Codex código r3 #3: se puede desemparejar y cambiar la IP", dao.hayPendientesDeLaMaquina())
+
+            val frenan = listOf(
+                fila("AQ00000000000A", EstadoDelIntento.EN_CURSO),
+                fila("AQ00000000000B", EstadoDelIntento.ESPERANDO).copy(conflicto = "400 sin incidencia"),   // el SERVIDOR no la tiene
+                fila("AQ00000000000C", EstadoDelIntento.ESPERANDO),
+                // Codex código r3 #2: una duda PROPIA que el SERVIDOR ya acusó sigue abierta: frena salir, igual que desemparejar.
+                fila("AQ000000000005", EstadoDelIntento.ESPERANDO, dudaSubida = true),
+                fila("AQ000000000008", EstadoDelIntento.ESPERANDO, dudaSubida = true).copy(conflicto = "otra evidencia", respuestaServidor = "{}"),
+                fila("AQ00000000000D", EstadoDelIntento.PAGADO),
+                fila("AQ00000000000E", EstadoDelIntento.CANCELADO),
+                fila("AQ00000000000F", EstadoDelIntento.GUARDADO, venue = "venue-2"),
+                // Codex código POS r4 #4: evidencia que llegó después de resolver y que sólo está en esta PC.
+                fila("AQ00000000000G", EstadoDelIntento.RESUELTO),
+                // …y la evidencia NUEVA de un folio de OTRA PC o de una incidencia 422, hasta que se entregue.
+                fila("AQ00000000000H", EstadoDelIntento.ESPERANDO).copy(conflicto = "otra PC", respuestaServidor = OTRA_PC),
+                fila("AQ00000000000J", EstadoDelIntento.ESPERANDO).copy(conflicto = "imposible", respuestaServidor = IMPOSIBLE),
+            )
+            frenan.forEachIndexed { i, f ->
+                dao.insertar(f)
+                assertEquals(f.estado, i + 1, dao.pendientes(null))
+            }
+            assertTrue(dao.hayPendientesDeLaMaquina())
+            assertEquals("por sucursal", 10, dao.pendientes("venue-1"))
+            assertEquals(1, dao.pendientes("venue-2"))
+            assertEquals(0, dao.pendientes("venue-3"))
+        }
+    }
+
+    // MARK: - Probar conexión
+
+    @Test
+    fun `probar conexion dice que si cuando la maquina manda su sockets`() = runBlocking {
+        servidor.enqueue(MockResponse().withWebSocketUpgrade(object : WebSocketListener() {
+            override fun onOpen(webSocket: WebSocket, response: Response) {
+                webSocket.send(SOCKETS)
+            }
+        }))
+        servidor.start()
+
+        assertTrue(probarConexion(servidor.hostName, okHttp, puerto = servidor.port))
+    }
+
+    @Test
+    fun `P1 con una IP que no contesta dice que no a los 5 s, no despues`() = runBlocking {
+        val puertoCerrado = ServerSocket(0).use { it.localPort }
+        val inicio = System.currentTimeMillis()
+
+        assertFalse(probarConexion("127.0.0.1", okHttp, puerto = puertoCerrado))
+
+        val tardo = System.currentTimeMillis() - inicio
+        assertTrue("tardó $tardo ms", tardo in 4_900L..5_600L)
+    }
+
+    @Test
+    fun `un servidor que acepta pero nunca manda sockets no cuenta como maquina`() = runBlocking {
+        servidor.enqueue(MockResponse().withWebSocketUpgrade(object : WebSocketListener() {}))
+        servidor.start()
+
+        assertFalse(probarConexion(servidor.hostName, okHttp, puerto = servidor.port, plazoMs = 600))
+    }
+
+    // MARK: - Emparejamiento con el SERVIDOR
+
+    @Test
+    fun `emparejar manda la IP a la sucursal activa y devuelve la credencial`() = runBlocking {
+        servidor.enqueue(MockResponse().setResponseCode(201).setBody("""{"success":true,"bindingId":"b1","credential":"cred-1"}"""))
+        servidor.start()
+
+        val emparejado = emparejamiento().emparejar("192.168.1.50").getOrThrow()
+
+        assertEquals("r6-6: con el emparejamiento que congela cada cobro", Emparejado("cred-1", "venue-1", "La Galeterie", bindingId = "b1"), emparejado)
+        val pedido = servidor.takeRequest()
+        assertEquals("POST", pedido.method)
+        assertEquals("/api/v1/mobile/venues/venue-1/cash-machine/binding", pedido.path)
+        assertEquals("192.168.1.50", JSONObject(pedido.body.readUtf8()).getString("machineIp"))
+        // El 403 lo explica la hoja: nunca el diálogo de PIN de gerente (R5#10).
+        assertEquals("1", pedido.getHeader(ForbiddenInterceptor.LOCAL_ERROR_HEADER))
+    }
+
+    @Test
+    fun `desemparejar manda DELETE a la sucursal activa`() = runBlocking {
+        servidor.enqueue(MockResponse().setBody("""{"success":true,"revoked":true}"""))
+        servidor.start()
+
+        assertTrue(emparejamiento().desemparejar().isSuccess)
+
+        val pedido = servidor.takeRequest()
+        assertEquals("DELETE", pedido.method)
+        assertEquals("/api/v1/mobile/venues/venue-1/cash-machine/binding", pedido.path)
+        assertEquals("1", pedido.getHeader(ForbiddenInterceptor.LOCAL_ERROR_HEADER))
+    }
+
+    @Test
+    fun `sin permiso el servidor responde 403 y se le pide a un gerente que entre con su PIN`() = runBlocking {
+        servidor.enqueue(MockResponse().setResponseCode(403).setBody("""{"message":"Forbidden"}"""))
+        servidor.start()
+
+        val falla = emparejamiento().emparejar("192.168.1.50").exceptionOrNull()
+
+        assertEquals(TEXTO_SIN_PERMISO, falla?.message)
+    }
+
+    @Test
+    fun `recorte R1 con cobros de la maquina sin terminar el servidor no empareja otra PC ni desempareja, y la hoja lo dice claro`() = runBlocking {
+        val aMedias = MockResponse().setResponseCode(409).setBody(
+            """{"message":"La máquina tiene cobros sin terminar.","code":"CASH_MACHINE_FOLIOS_PENDING","details":{"count":2,"folios":[{"referenceCC":"AQ000000000001","kind":"ESPERANDO"}]}}""",
+        )
+        servidor.enqueue(aMedias)
+        servidor.enqueue(aMedias)
+        servidor.start()
+
+        assertEquals(TEXTO_FOLIOS_SIN_TERMINAR, emparejamiento().emparejar("192.168.1.50").exceptionOrNull()?.message)
+        assertEquals(TEXTO_FOLIOS_SIN_TERMINAR_AL_DESEMPAREJAR, emparejamiento().desemparejar().exceptionOrNull()?.message)
+    }
+
+    @Test
+    fun `sin red la falla es de red, para que la hoja diga que hace falta internet`() = runBlocking {
+        servidor.start()
+        val repo = emparejamiento()
+        servidor.shutdown()
+
+        assertTrue(repo.emparejar("192.168.1.50").exceptionOrNull() is IOException)
+        assertTrue(repo.desemparejar().exceptionOrNull() is IOException)
+    }
+
+    private fun emparejamiento() = EmparejamientoDeLaMaquina(
+        mockk {
+            every { venueId } returns "venue-1"
+            every { venueName } returns "La Galeterie"
+        },
+        okHttp,
+    ).apply { baseUrl = servidor.url("/api/v1").toString().trimEnd('/') }
+
+    companion object {
+        const val SOCKETS = """{"comando":"sockets","cobrando":false,"Due":0,"Credit":0,"changeBar":"022210221000"}"""
+
+        /** El 409 `OTRA_PC` con su incidencia, como lo guarda la subida en `respuestaServidor`. */
+        const val OTRA_PC = """{"message":"Este folio es de otra PC","code":"CASH_MACHINE_DOUBT_CONFLICT","details":{"motivo":"OTRA_PC","deviceId":"la-otra-pc","incidentId":"cinc000000000000000000009"}}"""
+
+        /** Codex código POS r4 #5: el 422 de una duda que el SERVIDOR sólo pudo guardar como incidencia (no abrió duda). */
+        const val IMPOSIBLE = """{"message":"El adeudo de esta duda no lo puede cobrar la máquina","code":"CASH_MACHINE_CLOSE_IMPOSSIBLE","details":{"incidentId":"cinc000000000000000000012"}}"""
+
+        fun fila(
+            ref: String,
+            estado: String,
+            subido: Boolean = false,
+            dudaSubida: Boolean = false,
+            venue: String = "venue-1",
+        ) = CobroEnMaquinaEntity(
+            ref, venue, "venta-$ref", "{}", 18_000, 0, 18_000, null, null, creadoEn = 1, estado = estado,
+            subido = subido, dudaSubida = dudaSubida,
+        )
+
+        /** `SharedPreferences` en un mapa (patrón `KdsPrefsTest`): sin Robolectric. */
+        fun contextoConPreferencias(): Context {
+            val guardado = mutableMapOf<String, Any?>()
+            val editor = mockk<SharedPreferences.Editor>()
+            val prefs = mockk<SharedPreferences>()
+            every { prefs.getString(any(), any()) } answers { guardado[firstArg<String>()] as String? ?: secondArg<String?>() }
+            every { prefs.getBoolean(any(), any()) } answers { guardado[firstArg<String>()] as Boolean? ?: secondArg<Boolean>() }
+            every { prefs.edit() } returns editor
+            every { editor.putString(any(), any()) } answers { guardado[firstArg<String>()] = secondArg<String?>(); editor }
+            every { editor.putBoolean(any(), any()) } answers { guardado[firstArg<String>()] = secondArg<Boolean>(); editor }
+            every { editor.commit() } returns true
+            return mockk { every { getSharedPreferences(MaquinaDeEfectivoPrefs.NOMBRE, Context.MODE_PRIVATE) } returns prefs }
+        }
+    }
+}
