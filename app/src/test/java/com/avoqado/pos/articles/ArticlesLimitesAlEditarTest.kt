@@ -3,6 +3,7 @@ package com.avoqado.pos.articles
 import com.avoqado.pos.MainDispatcherRule
 import com.avoqado.pos.articles.data.ArticlesRepository
 import com.avoqado.pos.articles.presentation.ArticlesViewModel
+import com.avoqado.pos.articles.presentation.renglonesSiCambiaron
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.domain.PlanManager
 import io.mockk.coEvery
@@ -16,9 +17,11 @@ import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
@@ -95,6 +98,59 @@ class ArticlesLimitesAlEditarTest {
     @Test
     fun `editar un paquete con dias de validez los manda`() = runTest {
         assertEquals("30", paqueteAlEditar(validityDays = 30)["validityDays"]?.toString())
+    }
+
+    @Test
+    fun `P1 editar un paquete con un Ilimitado manda unlimited en cada renglon y el Ilimitado sin cantidad (D679 W4)`() = runTest {
+        val payload = slot<String>()
+        coEvery { repository.updateCreditPack("pack-1", capture(payload)) } returns true
+        createViewModel().updateCreditPack(
+            packId = "pack-1",
+            name = "Mensual",
+            price = 1500.0,
+            validityDays = 30,
+            active = true,
+            items = listOf(
+                ArticlesViewModel.CreditPackItemInput(productId = "lagree", quantity = 99_999, unlimited = true),
+                ArticlesViewModel.CreditPackItemInput(productId = "shake", quantity = 2),
+            ),
+        )
+        advanceUntilIdle()
+
+        val renglones = Json.parseToJsonElement(payload.captured).jsonObject["items"]!!.jsonArray.map { it.jsonObject }
+        assertEquals(listOf("true", "false"), renglones.map { it["unlimited"].toString() })
+        assertFalse("quantity" in renglones[0])
+        assertEquals("2", renglones[1]["quantity"].toString())
+    }
+
+    @Test
+    fun `P1 editar sin tocar los renglones no manda items y el SERVIDOR conserva los suyos (D679 Codex r1 1)`() = runTest {
+        val payload = slot<String>()
+        coEvery { repository.updateCreditPack("pack-1", capture(payload)) } returns true
+        createViewModel().updateCreditPack(packId = "pack-1", name = "Otro nombre", price = 1500.0, active = true, items = null)
+        advanceUntilIdle()
+
+        assertFalse("items" in Json.parseToJsonElement(payload.captured).jsonObject)
+    }
+
+    @Test
+    fun `los renglones se mandan solo si la persona cambio alguno (D679 Codex r1 1)`() {
+        val leidos = listOf(
+            com.avoqado.pos.articles.data.model.CreditPackItem(id = "i1", productId = "lagree", quantity = 5),
+            com.avoqado.pos.articles.data.model.CreditPackItem(id = "i2", productId = "shake", quantity = 2),
+        )
+        val iguales = listOf(
+            ArticlesViewModel.CreditPackItemInput("lagree", 5),
+            ArticlesViewModel.CreditPackItemInput("shake", 2),
+        )
+        // Sin cambios: el formulario abierto antes de que el panel lo volviera Ilimitado no manda su `false` viejo.
+        assertNull(renglonesSiCambiaron(leidos, iguales))
+        // Cambió una cantidad, quitó o agregó un renglón: se mandan todos.
+        val otraCantidad = listOf(ArticlesViewModel.CreditPackItemInput("lagree", 6), iguales[1])
+        assertEquals(otraCantidad, renglonesSiCambiaron(leidos, otraCantidad))
+        assertEquals(iguales.take(1), renglonesSiCambiaron(leidos, iguales.take(1)))
+        val conOtro = iguales + ArticlesViewModel.CreditPackItemInput("agua", 1)
+        assertEquals(conOtro, renglonesSiCambiaron(leidos, conOtro))
     }
 
     @Test

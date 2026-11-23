@@ -24,6 +24,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.avoqado.pos.articles.data.model.textoDelSaldo
 import com.avoqado.pos.customers.presentation.CustomerCreditsViewModel
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 
@@ -48,7 +49,7 @@ fun CartCreditsCard(
     // créditos. Si el server dice que no, se cuenta abajo, en esta tarjeta.
     LaunchedEffect(customerId) { viewModel.load(customerId, background = true) }
 
-    val items = balances.flatMap { it.itemBalances }
+    val items = balances.flatMap { compra -> compra.itemBalances.map { compra to it } }
     if (items.isEmpty() && loadError) {
         // Fetch failed: without this the card vanished, making "network error"
         // identical to "customer has no credits".
@@ -82,7 +83,7 @@ fun CartCreditsCard(
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            items.forEach { item ->
+            items.forEach { (compra, item) ->
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(top = AvoqadoTheme.spacing.sm),
                     verticalAlignment = Alignment.CenterVertically,
@@ -95,7 +96,7 @@ fun CartCreditsCard(
                             color = MaterialTheme.colorScheme.onSurface,
                         )
                         Text(
-                            text = "${item.remainingQuantity} disponibles",
+                            text = compra.textoDelSaldo(item, conTotal = false),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )

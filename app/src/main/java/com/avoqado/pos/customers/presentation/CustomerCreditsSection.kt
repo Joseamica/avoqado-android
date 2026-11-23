@@ -39,6 +39,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.avoqado.pos.articles.data.model.CreditBalanceItem
 import com.avoqado.pos.articles.data.model.CreditPack
+import com.avoqado.pos.articles.data.model.textoDelSaldo
 import com.avoqado.pos.customers.data.model.Customer
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 
@@ -114,7 +115,7 @@ fun CustomerCreditsSection(
                                         color = MaterialTheme.colorScheme.onSurface,
                                     )
                                     Text(
-                                        text = "${item.remainingQuantity} de ${item.originalQuantity} disponibles",
+                                        text = purchase.textoDelSaldo(item),
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     )
@@ -135,7 +136,8 @@ fun CustomerCreditsSection(
     showRedeemConfirm?.let { item ->
         AvoqadoDialog(
             title = "Canjear crédito",
-            description = "Se descontará 1 de ${item.productName}. Esta acción no se puede deshacer.",
+            description = if (item.unlimited) "Se registrará 1 uso del Ilimitado de ${item.productName}. Esta acción no se puede deshacer."
+            else "Se descontará 1 de ${item.productName}. Esta acción no se puede deshacer.",
             onDismiss = { showRedeemConfirm = null },
             actionButton = {
                 PrimaryButton(text = "Canjear", onClick = {
@@ -241,7 +243,7 @@ private fun SellPackDialog(
                                     color = MaterialTheme.colorScheme.onSurface,
                                 )
                                 Text(
-                                    text = "${pack.creditCount} créditos · ${pack.displayPrice}",
+                                    text = "${pack.creditsLabel} · ${pack.displayPrice}",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
@@ -276,7 +278,10 @@ private fun SellPackDialog(
             onDismissRequest = { pendingPack = null },
             title = { Text("Vender paquete") },
             text = {
-                Text("Se otorgarán ${pack.creditCount} créditos a ${customer.fullName}. Cobra el pago antes de confirmar.")
+                Text(
+                    if (pack.isUnlimited) "Se otorgará un paquete Ilimitado a ${customer.fullName}. Cobra el pago antes de confirmar."
+                    else "Se otorgarán ${pack.creditCount} créditos a ${customer.fullName}. Cobra el pago antes de confirmar.",
+                )
             },
             confirmButton = {
                 TextButton(onClick = {

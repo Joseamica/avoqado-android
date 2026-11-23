@@ -1,9 +1,12 @@
 package com.avoqado.pos.articles.data.model
 
+import com.avoqado.pos.core.util.VenueDateTimeFormatter
+import com.avoqado.pos.core.util.VenueTimeZone
 import com.avoqado.pos.pos.presentation.product.inicialesDeTile
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.Transient
+import java.time.format.DateTimeFormatter
 import java.util.Locale
 
 // MARK: - Enums
@@ -331,9 +334,17 @@ data class CreditPack(
     val itemCount: Int
         get() = items?.size ?: 0
 
-    /** Total prepaid credits across all items (sum of quantities). */
+    /** Total prepaid credits across all items (sum of quantities). Con un Ilimitado suma su 99,999: no se enseña, usa [creditsLabel]. */
     val creditCount: Int
         get() = items?.sumOf { it.quantity } ?: 0
+
+    /** D679: algún renglón es Ilimitado (por dentro 99,999 con su marca, como Mindbody). */
+    val isUnlimited: Boolean
+        get() = items?.any { it.unlimited } == true
+
+    /** Lo que se enseña al vender (cuadrícula, carrito, ficha del cliente): «Ilimitado» o «5 créditos», nunca 99,999. */
+    val creditsLabel: String
+        get() = if (isUnlimited) "Ilimitado" else "$creditCount créditos"
 }
 
 @Serializable
@@ -342,6 +353,8 @@ data class CreditPackItem(
     val productId: String = "",
     val quantity: Int = 1,
     val product: CreditPackItemProduct? = null,
+    /** D679: renglón Ilimitado. Servidor viejo = sin la llave = normal. Se crea y se cambia en el DASHBOARD. */
+    val unlimited: Boolean = false,
 )
 
 @Serializable
@@ -372,8 +385,23 @@ data class CreditBalanceItem(
     val originalQuantity: Int = 0,
     val remainingQuantity: Int = 0,
     val product: CreditBalanceProduct? = null,
+    /** D679: saldo de un Ilimitado (99,999 por dentro). Copia la marca de lo vendido y nunca cambia. */
+    val unlimited: Boolean = false,
 ) {
     val productName: String get() = product?.name ?: "Servicio"
+}
+
+/**
+ * D679 (N28): lo que se enseña del saldo de un renglón. Un Ilimitado dice «Ilimitado · vence el 22 de diciembre» (la fecha en la
+ * zona del negocio, como el texto del SERVIDOR); uno normal, «3 de 5 disponibles» o, con [conTotal] en `false`, «3 disponibles».
+ */
+fun CreditPurchaseBalance.textoDelSaldo(item: CreditBalanceItem, conTotal: Boolean = true, timezone: String? = null): String {
+    if (!item.unlimited) {
+        return if (conTotal) "${item.remainingQuantity} de ${item.originalQuantity} disponibles" else "${item.remainingQuantity} disponibles"
+    }
+    val vence = VenueDateTimeFormatter.parseIso(expiresAt) ?: return "Ilimitado"
+    val fecha = VenueTimeZone.at(vence, timezone).format(DateTimeFormatter.ofPattern("d 'de' MMMM", VenueDateTimeFormatter.SPANISH_MX))
+    return "Ilimitado · vence el $fecha"
 }
 
 @Serializable

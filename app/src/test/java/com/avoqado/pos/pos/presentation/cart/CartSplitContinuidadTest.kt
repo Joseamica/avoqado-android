@@ -445,6 +445,37 @@ class CartSplitContinuidadTest {
         assertEquals("foto-al-agregar", tipo.saleProof)
     }
 
+    /** D679 (Codex android r1 #4): restaurar perdía el subtítulo de la línea del paquete («Ilimitado» o «N créditos»). */
+    private fun subtituloTrasGuardarYRecuperar(pack: com.avoqado.pos.articles.data.model.CreditPack): String? {
+        val vm = createViewModel()
+        vm.setSelectedCustomer("cust-ana", "Ana")
+        vm.addCreditPack(pack)
+        val guardado = io.mockk.slot<SavedCart>()
+        every { savedCartsRepository.saveCart(capture(guardado)) } returns true
+        assertTrue(vm.saveCurrentCart("Para luego"))
+
+        val otra = createViewModel()
+        otra.restoreSavedCart(guardado.captured)
+        return otra.cartState.value.items.single().subtitle
+    }
+
+    @Test
+    fun `P1 recuperar un carrito guardado conserva Ilimitado en la linea del paquete (D679)`() = runTest {
+        val ilimitado = membresia.copy(
+            name = "Mensual",
+            items = listOf(com.avoqado.pos.articles.data.model.CreditPackItem(id = "i1", productId = "lagree", quantity = 99_999, unlimited = true)),
+        )
+        assertEquals("Ilimitado", subtituloTrasGuardarYRecuperar(ilimitado))
+    }
+
+    @Test
+    fun `recuperar un carrito guardado conserva los creditos en la linea de un paquete normal (D679)`() = runTest {
+        val normal = membresia.copy(
+            items = listOf(com.avoqado.pos.articles.data.model.CreditPackItem(id = "i1", productId = "lagree", quantity = 10)),
+        )
+        assertEquals("10 créditos", subtituloTrasGuardarYRecuperar(normal))
+    }
+
     @Test
     fun `sin cola, capturar no impide cobrar`() = runTest {
         val vm = createViewModel()

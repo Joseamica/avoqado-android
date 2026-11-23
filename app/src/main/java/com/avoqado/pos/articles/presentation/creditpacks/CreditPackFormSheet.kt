@@ -44,6 +44,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.avoqado.pos.articles.data.model.CreditPack
 import com.avoqado.pos.articles.presentation.ArticlesViewModel
+import com.avoqado.pos.articles.presentation.renglonesSiCambiaron
 import com.avoqado.pos.articles.presentation.coupons.soloDigitosDeLimite
 import com.avoqado.pos.designsystem.components.AvoqadoFullScreenModal
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
@@ -55,6 +56,8 @@ private data class CreditPackItemState(
     val productId: String = "",
     val quantity: String = "1",
     val key: Long = System.nanoTime(),
+    /** D679: renglón Ilimitado. Aquí sólo se conserva (sin cantidad ni cambio de producto); se configura en el DASHBOARD. */
+    val unlimited: Boolean = false,
 )
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -85,6 +88,7 @@ fun CreditPackFormSheet(
                     productId = item.productId,
                     quantity = item.quantity.toString(),
                     key = item.id.hashCode().toLong(),
+                    unlimited = item.unlimited,
                 ))
             }
         }
@@ -118,6 +122,7 @@ fun CreditPackFormSheet(
                     ArticlesViewModel.CreditPackItemInput(
                         productId = it.productId,
                         quantity = it.quantity.toIntOrNull() ?: 1,
+                        unlimited = it.unlimited,
                     )
                 }
             if (isEditing) {
@@ -129,7 +134,7 @@ fun CreditPackFormSheet(
                     validityDays = validityDays.toIntOrNull(),
                     maxPerCustomer = maxPerCustomer.toIntOrNull(),
                     active = active,
-                    items = packItems,
+                    items = renglonesSiCambiaron(pack.items, packItems),
                     onResult = handle,
                 )
             } else {
@@ -293,6 +298,30 @@ private fun CreditPackItemRow(
     var expanded by remember { mutableStateOf(false) }
     val selectedProduct = remember(products, item.productId) {
         products.firstOrNull { it.id == item.productId }
+    }
+
+    // D679: un renglón Ilimitado no enseña su cantidad (99,999 por dentro) ni deja cambiar o quitar su producto: eso es del panel.
+    if (item.unlimited) {
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.xxs),
+        ) {
+            OutlinedTextField(
+                value = selectedProduct?.name ?: "",
+                onValueChange = {},
+                readOnly = true,
+                enabled = false,
+                label = { Text("Producto") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+            )
+            Text(
+                text = "Ilimitado (se configura en el panel)",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        return
     }
 
     Row(
