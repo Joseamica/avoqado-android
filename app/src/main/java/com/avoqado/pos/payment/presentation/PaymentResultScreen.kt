@@ -510,7 +510,8 @@ fun PaymentResultScreen(
 
     // Sin red (o venta aún sin sincronizar) al agregar cliente: ÁMBAR, no rojo — es un estado, no una falla.
     val esAvisoSinRed = resultMessage == TextosDelSello.SIN_RED_AL_AGREGAR_CLIENTE ||
-        resultMessage == TextosDelSello.VENTA_SIN_SINCRONIZAR
+        resultMessage == TextosDelSello.VENTA_SIN_SINCRONIZAR ||
+        resultMessage == TextosDelSello.COBRO_SIN_CONFIRMAR_AL_AGREGAR_CLIENTE // D14: también ámbar (Codex r1 #2)
     if (resultMessage != null && esAvisoSinRed) {
         AvoqadoWarningToast(
             message = resultMessage,

@@ -23,6 +23,31 @@ import org.junit.Test
  */
 class CardChargeDecisionTest {
 
+    // MARK: - D14: el pago que se puede ligar al agregar cliente (Codex r1 #1, 16-nov)
+
+    @Test
+    fun `P1 D14 pagoAcreditado sólo da el pago de un cobro COMPLETED`() {
+        assertEquals("pay-1", CardChargeDecision.pagoAcreditado(ChargeStatusProbe.Known("COMPLETED", false, paymentId = "pay-1")))
+    }
+
+    @Test
+    fun `P1 D14 un paymentId en una fila UNKNOWN, FAILED o en curso no se acepta`() {
+        listOf(
+            ChargeStatusProbe.Known("UNKNOWN", false, paymentId = "pay-viejo", outcome = "UNRESOLVED"),
+            ChargeStatusProbe.Known("FAILED", false, paymentId = "pay-viejo"),
+            ChargeStatusProbe.Known("SENT", true, paymentId = "pay-viejo"),
+            ChargeStatusProbe.Known("CANCELLED", false, paymentId = "pay-viejo", cancelDisposition = "ACCEPTED"),
+        ).forEach { probe -> assertEquals("$probe", null, CardChargeDecision.pagoAcreditado(probe)) }
+    }
+
+    @Test
+    fun `D14 sin pago, sin respuesta o 404 no hay pago que ligar`() {
+        assertEquals(null, CardChargeDecision.pagoAcreditado(ChargeStatusProbe.Known("COMPLETED", false, paymentId = null)))
+        assertEquals(null, CardChargeDecision.pagoAcreditado(ChargeStatusProbe.Known("COMPLETED", false, paymentId = " ")))
+        assertEquals(null, CardChargeDecision.pagoAcreditado(ChargeStatusProbe.Unreachable))
+        assertEquals(null, CardChargeDecision.pagoAcreditado(ChargeStatusProbe.NotFound))
+    }
+
     // MARK: - ¿Qué es un fallo de transporte?
 
     @Test

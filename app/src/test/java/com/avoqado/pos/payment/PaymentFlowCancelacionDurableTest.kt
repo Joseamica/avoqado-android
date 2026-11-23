@@ -489,6 +489,120 @@ class PaymentFlowCancelacionDurableTest {
         assertFalse(viewModel.debeSalir.value)
     }
 
+    // MARK: - Agregar cliente tras el cobro recuperado (D14, 16-nov)
+
+    /** El cobro sí pasó, pero la reconsulta no trajo su pago: «SÍ pasó» de la marca durable, sin `paymentId`. */
+    private fun cobroQueSiPasoSinPago() {
+        stubOrdenCreada()
+        cobroEnVuelo()
+        transporte.programarEstados(ChargeStatusProbe.Known("COMPLETED", false, paymentId = "pay-1"))
+        coEvery { terminalPaymentService.resolveOutcome("req-1") } returns TerminalPaymentResult.Success(requestId = "req-1")
+    }
+
+    private fun kotlinx.coroutines.test.TestScope.cancelarYRecuperar() {
+        cobrarConTarjeta()
+        advanceTimeBy(1_000)
+        viewModel.cancelarVenta()
+        advanceTimeBy(5_000)
+        runCurrent()
+        val estado = viewModel.state.value
+        assertTrue("premisa: la venta quedó pagada tras cancelar ($estado)", estado is PaymentFlowState.Success)
+        assertNull("premisa: la reconsulta no trajo el pago", (estado as PaymentFlowState.Success).paymentId)
+    }
+
+    @Test
+    fun `P1 D14 agregar cliente tras un cobro recuperado sin pago liga SU pago por su solicitud, nunca el ultimo del mismo importe`() = runTest {
+        cobroQueSiPasoSinPago()
+        coEvery { terminalPaymentService.pagoDelCobro("req-1") } returns "pay-1"
+        coEvery { orderRepository.attachCustomerToPayment("pay-1", "cm-dany") } returns Result.success(null)
+        cancelarYRecuperar()
+
+        viewModel.attachCustomerToCurrentPayment("cm-dany", "Dany")
+        advanceUntilIdle()
+
+        coVerify(exactly = 1) { orderRepository.attachCustomerToPayment("pay-1", "cm-dany") }
+        coVerify(exactly = 0) { orderRepository.attachCustomerToLatestPayment(any(), any(), any(), any()) }
+        assertEquals("Cliente agregado: Dany", viewModel.customerAttachResult.value)
+        assertFalse(viewModel.customerAttachSending.value)
+    }
+
+    @Test
+    fun `P1 D14 si todavia no se sabe el pago de ese cobro no se liga a ninguna venta y se dice`() = runTest {
+        cobroQueSiPasoSinPago()
+        coEvery { terminalPaymentService.pagoDelCobro("req-1") } returns null
+        cancelarYRecuperar()
+
+        viewModel.attachCustomerToCurrentPayment("cm-dany", "Dany")
+        advanceUntilIdle()
+
+        coVerify(exactly = 0) { orderRepository.attachCustomerToLatestPayment(any(), any(), any(), any()) }
+        coVerify(exactly = 0) { orderRepository.attachCustomerToPayment(any(), any()) }
+        assertEquals(com.avoqado.pos.loyalty.domain.TextosDelSello.COBRO_SIN_CONFIRMAR_AL_AGREGAR_CLIENTE, viewModel.customerAttachResult.value)
+        assertFalse("se puede volver a intentar", viewModel.customerAttachSending.value)
+    }
+
+    @Test
+    fun `D14 al segundo intento, con el pago ya conocido, se liga ese pago`() = runTest {
+        cobroQueSiPasoSinPago()
+        coEvery { terminalPaymentService.pagoDelCobro("req-1") } returnsMany listOf(null, "pay-1")
+        coEvery { orderRepository.attachCustomerToPayment("pay-1", "cm-dany") } returns Result.success(null)
+        cancelarYRecuperar()
+
+        viewModel.attachCustomerToCurrentPayment("cm-dany", "Dany")
+        advanceUntilIdle()
+        viewModel.attachCustomerToCurrentPayment("cm-dany", "Dany")
+        advanceUntilIdle()
+
+        coVerify(exactly = 1) { orderRepository.attachCustomerToPayment("pay-1", "cm-dany") }
+        coVerify(exactly = 0) { orderRepository.attachCustomerToLatestPayment(any(), any(), any(), any()) }
+        assertEquals("Cliente agregado: Dany", viewModel.customerAttachResult.value)
+    }
+
+    @Test
+    fun `D14 regresion - con el pago conocido tras cancelar se liga directo sin volver a preguntar`() = runTest {
+        stubOrdenCreada()
+        cobroEnVuelo()
+        transporte.programarEstados(ChargeStatusProbe.Known("COMPLETED", false, paymentId = "pay-1"))
+        coEvery { terminalPaymentService.resolveOutcome("req-1") } returns
+            TerminalPaymentResult.Success(paymentId = "pay-1", requestId = "req-1")
+        coEvery { orderRepository.attachCustomerToPayment("pay-1", "cm-dany") } returns Result.success(null)
+        cobrarConTarjeta()
+        advanceTimeBy(1_000)
+        viewModel.cancelarVenta()
+        advanceTimeBy(5_000)
+        runCurrent()
+
+        viewModel.attachCustomerToCurrentPayment("cm-dany", "Dany")
+        advanceUntilIdle()
+
+        coVerify(exactly = 1) { orderRepository.attachCustomerToPayment("pay-1", "cm-dany") }
+        coVerify(exactly = 0) { terminalPaymentService.pagoDelCobro(any()) }
+        coVerify(exactly = 0) { orderRepository.attachCustomerToLatestPayment(any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun `D14 la respuesta tardia de la consulta del pago no liga al cliente en la venta nueva`() = runTest {
+        cobroQueSiPasoSinPago()
+        coEvery { terminalPaymentService.pagoDelCobro("req-1") } coAnswers {
+            kotlinx.coroutines.delay(5_000)
+            "pay-1"
+        }
+        coEvery { orderRepository.attachCustomerToPayment("pay-1", "cm-dany") } returns Result.success(null)
+        cancelarYRecuperar()
+
+        viewModel.attachCustomerToCurrentPayment("cm-dany", "Dany")
+        runCurrent()
+        viewModel.startPaymentFlow(
+            CartState(items = listOf(CartItem(id = "line-b", type = CartItemType.ProductItem("prod-b"), name = "Café", unitPrice = 900))),
+        )
+        advanceUntilIdle()
+
+        // La liga de A sí puede salir (es SU pago), pero nada se pinta en la venta B.
+        coVerify(exactly = 0) { orderRepository.attachCustomerToLatestPayment(any(), any(), any(), any()) }
+        assertNull(viewModel.customerAttachResult.value)
+        assertNull(viewModel.attachedCustomerName.value)
+    }
+
     @Test
     fun `D9 si el cobro que si paso se confirma con otra venta en pantalla, no paga la venta nueva`() = runTest {
         stubOrdenCreada()

@@ -1026,6 +1026,13 @@ class TerminalPaymentService @Inject constructor(
     }
 
     /**
+     * D14 (16-nov): el pago que el servidor ACREDITA para esta solicitud (`COMPLETED` con `paymentId`), o null si no lo
+     * dice (sin red, 404, en curso, sin conciliar). Sólo LEE: no marca, no arma llaves ni toca la lista durable.
+     */
+    suspend fun pagoDelCobro(requestId: String): String? =
+        CardChargeDecision.pagoAcreditado(consultarEstado(requestId, venueId = null).probe)
+
+    /**
      * Averigua cómo terminó de verdad un cobro cuyo desenlace no consta, consultando el estado
      * durable hasta 3 veces. La decisión (cobró / no cobró / no se sabe) es de
      * [CardChargeDecision] — aquí sólo se hace la red y se traduce al resultado del flujo.
