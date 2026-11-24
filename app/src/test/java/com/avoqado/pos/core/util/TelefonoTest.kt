@@ -69,7 +69,7 @@ class TelefonoTest {
         var digitos = ""
         for (tecla in texto) {
             escrito = filtrarTecleoDelCampoConBandera(textoVisibleDelCampo(escrito, digitos, lada) + tecla)
-            digitos = digitosNacionales(escrito, lada)
+            digitos = digitosDelCampo(escrito, lada)   // lo mismo que entrega el campo (Codex r1 del 24-nov)
         }
         return digitos
     }

@@ -53,17 +53,13 @@ class TelefonoCompletoTest {
         assertEquals("+34612345678", digitosDelCampo("+34 612 345 678", "52"))
         assertEquals("+79123456789", digitosDelCampo("+7 912 345 67 89", "34"))   // en ES el rango la dejaba pasar
         assertFalse(telefonoCompleto("+79123456789", "34"))
-        assertEquals(
-            "El número trae otra lada: elige su país en la bandera o escríbelo sin lada",
-            avisoDelTelefono("+79123456789", "34", "España"),
-        )
+        assertEquals("Revisa la lada del número", avisoDelTelefono("+79123456789", "34", "España"))
     }
 
     @Test fun `P2 con la lada del pais o sin lada entrega lo mismo que antes`() {
         assertEquals("5591873922", digitosDelCampo("+52 55 9187 3922", "52"))
         assertEquals("5591873922", digitosDelCampo("55 9187 3922", "52"))
-        assertEquals("", digitosDelCampo("+", "52"))        // apenas empieza a escribir la lada: nada que avisar
-        assertEquals("", digitosDelCampo("(+", "52"))
+        assertEquals("", digitosDelCampo("", "52"))
     }
 
     @Test fun `P1 el aviso dice cuantos faltan o sobran`() {
@@ -74,6 +70,20 @@ class TelefonoCompletoTest {
         assertEquals("Sobra 1 dígito: un número de México lleva 10", avisoDelTelefono("55918739221", "52", "México"))
         assertEquals("Sobran 2 dígitos: un número de México lleva 10", avisoDelTelefono("559187392211", "52", "México"))
         assertEquals("Faltan 2 dígitos: un número de España lleva de 9 a 13", avisoDelTelefono("6123456", "34", "España"))
+    }
+
+    @Test fun `P1 Codex r1 lo que no se puede atribuir a este pais no pasa`() {
+        // La lada sola: antes llegaba vacío y Reservas guardaba sin teléfono con «+52» a la vista.
+        assertEquals("+", digitosDelCampo("+", "52"))
+        assertEquals("+", digitosDelCampo("(+", "52"))
+        assertEquals("+52", digitosDelCampo("+52", "52"))
+        assertEquals("+521", digitosDelCampo("+52 1", "52"))
+        assertFalse(telefonoCompleto(digitosDelCampo("+52", "52"), "52"))
+        // Un «+» que no va al principio: antes «.+7 912 345 67 89» con España pasaba como «+3479123456789».
+        assertEquals("+79123456789", digitosDelCampo(".+7 912 345 67 89", "34"))
+        assertFalse(telefonoCompleto(digitosDelCampo(".+7 912 345 67 89", "34"), "34"))
+        assertFalse(masBienPuesto(".+7 912"))
+        assertTrue(masBienPuesto("(+52) 55"))
     }
 
     @Test fun `P2 la lada escrita se lee para cambiar la bandera`() {

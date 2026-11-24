@@ -40,6 +40,8 @@ import androidx.compose.ui.unit.sp
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.core.util.avisoDelTelefono
 import com.avoqado.pos.core.util.digitosDelCampo
+import com.avoqado.pos.core.util.digitosNacionales
+import com.avoqado.pos.core.util.masBienPuesto
 import com.avoqado.pos.core.util.filtrarTecleoDelCampoConBandera
 import com.avoqado.pos.core.util.textoVisibleDelCampo
 
@@ -52,8 +54,10 @@ import com.avoqado.pos.core.util.textoVisibleDelCampo
  *
  * 🔴 Antes de mandar, quien lo usa revisa `telefonoCompleto(digits, country.dialCode)` (hz:nube0000:na519219): el campo
  * dejaba mandar «55918739221» con México. El campo dice debajo qué falta («Falta 1 dígito: un número de México lleva 10»).
- * Si la persona escribe con «+» otra lada, la bandera cambia sola a ese país; si esa lada no está en la lista, [digits]
- * llega como «+<dígitos>» y no pasa.
+ * Si la persona escribe o pega con «+» la lada de otro país de la lista, la bandera se la queda y el texto se queda con el
+ * número («+34 612 345 678» → 🇪🇸 «612345678»): lo que se ve es lo que se manda. Si después se borra todo, la bandera regresa
+ * a la de antes. Lo que no se puede atribuir (lada fuera de la lista, «+» fuera de lugar, la lada sin número) llega como
+ * «+<dígitos>» y no pasa. Reglas: [alEscribirEnElCampo] y [avisoDelCampo].
  *
  * Example:
  * ```
@@ -81,7 +85,9 @@ fun AvoqadoPhoneInput(
 ) {
     var showPicker by remember { mutableStateOf(false) }
     var escrito by remember { mutableStateOf(digits) }
-    val aviso = avisoDelTelefono(digits, country.dialCode, country.name)
+    // La bandera que había antes de que la tomara una lada escrita: vuelve si se borra todo (Codex r1 del 24-nov).
+    var paisAntes by remember { mutableStateOf<Country?>(null) }
+    val aviso = avisoDelCampo(textoVisibleDelCampo(escrito, digits, country.dialCode), country)
 
     Column(modifier = modifier.fillMaxWidth()) {
     Row(
@@ -155,11 +161,12 @@ fun AvoqadoPhoneInput(
                     // igual pegado que tecleado. Regla en core/util/Telefono.kt.
                     value = visible,
                     onValueChange = { nuevo ->
-                        escrito = filtrarTecleoDelCampoConBandera(nuevo)
                         // «+34 612…» con México elegido: la bandera pasa sola a España (antes salía a «+5234612…»).
-                        val pais = Countries.porLadaEscrita(escrito, country) ?: country
-                        if (pais != country) onCountryChange(pais)
-                        onDigitsChange(digitosDelCampo(escrito, pais.dialCode))
+                        val despues = alEscribirEnElCampo(nuevo, EstadoDelCampo(escrito, country, paisAntes))
+                        escrito = despues.escrito
+                        paisAntes = despues.paisAntes
+                        if (despues.pais != country) onCountryChange(despues.pais)
+                        onDigitsChange(digitosDelCampo(despues.escrito, despues.pais.dialCode))
                     },
                     singleLine = true,
                     enabled = enabled,
@@ -175,10 +182,10 @@ fun AvoqadoPhoneInput(
     }
     if (aviso != null) {
         Text(
-            text = aviso,
+            text = aviso.texto,
             style = MaterialTheme.typography.bodySmall,
-            // Mientras faltan dígitos es una guía; lo que sobra o la otra lada sí es un error.
-            color = if (aviso.startsWith("Falta")) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error,
+            // Mientras faltan dígitos o se escribe la lada es una guía; lo que sobra o la lada que no cuadra sí es un error.
+            color = if (aviso.esError) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(start = AvoqadoTheme.spacing.md, top = AvoqadoTheme.spacing.xxs),
         )
     }
@@ -192,12 +199,63 @@ fun AvoqadoPhoneInput(
                 // «5123456789» y al pasar a Alemania se mandaba «+495123456789» (Codex r3).
                 val visible = textoVisibleDelCampo(escrito, digits, country.dialCode)
                 escrito = visible
+                paisAntes = null   // la eligió la persona: ya no hay bandera «de antes» a la cual volver
                 onCountryChange(it)
                 onDigitsChange(digitosDelCampo(visible, it.dialCode))
                 showPicker = false
             },
             onDismiss = { showPicker = false },
         )
+    }
+}
+
+/** Lo que el campo recuerda entre teclazos: lo escrito, la bandera y la que había antes de que la tomara una lada. */
+internal data class EstadoDelCampo(val escrito: String, val pais: Country, val paisAntes: Country?)
+
+/**
+ * Un teclazo o un pegado en el campo. Si lo escrito empieza con «+<lada>» de otro país de la lista, la bandera pasa a ese
+ * país y el texto se queda con el número nacional (la lada ya la dice la bandera: así no se ve dos veces ni se queda
+ * pegada al borrar el «+», Codex r1 del 24-nov). Si se borra todo, la bandera regresa a la que había antes.
+ */
+internal fun alEscribirEnElCampo(nuevo: String, antes: EstadoDelCampo): EstadoDelCampo {
+    val escrito = filtrarTecleoDelCampoConBandera(nuevo)
+    val porLada = Countries.porLadaEscrita(escrito, antes.pais)
+    if (porLada != null) {
+        return EstadoDelCampo(
+            escrito = digitosNacionales(escrito, porLada.dialCode),
+            pais = porLada,
+            paisAntes = antes.paisAntes ?: antes.pais,
+        )
+    }
+    // Regresa sólo al BORRAR lo que había (antes había dígitos y ya no): tras tomar «+34» el texto queda vacío y el espacio
+    // que sigue («+34 612…» tecleado) no debe regresarla.
+    val borroTodo = antes.escrito.any { it in '0'..'9' } && escrito.none { it in '0'..'9' || it == '+' }
+    if (borroTodo && antes.paisAntes != null) {
+        return EstadoDelCampo(escrito, antes.paisAntes, null)
+    }
+    return antes.copy(escrito = escrito)
+}
+
+/** El aviso bajo el campo: qué le falta a lo escrito. [esError] = rojo; si no, gris de guía. */
+internal data class AvisoDelCampo(val texto: String, val esError: Boolean)
+
+internal fun avisoDelCampo(escrito: String, pais: Country): AvisoDelCampo? {
+    val digitos = digitosDelCampo(escrito, pais.dialCode)
+    if (digitos.isEmpty()) return null
+    if (!digitos.startsWith("+")) {
+        val texto = avisoDelTelefono(digitos, pais.dialCode, pais.name) ?: return null
+        return AvisoDelCampo(texto, esError = !texto.startsWith("Falta"))
+    }
+    val escritos = digitos.drop(1)
+    if (!masBienPuesto(escrito)) return AvisoDelCampo("El «+» sólo va al principio, antes de la lada", esError = true)
+    if (escritos.isEmpty()) return AvisoDelCampo("Escribe la lada y el número", esError = false)
+    if (escritos.startsWith(pais.dialCode)) return AvisoDelCampo("Escribe el número después de la lada", esError = false)
+    if (Countries.all.any { it.dialCode.startsWith(escritos) }) return AvisoDelCampo("Sigue escribiendo la lada", esError = false)
+    val otro = Countries.all.filter { escritos.startsWith(it.dialCode) }.maxByOrNull { it.dialCode.length }
+    return if (otro != null) {
+        AvisoDelCampo("El número trae la lada +${otro.dialCode} (${otro.name}): elige ese país en la bandera o quítala", esError = true)
+    } else {
+        AvisoDelCampo("La lada de ese número no está en la lista de países", esError = true)
     }
 }
 

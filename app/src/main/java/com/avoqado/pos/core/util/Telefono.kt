@@ -82,17 +82,24 @@ fun digitosNacionalesValidos(lada: String): IntRange =
     else maxOf(8, 11 - lada.length)..(15 - lada.length)
 
 /**
- * Lo que el campo con bandera le entrega a quien lo usa: los dígitos nacionales ([digitosNacionales]), salvo que la persona
- * escribió con «+» OTRA lada que la del país elegido (y la bandera no la pudo tomar sola, ver `Countries.porLadaEscrita`):
- * entonces «+» y sus dígitos, para que [telefonoCompleto] no lo acepte y [avisoDelTelefono] lo diga. Antes esos dígitos se
- * pegaban a la lada elegida: con México, «+34 612 345 678» salía a «+5234612345678» (hz:nube0000:na519219).
+ * Lo que el campo con bandera le entrega a quien lo usa: los dígitos nacionales ([digitosNacionales]) cuando lo escrito ya
+ * es un número de ESTE país. Si no lo es, «+» y los dígitos escritos, para que [telefonoCompleto] no lo acepte y el campo
+ * diga por qué (hz:nube0000:na519219, Codex r1):
+ * - «+» con OTRA lada (la bandera no la pudo tomar: no está en la lista, o se eligió otro país a mano). Antes esos dígitos
+ *   se pegaban a la lada elegida: con México, «+34 612 345 678» salía a «+5234612345678».
+ * - un «+» que no va al principio («.+7 912…»): antes se ignoraba y el número pasaba con la lada elegida.
+ * - la lada sola, sin número («+», «+52», «+52 1»): antes llegaba vacío y Reservas guardaba sin teléfono con «+52» a la vista.
  */
 fun digitosDelCampo(escrito: String, lada: String): String {
     val limpio = sinAdornos(escrito)
+    if ('+' !in limpio) return digitosNacionales(escrito, lada)
     val digitos = limpio.filter { it in '0'..'9' }
-    if (conLadaEscrita(limpio) && digitos.isNotEmpty() && !digitos.startsWith(lada)) return "+$digitos"
-    return digitosNacionales(escrito, lada)
+    if (masFueraDeLugar(limpio) || !digitos.startsWith(lada)) return "+$digitos"
+    return digitosNacionales(escrito, lada).ifEmpty { "+$digitos" }
 }
+
+/** El «+» de lo escrito va al principio (también «(+52)») y es uno solo. */
+fun masBienPuesto(escrito: String): Boolean = !masFueraDeLugar(sinAdornos(escrito))
 
 /** Los dígitos que siguen al «+» si la persona escribió la lada («+34 612…» → «34612…»); null sin «+» o sin dígitos. */
 fun ladaEscrita(escrito: String): String? {
@@ -107,7 +114,7 @@ fun ladaEscrita(escrito: String): String? {
  */
 fun avisoDelTelefono(digitos: String, lada: String, pais: String): String? {
     if (digitos.isEmpty()) return null
-    if (digitos.any { it !in '0'..'9' }) return "El número trae otra lada: elige su país en la bandera o escríbelo sin lada"
+    if (digitos.any { it !in '0'..'9' }) return "Revisa la lada del número"   // el campo lo dice con más detalle
     val rango = digitosNacionalesValidos(lada)
     val lleva = if (rango.first == rango.last) "${rango.first}" else "de ${rango.first} a ${rango.last}"
     return when {
