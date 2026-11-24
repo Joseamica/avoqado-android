@@ -85,8 +85,8 @@ fun digitosNacionalesValidos(lada: String): IntRange =
  * Lo que el campo con bandera le entrega a quien lo usa: los dígitos nacionales ([digitosNacionales]) cuando lo escrito ya
  * es un número de ESTE país. Si no lo es, «+» y los dígitos escritos, para que [telefonoCompleto] no lo acepte y el campo
  * diga por qué (hz:nube0000:na519219, Codex r1):
- * - «+» con OTRA lada (la bandera no la pudo tomar: no está en la lista, o se eligió otro país a mano). Antes esos dígitos
- *   se pegaban a la lada elegida: con México, «+34 612 345 678» salía a «+5234612345678».
+ * - «+» con OTRA lada: la bandera sólo la cambia la persona. Antes esos dígitos se pegaban a la lada elegida: con México,
+ *   «+34 612 345 678» salía a «+5234612345678».
  * - un «+» que no va al principio («.+7 912…»): antes se ignoraba y el número pasaba con la lada elegida.
  * - la lada sola, sin número («+», «+52», «+52 1»): antes llegaba vacío y Reservas guardaba sin teléfono con «+52» a la vista.
  */
@@ -100,13 +100,6 @@ fun digitosDelCampo(escrito: String, lada: String): String {
 
 /** El «+» de lo escrito va al principio (también «(+52)») y es uno solo. */
 fun masBienPuesto(escrito: String): Boolean = !masFueraDeLugar(sinAdornos(escrito))
-
-/** Los dígitos que siguen al «+» si la persona escribió la lada («+34 612…» → «34612…»); null sin «+» o sin dígitos. */
-fun ladaEscrita(escrito: String): String? {
-    val limpio = sinAdornos(escrito)
-    if (!conLadaEscrita(limpio)) return null
-    return limpio.filter { it in '0'..'9' }.ifEmpty { null }
-}
 
 /**
  * Qué le falta al número del campo con bandera, en una línea para enseñarla junto al campo; null si está completo o vacío.

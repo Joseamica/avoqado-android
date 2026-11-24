@@ -54,16 +54,4 @@ object Countries {
     val all: List<Country> = pinned + others.sortedBy { it.name }
 
     fun byIso(iso: String?): Country = all.firstOrNull { it.isoCode == iso?.uppercase() } ?: pinned[0]
-
-    /**
-     * El país cuya lada escribió la persona con «+» («+34 612…» → España), o null si no hay que cambiar la bandera: sin «+»,
-     * con la lada del país elegido (Canadá se queda Canadá con «+1»), o con una lada que no está en la lista (entonces el
-     * campo lo marca y [com.avoqado.pos.core.util.avisoDelTelefono] lo dice). Ninguna lada de la lista es el principio de
-     * otra, así que al teclear de uno en uno la bandera no salta antes de tiempo (prueba `PaisPorLadaEscritaTest`).
-     */
-    fun porLadaEscrita(escrito: String, actual: Country): Country? {
-        val digitos = com.avoqado.pos.core.util.ladaEscrita(escrito) ?: return null
-        if (digitos.startsWith(actual.dialCode)) return null
-        return all.filter { digitos.startsWith(it.dialCode) }.maxByOrNull { it.dialCode.length }
-    }
 }

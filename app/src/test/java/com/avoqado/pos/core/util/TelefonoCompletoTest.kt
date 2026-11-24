@@ -85,11 +85,4 @@ class TelefonoCompletoTest {
         assertFalse(masBienPuesto(".+7 912"))
         assertTrue(masBienPuesto("(+52) 55"))
     }
-
-    @Test fun `P2 la lada escrita se lee para cambiar la bandera`() {
-        assertEquals("34612345678", ladaEscrita("+34 612 345 678"))
-        assertEquals("52", ladaEscrita("(+52)"))
-        assertNull(ladaEscrita("612 345 678"))
-        assertNull(ladaEscrita("+"))
-    }
 }
