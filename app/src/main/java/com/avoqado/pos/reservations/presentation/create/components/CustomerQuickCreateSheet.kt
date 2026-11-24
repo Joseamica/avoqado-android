@@ -1,5 +1,6 @@
 package com.avoqado.pos.reservations.presentation.create.components
 
+import com.avoqado.pos.core.util.telefonoCompleto
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
@@ -58,7 +59,10 @@ fun CustomerQuickCreateSheet(
         viewModel.clearCustomerError()
     }
 
-    val canSubmit = firstName.isNotBlank() && (digits.isNotBlank() || email.isNotBlank())
+    // El teléfono es opcional si hay correo, pero si se escribe tiene que estar completo (hz:nube0000:na519219): antes un
+    // número de 9 u 11 dígitos se guardaba y el aviso de la reserva iba a un número que no existe.
+    val telefonoBien = digits.isEmpty() || telefonoCompleto(digits, country.dialCode)
+    val canSubmit = firstName.isNotBlank() && telefonoBien && (digits.isNotBlank() || email.isNotBlank())
 
     AvoqadoDialog(
         title = "Crear cliente",
@@ -74,6 +78,7 @@ fun CustomerQuickCreateSheet(
                 Text(
                     text = when {
                         firstName.isBlank() -> "Escribe al menos el nombre del cliente"
+                        !telefonoBien -> "Completa el teléfono o bórralo para crear el cliente"
                         else -> "Agrega un teléfono o un correo para poder avisarle"
                     },
                     style = MaterialTheme.typography.bodySmall,
@@ -84,7 +89,7 @@ fun CustomerQuickCreateSheet(
             PrimaryButton(
                 text = "Crear",
                 onClick = {
-                    val phoneE164 = if (digits.isNotBlank()) "+${country.dialCode}$digits" else null
+                    val phoneE164 = if (digits.isNotBlank() && telefonoBien) "+${country.dialCode}$digits" else null
                     viewModel.createCustomer(
                         request = CreateCustomerRequest(
                             firstName = firstName.trim().ifBlank { null },

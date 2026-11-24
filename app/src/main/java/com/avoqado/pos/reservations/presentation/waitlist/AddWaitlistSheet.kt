@@ -1,5 +1,6 @@
 package com.avoqado.pos.reservations.presentation.waitlist
 
+import com.avoqado.pos.core.util.telefonoCompleto
 import com.avoqado.pos.core.util.VenueTimeZone
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -84,7 +85,9 @@ fun AddWaitlistSheet(
     var showDatePicker by remember { mutableStateOf(false) }
     var showTimePicker by remember { mutableStateOf(false) }
 
-    val canSubmit = (isGuest && name.isNotBlank()) || (!isGuest && customerId != null)
+    // El teléfono del invitado es opcional, pero si se escribe tiene que estar completo (hz:nube0000:na519219).
+    val telefonoBien = phone.isEmpty() || telefonoCompleto(phone, country.dialCode)
+    val canSubmit = (isGuest && name.isNotBlank() && telefonoBien) || (!isGuest && customerId != null)
 
     AvoqadoDialog(
         title = "Agregar a la lista de espera",
@@ -95,7 +98,9 @@ fun AddWaitlistSheet(
                 // cliente esperando enfrente. Decirle qué falta cuesta una línea.
                 if (!canSubmit) {
                     Text(
-                        text = if (isGuest) {
+                        text = if (isGuest && name.isNotBlank()) {
+                            "Completa el teléfono o bórralo para agregarlo"
+                        } else if (isGuest) {
                             "Escribe el nombre del cliente para agregarlo"
                         } else {
                             "Busca y elige un cliente para agregarlo"
@@ -113,7 +118,7 @@ fun AddWaitlistSheet(
                         val req = AddToWaitlistRequest(
                             customerId = if (!isGuest) customerId else null,
                             guestName = if (isGuest) name else null,
-                            guestPhone = if (isGuest && phone.isNotBlank()) "+${country.dialCode}$phone" else null,
+                            guestPhone = if (isGuest && phone.isNotBlank() && telefonoBien) "+${country.dialCode}$phone" else null,
                             partySize = partySize,
                             desiredStartAt = iso,
                             notes = notes.ifBlank { null },

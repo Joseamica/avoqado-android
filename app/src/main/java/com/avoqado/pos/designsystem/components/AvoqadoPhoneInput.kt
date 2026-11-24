@@ -38,7 +38,8 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
-import com.avoqado.pos.core.util.digitosNacionales
+import com.avoqado.pos.core.util.avisoDelTelefono
+import com.avoqado.pos.core.util.digitosDelCampo
 import com.avoqado.pos.core.util.filtrarTecleoDelCampoConBandera
 import com.avoqado.pos.core.util.textoVisibleDelCampo
 
@@ -48,6 +49,11 @@ import com.avoqado.pos.core.util.textoVisibleDelCampo
  * Emits the raw digits (not the dial code) — the caller composes E.164 as
  * `"+${country.dialCode}${digits}"` when submitting. [country] tracks the
  * selected country so the caller can read the dial code.
+ *
+ * 🔴 Antes de mandar, quien lo usa revisa `telefonoCompleto(digits, country.dialCode)` (hz:nube0000:na519219): el campo
+ * dejaba mandar «55918739221» con México. El campo dice debajo qué falta («Falta 1 dígito: un número de México lleva 10»).
+ * Si la persona escribe con «+» otra lada, la bandera cambia sola a ese país; si esa lada no está en la lista, [digits]
+ * llega como «+<dígitos>» y no pasa.
  *
  * Example:
  * ```
@@ -75,9 +81,11 @@ fun AvoqadoPhoneInput(
 ) {
     var showPicker by remember { mutableStateOf(false) }
     var escrito by remember { mutableStateOf(digits) }
+    val aviso = avisoDelTelefono(digits, country.dialCode, country.name)
 
+    Column(modifier = modifier.fillMaxWidth()) {
     Row(
-        modifier = modifier
+        modifier = Modifier
             .fillMaxWidth()
             .heightIn(min = 48.dp),
         horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm),
@@ -148,7 +156,10 @@ fun AvoqadoPhoneInput(
                     value = visible,
                     onValueChange = { nuevo ->
                         escrito = filtrarTecleoDelCampoConBandera(nuevo)
-                        onDigitsChange(digitosNacionales(escrito, country.dialCode))
+                        // «+34 612…» con México elegido: la bandera pasa sola a España (antes salía a «+5234612…»).
+                        val pais = Countries.porLadaEscrita(escrito, country) ?: country
+                        if (pais != country) onCountryChange(pais)
+                        onDigitsChange(digitosDelCampo(escrito, pais.dialCode))
                     },
                     singleLine = true,
                     enabled = enabled,
@@ -162,6 +173,16 @@ fun AvoqadoPhoneInput(
             }
         }
     }
+    if (aviso != null) {
+        Text(
+            text = aviso,
+            style = MaterialTheme.typography.bodySmall,
+            // Mientras faltan dígitos es una guía; lo que sobra o la otra lada sí es un error.
+            color = if (aviso.startsWith("Falta")) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error,
+            modifier = Modifier.padding(start = AvoqadoTheme.spacing.md, top = AvoqadoTheme.spacing.xxs),
+        )
+    }
+    }
 
     if (showPicker) {
         CountryPickerSheet(
@@ -172,7 +193,7 @@ fun AvoqadoPhoneInput(
                 val visible = textoVisibleDelCampo(escrito, digits, country.dialCode)
                 escrito = visible
                 onCountryChange(it)
-                onDigitsChange(digitosNacionales(visible, it.dialCode))
+                onDigitsChange(digitosDelCampo(visible, it.dialCode))
                 showPicker = false
             },
             onDismiss = { showPicker = false },

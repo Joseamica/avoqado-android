@@ -208,9 +208,7 @@ sealed interface KioskContent {
  * guardado (`sinPrefijoMexicanoViejo`, 71 fichas así), así que «+49 20123456» caía en la ficha de «+52 4920123456».
  * Un número así de corto (Cuba +53 con 8, Islandia +354 con 7) se registra en el mostrador.
  */
-fun nationalDigitsFor(country: Country): IntRange =
-    if (country.dialCode == "52" || country.dialCode == "1") 10..10
-    else maxOf(8, 11 - country.dialCode.length)..(15 - country.dialCode.length)
+fun nationalDigitsFor(country: Country): IntRange = com.avoqado.pos.core.util.digitosNacionalesValidos(country.dialCode)
 
 /** Una clase o cita de hoy, ya resuelta por el servidor. Aquí no se calcula nada. */
 data class KioskSession(
