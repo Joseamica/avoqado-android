@@ -19,8 +19,9 @@ import javax.inject.Singleton
  *
  * Ahora la pantalla de Cobrar declara su carrito con [tomar] y sólo ése publica ([update] de otro dueño no cambia nada).
  * No es «cualquier carrito con artículos»: al rehacer la navegación (cambio de modo, cerrar sesión) Android NO limpia el
- * ViewModel del NavHost viejo (Codex r1); su carrito ya no se puede retomar y no debe frenar nada. El Cobrar nuevo lo
- * releva al [tomar]. [soltar] (desde `onCleared`) apaga la señal si el que se va es el vigente.
+ * ViewModel del NavHost viejo (Codex r1); su carrito ya no se puede retomar y no debe frenar nada. Cada navegación
+ * nueva lo releva al montarse ([navegacionMontada], Codex r2) y el Cobrar nuevo al [tomar]. [soltar] (desde `onCleared`)
+ * apaga la señal si el que se va es el vigente.
  */
 @Singleton
 class ActiveCartState @Inject constructor() {
@@ -28,6 +29,9 @@ class ActiveCartState @Inject constructor() {
 
     /** El carrito de la pantalla de Cobrar vigente; null mientras ninguna lo ha declarado. */
     private var vigente: Any? = null
+
+    /** La edición de la navegación donde se montó el Cobrar [vigente]. */
+    private var edicionDelVigente: Any? = null
 
     private val _itemCount = MutableStateFlow(0)
 
@@ -41,10 +45,27 @@ class ActiveCartState @Inject constructor() {
 
     val hasItems: Boolean get() = _itemCount.value > 0
 
-    /** La pantalla de Cobrar declara que [dueno] es SU carrito, con lo que tiene ahora. Releva al anterior. */
-    fun tomar(dueno: Any, itemCount: Int, totalDisplay: String) = synchronized(candado) {
+    /**
+     * La pantalla de Cobrar de la navegación [edicion] declara que [dueno] es SU carrito, con lo que tiene ahora. Releva al
+     * anterior.
+     */
+    fun tomar(dueno: Any, edicion: Any?, itemCount: Int, totalDisplay: String) = synchronized(candado) {
         vigente = dueno
+        edicionDelVigente = edicion
         publicar(itemCount, totalDisplay)
+    }
+
+    /**
+     * Se montó la navegación [edicion] (`AvoqadoNavGraph`, una por cada vez que se rehace la pantalla; girarla conserva la
+     * misma). Si el Cobrar vigente es de otra, su carrito ya no se puede retomar (Android no limpia el NavHost viejo):
+     * deja de contar aunque el Cobrar nuevo todavía no se monte (un aparato que arranca en Mesas). Codex r2.
+     */
+    fun navegacionMontada(edicion: Any) = synchronized(candado) {
+        if (vigente != null && edicionDelVigente != edicion) {
+            vigente = null
+            edicionDelVigente = null
+            publicar(0, VACIO)
+        }
     }
 
     /** El carrito [dueno] cambió. Sólo cuenta si es el de Cobrar vigente: un carrito de consulta no la pisa. */
@@ -56,6 +77,7 @@ class ActiveCartState @Inject constructor() {
     fun soltar(dueno: Any) = synchronized(candado) {
         if (dueno === vigente) {
             vigente = null
+            edicionDelVigente = null
             publicar(0, VACIO)
         }
     }

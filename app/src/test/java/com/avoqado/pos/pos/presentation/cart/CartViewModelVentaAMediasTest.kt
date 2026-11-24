@@ -89,8 +89,9 @@ class CartViewModelVentaAMediasTest {
     /** Lo que hace Android al salir de la pantalla dueña del carrito: limpia su ViewModel. */
     private fun cerrar(vm: CartViewModel) = androidx.lifecycle.ViewModelStore().apply { put("carrito", vm) }.clear()
 
-    /** El carrito que la pantalla de Cobrar declara como suyo (`AvoqadoNavGraph`). */
-    private fun carritoDeCobrar(): CartViewModel = carrito().also { it.esElCarritoDeCobrar() }
+    /** El carrito que la pantalla de Cobrar de la navegación [edicion] declara como suyo (`AvoqadoNavGraph`). */
+    private fun carritoDeCobrar(edicion: String = "navegacion-1"): CartViewModel =
+        carrito().also { it.esElCarritoDeCobrar(edicion) }
 
     @Test
     fun `P1 abrir una mesa no apaga la venta a medias de Cobrar`() = runTest {
@@ -149,7 +150,7 @@ class CartViewModelVentaAMediasTest {
         val viejo = carritoDeCobrar()
         viejo.addProduct(taco)
 
-        val nuevo = carritoDeCobrar()
+        val nuevo = carritoDeCobrar(edicion = "navegacion-2")
         assertFalse("el Cobrar nuevo está vacío: el viejo no frena nada", ventaAMedias.hasItems)
 
         nuevo.addProduct(taco)
@@ -167,8 +168,36 @@ class CartViewModelVentaAMediasTest {
         cobrar.addProduct(taco)
         carrito() // la mesa
 
-        cobrar.esElCarritoDeCobrar() // la pantalla de Cobrar vuelve a montarse con su mismo ViewModel
+        cobrar.esElCarritoDeCobrar("navegacion-1") // la pantalla de Cobrar vuelve a montarse con su mismo ViewModel
 
+        assertEquals(1, ventaAMedias.itemCount.value)
+    }
+
+    /**
+     * Codex r2: un aparato que arranca en Mesas. Con una venta en Cobrar se cierra sesión (o cambia el modo) y se vuelve a
+     * entrar: la navegación nueva se monta sin abrir Cobrar. El carrito viejo ya no se puede retomar y no frena nada.
+     */
+    @Test
+    fun `P1 una navegacion nueva releva al Cobrar viejo aunque Cobrar no se monte`() = runTest {
+        val viejo = carritoDeCobrar(edicion = "navegacion-1")
+        viejo.addProduct(taco)
+
+        ventaAMedias.navegacionMontada("navegacion-2")
+        carrito() // abre la cuenta de una mesa sin pasar por Cobrar
+
+        assertFalse(ventaAMedias.hasItems)
+        viejo.addProduct(taco)
+        assertFalse("lo que haga el carrito viejo después tampoco cuenta", ventaAMedias.hasItems)
+    }
+
+    @Test
+    fun `P1 girar la pantalla conserva la misma navegacion y la venta`() = runTest {
+        val cobrar = carritoDeCobrar(edicion = "navegacion-1")
+        cobrar.addProduct(taco)
+
+        ventaAMedias.navegacionMontada("navegacion-1") // la Activity se recrea y la edición se restaura (rememberSaveable)
+
+        assertTrue(ventaAMedias.hasItems)
         assertEquals(1, ventaAMedias.itemCount.value)
     }
 }

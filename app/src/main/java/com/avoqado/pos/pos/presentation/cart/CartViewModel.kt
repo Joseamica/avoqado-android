@@ -727,10 +727,11 @@ class CartViewModel @Inject constructor(
     /**
      * Encargo f7529d: la pantalla de Cobrar declara que éste es SU carrito; desde ahí su número es la señal «venta a
      * medias» del aparato. El catálogo de la cuenta de una mesa y el de «Asignar» no la llaman y ya no la pisan.
+     * [edicionDeLaNavegacion]: la navegación donde se montó (`LocalEdicionDeLaNavegacion`); una nueva lo releva.
      */
-    fun esElCarritoDeCobrar() {
+    fun esElCarritoDeCobrar(edicionDeLaNavegacion: Any?) {
         val estado = _cartState.value
-        activeCartState.tomar(duenoDeLaVentaAMedias, estado.itemCount, estado.totalDisplay)
+        activeCartState.tomar(duenoDeLaVentaAMedias, edicionDeLaNavegacion, estado.itemCount, estado.totalDisplay)
     }
 
     override fun onCleared() {

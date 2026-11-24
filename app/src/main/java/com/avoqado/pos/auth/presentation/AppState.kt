@@ -71,7 +71,18 @@ class AppState @Inject constructor(
     private val subidaDeLaMaquina: com.avoqado.pos.maquina.SubidaDeLaMaquina? = null,
     /** C5: la máquina de efectivo arranca con la sesión (rescata lo de un proceso muerto y se conecta). Default para las pruebas de JVM. */
     private val maquinaDeEfectivo: com.avoqado.pos.maquina.MaquinaDeEfectivo? = null,
+    /** f7529d: la señal «venta a medias»; cada navegación nueva la releva del carrito de la anterior. Default para las pruebas de JVM. */
+    private val activeCartState: com.avoqado.pos.pos.data.ActiveCartState? = null,
 ) : ViewModel() {
+
+    /**
+     * Encargo f7529d (Codex r2): se montó una navegación nueva ([edicion]: cambio de modo, de sucursal, de papel o volver a
+     * entrar). El carrito de Cobrar de la anterior ya no se puede retomar y deja de frenar cambios, aunque Cobrar todavía no
+     * se haya abierto en la nueva (p. ej. un aparato que arranca en Mesas). Girar la pantalla conserva la misma edición.
+     */
+    fun navegacionMontada(edicion: Any) {
+        activeCartState?.navegacionMontada(edicion)
+    }
 
     /**
      * Member injection keeps the existing pure-JVM constructor callers usable;

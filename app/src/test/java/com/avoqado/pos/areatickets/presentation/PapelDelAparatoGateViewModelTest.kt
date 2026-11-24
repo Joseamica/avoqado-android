@@ -450,12 +450,12 @@ class PapelDelAparatoGateViewModelTest {
     fun `P1 a media venta la compuerta no interrumpe y pregunta en el siguiente momento`() = runTest {
         respondeAjustes(ajustes())
         val vm = vm()
-        carrito.tomar(dueno = carritoDeCobrar, itemCount = 2, totalDisplay = "$40.00")
+        carrito.tomar(dueno = carritoDeCobrar, edicion = null, itemCount = 2, totalDisplay = "$40.00")
 
         vm.consultar(disparo(1))
         assertNull(vm.hoja.value)
 
-        carrito.tomar(dueno = carritoDeCobrar, itemCount = 0, totalDisplay = "$0.00")
+        carrito.tomar(dueno = carritoDeCobrar, edicion = null, itemCount = 0, totalDisplay = "$0.00")
         vm.consultar(disparo(2)) // no se calló: la venta no es un «Ahora no»
         assertNotNull(vm.hoja.value)
     }
@@ -465,7 +465,7 @@ class PapelDelAparatoGateViewModelTest {
         respondeAjustes(ajustes())
         val vm = vm()
         vm.consultar(disparo(1))
-        carrito.tomar(dueno = carritoDeCobrar, itemCount = 1, totalDisplay = "$10.00")
+        carrito.tomar(dueno = carritoDeCobrar, edicion = null, itemCount = 1, totalDisplay = "$10.00")
 
         vm.elegir(PapelDelAparato.Cobra)
         vm.guardar()
