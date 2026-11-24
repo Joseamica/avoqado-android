@@ -17,6 +17,9 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -24,7 +27,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.avoqado.pos.articles.data.model.CreditBalanceItem
 import com.avoqado.pos.articles.data.model.textoDelSaldo
+import com.avoqado.pos.customers.presentation.ConfirmarCanjeDialog
 import com.avoqado.pos.customers.presentation.CustomerCreditsViewModel
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 
@@ -44,6 +49,7 @@ fun CartCreditsCard(
     val balances by viewModel.balances.collectAsStateWithLifecycle()
     val busyId by viewModel.busyBalanceId.collectAsStateWithLifecycle()
     val loadError by viewModel.loadError.collectAsStateWithLifecycle()
+    var porCanjear by remember(customerId) { mutableStateOf<CreditBalanceItem?>(null) }
 
     // Corre sola al adjuntar un cliente: el cajero pidió adjuntarlo, no ver sus
     // créditos. Si el server dice que no, se cuenta abajo, en esta tarjeta.
@@ -109,7 +115,7 @@ fun CartCreditsCard(
                                 if (enabled) MaterialTheme.colorScheme.primary
                                 else MaterialTheme.colorScheme.surfaceVariant,
                             )
-                            .clickable(enabled = enabled) { viewModel.redeem(item.id, customerId) }
+                            .clickable(enabled = enabled) { porCanjear = item }
                             .padding(horizontal = AvoqadoTheme.spacing.md, vertical = AvoqadoTheme.spacing.xs),
                         contentAlignment = Alignment.Center,
                     ) {
@@ -127,5 +133,18 @@ fun CartCreditsCard(
                 }
             }
         }
+    }
+
+    // hz:73e6a32c:D687: la misma confirmación de la ficha. Con un Ilimitado el saldo no cambia al canjear, y un toque suelto
+    // registraba usos sin que nadie lo notara. Atada al cliente: si lo cambian, la confirmación del anterior se cierra.
+    porCanjear?.let { item ->
+        ConfirmarCanjeDialog(
+            item = item,
+            onDismiss = { porCanjear = null },
+            onConfirm = {
+                viewModel.redeem(item.id, customerId)
+                porCanjear = null
+            },
+        )
     }
 }

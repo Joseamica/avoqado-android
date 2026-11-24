@@ -66,6 +66,17 @@ class ClienteQuitadoNoRegresaTest {
         assertTrue(tarjeta.contains("hiltViewModel(key = \"creditos-del-carrito-\$customerId\")"))
     }
 
+    @Test
+    fun `P2 canjear en el carrito pide la confirmación de la ficha y no sobrevive al cambio de cliente`() {
+        // hz:73e6a32c:D687: el toque sólo abre la confirmación (la misma de la ficha); el canje sale de «Canjear» del diálogo.
+        val tarjeta = fuente("pos/presentation/cart/CartCreditsCard.kt")
+        assertTrue(tarjeta.contains("var porCanjear by remember(customerId) { mutableStateOf<CreditBalanceItem?>(null) }"))
+        assertTrue(tarjeta.contains(".clickable(enabled = enabled) { porCanjear = item }"))
+        assertTrue(tarjeta.contains("ConfirmarCanjeDialog("))
+        assertEquals(1, Regex("""viewModel\.redeem\(""").findAll(tarjeta).count())
+        assertTrue(fuente("customers/presentation/CustomerCreditsSection.kt").contains("ConfirmarCanjeDialog("))
+    }
+
     private fun raizDelRepo(): File {
         var dir: File? = File(System.getProperty("user.dir") ?: ".").absoluteFile
         while (dir != null) {

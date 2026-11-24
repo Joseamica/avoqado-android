@@ -165,8 +165,11 @@ class CustomerCreditsViewModel @Inject constructor(
     }
 
     fun redeem(balanceId: String, customerId: String) {
+        // hz:73e6a32c:D687: un doble toque llega dos veces antes de que el botón se apague; con un canje en vuelo el segundo no
+        // registra otro uso (con un Ilimitado no se nota en la pantalla). Se marca ANTES de lanzar, como `sell`.
+        if (_busyBalanceId.value != null) return
+        _busyBalanceId.value = balanceId
         viewModelScope.launch {
-            _busyBalanceId.value = balanceId
             val ok = articlesRepository.redeemCredit(balanceId)
             _busyBalanceId.value = null
             if (ok) load(customerId)

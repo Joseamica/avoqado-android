@@ -13,6 +13,7 @@ import io.mockk.coVerifyOrder
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -201,6 +202,32 @@ class CustomerCreditsGrantTest {
         advanceUntilIdle()
 
         verify(exactly = 1) { queue.guardarVentaDeFicha(any(), any(), any()) }
+    }
+
+    @Test
+    fun `doble toque en canjear no registra dos usos`() = runTest {
+        // hz:73e6a32c:D687: con un Ilimitado la pantalla no cambia al canjear, así que el segundo toque no se nota y quedaban 2 usos.
+        val repo: ArticlesRepository = mockk(relaxed = true)
+        val queue: PendingGrantQueue = mockk(relaxed = true)
+        val enVuelo = CompletableDeferred<Boolean>()
+        coEvery { repo.redeemCredit("saldo-1") } coAnswers { enVuelo.await() }
+
+        val vm = buildViewModel(repo, queue)
+        vm.redeem("saldo-1", "cli-1")
+        vm.redeem("saldo-1", "cli-1")   // mismo cuadro: el botón todavía no se apagó
+        advanceUntilIdle()
+        vm.redeem("saldo-1", "cli-1")   // con el primero esperando al servidor
+        assertEquals("saldo-1", vm.busyBalanceId.value)
+        enVuelo.complete(true)
+        advanceUntilIdle()
+
+        coVerify(exactly = 1) { repo.redeemCredit(any()) }
+        assertNull(vm.busyBalanceId.value)
+
+        // Terminado el primero, otro canje sí sale.
+        vm.redeem("saldo-1", "cli-1")
+        advanceUntilIdle()
+        coVerify(exactly = 2) { repo.redeemCredit(any()) }
     }
 
     @Test
