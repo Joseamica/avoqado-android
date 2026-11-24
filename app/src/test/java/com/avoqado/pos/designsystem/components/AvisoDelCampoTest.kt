@@ -37,7 +37,10 @@ class AvisoDelCampoTest {
             avisoDelCampo("+52 55 9187 3922", espana),
         )
         assertEquals(
-            AvisoDelCampo("El número trae la lada +1 (Estados Unidos o Canadá): elige ese país en la bandera o quítala", true),
+            AvisoDelCampo(
+                "El número trae la lada +1 (Estados Unidos, Canadá, Puerto Rico o República Dominicana): elige ese país en la bandera o quítala",
+                true,
+            ),
             avisoDelCampo("+1 202 555 0123", mexico),
         )
         assertEquals(
@@ -56,6 +59,9 @@ class AvisoDelCampoTest {
         assertNull(manda("+1 1 202 555 0123", mexico))      // r2 #5
         assertNull(manda("+1 1 202 555 0123", Countries.byIso("US")))
         assertNull(manda("+7 912 345 67 89", espana))       // lada fuera de la lista
+        assertNull(manda("﹢1 202 555 0123", espana))        // r3: el «+» chico de copiar y pegar ya cuenta como «+»
+        assertNull(manda("⁺1 202 555 0123", espana))
+        assertEquals("+12025550123", manda("﹢1 202 555 0123", Countries.byIso("US")))
     }
 
     @Test fun `P1 lo de siempre sigue pasando`() {
@@ -89,6 +95,8 @@ class AvisoDelCampoTest {
         assertEquals(AvisoDelCampo("Falta 1 dígito: un número de México lleva 10", false), avisoDelCampo("559187392", mexico))
         assertEquals(AvisoDelCampo("Sobra 1 dígito: un número de México lleva 10", true), avisoDelCampo("55918739221", mexico))
         assertEquals(AvisoDelCampo("Un número de México no empieza con 1", true), avisoDelCampo("1591873922", mexico))
+        // r3: el «0» del principio se dice antes que lo que falta (agregar dígitos no lo arregla).
+        assertEquals(AvisoDelCampo("Un número de México no empieza con 0", true), avisoDelCampo("059187392", mexico))
         assertNull(avisoDelCampo("55 9187 3922", mexico))
         assertNull(avisoDelCampo("", mexico))
     }

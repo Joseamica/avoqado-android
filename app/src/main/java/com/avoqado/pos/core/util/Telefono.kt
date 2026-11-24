@@ -111,10 +111,11 @@ fun avisoDelTelefono(digitos: String, lada: String, pais: String): String? {
     val rango = digitosNacionalesValidos(lada)
     val lleva = if (rango.first == rango.last) "${rango.first}" else "de ${rango.first} a ${rango.last}"
     return when {
+        // Ni en México ni en Norteamérica un número empieza con 0 o 1 (el «1» de México es el prefijo viejo del celular). Va
+        // primero: «Falta 1 dígito» no arregla un «0» al principio (Codex r3 del 24-nov).
+        (lada == LADA_MEXICO || lada == LADA_NORTEAMERICA) && digitos[0] in "01" -> "Un número de $pais no empieza con ${digitos[0]}"
         digitos.length < rango.first -> conCuantos(rango.first - digitos.length, "Falta", "Faltan") + ": un número de $pais lleva $lleva"
         digitos.length > rango.last -> conCuantos(digitos.length - rango.last, "Sobra", "Sobran") + ": un número de $pais lleva $lleva"
-        // Ni en México ni en Norteamérica un número empieza con 0 o 1 (el «1» de México es el prefijo viejo del celular).
-        (lada == LADA_MEXICO || lada == LADA_NORTEAMERICA) && digitos[0] in "01" -> "Un número de $pais no empieza con ${digitos[0]}"
         else -> null
     }
 }
@@ -147,7 +148,7 @@ private fun normalizar(texto: String): String = buildString {
         when {
             tipo == Character.FORMAT.toInt() -> Unit
             Character.isDigit(c) -> Character.digit(c, 10).takeIf { it >= 0 }?.let { append('0' + it) } ?: append(c)
-            c == '＋' -> append('+')
+            c == '＋' || c == '﹢' || c == '⁺' -> append('+')   // también el «+» chico de copiar y pegar (Codex r3 del 24-nov)
             c == '（' -> append('(')
             c == '）' -> append(')')
             c == '．' -> append('.')

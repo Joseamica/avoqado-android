@@ -223,7 +223,9 @@ internal fun avisoDelCampo(escrito: String, pais: Country): AvisoDelCampo? {
     // el principio de otra (prueba `PaisPorLadaEscritaTest`), así que la más larga que encaje es la única.
     val otro = Countries.all.filter { escritos.startsWith(it.dialCode) }.maxByOrNull { it.dialCode.length }
     if (otro != null) {
-        val nombre = if (otro.dialCode == "1") "Estados Unidos o Canadá" else otro.name
+        // Varias banderas comparten lada (+1: Estados Unidos, Canadá, Puerto Rico, República Dominicana): se nombran todas.
+        val nombres = Countries.all.filter { it.dialCode == otro.dialCode }.map { it.name }
+        val nombre = if (nombres.size == 1) nombres[0] else nombres.dropLast(1).joinToString(", ") + " o " + nombres.last()
         return AvisoDelCampo("El número trae la lada +${otro.dialCode} ($nombre): elige ese país en la bandera o quítala", esError = true)
     }
     if (Countries.all.any { it.dialCode.startsWith(escritos) }) return AvisoDelCampo("Sigue escribiendo la lada", esError = false)

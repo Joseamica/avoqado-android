@@ -78,6 +78,8 @@ fun CustomerQuickCreateSheet(
                 Text(
                     text = when {
                         firstName.isBlank() -> "Escribe al menos el nombre del cliente"
+                        // Sin correo, borrar el teléfono no basta para crear (Codex r3 del 24-nov).
+                        !telefonoBien && email.isBlank() -> "Completa el teléfono, o bórralo y escribe un correo"
                         !telefonoBien -> "Completa el teléfono o bórralo para crear el cliente"
                         else -> "Agrega un teléfono o un correo para poder avisarle"
                     },
@@ -89,7 +91,9 @@ fun CustomerQuickCreateSheet(
             PrimaryButton(
                 text = "Crear",
                 onClick = {
-                    val phoneE164 = if (digits.isNotBlank() && telefonoBien) "+${country.dialCode}$digits" else null
+                    // Se revisa otra vez al tocar: un clic que entra antes de que el botón se apague no usa la regla vieja (Codex r3).
+                    if (digits.isNotEmpty() && !telefonoCompleto(digits, country.dialCode)) return@PrimaryButton
+                    val phoneE164 = if (digits.isNotBlank()) "+${country.dialCode}$digits" else null
                     viewModel.createCustomer(
                         request = CreateCustomerRequest(
                             firstName = firstName.trim().ifBlank { null },

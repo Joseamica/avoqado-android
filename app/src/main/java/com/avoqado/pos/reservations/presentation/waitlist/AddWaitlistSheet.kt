@@ -113,12 +113,14 @@ fun AddWaitlistSheet(
                 PrimaryButton(
                     text = "Agregar",
                     onClick = {
+                        // Se revisa otra vez al tocar: un clic que entra antes de que el botón se apague no usa la regla vieja (Codex r3).
+                        if (isGuest && phone.isNotEmpty() && !telefonoCompleto(phone, country.dialCode)) return@PrimaryButton
                         val instant = VenueTimeZone.fromLocalDateTime(date.atTime(time), zone.id).toInstant()
                         val iso = DateTimeFormatter.ISO_INSTANT.format(instant)
                         val req = AddToWaitlistRequest(
                             customerId = if (!isGuest) customerId else null,
                             guestName = if (isGuest) name else null,
-                            guestPhone = if (isGuest && phone.isNotBlank() && telefonoBien) "+${country.dialCode}$phone" else null,
+                            guestPhone = if (isGuest && phone.isNotBlank()) "+${country.dialCode}$phone" else null,
                             partySize = partySize,
                             desiredStartAt = iso,
                             notes = notes.ifBlank { null },
