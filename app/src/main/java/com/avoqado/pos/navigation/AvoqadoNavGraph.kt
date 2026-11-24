@@ -571,6 +571,7 @@ private fun MainScaffold(
                     composable(MainTab.CHECKOUT.route) {
                         val carrito: com.avoqado.pos.pos.presentation.cart.CartViewModel = hiltViewModel()
                         SideEffect { carritoVivo = carrito }
+                        LaunchedEffect(carrito) { carrito.esElCarritoDeCobrar() }   // f7529d: su carrito es la «venta a medias»
                         CheckoutScreen(isTablet = true, cartViewModel = carrito, roleManager = roleManager, onResultadoDeTarjetas = ::abrirResultadoDeTarjetas)
                     }
                     composable(MainTab.TABLES.route) {
@@ -905,6 +906,7 @@ private fun MainScaffold(
                     composable(MainTab.CHECKOUT.route) {
                         val carrito: com.avoqado.pos.pos.presentation.cart.CartViewModel = hiltViewModel()
                         SideEffect { carritoVivo = carrito }
+                        LaunchedEffect(carrito) { carrito.esElCarritoDeCobrar() }   // f7529d: su carrito es la «venta a medias»
                         CheckoutScreen(isTablet = false, cartViewModel = carrito, roleManager = roleManager, onResultadoDeTarjetas = ::abrirResultadoDeTarjetas)
                     }
                     composable(MainTab.TABLES.route) {

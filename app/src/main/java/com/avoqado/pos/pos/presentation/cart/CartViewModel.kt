@@ -718,10 +718,20 @@ class CartViewModel @Inject constructor(
     private val _cartState = MutableStateFlow(defaultCartState())
 
     /**
-     * La parte de ESTE carrito en la señal «hay venta a medias» ([ActiveCartState]). Una llave propia (no el ViewModel)
-     * para que la señal, que es de todo el aparato, no retenga al carrito. Se suelta en [onCleared].
+     * La llave de ESTE carrito en la señal «hay venta a medias» ([ActiveCartState]). Una llave propia (no el ViewModel)
+     * para que la señal, que es de todo el aparato, no retenga al carrito. Sólo publica si la pantalla de Cobrar lo
+     * declaró ([esElCarritoDeCobrar]); se suelta en [onCleared].
      */
     private val duenoDeLaVentaAMedias = Any()
+
+    /**
+     * Encargo f7529d: la pantalla de Cobrar declara que éste es SU carrito; desde ahí su número es la señal «venta a
+     * medias» del aparato. El catálogo de la cuenta de una mesa y el de «Asignar» no la llaman y ya no la pisan.
+     */
+    fun esElCarritoDeCobrar() {
+        val estado = _cartState.value
+        activeCartState.tomar(duenoDeLaVentaAMedias, estado.itemCount, estado.totalDisplay)
+    }
 
     override fun onCleared() {
         activeCartState.soltar(duenoDeLaVentaAMedias)
@@ -1449,7 +1459,7 @@ class CartViewModel @Inject constructor(
         }
 
         // Keep ActiveCartState in sync so other screens can check if cart has items.
-        // Con dueño (encargo f7529d): el carrito vacío de una mesa ya no pisa la venta a medias de Cobrar.
+        // Con dueño (encargo f7529d): sólo cuenta si este carrito es el de Cobrar vigente (esElCarritoDeCobrar).
         viewModelScope.launch {
             _cartState.collect { state ->
                 activeCartState.update(duenoDeLaVentaAMedias, state.itemCount, state.totalDisplay)

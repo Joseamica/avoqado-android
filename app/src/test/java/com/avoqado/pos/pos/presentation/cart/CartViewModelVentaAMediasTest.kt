@@ -89,9 +89,12 @@ class CartViewModelVentaAMediasTest {
     /** Lo que hace Android al salir de la pantalla dueña del carrito: limpia su ViewModel. */
     private fun cerrar(vm: CartViewModel) = androidx.lifecycle.ViewModelStore().apply { put("carrito", vm) }.clear()
 
+    /** El carrito que la pantalla de Cobrar declara como suyo (`AvoqadoNavGraph`). */
+    private fun carritoDeCobrar(): CartViewModel = carrito().also { it.esElCarritoDeCobrar() }
+
     @Test
     fun `P1 abrir una mesa no apaga la venta a medias de Cobrar`() = runTest {
-        val cobrar = carrito()
+        val cobrar = carritoDeCobrar()
         cobrar.addProduct(taco)
         assertTrue("con un renglón en Cobrar hay venta a medias", ventaAMedias.hasItems)
 
@@ -104,7 +107,7 @@ class CartViewModelVentaAMediasTest {
 
     @Test
     fun `P1 cerrar la mesa tampoco la apaga, y vaciar Cobrar si`() = runTest {
-        val cobrar = carrito()
+        val cobrar = carritoDeCobrar()
         cobrar.addProduct(taco)
         val mesa = carrito()
 
@@ -117,8 +120,18 @@ class CartViewModelVentaAMediasTest {
     }
 
     @Test
-    fun `P2 un carrito que se va con articulos suelta su parte de la senal`() = runTest {
-        val cobrar = carrito()
+    fun `P1 un carrito que no es el de Cobrar no enciende la senal`() = runTest {
+        carritoDeCobrar()
+        val consulta = carrito()
+
+        consulta.addProduct(taco)
+
+        assertFalse("sólo la venta de Cobrar frena un cambio", ventaAMedias.hasItems)
+    }
+
+    @Test
+    fun `P2 el carrito de Cobrar que se va suelta la senal`() = runTest {
+        val cobrar = carritoDeCobrar()
         cobrar.addProduct(taco)
 
         cerrar(cobrar)
@@ -127,17 +140,35 @@ class CartViewModelVentaAMediasTest {
         assertEquals("$0.00", ventaAMedias.totalDisplay.value)
     }
 
+    /**
+     * Codex r1: al rehacer la navegación (cambio de modo, cerrar sesión), Android NO limpia el ViewModel del NavHost viejo
+     * (no hay onCleared). Su carrito ya no se puede retomar: manda el Cobrar nuevo, y lo que haga el viejo no cuenta.
+     */
     @Test
-    fun `P2 el carrito de Cobrar que vuelve a nacer con articulos manda aunque el viejo se suelte despues`() = runTest {
-        val viejo = carrito()
+    fun `P1 al rehacer la pantalla manda el Cobrar nuevo aunque el viejo siga vivo con articulos`() = runTest {
+        val viejo = carritoDeCobrar()
         viejo.addProduct(taco)
-        val nuevo = carrito()
+
+        val nuevo = carritoDeCobrar()
+        assertFalse("el Cobrar nuevo está vacío: el viejo no frena nada", ventaAMedias.hasItems)
+
         nuevo.addProduct(taco)
         nuevo.addProduct(taco)
+        viejo.clearCart()
+        assertEquals("lo que haga el carrito viejo no pisa al nuevo", 2, ventaAMedias.itemCount.value)
 
         cerrar(viejo)
+        assertTrue("soltar el viejo tampoco", ventaAMedias.hasItems)
+    }
 
-        assertTrue(ventaAMedias.hasItems)
-        assertEquals(2, ventaAMedias.itemCount.value)
+    @Test
+    fun `P2 volver a la pestana de Cobrar con su mismo carrito conserva la venta`() = runTest {
+        val cobrar = carritoDeCobrar()
+        cobrar.addProduct(taco)
+        carrito() // la mesa
+
+        cobrar.esElCarritoDeCobrar() // la pantalla de Cobrar vuelve a montarse con su mismo ViewModel
+
+        assertEquals(1, ventaAMedias.itemCount.value)
     }
 }
