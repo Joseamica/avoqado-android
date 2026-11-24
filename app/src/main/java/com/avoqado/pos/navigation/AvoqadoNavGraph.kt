@@ -178,10 +178,13 @@ fun AvoqadoNavGraph(
                 // montan de cero y recargan datos del contexto NUEVO. Antes las
                 // pantallas ya montadas seguían con los datos del venue anterior.
                 key(mainNavigation.contentKey) {
-                    // f7529d (Codex r2): una edición por cada navegación montada; girar la pantalla la conserva (saveable).
-                    // Al montarse una nueva, el carrito de Cobrar de la anterior deja de ser la «venta a medias».
+                    // f7529d (Codex r2/r3): una edición por cada navegación montada; girar la pantalla la conserva (saveable).
+                    // La que está al frente (al montarse y cada vez que su ventana vuelve al frente) manda la «venta a medias».
                     val edicionDeLaNavegacion = androidx.compose.runtime.saveable.rememberSaveable { java.util.UUID.randomUUID().toString() }
-                    LaunchedEffect(edicionDeLaNavegacion) { appState.navegacionMontada(edicionDeLaNavegacion) }
+                    androidx.lifecycle.compose.LifecycleResumeEffect(edicionDeLaNavegacion) {
+                        appState.navegacionMontada(edicionDeLaNavegacion)
+                        onPauseOrDispose { }
+                    }
                     val payLaterReviewCount by appState.payLaterReviewCount.collectAsState(initial = 0)
                     CompositionLocalProvider(LocalEdicionDeLaNavegacion provides edicionDeLaNavegacion) {
                         MainScaffold(

@@ -150,6 +150,7 @@ class CartViewModelVentaAMediasTest {
         val viejo = carritoDeCobrar()
         viejo.addProduct(taco)
 
+        ventaAMedias.navegacionMontada("navegacion-2") // AvoqadoNavGraph al rehacer la navegación
         val nuevo = carritoDeCobrar(edicion = "navegacion-2")
         assertFalse("el Cobrar nuevo está vacío: el viejo no frena nada", ventaAMedias.hasItems)
 
@@ -198,6 +199,35 @@ class CartViewModelVentaAMediasTest {
         ventaAMedias.navegacionMontada("navegacion-1") // la Activity se recrea y la edición se restaura (rememberSaveable)
 
         assertTrue(ventaAMedias.hasItems)
+        assertEquals(1, ventaAMedias.itemCount.value)
+    }
+
+    /**
+     * Codex r3: una segunda ventana de Avoqado encima (al conectar una impresora USB) y luego Atrás. La primera vuelve al
+     * frente con su mismo carrito de Cobrar: su venta vuelve a contar.
+     */
+    @Test
+    fun `P1 al volver de una segunda ventana la venta de la primera vuelve a contar`() = runTest {
+        val primera = carritoDeCobrar(edicion = "ventana-1")
+        primera.addProduct(taco)
+
+        ventaAMedias.navegacionMontada("ventana-2")
+        carritoDeCobrar(edicion = "ventana-2") // su Cobrar, vacío
+        assertFalse("al frente está la segunda, sin venta", ventaAMedias.hasItems)
+
+        ventaAMedias.navegacionMontada("ventana-1")
+
+        assertTrue(ventaAMedias.hasItems)
+        assertEquals(1, ventaAMedias.itemCount.value)
+    }
+
+    @Test
+    fun `P2 el carrito de Cobrar que se monta despues de declarar su navegacion publica al tomar`() = runTest {
+        ventaAMedias.navegacionMontada("navegacion-1")
+        val cobrar = carritoDeCobrar(edicion = "navegacion-1")
+
+        cobrar.addProduct(taco)
+
         assertEquals(1, ventaAMedias.itemCount.value)
     }
 }

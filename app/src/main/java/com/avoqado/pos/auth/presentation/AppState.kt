@@ -76,9 +76,10 @@ class AppState @Inject constructor(
 ) : ViewModel() {
 
     /**
-     * Encargo f7529d (Codex r2): se montó una navegación nueva ([edicion]: cambio de modo, de sucursal, de papel o volver a
-     * entrar). El carrito de Cobrar de la anterior ya no se puede retomar y deja de frenar cambios, aunque Cobrar todavía no
-     * se haya abierto en la nueva (p. ej. un aparato que arranca en Mesas). Girar la pantalla conserva la misma edición.
+     * Encargo f7529d (Codex r2/r3): la navegación [edicion] quedó al frente (se montó, o su ventana volvió al frente). Desde
+     * ahí la «venta a medias» es la de SU Cobrar: el de una navegación rehecha (cambio de modo, volver a entrar) deja de
+     * frenar aunque Cobrar no se haya abierto en la nueva, y al volver de una segunda ventana la venta de la primera vuelve a
+     * contar. Girar la pantalla conserva la misma edición.
      */
     fun navegacionMontada(edicion: Any) {
         activeCartState?.navegacionMontada(edicion)
