@@ -53,7 +53,7 @@ class TelefonoCompletoTest {
         assertEquals("+34612345678", digitosDelCampo("+34 612 345 678", "52"))
         assertEquals("+79123456789", digitosDelCampo("+7 912 345 67 89", "34"))   // en ES el rango la dejaba pasar
         assertFalse(telefonoCompleto("+79123456789", "34"))
-        assertEquals("Revisa la lada del número", avisoDelTelefono("+79123456789", "34", "España"))
+        assertEquals("Revisa el número", avisoDelTelefono("+79123456789", "34", "España"))
     }
 
     @Test fun `P2 con la lada del pais o sin lada entrega lo mismo que antes`() {

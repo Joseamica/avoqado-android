@@ -89,6 +89,17 @@ class AvisoDelCampoTest {
         )
         assertEquals("+12025550123", manda("1 202 555 0123", us))
         assertEquals(AvisoDelCampo("Un número de México no empieza con 1", true), avisoDelCampo("1 2", mexico))
+        // r5: con «+1» escrito, un número que empieza con 1 es un error, no algo a medias.
+        assertEquals(
+            AvisoDelCampo("Un número de Estados Unidos no empieza con 1", true),
+            avisoDelCampo("+1 102 555 0123", us),
+        )
+    }
+
+    @Test fun `P1 Codex r5 una marca invisible pegada no bloquea un numero bueno`() {
+        assertEquals("+525591873922", manda("55 9187 \u034F3922", mexico))
+        assertEquals("+525591873922", manda("\u200E55 9187 3922\u200F", mexico))
+        assertNull(avisoDelCampo(filtrarTecleoDelCampoConBandera("55 9187 \u034F3922"), mexico))
     }
 
     @Test fun `P1 lo de siempre sigue pasando`() {

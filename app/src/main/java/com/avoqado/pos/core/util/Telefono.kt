@@ -124,7 +124,8 @@ fun avisoDelTelefono(digitos: String, lada: String, pais: String): String? {
         // primero: «Falta 1 dígito» no arregla un «0» al principio (Codex r3 del 24-nov).
         // Norteamérica: el «1» de larga distancia delante («1 202 555 0123») es válido con 11 dígitos; mientras se teclea
         // no es error (Codex r4 del 24-nov).
-        lada == LADA_NORTEAMERICA && digitos[0] == '1' && digitos.length < 11 ->
+        // Sólo si lo que sigue al «1» puede ser un número (2-9): «+1 102 555 0123» es un error, no algo a medias (Codex r5).
+        lada == LADA_NORTEAMERICA && digitos[0] == '1' && digitos.length < 11 && (digitos.length == 1 || digitos[1] in '2'..'9') ->
             conCuantos(11 - digitos.length, "Falta", "Faltan") + ": con el 1 delante, un número de $pais lleva 11"
         (lada == LADA_MEXICO || lada == LADA_NORTEAMERICA) && digitos[0] in "01" -> "Un número de $pais no empieza con ${digitos[0]}"
         digitos.length < rango.first -> conCuantos(rango.first - digitos.length, "Falta", "Faltan") + ": un número de $pais lleva $lleva"
@@ -159,7 +160,9 @@ private fun normalizar(texto: String): String = buildString {
     for (c in texto) {
         val tipo = Character.getType(c)
         when {
-            tipo == Character.FORMAT.toInt() -> Unit
+            // Marcas invisibles de copiar y pegar: de formato (U+200E, U+202E…) y las que se pegan a otra letra sin verse
+            // (U+034F…). Ya no se borra nada más en el campo con bandera, así que éstas no pueden quedar como «Quita « »» (Codex r5).
+            tipo == Character.FORMAT.toInt() || tipo == Character.NON_SPACING_MARK.toInt() || tipo == Character.ENCLOSING_MARK.toInt() -> Unit
             Character.isDigit(c) -> Character.digit(c, 10).takeIf { it >= 0 }?.let { append('0' + it) } ?: append(c)
             c == '＋' || c == '﹢' || c == '⁺' -> append('+')   // también el «+» chico de copiar y pegar (Codex r3 del 24-nov)
             c == '（' -> append('(')
