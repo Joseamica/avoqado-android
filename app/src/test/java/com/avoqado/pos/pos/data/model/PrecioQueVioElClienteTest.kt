@@ -201,4 +201,80 @@ class PrecioQueVioElClienteTest {
         "Café bajó de precio: ahora cuesta \$45.00.",
         avisoDePrecioDeLaCreacion(listOf(cambio("e1", 5000, 4500)), totalNuevoCents = 4500, totalAntesCents = null),
     )
+
+    // MARK: - Encargo 65076b: el precio que vio el cliente de los EXTRAS
+
+    private fun queso(precio: Int) = SelectedModifier("g1", "Extras", "m-queso", "Queso", precio)
+    private fun tocino(precio: Int) = SelectedModifier("g1", "Extras", "m-tocino", "Tocino", precio)
+
+    private fun hamburguesa(vararg extras: SelectedModifier, precio: Int = 16800, cantidad: Int = 1) = CartItem(
+        id = "e1", type = CartItemType.ProductItem("p1"), name = "Hamburguesa", unitPrice = precio, quantity = cantidad,
+        selectedModifiers = extras.toList(), catalogAt = "2026-10-17T15:00:00.000Z",
+    )
+
+    private fun cambioDeExtra(id: String?, modifierId: String, de: Int, a: Int) =
+        CambioDePrecio(id, "p1", "Hamburguesa", "2026-10-17T15:00:00.000Z", de, a, modifierId = modifierId)
+
+    @Test fun `P1 el cambio de un extra corrige ESE extra y no el precio del producto`() {
+        val r = aplicarCambiosDePrecio(listOf(hamburguesa(queso(1500), tocino(2000))), listOf(cambioDeExtra("e1", "m-queso", 1500, 2000)))
+        val linea = r.single()
+        assertEquals("el producto no se toca", 16800, linea.unitPrice)
+        assertEquals(listOf(2000, 2000), linea.selectedModifiers.map { it.priceInCents })
+        assertEquals(listOf("m-queso", "m-tocino"), linea.selectedModifiers.map { it.modifierId })
+    }
+
+    @Test fun `P1 un extra elegido varias veces se corrige en todas sus veces`() {
+        val r = aplicarCambiosDePrecio(listOf(hamburguesa(queso(1500), queso(1500), queso(1500))), listOf(cambioDeExtra("e1", "m-queso", 1500, 2000)))
+        assertEquals(listOf(2000, 2000, 2000), r.single().selectedModifiers.map { it.priceInCents })
+        assertEquals(16800 + 6000, r.single().totalPrice)
+    }
+
+    @Test fun `P1 producto y extra de la misma línea se corrigen los dos, en cualquier orden`() {
+        val cambios = listOf(cambioDeExtra("e1", "m-queso", 1500, 1000), cambio("e1", 16800, 15000))
+        val linea = aplicarCambiosDePrecio(listOf(hamburguesa(queso(1500))), cambios).single()
+        assertEquals(15000, linea.unitPrice)
+        assertEquals(1000, linea.selectedModifiers.single().priceInCents)
+    }
+
+    @Test fun `el aviso nombra al extra`() {
+        assertEquals(
+            "Queso (extra de Hamburguesa) cambió de precio: ahora cuesta \$20.00.",
+            avisoDeCambioDePrecio(listOf(cambioDeExtra("e1", "m-queso", 1500, 2000)), items = listOf(hamburguesa(queso(1500)))),
+        )
+        assertEquals(
+            "Un extra de Hamburguesa bajó de precio: ahora cuesta \$10.00.",
+            avisoDeCambioDePrecio(listOf(cambioDeExtra("e1", "m-queso", 1500, 1000))),
+        )
+    }
+
+    @Test fun `el producto y su extra con el mismo precio nuevo se dicen los dos`() =
+        assertEquals(2, avisoDeCambioDePrecio(listOf(cambio("e1", 1500, 2000), cambioDeExtra("e1", "m-queso", 1500, 2000))).lines().size)
+
+    @Test fun `acumular junta por línea Y por extra`() {
+        val acumulados = acumularCambiosDePrecio(
+            listOf(cambio("e1", 16800, 17000), cambioDeExtra("e1", "m-queso", 1500, 2000)),
+            listOf(cambioDeExtra("e1", "m-queso", 2000, 1800)),
+        )
+        assertEquals(listOf(cambio("e1", 16800, 17000), cambioDeExtra("e1", "m-queso", 1500, 1800)), acumulados)
+    }
+
+    @Test fun `el 409 y el 201 leen el extra del cambio`() {
+        val extra = """{"externalId":"e1","productId":"p1","productName":"Hamburguesa","modifierId":"m-queso",
+            "catalogAt":"2026-10-17T15:00:00.000Z","displayedUnitPriceCents":1500,"unitPriceCents":2000}"""
+        assertEquals(
+            listOf(cambioDeExtra("e1", "m-queso", 1500, 2000)),
+            OrderRepository.leerCambiosDePrecio("""{"code":"ORDER_PRICE_CHANGED","details":{"priceChanges":[$extra]}}"""),
+        )
+        val orden = Json { ignoreUnknownKeys = true }.decodeFromString(OrderData.serializer(), """{"id":"o","priceChanges":[$extra]}""")
+        assertEquals("m-queso", orden.priceChanges.single().modifierId)
+    }
+
+    @Test fun `P1 un 201 que corrige un extra congela el descuento de cuenta con el monto que viajó`() {
+        val antes = CartState(items = listOf(hamburguesa(queso(1500), precio = 8500)), orderDiscount = diezPorCiento)
+        assertEquals(1000, antes.orderDiscountCents)
+        val corregido = antes.conPreciosDelServidor(listOf(cambioDeExtra("e1", "m-queso", 1500, 1000)))
+        assertEquals(9500, corregido.subtotalCents)
+        assertEquals(1000, corregido.orderDiscountCents)
+        assertEquals(8500, corregido.totalCents)
+    }
 }

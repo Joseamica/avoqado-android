@@ -105,6 +105,59 @@ class PrecioMostradoEnElPedidoTest {
         assertEquals(4500, l.getValue("displayedUnitPrice").jsonPrimitive.int)
     }
 
+    // MARK: - Encargo 65076b: el precio de cada EXTRA que vio el cliente
+
+    private fun extra(id: String, precio: Int, nombre: String = id) =
+        com.avoqado.pos.pos.data.model.SelectedModifier("g1", "Extras", id, nombre, precio)
+
+    @Test
+    fun `P1 una línea del catálogo con extras manda el precio de cada extra que vio el cliente`() {
+        val l = pedido(
+            CartItem(id = "e1", type = CartItemType.ProductItem("p1"), name = "Hamburguesa", unitPrice = 16800, catalogAt = cat,
+                selectedModifiers = listOf(extra("m-queso", 1500), extra("m-tocino", 2000))),
+        ).linea()
+        val precios = l.getValue("displayedModifierPrices").jsonObject
+        assertEquals(1500, precios.getValue("m-queso").jsonPrimitive.int)
+        assertEquals(2000, precios.getValue("m-tocino").jsonPrimitive.int)
+        assertEquals(2, precios.size)
+        assertEquals(cat, l.getValue("catalogAt").jsonPrimitive.content)
+        assertEquals("e1", l.getValue("externalId").jsonPrimitive.content)
+    }
+
+    @Test
+    fun `un extra elegido varias veces va una vez, por unidad`() {
+        val l = pedido(
+            CartItem(id = "e1", type = CartItemType.ProductItem("p1"), name = "Flautas", unitPrice = 9000, catalogAt = cat,
+                selectedModifiers = listOf(extra("m-papa", 500), extra("m-papa", 500), extra("m-pollo", 0))),
+        ).linea()
+        val precios = l.getValue("displayedModifierPrices").jsonObject
+        assertEquals(mapOf("m-papa" to 500, "m-pollo" to 0), precios.mapValues { it.value.jsonPrimitive.int })
+        // Las veces siguen viajando como siempre: una por elección.
+        assertEquals(listOf("m-papa", "m-papa", "m-pollo"), l.getValue("modifierIds").jsonArray.map { it.jsonPrimitive.content })
+    }
+
+    @Test
+    fun `sin extras, o sin hora de catálogo, no viaja la llave`() {
+        val sinExtras = pedido(CartItem(id = "e1", type = CartItemType.ProductItem("p1"), name = "Café", unitPrice = 4500, catalogAt = cat)).linea()
+        assertFalse(sinExtras.containsKey("displayedModifierPrices"))
+        val sinHora = pedido(
+            CartItem(id = "e1", type = CartItemType.ProductItem("p1"), name = "Hamburguesa", unitPrice = 16800,
+                selectedModifiers = listOf(extra("m-queso", 1500))),
+        ).linea()
+        assertFalse(sinHora.containsKey("displayedModifierPrices"))
+        assertEquals(listOf("m-queso"), sinHora.getValue("modifierIds").jsonArray.map { it.jsonPrimitive.content })
+    }
+
+    @Test
+    fun `P1 en la cola sin red (isOfflineReplay) también viaja el precio del extra`() {
+        val l = pedido(
+            CartItem(id = "e1", type = CartItemType.ProductItem("p1"), name = "Hamburguesa", unitPrice = 16800, catalogAt = cat,
+                selectedModifiers = listOf(extra("m-queso", 1500))),
+            isOfflineReplay = true, createdAtLocal = 1_760_000_000_000L,
+        ).linea()
+        assertEquals(1500, l.getValue("displayedModifierPrices").jsonObject.getValue("m-queso").jsonPrimitive.int)
+    }
+
     // MARK: - D12: el «Ajuste de precio» viaja como adjustedUnitPrice
 
     private fun playera(

@@ -23,6 +23,11 @@ data class CambioDePrecio(
     val catalogAt: String? = null,
     val displayedUnitPriceCents: Int,
     val unitPriceCents: Int,
+    /**
+     * Encargo 65076b: con él, el cambio es de ESE extra de la línea (los centavos son del extra, por unidad); sin él, del producto.
+     * Al final y con default: los constructores posicionales de siempre siguen siendo cambios de producto.
+     */
+    val modifierId: String? = null,
 )
 
 const val TITULO_AVISO_DE_PRECIO = "Revisa el precio"
@@ -34,20 +39,46 @@ const val TITULO_AVISO_DE_PRECIO = "Revisa el precio"
 const val MENSAJE_RESERVA_SIN_RETIRAR = "No se pudo guardar en el aparato que el cobro anterior no se hizo. Vuelve a intentar."
 
 /**
- * Corrige `unitPrice` SÓLO de la línea de producto que el servidor nombró (`id == externalId`); todo lo demás queda intacto.
+ * Corrige SÓLO la línea de producto que el servidor nombró (`id == externalId`); todo lo demás queda intacto. Un cambio sin
+ * `modifierId` corrige su `unitPrice`; uno con `modifierId` (encargo 65076b) corrige el precio de ESE extra en todas sus veces,
+ * nunca el del producto.
  * 🔴 Por identidad de línea, nunca por `productId`: el mismo producto puede ir en dos líneas con precios mostrados distintos.
  */
 fun aplicarCambiosDePrecio(items: List<CartItem>, cambios: List<CambioDePrecio>): List<CartItem> = items.map { item ->
     if (item.type !is CartItemType.ProductItem) return@map item
-    val cambio = cambios.firstOrNull { it.externalId == item.id } ?: return@map item
-    item.copy(unitPrice = cambio.unitPriceCents)
+    val deLaLinea = cambios.filter { it.externalId == item.id }
+    if (deLaLinea.isEmpty()) return@map item
+    val delProducto = deLaLinea.firstOrNull { it.modifierId == null }
+    val deExtras = deLaLinea.filter { it.modifierId != null }.associateBy { it.modifierId }
+    item.copy(
+        unitPrice = delProducto?.unitPriceCents ?: item.unitPrice,
+        selectedModifiers = if (deExtras.isEmpty()) item.selectedModifiers else item.selectedModifiers.map { extra ->
+            deExtras[extra.modifierId]?.let { extra.copy(priceInCents = it.unitPriceCents) } ?: extra
+        },
+    )
 }
 
-/** El aviso al cajero: un renglón por producto y precio distintos, luego el cambio de más y el total nuevo si aplican. */
-fun avisoDeCambioDePrecio(cambios: List<CambioDePrecio>, totalNuevoCents: Int? = null, cambioDeMasCents: Int = 0): String {
-    val renglones = cambios.distinctBy { it.productId to it.unitPriceCents }.map { c ->
+/** El renglón de un cambio: el producto, o «Queso (extra de Hamburguesa)» con el nombre del extra que trae el carrito. */
+private fun queCambio(c: CambioDePrecio, items: List<CartItem>): String {
+    val id = c.modifierId ?: return "${c.productName} "
+    val nombre = items.asSequence().filter { it.id == c.externalId }.flatMap { it.selectedModifiers }
+        .firstOrNull { it.modifierId == id }?.modifierName?.takeIf { it.isNotBlank() }
+    return if (nombre != null) "$nombre (extra de ${c.productName}) " else "Un extra de ${c.productName} "
+}
+
+/**
+ * El aviso al cajero: un renglón por producto (o extra) y precio distintos, luego el cambio de más y el total nuevo si aplican.
+ * [items] sólo sirve para nombrar al extra; sin él se dice «Un extra de <producto>».
+ */
+fun avisoDeCambioDePrecio(
+    cambios: List<CambioDePrecio>,
+    totalNuevoCents: Int? = null,
+    cambioDeMasCents: Int = 0,
+    items: List<CartItem> = emptyList(),
+): String {
+    val renglones = cambios.distinctBy { Triple(it.productId, it.modifierId, it.unitPriceCents) }.map { c ->
         val verbo = if (c.unitPriceCents < c.displayedUnitPriceCents) "bajó" else "cambió"
-        "${c.productName} $verbo de precio: ahora cuesta ${formatMoneyFromCents(c.unitPriceCents)}."
+        "${queCambio(c, items)}$verbo de precio: ahora cuesta ${formatMoneyFromCents(c.unitPriceCents)}."
     }.toMutableList()
     if (cambioDeMasCents > 0) renglones += "Devuelve ${formatMoneyFromCents(cambioDeMasCents)} más de cambio."
     totalNuevoCents?.let { renglones += "Total nuevo: ${formatMoneyFromCents(it)}." }
@@ -55,13 +86,13 @@ fun avisoDeCambioDePrecio(cambios: List<CambioDePrecio>, totalNuevoCents: Int? =
 }
 
 /**
- * Junta las correcciones de UNA venta (p. ej. un 409 y luego el 201 del reintento): una entrada por `externalId`, con el ÚLTIMO
+ * Junta las correcciones de UNA venta (p. ej. un 409 y luego el 201 del reintento): una entrada por `externalId` y extra, con el ÚLTIMO
  * precio cobrado y el PRIMER precio mostrado —el que vio el cajero; el intermedio nunca lo vio—. Los cambios sin `externalId`
  * no se correlacionan y se suman tal cual. Igual que `acumular` de iOS.
  */
 fun acumularCambiosDePrecio(acumulados: List<CambioDePrecio>, nuevos: List<CambioDePrecio>): List<CambioDePrecio> =
     nuevos.fold(acumulados) { lista, c ->
-        val i = c.externalId?.let { id -> lista.indexOfFirst { it.externalId == id } } ?: -1
+        val i = c.externalId?.let { id -> lista.indexOfFirst { it.externalId == id && it.modifierId == c.modifierId } } ?: -1
         if (i < 0) lista + c else lista.toMutableList().also { it[i] = c.copy(displayedUnitPriceCents = lista[i].displayedUnitPriceCents) }
     }
 
@@ -76,11 +107,12 @@ fun avisoDePrecioDeLaCreacion(
     totalNuevoCents: Int?,
     totalAntesCents: Int?,
     cambioDeMasCents: Int = 0,
+    items: List<CartItem> = emptyList(),
 ): String? {
     val visibles = cambios.filter { it.displayedUnitPriceCents != it.unitPriceCents }
     val total = totalNuevoCents?.takeIf { totalAntesCents != null }?.takeUnless { visibles.isEmpty() && it == totalAntesCents }
     if (visibles.isEmpty() && total == null && cambioDeMasCents <= 0) return null
-    return avisoDeCambioDePrecio(visibles, total, cambioDeMasCents)
+    return avisoDeCambioDePrecio(visibles, total, cambioDeMasCents, items)
 }
 
 /**

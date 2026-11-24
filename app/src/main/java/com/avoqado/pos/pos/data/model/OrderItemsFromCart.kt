@@ -125,8 +125,17 @@ private fun CartItem.toOrderItemRequest(): OrderItemRequest {
         externalId = id.takeIf { isCortesia || delCatalogo || serviceCourse?.preparationVersion == 1 },
         displayedUnitPrice = unitPrice.takeIf { delCatalogo },
         catalogAt = catalogAt.takeIf { delCatalogo },
+        displayedModifierPrices = preciosDeExtrasQueVioElCliente().takeIf { delCatalogo && it.isNotEmpty() },
         adjustedUnitPrice = ajusteQueViaja(),
     )
+}
+
+/**
+ * Encargo 65076b: el precio de catálogo de cada extra con que se agregó la línea, por unidad. Un extra elegido varias veces va una
+ * sola vez (todas sus veces nacen de la misma selección, con el mismo precio); si llegaran a diferir, gana la primera.
+ */
+internal fun CartItem.preciosDeExtrasQueVioElCliente(): Map<String, Int> = buildMap<String, Int> {
+    selectedModifiers.forEach { if (it.modifierId.isNotBlank() && it.modifierId !in this) put(it.modifierId, it.priceInCents) }
 }
 
 /**
