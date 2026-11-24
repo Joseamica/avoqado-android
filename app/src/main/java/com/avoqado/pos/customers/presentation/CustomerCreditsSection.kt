@@ -134,18 +134,13 @@ fun CustomerCreditsSection(
     }
 
     showRedeemConfirm?.let { item ->
-        AvoqadoDialog(
-            title = "Canjear crédito",
-            description = if (item.unlimited) "Se registrará 1 uso del Ilimitado de ${item.productName}. Esta acción no se puede deshacer."
-            else "Se descontará 1 de ${item.productName}. Esta acción no se puede deshacer.",
+        ConfirmarCanjeDialog(
+            item = item,
             onDismiss = { showRedeemConfirm = null },
-            actionButton = {
-                PrimaryButton(text = "Canjear", onClick = {
-                    viewModel.redeem(item.id, customer.id)
-                    showRedeemConfirm = null
-                })
+            onConfirm = {
+                viewModel.redeem(item.id, customer.id)
+                showRedeemConfirm = null
             },
-            content = {},
         )
     }
 
@@ -156,6 +151,19 @@ fun CustomerCreditsSection(
             onDismiss = { showSell = false },
         )
     }
+}
+
+/** La confirmación antes de registrar un uso. La usan la ficha del cliente y la tarjeta «Membresías» del carrito (D687). */
+@Composable
+internal fun ConfirmarCanjeDialog(item: CreditBalanceItem, onDismiss: () -> Unit, onConfirm: () -> Unit) {
+    AvoqadoDialog(
+        title = "Canjear crédito",
+        description = if (item.unlimited) "Se registrará 1 uso del Ilimitado de ${item.productName}. Esta acción no se puede deshacer."
+        else "Se descontará 1 de ${item.productName}. Esta acción no se puede deshacer.",
+        onDismiss = onDismiss,
+        actionButton = { PrimaryButton(text = "Canjear", onClick = onConfirm) },
+        content = {},
+    )
 }
 
 @Composable
