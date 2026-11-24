@@ -58,6 +58,8 @@ class PapelDelAparatoGateViewModelTest {
     }
     private val repo = AreaTicketRepository(api = api, secureStorage = storage, session = AreaTicketSession(storage), payloadCache = cache)
     private val carrito = ActiveCartState()
+    /** El carrito de Cobrar: la señal guarda la parte de cada carrito por su dueño (encargo f7529d). */
+    private val carritoDeCobrar = Any()
     private var permiso = true
     private val roles = mockk<RoleManager> {
         every { hasVenuePermission("area-tickets:configure", any()) } answers { permiso }
@@ -448,12 +450,12 @@ class PapelDelAparatoGateViewModelTest {
     fun `P1 a media venta la compuerta no interrumpe y pregunta en el siguiente momento`() = runTest {
         respondeAjustes(ajustes())
         val vm = vm()
-        carrito.update(itemCount = 2, totalDisplay = "$40.00")
+        carrito.update(dueno = carritoDeCobrar, itemCount = 2, totalDisplay = "$40.00")
 
         vm.consultar(disparo(1))
         assertNull(vm.hoja.value)
 
-        carrito.clear()
+        carrito.update(dueno = carritoDeCobrar, itemCount = 0, totalDisplay = "$0.00")
         vm.consultar(disparo(2)) // no se calló: la venta no es un «Ahora no»
         assertNotNull(vm.hoja.value)
     }
@@ -463,7 +465,7 @@ class PapelDelAparatoGateViewModelTest {
         respondeAjustes(ajustes())
         val vm = vm()
         vm.consultar(disparo(1))
-        carrito.update(itemCount = 1, totalDisplay = "$10.00")
+        carrito.update(dueno = carritoDeCobrar, itemCount = 1, totalDisplay = "$10.00")
 
         vm.elegir(PapelDelAparato.Cobra)
         vm.guardar()

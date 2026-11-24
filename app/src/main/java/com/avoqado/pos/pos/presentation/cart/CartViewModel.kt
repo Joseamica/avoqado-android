@@ -716,6 +716,17 @@ class CartViewModel @Inject constructor(
 ) : ViewModel() {
 
     private val _cartState = MutableStateFlow(defaultCartState())
+
+    /**
+     * La parte de ESTE carrito en la señal «hay venta a medias» ([ActiveCartState]). Una llave propia (no el ViewModel)
+     * para que la señal, que es de todo el aparato, no retenga al carrito. Se suelta en [onCleared].
+     */
+    private val duenoDeLaVentaAMedias = Any()
+
+    override fun onCleared() {
+        activeCartState.soltar(duenoDeLaVentaAMedias)
+        super.onCleared()
+    }
     val cartState: StateFlow<CartState> = _cartState.asStateFlow()
 
     /**
@@ -1437,10 +1448,11 @@ class CartViewModel @Inject constructor(
             }
         }
 
-        // Keep ActiveCartState in sync so other screens can check if cart has items
+        // Keep ActiveCartState in sync so other screens can check if cart has items.
+        // Con dueño (encargo f7529d): el carrito vacío de una mesa ya no pisa la venta a medias de Cobrar.
         viewModelScope.launch {
             _cartState.collect { state ->
-                activeCartState.update(state.itemCount, state.totalDisplay)
+                activeCartState.update(duenoDeLaVentaAMedias, state.itemCount, state.totalDisplay)
                 // Espejo a la pantalla del cliente (POS de doble pantalla): el
                 // cliente ve su carrito en vivo mientras el cajero teclea.
                 // No-op en equipos de una sola pantalla.
