@@ -137,6 +137,20 @@ class PrecioMostradoEnElPedidoTest {
     }
 
     @Test
+    fun `P1 un extra con dos precios en la misma línea no se manda (Codex r1 #2)`() {
+        val l = pedido(
+            CartItem(id = "e1", type = CartItemType.ProductItem("p1"), name = "Hamburguesa", unitPrice = 10000, catalogAt = cat,
+                selectedModifiers = listOf(extra("m-queso", 1500), extra("m-queso", 2000), extra("m-tocino", 1000))),
+        ).linea()
+        assertEquals(mapOf("m-tocino" to 1000), l.getValue("displayedModifierPrices").jsonObject.mapValues { it.value.jsonPrimitive.int })
+        val soloQueso = pedido(
+            CartItem(id = "e1", type = CartItemType.ProductItem("p1"), name = "Hamburguesa", unitPrice = 10000, catalogAt = cat,
+                selectedModifiers = listOf(extra("m-queso", 1500), extra("m-queso", 2000))),
+        ).linea()
+        assertFalse(soloQueso.containsKey("displayedModifierPrices"))
+    }
+
+    @Test
     fun `sin extras, o sin hora de catálogo, no viaja la llave`() {
         val sinExtras = pedido(CartItem(id = "e1", type = CartItemType.ProductItem("p1"), name = "Café", unitPrice = 4500, catalogAt = cat)).linea()
         assertFalse(sinExtras.containsKey("displayedModifierPrices"))

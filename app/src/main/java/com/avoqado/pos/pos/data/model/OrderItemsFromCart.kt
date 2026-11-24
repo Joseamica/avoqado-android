@@ -132,11 +132,13 @@ private fun CartItem.toOrderItemRequest(): OrderItemRequest {
 
 /**
  * Encargo 65076b: el precio de catálogo de cada extra con que se agregó la línea, por unidad. Un extra elegido varias veces va una
- * sola vez (todas sus veces nacen de la misma selección, con el mismo precio); si llegaran a diferir, gana la primera.
+ * sola vez. 🔴 Codex r1 #2: si sus veces traen precios distintos (dos lecturas del catálogo en la misma ficha), el SERVIDOR sólo
+ * sabe un precio por extra y cobraría ese en todas: ese extra no se manda y queda como antes (el precio de hoy).
  */
-internal fun CartItem.preciosDeExtrasQueVioElCliente(): Map<String, Int> = buildMap<String, Int> {
-    selectedModifiers.forEach { if (it.modifierId.isNotBlank() && it.modifierId !in this) put(it.modifierId, it.priceInCents) }
-}
+internal fun CartItem.preciosDeExtrasQueVioElCliente(): Map<String, Int> =
+    selectedModifiers.filter { it.modifierId.isNotBlank() }.groupBy { it.modifierId }
+        .mapNotNull { (id, veces) -> veces.map { it.priceInCents }.distinct().singleOrNull()?.let { id to it } }
+        .toMap()
 
 /**
  * D12: el «Ajuste de precio» que viaja como `adjustedUnitPrice`: sólo un producto, nunca una cortesía, y sólo si BAJA el precio (si
