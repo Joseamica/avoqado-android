@@ -3957,7 +3957,7 @@ class CartViewModel @Inject constructor(
                                 if (it.identidadDeVenta == s.venta.identidadDeVenta) it.conPreciosDelServidor(d.cambios, congelar = false) else it
                             }
                             refreshProducts()
-                            avisoDeCambioDePrecio(d.cambios, totalNuevoCents = _cartState.value.totalCents)
+                            avisoDeCambioDePrecio(d.cambios, totalNuevoCents = _cartState.value.totalCents, items = s.venta.items)
                         } else {
                             d.mensaje
                         }
@@ -3997,7 +3997,7 @@ class CartViewModel @Inject constructor(
         if (d.cambios.isEmpty()) return s to d.mensaje
         val corregida = s.venta.conPreciosDelServidor(d.cambios, congelar = false)
         refreshProducts()
-        return s.copy(venta = corregida) to avisoDeCambioDePrecio(d.cambios, totalNuevoCents = corregida.totalCents)
+        return s.copy(venta = corregida) to avisoDeCambioDePrecio(d.cambios, totalNuevoCents = corregida.totalCents, items = corregida.items)
     }
 
     /**
