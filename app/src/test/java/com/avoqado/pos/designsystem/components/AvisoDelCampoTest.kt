@@ -62,6 +62,33 @@ class AvisoDelCampoTest {
         assertNull(manda("﹢1 202 555 0123", espana))        // r3: el «+» chico de copiar y pegar ya cuenta como «+»
         assertNull(manda("⁺1 202 555 0123", espana))
         assertEquals("+12025550123", manda("﹢1 202 555 0123", Countries.byIso("US")))
+        // r4: nada se borra en silencio.
+        assertNull(manda("₊1 202 555 0123", espana))
+        assertNull(manda("+52 55 9187 392 ext. 2", mexico))
+        assertNull(manda("()", mexico))
+        assertNull(manda("55 9187 39a2", mexico))
+    }
+
+    @Test fun `P1 Codex r4 lo que no es de un telefono se queda a la vista y se dice`() {
+        assertEquals(
+            AvisoDelCampo("Quita «ext» del número: sólo lleva dígitos", true),
+            avisoDelCampo(filtrarTecleoDelCampoConBandera("+52 55 9187 392 ext. 2"), mexico),
+        )
+        assertEquals(
+            AvisoDelCampo("Quita «₊» del número: sólo lleva dígitos", true),
+            avisoDelCampo(filtrarTecleoDelCampoConBandera("₊1 202 555 0123"), espana),
+        )
+        assertEquals(AvisoDelCampo("Escribe el número", false), avisoDelCampo("()", mexico))
+    }
+
+    @Test fun `P1 Codex r4 el 1 de larga distancia en EE UU no es error mientras se teclea`() {
+        val us = Countries.byIso("US")
+        assertEquals(
+            AvisoDelCampo("Faltan 9 dígitos: con el 1 delante, un número de Estados Unidos lleva 11", false),
+            avisoDelCampo("1 2", us),
+        )
+        assertEquals("+12025550123", manda("1 202 555 0123", us))
+        assertEquals(AvisoDelCampo("Un número de México no empieza con 1", true), avisoDelCampo("1 2", mexico))
     }
 
     @Test fun `P1 lo de siempre sigue pasando`() {

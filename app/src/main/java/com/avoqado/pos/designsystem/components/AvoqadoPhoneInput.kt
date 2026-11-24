@@ -39,6 +39,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.core.util.avisoDelTelefono
+import com.avoqado.pos.core.util.caracteresAjenos
 import com.avoqado.pos.core.util.digitosDelCampo
 import com.avoqado.pos.core.util.masBienPuesto
 import com.avoqado.pos.core.util.filtrarTecleoDelCampoConBandera
@@ -211,6 +212,9 @@ internal data class AvisoDelCampo(val texto: String, val esError: Boolean)
 internal fun avisoDelCampo(escrito: String, pais: Country): AvisoDelCampo? {
     val digitos = digitosDelCampo(escrito, pais.dialCode)
     if (digitos.isEmpty()) return null
+    val ajenos = caracteresAjenos(escrito)
+    if (ajenos.isNotEmpty()) return AvisoDelCampo("Quita «$ajenos» del número: sólo lleva dígitos", esError = true)
+    if (digitos.startsWith("?")) return AvisoDelCampo("Escribe el número", esError = false)
     if (!digitos.startsWith("+")) {
         val texto = avisoDelTelefono(digitos, pais.dialCode, pais.name) ?: return null
         return AvisoDelCampo(texto, esError = !texto.startsWith("Falta"))

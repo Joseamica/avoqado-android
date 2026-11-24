@@ -41,10 +41,16 @@ fun digitosNacionales(texto: String, lada: String = LADA_MEXICO): String {
 fun filtrarTecleoDeTelefono(texto: String): String = normalizar(texto)
 
 /**
- * Lo que deja escribir el campo con bandera: lo normalizado, pero sólo dígitos, espacios, «+», paréntesis, guiones y
- * puntos. Una letra no aparece (como siempre en ese campo); lo que se ve es lo que se usa.
+ * Lo que deja escribir el campo con bandera: lo normalizado, sin borrar nada más. 🔴 Antes se borraban en silencio letras y
+ * signos desconocidos, y eso cambiaba el número: «+52 55 9187 392 ext. 2» pasaba como «5591873922» y «₊1 202…» con España
+ * salía a «+3412025550123» (Codex r3 y r4 del 24-nov). Ahora se quedan a la vista, el número no pasa ([digitosDelCampo]) y
+ * el campo dice qué quitar ([caracteresAjenos]), como el campo de las tarjetas de regalo.
  */
-fun filtrarTecleoDelCampoConBandera(texto: String): String = normalizar(texto).filter { it in '0'..'9' || it in " +()-." }
+fun filtrarTecleoDelCampoConBandera(texto: String): String = normalizar(texto)
+
+/** Lo escrito que no es parte de un teléfono (letras, «₊», «*»…), sin repetir y en orden, para decir qué quitar. */
+fun caracteresAjenos(escrito: String): String =
+    sinAdornos(escrito).filter { it !in '0'..'9' && it !in "+()." }.toList().distinct().joinToString("")
 
 /**
  * El texto que enseña el campo con bandera: lo que la persona escribió (con su «+», que dice la lada) mientras siga dando los
@@ -89,11 +95,14 @@ fun digitosNacionalesValidos(lada: String): IntRange =
  *   «+34 612 345 678» salía a «+5234612345678».
  * - un «+» que no va al principio («.+7 912…»): antes se ignoraba y el número pasaba con la lada elegida.
  * - la lada sola, sin número («+», «+52», «+52 1»): antes llegaba vacío y Reservas guardaba sin teléfono con «+52» a la vista.
+ * Y «?» y los dígitos si trae algo que no es de un teléfono («ext.», «₊», una letra) o sólo signos («()»).
  */
 fun digitosDelCampo(escrito: String, lada: String): String {
     val limpio = sinAdornos(escrito)
-    if ('+' !in limpio) return digitosNacionales(escrito, lada)
     val digitos = limpio.filter { it in '0'..'9' }
+    // Algo que no es parte de un teléfono, o signos sin un solo dígito («()»): no se adivina, no pasa (Codex r4).
+    if (caracteresAjenos(escrito).isNotEmpty() || (digitos.isEmpty() && limpio.isNotEmpty() && '+' !in limpio)) return "?$digitos"
+    if ('+' !in limpio) return digitosNacionales(escrito, lada)
     if (masFueraDeLugar(limpio) || !digitos.startsWith(lada)) return "+$digitos"
     return digitosNacionales(escrito, lada).ifEmpty { "+$digitos" }
 }
@@ -107,12 +116,16 @@ fun masBienPuesto(escrito: String): Boolean = !masFueraDeLugar(sinAdornos(escrit
  */
 fun avisoDelTelefono(digitos: String, lada: String, pais: String): String? {
     if (digitos.isEmpty()) return null
-    if (digitos.any { it !in '0'..'9' }) return "Revisa la lada del número"   // el campo lo dice con más detalle
+    if (digitos.any { it !in '0'..'9' }) return "Revisa el número"   // el campo lo dice con más detalle
     val rango = digitosNacionalesValidos(lada)
     val lleva = if (rango.first == rango.last) "${rango.first}" else "de ${rango.first} a ${rango.last}"
     return when {
         // Ni en México ni en Norteamérica un número empieza con 0 o 1 (el «1» de México es el prefijo viejo del celular). Va
         // primero: «Falta 1 dígito» no arregla un «0» al principio (Codex r3 del 24-nov).
+        // Norteamérica: el «1» de larga distancia delante («1 202 555 0123») es válido con 11 dígitos; mientras se teclea
+        // no es error (Codex r4 del 24-nov).
+        lada == LADA_NORTEAMERICA && digitos[0] == '1' && digitos.length < 11 ->
+            conCuantos(11 - digitos.length, "Falta", "Faltan") + ": con el 1 delante, un número de $pais lleva 11"
         (lada == LADA_MEXICO || lada == LADA_NORTEAMERICA) && digitos[0] in "01" -> "Un número de $pais no empieza con ${digitos[0]}"
         digitos.length < rango.first -> conCuantos(rango.first - digitos.length, "Falta", "Faltan") + ": un número de $pais lleva $lleva"
         digitos.length > rango.last -> conCuantos(digitos.length - rango.last, "Sobra", "Sobran") + ": un número de $pais lleva $lleva"
