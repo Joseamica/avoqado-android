@@ -213,7 +213,8 @@ private fun ContenidoDelCliente(
         LocalLifecycleOwner provides dueño,
         LocalConfiguration provides configuracion,
     ) {
-        AvoqadoTheme(darkTheme = false) {
+        // Modo ligero (hz:a5fa2439:D2): el reposo del letrero queda quieto y sin onda del clic, igual que la caja.
+        ConModoLigero { AvoqadoTheme(darkTheme = false) {
             val kioskOn by kiosco.enabled.collectAsState()
             if (kioskOn) {
                 val venueName by estado.venueName.collectAsState()
@@ -227,7 +228,7 @@ private fun ContenidoDelCliente(
                 onWhatsApp = { estado.onWhatsAppSubmit?.invoke(it) },
                 onEmail = { estado.onEmailSubmit?.invoke(it) },
             )
-        }
+        } }
     }
     LaunchedEffect(Unit) {
         withFrameNanos { }   // el primer cuadro se compone…

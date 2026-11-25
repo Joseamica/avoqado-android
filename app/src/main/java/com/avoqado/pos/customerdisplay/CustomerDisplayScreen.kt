@@ -35,6 +35,11 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.State
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.mutableFloatStateOf
+import com.avoqado.pos.designsystem.LocalModoLigero
+import com.avoqado.pos.designsystem.relojAPasos
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
@@ -215,11 +220,14 @@ private fun IdleBranding(venueName: String?, logoUrl: String?, design: AppliedDe
  */
 @Composable
 private fun AvoqadoIdleBranding() {
-    val enter = remember { Animatable(0f) }
-    LaunchedEffect(Unit) { enter.animateTo(1f, tween(1200)) }
+    // Modo ligero (POS de Windows sin tarjeta de video, hz:a5fa2439:D2): sin entrada y con el halo quieto; lo que se
+    // mueve es la aurora, a saltos de 30 s. En Android nunca.
+    val ligero = LocalModoLigero.current
+    val enter = remember { Animatable(if (ligero) 1f else 0f) }
+    LaunchedEffect(ligero) { if (ligero) enter.snapTo(1f) else enter.animateTo(1f, tween(1200)) }
     // El halo late más despacio que el logo para que no se sienta un latido
     // único y mecánico.
-    val halo by rememberInfiniteTransition(label = "halo").animateFloat(
+    val halo by if (ligero) remember { mutableFloatStateOf(HALO_QUIETO) } else rememberInfiniteTransition(label = "halo").animateFloat(
         initialValue = 0.82f,
         targetValue = 1.12f,
         animationSpec = infiniteRepeatable(tween(5200), RepeatMode.Reverse),
@@ -292,14 +300,32 @@ private fun AvoqadoIdleBranding() {
     }
 }
 
+/** Modo ligero: el halo del logo de Avoqado se queda a media escala de su latido. */
+private const val HALO_QUIETO = 0.97f
+
+/** Modo ligero: la respiración del letrero (1 → 1.04 → 1 en 8 s), leída en el reloj de 30 s en 30 s: 1, 1.02, 1.04, 1.02… */
+@Composable
+private fun respiracionAPasos(): State<Float> {
+    val reloj = relojAPasos()
+    return remember(reloj) {
+        derivedStateOf {
+            val t = reloj.value % 8_000L
+            1f + 0.04f * (if (t < 4_000L) t else 8_000L - t) / 4_000f
+        }
+    }
+}
+
 @Composable
 private fun VenueIdleBranding(venueName: String?, logoUrl: String?, design: AppliedDesign?) {
     // Screensaver del negocio: entra con un fade + leve zoom, y luego "respira"
     // muy despacio (escala sutil) para que la pantalla no se vea muerta ni queme
     // pixeles. Nada llamativo — es un letrero en reposo, no una animación.
-    val enter = remember { Animatable(0f) }
-    LaunchedEffect(Unit) { enter.animateTo(1f, tween(900)) }
-    val breathe by rememberInfiniteTransition(label = "breathe").animateFloat(
+    // Modo ligero (POS de Windows sin tarjeta de video, hz:a5fa2439:D2): sin entrada, y la respiración da un paso cada
+    // 30 s en vez de moverse cada cuadro (sigue sin quemar pixeles). En Android nunca.
+    val ligero = LocalModoLigero.current
+    val enter = remember { Animatable(if (ligero) 1f else 0f) }
+    LaunchedEffect(ligero) { if (ligero) enter.snapTo(1f) else enter.animateTo(1f, tween(900)) }
+    val breathe by if (ligero) respiracionAPasos() else rememberInfiniteTransition(label = "breathe").animateFloat(
         initialValue = 1f,
         targetValue = 1.04f,
         animationSpec = infiniteRepeatable(tween(4000), RepeatMode.Reverse),

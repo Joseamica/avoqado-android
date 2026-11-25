@@ -562,7 +562,7 @@ private fun MainScaffold(
                 )
             },
         ) { innerPadding ->
-            NavHost(
+            NavHostDelPos(
                 navController = navController,
                 startDestination = startTab.route,
                 modifier = Modifier.padding(innerPadding),
@@ -896,7 +896,7 @@ private fun MainScaffold(
                 }
             },
         ) { innerPadding ->
-            NavHost(
+            NavHostDelPos(
                 navController = navController,
                 startDestination = startTab.route,
                 modifier = Modifier.padding(innerPadding),
@@ -1376,6 +1376,38 @@ private fun ExchangeDestination(navController: androidx.navigation.NavHostContro
             navController.popBackStack()
         }
     })
+}
+
+/**
+ * El NavHost de las dos disposiciones. Sin modo ligero (siempre en Android) es la llamada de siempre, con las transiciones
+ * de la librería. En modo ligero (POS de Windows sin tarjeta de video, hz:a5fa2439:D2) cambia de pantalla sin transición.
+ * 🔴 El modo se toma al MONTAR: cambiar de llamada con el NavHost ya montado lo volvería a crear y perdería lo capturado.
+ * Si Skiko cae solo a software con una sesión ya abierta, las transiciones se quitan la próxima vez que se monte (entrar,
+ * cambiar de sucursal o de modo).
+ */
+@Composable
+internal fun NavHostDelPos(
+    navController: androidx.navigation.NavHostController,
+    startDestination: String,
+    modifier: Modifier,
+    builder: androidx.navigation.NavGraphBuilder.() -> Unit,
+) {
+    val ligero = com.avoqado.pos.designsystem.LocalModoLigero.current
+    val sinTransiciones = remember { ligero }
+    if (sinTransiciones) {
+        NavHost(
+            navController = navController,
+            startDestination = startDestination,
+            modifier = modifier,
+            enterTransition = { androidx.compose.animation.EnterTransition.None },
+            exitTransition = { androidx.compose.animation.ExitTransition.None },
+            popEnterTransition = { androidx.compose.animation.EnterTransition.None },
+            popExitTransition = { androidx.compose.animation.ExitTransition.None },
+            builder = builder,
+        )
+    } else {
+        NavHost(navController = navController, startDestination = startDestination, modifier = modifier, builder = builder)
+    }
 }
 
 /**

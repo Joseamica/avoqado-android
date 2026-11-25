@@ -7,6 +7,8 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.LocalRippleConfiguration
 import androidx.compose.material3.windowsizeclass.ExperimentalMaterial3WindowSizeClassApi
 import androidx.compose.material3.windowsizeclass.WindowSizeClass
 import androidx.compose.runtime.Composable
@@ -27,8 +29,10 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.viewmodel.compose.LocalViewModelStoreOwner
 import com.avoqado.escritorio.ConfiguracionDeAndroid
 import com.avoqado.escritorio.calendario.CalendarioPendiente
+import com.avoqado.pos.designsystem.LocalModoLigero
 import com.avoqado.pos.designsystem.components.AvoqadoLaunchSplash
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
+import com.avoqado.pos.escritorio.dibujo.DibujoDeLaCaja
 import com.avoqado.pos.navigation.AvoqadoNavGraph
 import com.avoqado.pos.escritorio.teclado.ConTecladoEnPantalla
 import com.avoqado.pos.escritorio.teclado.TecladoDeLaVentana
@@ -42,10 +46,27 @@ object RaizDeEscritorio : ViewModelStoreOwner, LifecycleOwner {
     override val lifecycle: Lifecycle get() = registro
 }
 
+/**
+ * Modo ligero (hz:a5fa2439:D2), en la raíz de cada ventana: la app dibuja sin la tarjeta de video, así que el código
+ * compartido quita unas animaciones y aquí se apaga la onda del clic. Apagado, la onda es la misma que hereda (no una copia).
+ * Una sola llamada en los dos casos: si el modo cambia con la app abierta, nada de lo de adentro se vuelve a crear.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+internal fun ConModoLigero(ligero: Boolean = DibujoDeLaCaja.estado.value.modoLigero, content: @Composable () -> Unit) {
+    CompositionLocalProvider(
+        LocalModoLigero provides ligero,
+        LocalRippleConfiguration provides if (ligero) null else LocalRippleConfiguration.current,
+        content = content,
+    )
+}
+
 /** Lo que MainActivity.setContent hace en Android, sin barras de sistema ni segunda pantalla. */
 @OptIn(ExperimentalMaterial3WindowSizeClassApi::class)
 @Composable
-fun AppEscritorio() = BoxWithConstraints(Modifier.fillMaxSize()) {
+fun AppEscritorio(
+    contenido: @Composable (WindowSizeClass) -> Unit = { AvoqadoNavGraph(windowSizeClass = it) },
+) = BoxWithConstraints(Modifier.fillMaxSize()) {
     val windowSizeClass = WindowSizeClass.calculateFromSize(DpSize(maxWidth, maxHeight))
     CompositionLocalProvider(
         LocalViewModelStoreOwner provides RaizDeEscritorio,
@@ -55,17 +76,20 @@ fun AppEscritorio() = BoxWithConstraints(Modifier.fillMaxSize()) {
             var splash by remember { mutableStateOf(true) }
             LaunchedEffect(Unit) { delay(1_350L); splash = false }
             AvoqadoTheme(windowSizeClass = windowSizeClass) {
-                Box(Modifier.fillMaxSize()) {
+                ConModoLigero { Box(Modifier.fillMaxSize()) {
                     // Teclado híbrido: sólo con un dedo sobre un campo de texto; el contenido se encoge y las teclas van en un Popup.
                     ConTecladoEnPantalla(
                         visible = TecladoDeLaVentana.visible.value,
                         generacion = TecladoDeLaVentana.generacion.value,
                         teclado = { TecladoEnPantalla(TecladoDeLaVentana::alPresionar, TecladoDeLaVentana.estado, Modifier.fillMaxWidth()) },
-                    ) { AvoqadoNavGraph(windowSizeClass = windowSizeClass) }
+                    ) { contenido(windowSizeClass) }
                     CalendarioPendiente()   // android.app.DatePickerDialog de Reportes (sustituto en desktop/plataforma)
                     AvisoDeFallaDeGuardado()   // el disco no guardó (antivirus, disco lleno): se le DICE al cajero
-                    AnimatedVisibility(visible = splash, exit = fadeOut(tween(220))) { AvoqadoLaunchSplash() }
-                }
+                    // El splash se ve y dura igual en los dos modos: su indicador sí se mueve.
+                    AnimatedVisibility(visible = splash, exit = fadeOut(tween(220))) {
+                        CompositionLocalProvider(LocalModoLigero provides false) { AvoqadoLaunchSplash() }
+                    }
+                } }
             }
         }
     }
