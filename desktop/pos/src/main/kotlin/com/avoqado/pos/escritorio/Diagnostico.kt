@@ -1,5 +1,6 @@
 package com.avoqado.pos.escritorio
 
+import com.avoqado.pos.escritorio.diagnostico.DatosDelEquipo
 import com.avoqado.pos.escritorio.diagnostico.leerDatosDelEquipo
 import com.avoqado.pos.escritorio.dibujo.Estado
 import com.avoqado.pos.escritorio.dibujo.Modo
@@ -12,12 +13,17 @@ import java.nio.file.Path
 object Diagnostico {
     fun arranqueMs(): Long = System.currentTimeMillis() - ManagementFactory.getRuntimeMXBean().startTime
 
-    fun escribir(carpeta: Path, motor: String, arranqueMs: Long, toque: String, dibujo: Estado? = null) {
+    /** [equipo]: lo leído de la máquina (sin motor, arranque, toque ni dibujo); se pasa para no leerla dos veces. */
+    fun escribir(
+        carpeta: Path, motor: String, arranqueMs: Long, toque: String, dibujo: Estado? = null,
+        equipo: DatosDelEquipo = leerDatosDelEquipo(carpeta, motor = null, primerCuadroMs = null, toque = null),
+    ) {
         val rt = Runtime.getRuntime()
         val lineaDibujo = dibujo?.let { "\n" + lineaDeDibujo(it) } ?: ""
+        val datos = equipo.copy(motorDeDibujo = motor, primerCuadroMs = arranqueMs, toqueConElDedo = toque, dibujo = dibujo)
         Files.writeString(
             Files.createDirectories(carpeta.resolve("logs")).resolve("diagnostico.txt"),
-            veredicto(leerDatosDelEquipo(carpeta, motor, arranqueMs, toque, dibujo)).comoTexto() + "\n\n" + """
+            veredicto(datos).comoTexto() + "\n\n" + """
             |Fecha: ${java.time.LocalDateTime.now().format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"))}
             |Avoqado POS (${if (com.avoqado.pos.BuildConfig.PRODUCCION) "producción" else "prueba"} de escritorio) ${com.avoqado.pos.BuildConfig.VERSION_NAME}
             |Primer cuadro dibujado: $arranqueMs ms desde que arrancó Java (después vienen 1.35 s de splash, igual que en Android)

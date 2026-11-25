@@ -32,7 +32,7 @@ fun cabeceraDelEquipo(e: Estado, equipo: DatosDelEquipo, proceso: String, revisi
         "v=1;proc=$proceso;rev=$revision;api=$api;paint=$paint;light=${uno(e.modoLigero)};perf=$perf;set=$set;" +
             "forced=${uno(e.forzada)};fail=${uno(e.fallo)};hand=${uno(e.aMano)}",
     )
-    val cpu = equipo.procesador?.filter { it in ' '..'~' && it != ';' && it != '=' }?.take(80)?.trim()?.takeIf { it.isNotEmpty() }
+    val cpu = equipo.procesador?.filter { it in ' '..'~' && it != ';' && it != '=' }?.trim()?.take(80)?.trim()?.takeIf { it.isNotEmpty() }
     val ancho = equipo.anchoPx?.takeIf { it in 100..99_999 }
     val alto = equipo.altoPx?.takeIf { it in 100..99_999 }
     listOfNotNull(

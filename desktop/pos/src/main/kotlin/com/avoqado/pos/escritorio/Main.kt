@@ -68,6 +68,9 @@ fun main() {
     Thread.setDefaultUncaughtExceptionHandler { _, e -> Log.e("SinCapturar", "Excepción no atrapada", e) }
     // Sin carpeta o sin bitácora, el aviso no apunta a unos logs que no existen.
     val carpeta = protegido(carpeta = null) { CarpetaDeDatos.resolver(BuildConfig.PRODUCCION).also(Bitacora::iniciar) }
+    // La máquina se lee una vez y ya con la ventana pintada (el primer aviso de cómo dibuja, o el diagnóstico): antes de la
+    // ventana, en automático, sólo se lee dibujo.json (hz:a5fa2439:D1).
+    val equipo by lazy { leerDatosDelEquipo(carpeta, motor = null, primerCuadroMs = null, toque = null) }
     protegido(carpeta) {
         // Esta URL la lee la app por su cuenta (KDS/Waste/Inventory con DEBUG) y no pasa por Urls.api: mismo candado.
         System.getProperty("avoqado.test.baseUrl")?.let { url ->
@@ -81,13 +84,13 @@ fun main() {
         if (System.getProperty("avoqado.version") == null) System.setProperty("avoqado.version", BuildConfig.VERSION_NAME)
         // Preferencias ilegibles o base de otra versión: se niega A PROPÓSITO a arrancar vacía encima de los cobros pendientes.
         Arranque.abrir(carpeta)
-        // Cómo dibuja viaja en el sondeo (hz:a5fa2439:D1). Antes de alArrancar: leer el equipo no cuenta en lo que tarda en
-        // pintar, y el aviso queda conectado antes de alPintar (la revisión 1 no se pierde). Corre dentro del candado de
-        // DibujoDeLaCaja: sólo arma un texto. Nada de esto impide abrir.
+        // Cómo dibuja viaja en el sondeo (hz:a5fa2439:D1). Se conecta antes de alArrancar para que la revisión 1 no se pierda.
+        // Corre dentro del candado de DibujoDeLaCaja, ya pintada la ventana: arma un texto y, la primera vez, lee la máquina.
+        // Nada de esto impide abrir.
         runCatching {
-            val equipo = leerDatosDelEquipo(carpeta, motor = null, primerCuadroMs = null, toque = null)
+            val proceso = ID_DE_PROCESO   // se inicializa aquí (SecureRandom), no dentro del candado
             DibujoDeLaCaja.alCambiar = { e, revision ->
-                runCatching { ResumenDelEquipo.cabecera = cabeceraDelEquipo(e, equipo, ID_DE_PROCESO, revision, esWindows = equipo.windows) }
+                runCatching { ResumenDelEquipo.cabecera = cabeceraDelEquipo(e, equipo, proceso, revision, esWindows = equipo.windows) }
             }
         }.onFailure { Log.w("Dibujo", "El sondeo no llevará cómo dibuja", it) }
         // El motor de dibujo sólo se puede fijar antes de que exista la ventana (hz:a5fa2439:D2). Nunca lanza.
@@ -159,7 +162,7 @@ fun main() {
                                 ),
                             )
                         }.onFailure { Log.w("PantallaCliente", "Pantalla del cliente omitida: ${it.javaClass.simpleName}: ${it.message}") }
-                        runCatching { Diagnostico.escribir(carpeta, window.renderApi.name, Diagnostico.arranqueMs(), toque, DibujoDeLaCaja.estado.value) }
+                        runCatching { Diagnostico.escribir(carpeta, window.renderApi.name, Diagnostico.arranqueMs(), toque, DibujoDeLaCaja.estado.value, equipo) }
                             .onFailure { Log.w("Arranque", "No se pudo escribir el diagnóstico", it) }
                     }
                     DisposableEffect(window) {

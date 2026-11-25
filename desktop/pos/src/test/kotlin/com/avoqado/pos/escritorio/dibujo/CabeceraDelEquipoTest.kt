@@ -40,6 +40,11 @@ class CabeceraDelEquipoTest {
         assertTrue(c.length <= 512, "${c.length}")
     }
 
+    @Test fun `si el filtro deja espacios al principio, el procesador conserva sus primeros 80 caracteres reales`() {
+        val c = cabecera(d = sinDatos.copy(procesador = "®™   " + "Z".repeat(100)))!!
+        assertTrue(c.endsWith(";cpu=${"Z".repeat(80)}"), c)
+    }
+
     @Test fun `fuera de Windows no hay cabecera`() = assertNull(cabecera(windows = false))
 
     @Test fun `sin pintar no hay cabecera`() {
