@@ -1,6 +1,8 @@
 package com.avoqado.pos.escritorio
 
 import com.avoqado.pos.escritorio.diagnostico.leerDatosDelEquipo
+import com.avoqado.pos.escritorio.dibujo.Estado
+import com.avoqado.pos.escritorio.dibujo.Modo
 import com.avoqado.pos.escritorio.diagnostico.veredicto
 import java.lang.management.ManagementFactory
 import java.nio.file.Files
@@ -10,15 +12,16 @@ import java.nio.file.Path
 object Diagnostico {
     fun arranqueMs(): Long = System.currentTimeMillis() - ManagementFactory.getRuntimeMXBean().startTime
 
-    fun escribir(carpeta: Path, motor: String, arranqueMs: Long, toque: String) {
+    fun escribir(carpeta: Path, motor: String, arranqueMs: Long, toque: String, dibujo: Estado? = null) {
         val rt = Runtime.getRuntime()
+        val lineaDibujo = dibujo?.let { "\n" + lineaDeDibujo(it) } ?: ""
         Files.writeString(
             Files.createDirectories(carpeta.resolve("logs")).resolve("diagnostico.txt"),
-            veredicto(leerDatosDelEquipo(carpeta, motor, arranqueMs, toque)).comoTexto() + "\n\n" + """
+            veredicto(leerDatosDelEquipo(carpeta, motor, arranqueMs, toque, dibujo)).comoTexto() + "\n\n" + """
             |Fecha: ${java.time.LocalDateTime.now().format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"))}
             |Avoqado POS (${if (com.avoqado.pos.BuildConfig.PRODUCCION) "producción" else "prueba"} de escritorio) ${com.avoqado.pos.BuildConfig.VERSION_NAME}
             |Primer cuadro dibujado: $arranqueMs ms desde que arrancó Java (después vienen 1.35 s de splash, igual que en Android)
-            |Motor de dibujo (resuelto): $motor
+            |Motor de dibujo (resuelto): $motor$lineaDibujo
             |Toque con el dedo: $toque
             |Sistema: ${System.getProperty("os.name")} ${System.getProperty("os.version")} (${System.getProperty("os.arch")})
             |Java: ${System.getProperty("java.version")} · procesadores: ${rt.availableProcessors()} · memoria máx: ${rt.maxMemory() / 1_048_576} MB
@@ -26,6 +29,17 @@ object Diagnostico {
             |""".trimMargin(),
         )
     }
+
+    /** Cómo dibuja de verdad (hz:a5fa2439:D2), lo que midió DibujoDeLaCaja al pintar. */
+    private fun lineaDeDibujo(e: Estado): String = buildList {
+        add("Dibujo: ${e.motor ?: "sin medir"}")
+        e.pintarMs?.let { add("pintar al abrir $it ms") }
+        add("modo ${if (e.modo == Modo.RAPIDO) "rápido" else "automático"}")
+        add("modo ligero ${if (e.modoLigero) "sí" else "no"}")
+        if (e.aplicaAlReabrir) add("se aplica al volver a abrir")
+        if (e.aMano) add("fijado a mano")
+        if (e.fallo) add("el modo rápido falló")
+    }.joinToString(" · ")
 
     /** Una línea más al final (p. ej., el puente táctil se apagó solo después de arrancar). */
     fun anotar(carpeta: Path, linea: String) {

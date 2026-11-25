@@ -1,5 +1,10 @@
 package com.avoqado.pos.escritorio.diagnostico
 
+import com.avoqado.pos.escritorio.dibujo.Estado
+import com.avoqado.pos.escritorio.dibujo.Modo
+import com.avoqado.pos.escritorio.dibujo.ModoDeDibujo
+import com.avoqado.pos.escritorio.dibujo.Rendimiento
+
 enum class Nivel { BIEN, LENTA, NO_SIRVE, INFO, SIN_MEDIR }   // ✅ ⚠️ ❌ ℹ️ (no se pudo medir)
 
 data class DatosDelEquipo(
@@ -8,6 +13,7 @@ data class DatosDelEquipo(
     val discoLibreGb: Double?, val anchoPx: Int?, val altoPx: Int?,
     val puntosTactiles: Int?,                               // GetSystemMetrics(SM_MAXIMUMTOUCHES); null fuera de Windows
     val motorDeDibujo: String?, val primerCuadroMs: Long?, val toqueConElDedo: String?,
+    val dibujo: Estado? = null,                             // lo que midió DibujoDeLaCaja al pintar (hz:a5fa2439:D2)
 )
 
 data class Punto(val nombre: String, val nivel: Nivel, val texto: String)
@@ -80,9 +86,11 @@ private fun procesador(d: DatosDelEquipo): Punto {
     }
 }
 
+private fun segundos(ms: Long) = "%.1f s".format(ms / 1000.0)
+
 private fun primerCuadro(d: DatosDelEquipo): Punto {
     val ms = d.primerCuadroMs ?: return Punto("Tiempo para abrir", Nivel.SIN_MEDIR, NO_MEDIDO)
-    val s = "%.1f s".format(ms / 1000.0)
+    val s = segundos(ms)
     return when {
         ms <= CUADRO_BIEN_MS -> Punto("Tiempo para abrir", Nivel.BIEN, "la app abrió en $s.")
         ms <= CUADRO_LENTA_MS -> Punto("Tiempo para abrir", Nivel.LENTA, "la app tardó $s en abrir: es lenta. Cierra otros programas o usa una PC con más memoria.")
@@ -90,7 +98,30 @@ private fun primerCuadro(d: DatosDelEquipo): Punto {
     }
 }
 
+/** Con la medición del primer cuadro (hz:a5fa2439:D2) dice lo que de verdad pasa; sin ella, lo de siempre. */
 private fun motor(d: DatosDelEquipo): Punto {
+    val e = d.dibujo ?: return motorSinMedicion(d)
+    val rendimiento = e.rendimiento
+    val medido = e.motor
+    val ms = e.pintarMs
+    if (rendimiento == null || medido == null || ms == null) return motorSinMedicion(d)
+    return when (rendimiento) {
+        Rendimiento.FLUIDA -> Punto("Gráficos", Nivel.BIEN, "usa la tarjeta de video ($medido).")
+        Rendimiento.LIGERA -> Punto("Gráficos", Nivel.LENTA, "$medido: modo rápido. La app dibuja sin la tarjeta de video y con menos animaciones.")
+        Rendimiento.NO_ALCANZA -> if (ModoDeDibujo.esDeSoftware(medido)) {
+            Punto("Gráficos", Nivel.NO_SIRVE, "$medido: esta computadora tarda demasiado en dibujar la pantalla, aun en modo rápido. La app va a responder lento.")
+        } else {
+            val ofrecer = medido != "DIRECT3D" && !e.aMano && e.modo == Modo.AUTO
+            Punto(
+                "Gráficos", Nivel.LENTA,
+                "$medido: esta computadora tardó ${segundos(ms)} en dibujar la pantalla al abrir." +
+                    if (ofrecer) " Prueba el modo rápido en Más › Modo de dibujo." else "",
+            )
+        }
+    }
+}
+
+private fun motorSinMedicion(d: DatosDelEquipo): Punto {
     val m = d.motorDeDibujo ?: return Punto("Gráficos", Nivel.SIN_MEDIR, NO_MEDIDO)
     return when {
         m.startsWith("SOFTWARE") -> Punto("Gráficos", Nivel.LENTA, "$m: dibuja sin la tarjeta de video, las animaciones van a ir lentas. Actualiza el controlador de video.")

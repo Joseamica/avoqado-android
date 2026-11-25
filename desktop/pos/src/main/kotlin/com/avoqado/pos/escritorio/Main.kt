@@ -146,7 +146,7 @@ fun main() {
                                 ),
                             )
                         }.onFailure { Log.w("PantallaCliente", "Pantalla del cliente omitida: ${it.javaClass.simpleName}: ${it.message}") }
-                        runCatching { Diagnostico.escribir(carpeta, window.renderApi.name, Diagnostico.arranqueMs(), toque) }
+                        runCatching { Diagnostico.escribir(carpeta, window.renderApi.name, Diagnostico.arranqueMs(), toque, DibujoDeLaCaja.estado.value) }
                             .onFailure { Log.w("Arranque", "No se pudo escribir el diagnóstico", it) }
                     }
                     DisposableEffect(window) {
