@@ -70,7 +70,9 @@ object DibujoDeLaCaja {
             ajuste = plan.guardar?.takeIf { guardado || leido.intentando } ?: leido
             if (leido.intentando) Log.i(TAG, "modo=${ajuste.modo} por=SEGURO")
             val fijo = plan.fijar && guardado
-            apertura = Apertura(aMano = valorAMano != null, fijo = fijo, pidioSoftware = fijo || ModoDeDibujo.pideSoftware(valorAMano))
+            // La pista de la apertura anterior (Skiko cayó solo a software) sólo adelanta el modo ligero: no fija ningún motor.
+            val pidioSoftware = fijo || ModoDeDibujo.pideSoftware(valorAMano) || (valorAMano == null && ajuste.caeSolaASoftware)
+            apertura = Apertura(aMano = valorAMano != null, fijo = fijo, pidioSoftware = pidioSoftware)
             this.carpeta = carpeta
             _estado.value = ModoDeDibujo.estado(ajuste, apertura)
             if (fijo) {
@@ -90,7 +92,7 @@ object DibujoDeLaCaja {
             if (apertura.motor != null) return
             val (motor, ms) = fingido ?: (motorReal to (reloj() - inicioNs) / 1_000_000)
             apertura = apertura.copy(motor = motor, pintarMs = ms.coerceAtLeast(0))
-            ModoDeDibujo.alPintar(ajuste, apertura.fijo, motor)?.let { nuevo ->
+            ModoDeDibujo.alPintar(ajuste, apertura.fijo, apertura.aMano, motor)?.let { nuevo ->
                 val guardado = guardar(carpeta, nuevo)
                 // Regresar a automático se adopta aunque no se guarde (como al arrancar): la siguiente apertura llega al mismo
                 // AUTO con fallo por la marca. Quitar la marca sólo avanza si guardó; si no, la siguiente va a automático.

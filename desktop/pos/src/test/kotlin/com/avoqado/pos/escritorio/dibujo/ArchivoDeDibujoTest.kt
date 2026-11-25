@@ -57,6 +57,14 @@ class ArchivoDeDibujoTest {
         assertEquals(listOf("dibujo.json"), carpeta.listDirectoryEntries().map { it.name })
     }
 
+    @Test fun `la pista de caer sola a software va y vuelve, y un archivo de antes la lee apagada`() {
+        val a = Ajuste(caeSolaASoftware = true)
+        assertTrue(ArchivoDeDibujo.guardar(carpeta, a))
+        assertEquals(a, ArchivoDeDibujo.leer(carpeta))
+        Files.writeString(archivo, """{"modo":"AUTO","intentando":false,"fallo":false,"sinAviso":false}""")
+        assertEquals(Ajuste(), ArchivoDeDibujo.leer(carpeta))
+    }
+
     @Test fun `un campo desconocido se ignora`() {
         Files.writeString(archivo, """{"modo":"RAPIDO","campoDeUnaVersionNueva":"x"}""")
         assertEquals(Ajuste(modo = Modo.RAPIDO), ArchivoDeDibujo.leer(carpeta))

@@ -43,7 +43,10 @@ import androidx.lifecycle.viewmodel.compose.LocalViewModelStoreOwner
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
+import android.content.Context
 import com.avoqado.escritorio.Bitacora
+import com.avoqado.escritorio.Escritorio
+import com.google.inject.Injector
 import com.avoqado.escritorio.ContextoDeEscritorio
 import com.avoqado.pos.customerdisplay.CustomerDisplayScreen
 import com.avoqado.pos.customerdisplay.CustomerDisplayState
@@ -223,18 +226,31 @@ class ModoLigeroTest {
 
     private val datosDelDibujo: Path = carpeta.resolve("dibujo")
 
-    private fun arrancarDibujo(modo: Modo? = null, entorno: Map<String, String> = emptyMap()) {
+    private fun arrancarDibujo(archivo: Ajuste? = null, entorno: Map<String, String> = emptyMap()) {
         DibujoDeLaCaja.reiniciarParaPruebas()
-        if (modo != null) assertTrue(ArchivoDeDibujo.guardar(datosDelDibujo, Ajuste(modo = modo)))
+        if (archivo != null) assertTrue(ArchivoDeDibujo.guardar(datosDelDibujo, archivo))
         DibujoDeLaCaja.alArrancar(datosDelDibujo, entorno::get, emptyMap<String, String>()::get, fijar = {}, ahoraNs = { 0L })
     }
 
+    /** La app de verdad (como Main, antes de la ventana), una vez por prueba; [soltarLaApp] deja todo como estaba. */
+    private var datosDeLaApp: Path? = null
+    private var instaladaAntes: Pair<Context, Injector>? = null
+
     private fun prepararLaApp() {
-        if (appLista) return
+        if (datosDeLaApp != null) return
+        instaladaAntes = runCatching { Escritorio.contexto to Escritorio.inyector }.getOrNull()
         val datos = Files.createTempDirectory("Avoqado POS modo ligero")
+        datosDeLaApp = datos
         Bitacora.iniciar(datos)
         Arranque.abrir(datos)
-        appLista = true
+    }
+
+    @AfterTest fun soltarLaApp() {
+        val datos = datosDeLaApp ?: return
+        datosDeLaApp = null
+        RaizDeEscritorio.viewModelStore.clear()   // los ViewModels de esta prueba no los hereda la siguiente
+        instaladaAntes?.let { (contexto, inyector) -> Escritorio.instalar(contexto, inyector) }
+        datos.toFile().deleteRecursively()
     }
 
     /** La raíz real con un contenido que anota cómo ve el modo en su PRIMER cuadro y deja navegar. */
@@ -253,7 +269,7 @@ class ModoLigeroTest {
     }
 
     @Test fun `con el archivo en rapido el NavHost se compone ligero desde el primer cuadro`() = runComposeUiTest {
-        arrancarDibujo(modo = Modo.RAPIDO)
+        arrancarDibujo(Ajuste(modo = Modo.RAPIDO))
         assertTrue(DibujoDeLaCaja.estado.value.modoLigero)
         val (primero, nav) = raizConDosPantallas()
         mainClock.advanceTimeByFrame()
@@ -263,6 +279,15 @@ class ModoLigeroTest {
 
     @Test fun `con SKIKO_RENDER_API en software el NavHost se compone ligero desde el primer cuadro`() = runComposeUiTest {
         arrancarDibujo(entorno = mapOf("SKIKO_RENDER_API" to "DIRECT_SOFTWARE"))
+        assertTrue(DibujoDeLaCaja.estado.value.modoLigero)
+        val (primero, nav) = raizConDosPantallas()
+        mainClock.advanceTimeByFrame()
+        assertEquals(true, primero())
+        assertFalse(aSigueTrasUnCuadro(nav))
+    }
+
+    @Test fun `con un archivo que solo trae la pista de caer sola a software el NavHost se compone ligero desde el primer cuadro`() = runComposeUiTest {
+        arrancarDibujo(Ajuste(caeSolaASoftware = true))
         assertTrue(DibujoDeLaCaja.estado.value.modoLigero)
         val (primero, nav) = raizConDosPantallas()
         mainClock.advanceTimeByFrame()
@@ -280,7 +305,7 @@ class ModoLigeroTest {
         var resultado: Splash? = null
         runComposeUiTest {
             prepararLaApp()
-            arrancarDibujo(modo = modo)
+            arrancarDibujo(modo?.let { Ajuste(modo = it) })
             assertEquals(modo == Modo.RAPIDO, DibujoDeLaCaja.estado.value.modoLigero)
             mainClock.autoAdvance = false
             setContent { AppEscritorio() }
@@ -343,10 +368,5 @@ class ModoLigeroTest {
         assertEquals(true, ligeroDentro)
         onNodeWithTag("campo").assertTextEquals("hola")
         assertEquals(1, montajes, "la pantalla no se vuelve a crear")
-    }
-
-    private companion object {
-        /** El inyector de la app se instala una vez por corrida (como Main lo hace una vez por proceso). */
-        var appLista = false
     }
 }

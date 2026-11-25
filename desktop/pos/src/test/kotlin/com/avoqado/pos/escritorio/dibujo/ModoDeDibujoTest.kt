@@ -38,17 +38,49 @@ class ModoDeDibujoTest {
 
     @Test fun `fijo y pinto con software - quita la marca`() {
         val a = A.copy(modo = Modo.RAPIDO, intentando = true)
-        assertEquals(A.copy(modo = Modo.RAPIDO), ModoDeDibujo.alPintar(a, fijo = true, motorReal = "SOFTWARE_FAST"))
-        assertEquals(A.copy(modo = Modo.RAPIDO), ModoDeDibujo.alPintar(a, fijo = true, motorReal = "SOFTWARE_COMPAT"))
+        assertEquals(A.copy(modo = Modo.RAPIDO), ModoDeDibujo.alPintar(a, fijo = true, aMano = false, motorReal = "SOFTWARE_FAST"))
+        assertEquals(A.copy(modo = Modo.RAPIDO), ModoDeDibujo.alPintar(a, fijo = true, aMano = false, motorReal = "SOFTWARE_COMPAT"))
     }
 
     @Test fun `fijo pero Skiko abrio con otro motor - regresa a automatico con fallo`() {
         val a = A.copy(modo = Modo.RAPIDO, intentando = true)
-        assertEquals(A.copy(modo = Modo.AUTO, fallo = true), ModoDeDibujo.alPintar(a, fijo = true, motorReal = "OPENGL"))
+        assertEquals(A.copy(modo = Modo.AUTO, fallo = true), ModoDeDibujo.alPintar(a, fijo = true, aMano = false, motorReal = "OPENGL"))
     }
 
     @Test fun `sin fijar el archivo no cambia al pintar`() {
-        assertNull(ModoDeDibujo.alPintar(A, fijo = false, motorReal = "OPENGL"))
+        assertNull(ModoDeDibujo.alPintar(A, fijo = false, aMano = false, motorReal = "OPENGL"))
+    }
+
+    // MARK: - La pista: la computadora cae sola a software
+
+    @Test fun `sin fijar ni mano, la primera vez que pinta en software se anota la pista`() {
+        assertEquals(Ajuste(caeSolaASoftware = true), ModoDeDibujo.alPintar(A, fijo = false, aMano = false, motorReal = "SOFTWARE_FAST"))
+    }
+
+    @Test fun `con la pista y software otra vez el archivo no cambia`() {
+        assertNull(ModoDeDibujo.alPintar(A.copy(caeSolaASoftware = true), fijo = false, aMano = false, motorReal = "SOFTWARE_COMPAT"))
+    }
+
+    @Test fun `con la pista y la tarjeta de video la pista se quita`() {
+        assertEquals(Ajuste(), ModoDeDibujo.alPintar(A.copy(caeSolaASoftware = true), fijo = false, aMano = false, motorReal = "DIRECT3D"))
+    }
+
+    @Test fun `a mano no se anota la pista`() {
+        assertNull(ModoDeDibujo.alPintar(A, fijo = false, aMano = true, motorReal = "SOFTWARE_FAST"))
+    }
+
+    @Test fun `fijo quita la marca y conserva la pista`() {
+        assertEquals(
+            Ajuste(Modo.RAPIDO, caeSolaASoftware = true),
+            ModoDeDibujo.alPintar(Ajuste(Modo.RAPIDO, intentando = true, caeSolaASoftware = true), fijo = true, aMano = false, motorReal = "SOFTWARE_FAST"),
+        )
+    }
+
+    @Test fun `elegir, callar el aviso y el modo seguro conservan la pista`() {
+        val p = A.copy(caeSolaASoftware = true)
+        assertTrue(ModoDeDibujo.alElegir(p, Modo.RAPIDO).caeSolaASoftware)
+        assertTrue(ModoDeDibujo.alCallarAviso(p).caeSolaASoftware)
+        assertEquals(true, ModoDeDibujo.alArrancar(p.copy(modo = Modo.RAPIDO, intentando = true), aMano = false).guardar?.caeSolaASoftware)
     }
 
     // MARK: - alElegir

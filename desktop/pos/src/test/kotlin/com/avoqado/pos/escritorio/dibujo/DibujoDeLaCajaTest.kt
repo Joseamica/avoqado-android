@@ -242,6 +242,46 @@ class DibujoDeLaCajaTest {
         assertFalse(e.aplicaAlReabrir)
     }
 
+    // MARK: - La pista: la computadora cae sola a software
+
+    @Test fun `la primera vez que cae sola a software se anota la pista y la siguiente apertura ya arranca ligera`() {
+        arrancar()
+        assertFalse(archivo.exists(), "sin archivo, nada se escribe antes de la ventana")
+        assertFalse(e.modoLigero)
+        pintar("SOFTWARE_FAST", 700)
+        assertTrue(e.modoLigero)
+        assertEquals(Ajuste(caeSolaASoftware = true), crudo())
+
+        arrancar()
+        assertEquals(emptyList(), fijados, "la pista no fija ningún motor")
+        assertTrue(e.modoLigero, "ligero antes de pintar")
+        assertFalse(e.forzada)
+    }
+
+    @Test fun `con la pista no fija nada y, si pinta con la tarjeta de video, deja de ser ligera y se quita`() {
+        escribir(Ajuste(caeSolaASoftware = true))
+        arrancar()
+        assertEquals(emptyList(), fijados)
+        assertTrue(e.modoLigero)
+        assertEquals(Ajuste(caeSolaASoftware = true), crudo(), "nada se escribe antes de la ventana")
+        pintar("DIRECT3D", 600)
+        assertFalse(e.modoLigero)
+        assertEquals(Ajuste(), crudo())
+    }
+
+    @Test fun `a mano manda - la pista no cuenta y no se anota`() {
+        escribir(Ajuste(caeSolaASoftware = true))
+        arrancar(entorno = mapOf("SKIKO_RENDER_API" to "DIRECT3D"))
+        assertFalse(e.modoLigero)
+        pintar("DIRECT3D", 600)
+        assertEquals(Ajuste(caeSolaASoftware = true), crudo())
+
+        escribir(Ajuste())
+        arrancar(entorno = mapOf("SKIKO_RENDER_API" to "SOFTWARE"))
+        pintar("SOFTWARE", 700)
+        assertEquals(Ajuste(), crudo())
+    }
+
     @Test fun `apagado - ninguna funcion lee, escribe ni fija`() {
         val inicial = ModoDeDibujo.estado(Ajuste(), Apertura(aMano = false, fijo = false, pidioSoftware = false))
         assertEquals(inicial, e)

@@ -16,6 +16,7 @@ data class Ajuste(
     val intentando: Boolean = false,
     val fallo: Boolean = false,
     val sinAviso: Boolean = false,
+    val caeSolaASoftware: Boolean = false,
 )
 
 /** Lo que pasó en ESTA apertura. `fijo`: la app fijó el motor rápido. `pidioSoftware`: `fijo`, o ajuste a mano con valor de software. */
@@ -54,11 +55,16 @@ object ModoDeDibujo {
         else -> AlArrancar(a.copy(intentando = true), fijar = true)
     }
 
-    /** Tras el primer ciclo de dibujo. null = el archivo no cambia. */
-    fun alPintar(a: Ajuste, fijo: Boolean, motorReal: String): Ajuste? = when {
-        !fijo -> null
-        esDeSoftware(motorReal) -> a.copy(intentando = false)
-        else -> regresaAAutomatico(a)   // se fijó el rápido y Skiko abrió con otro motor
+    /**
+     * Tras el primer ciclo de dibujo. null = el archivo no cambia. Sin fijar ni ajuste a mano, recuerda si Skiko cayó solo a
+     * software: la siguiente apertura arranca ya en modo ligero (sin fijar nada) y el NavHost se monta sin transiciones.
+     */
+    fun alPintar(a: Ajuste, fijo: Boolean, aMano: Boolean, motorReal: String): Ajuste? = when {
+        fijo && esDeSoftware(motorReal) -> a.copy(intentando = false)
+        fijo -> regresaAAutomatico(a)   // se fijó el rápido y Skiko abrió con otro motor
+        aMano -> null
+        esDeSoftware(motorReal) != a.caeSolaASoftware -> a.copy(caeSolaASoftware = esDeSoftware(motorReal))
+        else -> null
     }
 
     // Elegir sólo pasa con la ventana ya pintada: quita la marca de intento, así el archivo nunca queda con `intentando` y
