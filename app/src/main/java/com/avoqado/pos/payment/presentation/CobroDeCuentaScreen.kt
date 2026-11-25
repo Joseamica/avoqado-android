@@ -10,6 +10,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.domain.RoleManager
 import com.avoqado.pos.core.util.ConnectivityMonitor
@@ -24,6 +25,8 @@ import com.avoqado.pos.pos.presentation.cart.CartState
 import com.avoqado.pos.tables.data.OrderDetail
 import com.avoqado.pos.tables.data.TableServiceRepository
 import com.avoqado.pos.tables.data.comoEvidencia
+import com.avoqado.pos.tables.data.paraLaCuenta
+import com.avoqado.pos.tables.presentation.RewardsDialog
 import com.avoqado.pos.tables.data.restanteCents
 import com.avoqado.pos.orders.data.CuentaGuardada
 import com.avoqado.pos.payment.domain.DatosDelCobroSinRed
@@ -201,6 +204,8 @@ class CobroDeCuentaViewModel @Inject constructor(
     /** Sin permiso todavía: lo que la cuenta ofrece antes del toque. Con un toque en curso no se pinta encima (lo publica él). */
     suspend fun consultarSinRed(orderId: String) {
         if (pedidoEnVuelo?.second?.isActive == true) return
+        // D39 (Codex r4 #1): con un canje de puntos en vuelo o sin respuesta, la copia no sabe cuánto falta: no se cobra desde ella.
+        if (cobroBloqueadoPorCanje(orderId)) { decisionSinRed.value = DecisionSinRed.Gris(RECOMPENSAS_COBRO_ESPERA_AL_CANJE); return }
         val datos = datosSinRed(orderId)
         val nueva = decidirCobroSinRed(datos, permiso = null)
         // Sólo tapa la MISMA causa: el aviso guardado es de contacto perdido Y la caja que la abrió sigue sin verse. Un motivo nuevo, o un
@@ -228,6 +233,7 @@ class CobroDeCuentaViewModel @Inject constructor(
     }
 
     private suspend fun pedirUnaVez(orderId: String): DecisionSinRed {
+        if (cobroBloqueadoPorCanje(orderId)) return DecisionSinRed.Gris(RECOMPENSAS_COBRO_ESPERA_AL_CANJE).also { decisionSinRed.value = it }
         val datos = datosSinRed(orderId)
         val antes = decidirCobroSinRed(datos, permiso = null)
         val cuentas = cuentasEntreCajas
@@ -371,6 +377,258 @@ class CobroDeCuentaViewModel @Inject constructor(
         else com.avoqado.pos.core.data.network.ServerErrorText.humanizeCancelacionDeCuenta(error, "No se pudo cancelar la cuenta.")
         return false
     }
+
+    // MARK: - D39 fase 1: «Recompensas» en las cuentas de «Pagar después» de Pedidos, con el canje de Mesas
+
+    private val lecturaDeLealtad = MutableStateFlow<com.avoqado.pos.tables.data.LealtadLeida?>(null)
+    /** La lectura más nueva del saldo, etiquetada con la cuenta (orden, clienta y versión) para la que se pidió. */
+    val lealtadLeida: StateFlow<com.avoqado.pos.tables.data.LealtadLeida?> = lecturaDeLealtad.asStateFlow()
+    private val lecturaProhibida = MutableStateFlow(false)
+    /** La última lectura del saldo fue un 403: el plan del negocio o los permisos de la sesión no incluyen la lealtad. */
+    val lealtadProhibida: StateFlow<Boolean> = lecturaProhibida.asStateFlow()
+    private var turnoDeLealtad = 0
+
+    /** Sólo la lectura de la cuenta que se ve: otra versión, otra clienta u otra cuenta no se ofrece (la regla de Mesas). */
+    fun lealtadDeLaCuenta(): com.avoqado.pos.tables.data.LealtadLeida? = lecturaDeLealtad.value.paraLaCuenta(foto.value)
+
+    /** Los permisos del SERVIDOR: leer el saldo (`loyalty:read`) y canjear (`orders:update`). */
+    val puedeCanjearPuntos: Boolean get() = roles.hasVenuePermission("loyalty:read") && roles.hasVenuePermission("orders:update")
+
+    private val dialogoDeRecompensas = MutableStateFlow(false)
+    val recompensasAbiertas: StateFlow<Boolean> = dialogoDeRecompensas.asStateFlow()
+    private val avisoDeCanje = MutableStateFlow<String?>(null)
+    /** «La cuenta cambió: revisa los puntos.» tras un 409 del candado de la oferta. */
+    val avisoDelCanje: StateFlow<String?> = avisoDeCanje.asStateFlow()
+    private val avisoDeLasRecompensas = MutableStateFlow<String?>(null)
+    /** Lo que pasó con el último canje (aplicado o por qué no). Aparte de [mensaje]: la relectura de la cuenta lo borraría. */
+    val avisoDeRecompensas: StateFlow<String?> = avisoDeLasRecompensas.asStateFlow()
+    private val canjeando = MutableStateFlow(false)
+    val canjeEnVuelo: StateFlow<Boolean> = canjeando.asStateFlow()
+
+    /** Lee el saldo de la clienta de la cuenta que se ve, contra ESA cuenta (`?orderId=`: el máximo es de ella). */
+    suspend fun leerLealtad(orderId: String) {
+        val cuenta = foto.value?.takeIf { it.id == orderId }
+        val cliente = cuenta?.customerId?.takeIf { it.isNotBlank() }
+        val venue = venueDeLaCuenta
+        val turno = ++turnoDeLealtad
+        lecturaDeLealtad.value = null
+        lecturaProhibida.value = false
+        if (cuenta == null || cliente == null || venue == null || venue != storage.venueId || cuenta.payLater != true) return
+        val leido = repo.getCustomerLoyalty(venue, cliente, orderId)
+        if (turno != turnoDeLealtad) return
+        lecturaProhibida.value = (leido.exceptionOrNull() as? retrofit2.HttpException)?.code() == 403
+        lecturaDeLealtad.value = leido.fold(
+            onSuccess = { com.avoqado.pos.tables.data.LealtadLeida(orderId, cliente, cuenta.version, it) },
+            onFailure = {
+                if (it is CancellationException) throw it
+                com.avoqado.pos.tables.data.LealtadLeida(orderId, cliente, cuenta.version, null, com.avoqado.pos.core.data.network.FalloDeLectura.de(it))
+            },
+        )
+    }
+
+    /** Tocar «Recompensas»: abre el diálogo y relee cuenta → saldo; el diálogo sólo pinta esa lectura fresca (como Mesas). */
+    suspend fun abrirRecompensas(orderId: String, laTraeUnCarrito: Boolean = false) {
+        avisoDeCanje.value = null
+        avisoDeLasRecompensas.value = null
+        dialogoDeRecompensas.value = true
+        releerConSaldo(orderId, laTraeUnCarrito)
+    }
+
+    fun cerrarRecompensas() {
+        dialogoDeRecompensas.value = false
+        avisoDeCanje.value = null
+    }
+
+    private suspend fun releerConSaldo(orderId: String, laTraeUnCarrito: Boolean) {
+        lecturaDeLealtad.value = null
+        turnoDeLealtad++
+        ofertaParaCobrar(orderId, laTraeUnCarrito)
+        leerLealtad(orderId)
+    }
+
+    /** D39 (Codex r3 #2): el canje que se quedó sin respuesta, tal cual se mandó (con la versión de entonces). null = ninguno. */
+    private data class CanjeSinRespuesta(val orderId: String, val customerId: String, val points: Int, val monto: Double, val version: Int?)
+    private var sinRespuesta: CanjeSinRespuesta? = null
+    private val enDuda = MutableStateFlow<String?>(null)
+    /** La cuenta con un canje sin respuesta: su botón es «Reintentar el canje», que manda EXACTAMENTE lo mismo. null = ninguna. */
+    val canjeEnDuda: StateFlow<String?> = enDuda.asStateFlow()
+
+    /**
+     * D39 (Codex r2 #2, r3 #1, r4 #1, pasada completa de la familia «cobro durante el canje»): ninguna entrada de cobro de esta cuenta
+     * se abre mientras un canje viaja (su relectura vaciaría la foto del cobro) ni mientras uno se quedó sin respuesta (no se sabe cuánto
+     * falta: si entró, el saldo es otro; si no, un «Reintentar» después de cobrar bajaría una cuenta ya cobrada). Las entradas: los dos
+     * «Cobrar $X», «No se cobró: cobrar aquí» y el efectivo desde la copia sin red. Se revisa otra vez después de cada espera.
+     */
+    fun cobroBloqueadoPorCanje(orderId: String): Boolean = canjeando.value || sinRespuesta?.orderId == orderId
+
+    /**
+     * Canjea [points] mandando lo que enseñó el diálogo ([montoMostrado]) y la versión de la cuenta que se ve: el SERVIDOR sólo canjea
+     * exactamente eso sobre esa misma versión (candado de la oferta, D18; versión, Codex D39 r1 #2), y quema los puntos y pone el
+     * descuento en una sola transacción. Corre en el alcance del ViewModel: cerrar el diálogo no lo corta. Al terminar relee la cuenta —el
+     * «Cobrar $X» cobra lo nuevo— y su saldo, y avisa a Pedidos ([alTerminar]); `canjeEnVuelo` sigue prendido hasta que la relectura
+     * termina, así ningún cobro se abre sobre la foto que se está releyendo (Codex r3 #1).
+     */
+    fun canjear(orderId: String, points: Int, montoMostrado: Double, laTraeUnCarrito: Boolean = false, alTerminar: () -> Unit) {
+        if (canjeando.value || sinRespuesta != null) return
+        if (!red.isConnected.value || !red.isServerReachable.value) {
+            avisoDeLasRecompensas.value = com.avoqado.pos.tables.data.RECOMPENSAS_SIN_RED
+            return
+        }
+        val cuenta = foto.value?.takeIf { it.id == orderId } ?: return
+        venueDeLaCuenta?.takeIf { it == storage.venueId } ?: return
+        val cliente = cuenta.customerId?.takeIf { it.isNotBlank() } ?: return
+        val lealtad = lealtadDeLaCuenta()?.lealtad ?: return
+        if (motivoSinRecompensasDeCuenta(cuenta, lecturaDeLealtad.value, enLinea = true, consultando = false, oferta = ofertaActual.value,
+                puedeCanjear = puedeCanjearPuntos, prohibida = lecturaProhibida.value, laTraeUnCarrito = laTraeUnCarrito) != null) return
+        if (points > topeQueNoCierraLaCuenta(lealtad, restanteCents(cuenta) ?: 0) || !lealtad.puedeCanjear(points)) return
+        mandarCanje(CanjeSinRespuesta(orderId, cliente, points, montoMostrado, cuenta.version), laTraeUnCarrito, alTerminar)
+    }
+
+    /**
+     * D39 (Codex r2 #3, r3 #2): repite el canje que se quedó sin respuesta, IDÉNTICO (la misma versión de la cuenta). Si el primero sí
+     * entró, el canje ya subió la versión y el SERVIDOR contesta 409 sin quemar nada: no hay dos canjes. Si no entró y la cuenta no cambió,
+     * canjea. Sobrevive a cerrar el diálogo, no a cerrar la app (al volver, la cuenta releída dice si trae el descuento).
+     */
+    fun reintentarCanje(orderId: String, laTraeUnCarrito: Boolean = false, alTerminar: () -> Unit) {
+        val intento = sinRespuesta?.takeIf { it.orderId == orderId } ?: return
+        if (canjeando.value) return
+        if (!red.isConnected.value || !red.isServerReachable.value) {
+            avisoDeLasRecompensas.value = com.avoqado.pos.tables.data.RECOMPENSAS_SIN_RED
+            return
+        }
+        venueDeLaCuenta?.takeIf { it == storage.venueId } ?: return
+        // Codex r4 #2: lo que frena un canje nuevo también frena repetirlo (un cobro de esta caja sin subir, la cuenta en el carrito).
+        if (ofertaActual.value != com.avoqado.pos.giftcards.domain.OfertaDeLaCuenta.OFRECER || laTraeUnCarrito || !puedeCanjearPuntos) {
+            avisoDeLasRecompensas.value = when {
+                !puedeCanjearPuntos -> RECOMPENSAS_SIN_PERMISO
+                ofertaActual.value == com.avoqado.pos.giftcards.domain.OfertaDeLaCuenta.COBRO_SIN_SINCRONIZAR -> RECOMPENSAS_CON_COBRO_SIN_SUBIR
+                laTraeUnCarrito -> RECOMPENSAS_EN_EL_CARRITO
+                else -> RECOMPENSAS_REINTENTO_NO_SE_PUEDE
+            }
+            return
+        }
+        mandarCanje(intento, laTraeUnCarrito, alTerminar)
+    }
+
+    private fun mandarCanje(intento: CanjeSinRespuesta, laTraeUnCarrito: Boolean, alTerminar: () -> Unit) {
+        val venue = venueDeLaCuenta ?: return
+        val esReintento = sinRespuesta == intento
+        canjeando.value = true
+        dialogoDeRecompensas.value = false
+        avisoDeCanje.value = null
+        viewModelScope.launch {
+            try {
+                repo.redeemLoyaltyPoints(venue, intento.orderId, intento.customerId, intento.points, intento.monto, intento.version).fold(
+                    onSuccess = { aplicado ->
+                        sinRespuesta = null
+                        avisoDeLasRecompensas.value = "Recompensa aplicada — ${aplicado.pointsRedeemed} puntos por " +
+                            com.avoqado.pos.core.util.formatMoney(aplicado.discountAmount)
+                    },
+                    onFailure = { e ->
+                        if (e is CancellationException) throw e
+                        when {
+                            // Un rechazo del SERVIDOR (4xx) es definitivo: el canje no se hizo con ESTE envío.
+                            e is com.avoqado.pos.tables.data.CanjeRechazado && esReintento -> {
+                                sinRespuesta = null
+                                // La cuenta ya no es la de entonces: o el canje anterior sí entró (subió la versión), u otra cosa la cambió.
+                                avisoDeLasRecompensas.value = if (e.ofertaCambio) RECOMPENSAS_REINTENTO_YA_CAMBIO else
+                                    com.avoqado.pos.core.data.network.ServerErrorText.humanize(e, "No se pudo canjear los puntos")
+                            }
+                            e is com.avoqado.pos.tables.data.CanjeRechazado && e.ofertaCambio -> {
+                                avisoDeCanje.value = "La cuenta cambió: revisa los puntos."
+                                dialogoDeRecompensas.value = true
+                            }
+                            e is com.avoqado.pos.tables.data.CanjeRechazado ->
+                                avisoDeLasRecompensas.value = com.avoqado.pos.core.data.network.ServerErrorText.humanize(e, "No se pudo canjear los puntos")
+                            // Sin respuesta (red, tiempo agotado, 5xx): no se sabe si entró. Lo único que se ofrece es repetirlo idéntico.
+                            else -> {
+                                sinRespuesta = intento
+                                avisoDeLasRecompensas.value = RECOMPENSAS_EN_DUDA
+                            }
+                        }
+                    },
+                )
+                enDuda.value = sinRespuesta?.orderId
+                releerConSaldo(intento.orderId, laTraeUnCarrito)
+            } finally {
+                canjeando.value = false
+            }
+            alTerminar()
+        }
+    }
+}
+
+const val RECOMPENSAS_EN_DUDA =
+    "No se sabe si el canje entró. Toca «Reintentar el canje»: manda lo mismo y, si ya había entrado, no se canjea otra vez."
+const val RECOMPENSAS_REINTENTO_YA_CAMBIO =
+    "No se volvió a canjear: la cuenta ya cambió. Si el canje anterior entró, la cuenta ya trae su descuento «Recompensas»; revísalo antes de canjear otra vez."
+const val TEXTO_REINTENTAR_CANJE = "Reintentar el canje"
+const val RECOMPENSAS_REINTENTO_NO_SE_PUEDE = "No se puede repetir el canje ahora: la cuenta ya no se puede cobrar desde aquí. Vuelve a abrirla."
+const val RECOMPENSAS_COBRO_ESPERA_AL_CANJE =
+    "Hay un canje de puntos sin terminar en esta cuenta: no se sabe cuánto falta. Espera a que termine o reinténtalo con red antes de cobrar."
+const val RECOMPENSAS_SIN_CLIENTE = "Esta cuenta no tiene cliente: no hay puntos que canjear."
+const val RECOMPENSAS_CON_COBRO_SIN_SUBIR = "Esta cuenta tiene un cobro de esta caja que todavía no sube: canjea cuando suba."
+const val RECOMPENSAS_SIN_PERMISO = "No tienes permiso para canjear puntos. Pídeselo a tu gerente."
+const val RECOMPENSAS_SIN_ACCESO = "No se pueden leer los puntos: el plan del negocio o tus permisos no incluyen la lealtad."
+const val RECOMPENSAS_EN_EL_CARRITO = "Esta cuenta está en el carrito: cóbrala desde ahí."
+const val RECOMPENSAS_LEYENDO_LA_CUENTA = "Leyendo la cuenta…"
+fun recompensasCubririanTodo(minimo: Int) =
+    "Con $minimo puntos o más la cuenta quedaría en \$0.00, y en Pedidos una cuenta en \$0.00 no se puede cerrar. Cóbrala sin puntos."
+
+/**
+ * D39 (Codex r1 #5): los MÁS puntos que se pueden canjear sin dejar la cuenta en $0.00 (en Pedidos el cobro sólo abre con saldo, y una
+ * cuenta de «Pagar después» en $0.00 no tiene con qué cerrarse). El valor de cada número es el del SERVIDOR (`valorDelCanje`). 0 = ninguno.
+ */
+fun topeQueNoCierraLaCuenta(lealtad: com.avoqado.pos.tables.data.CustomerLoyalty, restanteCents: Int): Int {
+    if (restanteCents <= 1 || lealtad.redemptionRate <= 0) return 0
+    fun cents(p: Int) = Math.round(lealtad.valorDelCanje(p) * 100).toInt()
+    // Arranca justo arriba del límite y baja (no barre desde el saldo entero: con una tasa chica serían millones de vueltas).
+    val estimado = (restanteCents / 100.0 / lealtad.redemptionRate).toLong() + 2
+    var p = minOf(lealtad.maxRedeemablePoints.toLong(), estimado).toInt().coerceAtLeast(0)
+    while (p > 0 && cents(p) >= restanteCents) p--
+    return p
+}
+
+/**
+ * D39 fase 1: por qué «Recompensas» de una cuenta de «Pagar después» está gris (null = se puede). Cada causa con su texto: sin red, sin
+ * permiso, sin cliente, un cobro local sin subir, el plan, la cuenta en el carrito; lo demás es la misma regla de Mesas
+ * ([com.avoqado.pos.tables.data.motivoSinRecompensas]); y al final, que el mínimo dejaría la cuenta en $0.00 ([topeQueNoCierraLaCuenta]).
+ */
+fun motivoSinRecompensasDeCuenta(
+    cuenta: com.avoqado.pos.tables.data.OrderDetail?,
+    leida: com.avoqado.pos.tables.data.LealtadLeida?,
+    enLinea: Boolean,
+    consultando: Boolean,
+    oferta: com.avoqado.pos.giftcards.domain.OfertaDeLaCuenta,
+    puedeCanjear: Boolean = true,
+    prohibida: Boolean = false,
+    laTraeUnCarrito: Boolean = false,
+): String? {
+    val vigente = leida.paraLaCuenta(cuenta)
+    val lealtad = vigente?.lealtad
+    val restante = cuenta?.let(::restanteCents)
+    return when {
+        !enLinea -> com.avoqado.pos.tables.data.RECOMPENSAS_SIN_RED
+        !puedeCanjear -> RECOMPENSAS_SIN_PERMISO
+        cuenta != null && !consultando && cuenta.customerId.isNullOrBlank() -> RECOMPENSAS_SIN_CLIENTE
+        oferta == com.avoqado.pos.giftcards.domain.OfertaDeLaCuenta.COBRO_SIN_SINCRONIZAR -> RECOMPENSAS_CON_COBRO_SIN_SUBIR
+        laTraeUnCarrito -> RECOMPENSAS_EN_EL_CARRITO
+        prohibida && lealtad == null -> RECOMPENSAS_SIN_ACCESO
+        else -> com.avoqado.pos.tables.data.motivoSinRecompensas(
+            tieneCliente = if (cuenta == null || consultando) null else !cuenta.customerId.isNullOrBlank(),
+            lealtad = lealtad,
+            fallo = vigente?.fallo,
+            enLinea = enLinea,
+            actualizandoCuenta = consultando,
+            cuentaCancelada = cuenta?.status == "CANCELLED" || cuenta?.status == "DELETED",
+            cuentaCambioAlLeer = lealtad?.let { l -> cuenta?.let { com.avoqado.pos.tables.data.maximoCeroContradiceLaCuenta(l, it) } } == true,
+        ) ?: when {
+            oferta != com.avoqado.pos.giftcards.domain.OfertaDeLaCuenta.OFRECER -> RECOMPENSAS_LEYENDO_LA_CUENTA
+            lealtad != null && restante != null && topeQueNoCierraLaCuenta(lealtad, restante) < maxOf(lealtad.minPointsRedeem, 1) ->
+                recompensasCubririanTodo(maxOf(lealtad.minPointsRedeem, 1))
+            else -> null
+        }
+    }
 }
 
 enum class CierreDeCuenta { ABIERTA, PAGADA, CANCELADA }
@@ -407,6 +665,8 @@ fun CobroDeCuentaScreen(
         onSalir(cierre)
     }
     val mensaje by viewModel.mensaje.collectAsState()
+    val canjeEnVuelo by viewModel.canjeEnVuelo.collectAsState()
+    val canjeEnDuda by viewModel.canjeEnDuda.collectAsState()
     val scope = rememberCoroutineScope()
     var cobrar by rememberSaveable(orderId) { mutableStateOf(false) }
     var avisoLocal by rememberSaveable(orderId) { mutableStateOf<String?>(null) }
@@ -455,8 +715,8 @@ fun CobroDeCuentaScreen(
                     when {
                         cents == null && cuenta != null -> Text("No se pudo consultar lo que falta. Vuelve a abrir la cuenta.")
                         cents == 0 -> Text("Esta cuenta no tiene saldo pendiente.")
-                        cents != null && cents > 0 -> PrimaryButton(text = TextosDeTarjetas.cobrar(cents), enabled = controlDeRedDeCuenta(conectado, servidor, viewModel.puedeCobrar && oferta == com.avoqado.pos.giftcards.domain.OfertaDeLaCuenta.OFRECER),
-                            onClick = { scope.launch { if (enLinea && viewModel.puedeCobrar && viewModel.ofertaParaCobrar(orderId, cuentaDelCarrito() == orderId) == com.avoqado.pos.giftcards.domain.OfertaDeLaCuenta.OFRECER) cobrar = true } })
+                        cents != null && cents > 0 -> PrimaryButton(text = TextosDeTarjetas.cobrar(cents), enabled = controlDeRedDeCuenta(conectado, servidor, viewModel.puedeCobrar && oferta == com.avoqado.pos.giftcards.domain.OfertaDeLaCuenta.OFRECER && !canjeEnVuelo && canjeEnDuda != orderId),
+                            onClick = { scope.launch { if (enLinea && viewModel.puedeCobrar && !viewModel.cobroBloqueadoPorCanje(orderId) && viewModel.ofertaParaCobrar(orderId, cuentaDelCarrito() == orderId) == com.avoqado.pos.giftcards.domain.OfertaDeLaCuenta.OFRECER && !viewModel.cobroBloqueadoPorCanje(orderId)) cobrar = true } })
                     }
                     if (oferta == com.avoqado.pos.giftcards.domain.OfertaDeLaCuenta.COBRO_SIN_SINCRONIZAR) Text(TextosDeTarjetas.COBRO_SIN_SINCRONIZAR)
                     if (!viewModel.puedeCobrar) Text("No tienes permiso para cobrar. Pídeselo a tu gerente.")
@@ -559,6 +819,8 @@ private fun CobrarCuentaSinRed(orderId: String, copia: CuentaGuardada, viewModel
 /** I2: con internet, el «no confirmó» de otra caja y su salida, en la caja que abrió la cuenta. Se vuelve a mirar cada 10 s. */
 @Composable
 private fun NoConfirmoEnLinea(orderId: String, viewModel: CobroDeCuentaViewModel, onDeclarado: () -> Unit) {
+    val canjeEnVuelo by viewModel.canjeEnVuelo.collectAsState()
+    val canjeEnDuda by viewModel.canjeEnDuda.collectAsState()
     var texto by remember(orderId) { mutableStateOf<String?>(null) }
     var declarando by remember(orderId) { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
@@ -570,7 +832,9 @@ private fun NoConfirmoEnLinea(orderId: String, viewModel: CobroDeCuentaViewModel
     }
     texto?.let { t ->
         Text(t)
-        PrimaryButton(text = TextosDeCuentaSinRed.NO_SE_COBRO_COBRAR_AQUI, enabled = !declarando, onClick = {
+        PrimaryButton(text = TextosDeCuentaSinRed.NO_SE_COBRO_COBRAR_AQUI, enabled = !declarando && !canjeEnVuelo && canjeEnDuda != orderId, onClick = {
+            // D39 (Codex r4 #1): mientras hay un canje no se declara nada: la declaración va antes de abrir el cobro.
+            if (viewModel.cobroBloqueadoPorCanje(orderId)) return@PrimaryButton
             declarando = true
             scope.launch {
                 try {
@@ -700,6 +964,8 @@ fun AccionesDeCuentaAbierta(
     val detalle by viewModel.detalle.collectAsState()
     val consultasEnCurso by viewModel.consultasEnCurso.collectAsState()
     val mensaje by viewModel.mensaje.collectAsState()
+    val canjeEnVuelo by viewModel.canjeEnVuelo.collectAsState()
+    val canjeEnDuda by viewModel.canjeEnDuda.collectAsState()
     val solicitudesPropias = solicitudesDeLaCuenta(solicitudes, viewModel.venueActual, order.id)
     val porTerminar = solicitudesPropias.any { it.porTerminar }
     val elegible = com.avoqado.pos.orders.data.model.puedeCobrarseDesdeLaLista(order.cobrosConSaldo, order, porTerminar)
@@ -715,7 +981,8 @@ fun AccionesDeCuentaAbierta(
     // I2: con internet, la caja que la abrió también ofrece «No se cobró: cobrar aquí» cuando otra la comprometió y no confirmó.
     if (enLinea && elegible) NoConfirmoEnLinea(order.id, viewModel) {
         scope.launch {
-            if (viewModel.puedeCobrar && viewModel.ofertaParaCobrar(order.id, cuentaDelCarrito() == order.id) == com.avoqado.pos.giftcards.domain.OfertaDeLaCuenta.OFRECER) abierta = true
+            // D39 (Codex r3 #1): tampoco abre el cobro mientras viaja un canje (su relectura vaciaría la foto del cobro).
+            if (viewModel.puedeCobrar && !viewModel.cobroBloqueadoPorCanje(order.id) && viewModel.ofertaParaCobrar(order.id, cuentaDelCarrito() == order.id) == com.avoqado.pos.giftcards.domain.OfertaDeLaCuenta.OFRECER && !viewModel.cobroBloqueadoPorCanje(order.id)) abierta = true
         }
     }
     if (conCopia) CobrarCuentaSinRed(order.id, copia!!, viewModel) { saldo -> cobroSinRed = saldo }
@@ -725,10 +992,13 @@ fun AccionesDeCuentaAbierta(
             scope.launch { if (enLinea) viewModel.ofertaParaCobrar(order.id, cuentaDelCarrito() == order.id) }
         }) { Text(TextosDeTarjetas.REINTENTAR) }
         else if (cents == null && detalle != null) Text("No se pudo consultar lo que falta. Vuelve a abrir la cuenta.")
-        else if (cents != null && cents > 0) PrimaryButton(text = TextosDeTarjetas.cobrar(cents), enabled = controlDeRedDeCuenta(conectado, servidor, viewModel.puedeCobrar && oferta == com.avoqado.pos.giftcards.domain.OfertaDeLaCuenta.OFRECER),
-            onClick = { scope.launch { if (enLinea && viewModel.puedeCobrar && viewModel.ofertaParaCobrar(order.id, cuentaDelCarrito() == order.id) == com.avoqado.pos.giftcards.domain.OfertaDeLaCuenta.OFRECER) abierta = true } })
+        // D39 (Codex r2 #2): mientras viaja un canje no se abre el cobro: su relectura vaciaría la foto y reiniciaría el cobro abierto.
+        else if (cents != null && cents > 0) PrimaryButton(text = TextosDeTarjetas.cobrar(cents), enabled = controlDeRedDeCuenta(conectado, servidor, viewModel.puedeCobrar && oferta == com.avoqado.pos.giftcards.domain.OfertaDeLaCuenta.OFRECER && !canjeEnVuelo && canjeEnDuda != order.id),
+            onClick = { scope.launch { if (enLinea && viewModel.puedeCobrar && !viewModel.cobroBloqueadoPorCanje(order.id) && viewModel.ofertaParaCobrar(order.id, cuentaDelCarrito() == order.id) == com.avoqado.pos.giftcards.domain.OfertaDeLaCuenta.OFRECER && !viewModel.cobroBloqueadoPorCanje(order.id)) abierta = true } })
         if (!viewModel.puedeCobrar) Text("No tienes permiso para cobrar. Pídeselo a tu gerente.")
     } else if (ofreceReintentarDetalle(order, enLinea)) TextButton(onClick = onReintentar) { Text(TextosDeTarjetas.REINTENTAR) }
+    // D39 fase 1: el canje de Mesas en una cuenta abierta de Mostrador con cliente (las de «Pagar después»). Sin red, gris con su texto.
+    if (ofreceRecompensas(order, detalle, conCopia, elegible, cents)) RecompensasDeLaCuenta(order.id, enLinea, viewModel, onActualizar)
     if (!order.esCuentaDeTarjetas) RegresarSaldoDeCuenta(order.id, order.cobrosConSaldo ?: 0,
         order.orderPaymentStatus == com.avoqado.pos.orders.data.model.PaymentStatus.PAID || order.status in listOf("CANCELLED", "DELETED"),
         onCancelada = { onCancelada(); onActualizar() })
@@ -738,6 +1008,76 @@ fun AccionesDeCuentaAbierta(
         order.esCuentaDeTarjetas, detalle?.cobrosConSaldo ?: order.cobrosConSaldo,
         sePuedeCobrar = elegible && (detalle == null || (cents ?: 0) > 0)))?.let { Text(it) }
 }
+
+/**
+ * D39 fase 1: dónde sale «Recompensas» en Pedidos. Sólo en una cuenta de «Pagar después» (`payLater` del SERVIDOR: sin mesa no basta,
+ * una importada o de plataforma tampoco tiene, Codex r1 #1), no de tarjetas de regalo, con cliente, y donde se ofrece cobrarla: con
+ * red, la cuenta con saldo que el botón «Cobrar» cobra; sin red, la de la copia (gris con su texto). Lo demás lo decide
+ * [motivoSinRecompensasDeCuenta].
+ */
+internal fun ofreceRecompensas(
+    order: com.avoqado.pos.orders.data.model.OrderDetail,
+    detalle: com.avoqado.pos.tables.data.OrderDetail?,
+    conCopia: Boolean,
+    elegible: Boolean,
+    cents: Int?,
+): Boolean = when {
+    order.esCuentaDeTarjetas -> false
+    // Con red: el detalle fresco del SERVIDOR, con su cliente.
+    !conCopia -> detalle?.id == order.id && detalle.payLater == true && detalle.esDeMesa == false && !detalle.esCuentaDeTarjetas &&
+        !detalle.customerId.isNullOrBlank() && elegible && (cents ?: 0) > 0
+    // Sin red (Codex r2 #5): la fila de la copia también dice `payLater`; se ve gris con «Sin conexión…», también abierta por primera vez.
+    else -> order.payLater == true && order.esDeMesa == false
+}
+
+/** El botón «Recompensas» de una cuenta de Pedidos y su diálogo (el de Mesas). */
+@Composable
+private fun RecompensasDeLaCuenta(orderId: String, enLinea: Boolean, viewModel: CobroDeCuentaViewModel, onActualizar: () -> Unit) {
+    val detalle by viewModel.detalle.collectAsState()
+    val leida by viewModel.lealtadLeida.collectAsState()
+    val prohibida by viewModel.lealtadProhibida.collectAsState()
+    val oferta by viewModel.oferta.collectAsState()
+    val consultas by viewModel.consultasEnCurso.collectAsState()
+    val abiertas by viewModel.recompensasAbiertas.collectAsState()
+    val avisoDelCanje by viewModel.avisoDelCanje.collectAsState()
+    val resultado by viewModel.avisoDeRecompensas.collectAsState()
+    val enVuelo by viewModel.canjeEnVuelo.collectAsState()
+    val cuentaDelCarrito = LocalCuentaDelCarrito.current
+    val scope = rememberCoroutineScope()
+    val cuenta = detalle?.takeIf { it.id == orderId }
+    // Cada cuenta nueva (otra versión, otra clienta) o la red que vuelve relee el saldo contra ella.
+    LaunchedEffect(cuenta?.id, cuenta?.version, cuenta?.customerId, enLinea) { if (enLinea && cuenta != null) viewModel.leerLealtad(orderId) }
+    val enCarrito = cuentaDelCarrito() == orderId
+    val enDuda by viewModel.canjeEnDuda.collectAsState()
+    val motivo = motivoSinRecompensasDeCuenta(cuenta, leida, enLinea, consultas > 0, oferta, viewModel.puedeCanjearPuntos, prohibida, enCarrito)
+    if (enDuda == orderId) {
+        // Codex r3 #2: con un canje sin respuesta no se ofrece uno nuevo; sólo repetir ESE, idéntico (no se canjea dos veces).
+        TextButton(enabled = !enVuelo && enLinea, onClick = { viewModel.reintentarCanje(orderId, enCarrito, onActualizar) }) {
+            Text(TEXTO_REINTENTAR_CANJE)
+        }
+    } else TextButton(enabled = !enVuelo && motivo == null, onClick = { scope.launch { viewModel.abrirRecompensas(orderId, enCarrito) } }) {
+        Text("Recompensas")
+    }
+    // Sin red es un estado normal: el mismo color de las notas, nunca rojo.
+    (if (enVuelo) TEXTO_CANJEANDO else if (enDuda == orderId) resultado ?: RECOMPENSAS_EN_DUDA else motivo ?: resultado)?.let {
+        Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+    val lealtad = leida.paraLaCuenta(cuenta)?.lealtad
+    val restante = cuenta?.let(::restanteCents)
+    if (abiertas) RewardsDialog(
+        loyalty = lealtad,
+        motivo = motivo,
+        aviso = avisoDelCanje,
+        enLinea = enLinea,
+        onDismiss = viewModel::cerrarRecompensas,
+        onRedeem = { pts, monto -> viewModel.canjear(orderId, pts, monto, enCarrito, onActualizar) },
+        // En Pedidos no hay «quitar la recompensa»: los puntos regresan si se cancela la venta.
+        nota = { "Mínimo ${it.minPointsRedeem} puntos. Si se cancela la venta, los puntos regresan." },
+        tope = if (lealtad != null && restante != null) topeQueNoCierraLaCuenta(lealtad, restante) else 0,
+    )
+}
+
+const val TEXTO_CANJEANDO = "Canjeando los puntos…"
 
 @Composable
 fun RegresarSaldoDeCuenta(orderId: String, cobrosConSaldo: Int, pagada: Boolean, onCancelada: () -> Unit,

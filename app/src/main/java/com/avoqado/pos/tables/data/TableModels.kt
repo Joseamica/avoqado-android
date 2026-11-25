@@ -396,6 +396,8 @@ data class OrderDetail(
     val addedTaxAmount: Double = 0.0,
     /** Saldo autoritativo opcional; importes en centavos, propina ausente conserva cero. */
     val preBillBalance: PreBillBalance? = null,
+    /** D39: «Pagar después» elegido a propósito (`Order.payLater`, aditivo del SERVIDOR); null = no se sabe (servidor viejo). */
+    val payLater: Boolean? = null,
 )
 
 @Serializable
@@ -606,7 +608,13 @@ data class CustomerLoyaltyResponse(val success: Boolean = true, val data: Custom
 
 /** POST .../orders/:orderId/loyalty/redeem body. */
 @Serializable
-data class RedeemPointsRequest(val customerId: String, val points: Int, val expectedDiscountAmount: Double? = null)
+data class RedeemPointsRequest(
+    val customerId: String,
+    val points: Int,
+    val expectedDiscountAmount: Double? = null,
+    /** D39: la versión de la cuenta que enseñó el diálogo; el SERVIDOR sólo canjea sobre esa misma versión (null = no la compara). */
+    val expectedVersion: Int? = null,
+)
 
 /** Lo que el SERVIDOR aplicó de verdad: el «aplicada» dice esto, nunca lo pedido. */
 @Serializable

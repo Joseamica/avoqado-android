@@ -660,9 +660,11 @@ class TableServiceRepository @Inject constructor(
      */
     suspend fun redeemLoyaltyPoints(
         venueId: String, orderId: String, customerId: String, points: Int, expectedDiscountAmount: Double,
+        /** D39: Pedidos la manda (el canje sube la versión: una respuesta perdida no se vuelve a canjear); Mesas, todavía no. */
+        expectedVersion: Int? = null,
     ): Result<RedeemPointsData> = runCatching {
         try {
-            apiService.redeemLoyaltyPoints(venueId, orderId, RedeemPointsRequest(customerId, points, expectedDiscountAmount)).data
+            apiService.redeemLoyaltyPoints(venueId, orderId, RedeemPointsRequest(customerId, points, expectedDiscountAmount, expectedVersion)).data
                 ?: error("Respuesta del canje sin datos")
         } catch (e: retrofit2.HttpException) {
             if (e.code() !in 400..499) throw e
