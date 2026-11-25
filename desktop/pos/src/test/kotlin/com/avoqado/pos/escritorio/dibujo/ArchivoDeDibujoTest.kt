@@ -22,7 +22,7 @@ class ArchivoDeDibujoTest {
     }
 
     @Test fun `ida y vuelta devuelve el mismo ajuste`() {
-        val a = Ajuste(modo = Modo.RAPIDO, ordenAplicada = 7, intentando = true, fallo = true, sinAviso = true)
+        val a = Ajuste(modo = Modo.RAPIDO, ultimaOrden = "c1a2-B_3", intentando = true, fallo = true, sinAviso = true)
         assertTrue(ArchivoDeDibujo.guardar(carpeta, a))
         assertEquals(a, ArchivoDeDibujo.leer(carpeta))
     }
@@ -36,9 +36,13 @@ class ArchivoDeDibujoTest {
         assertEquals(Ajuste(), ArchivoDeDibujo.leer(carpeta))
     }
 
-    @Test fun `orden aplicada negativa es incoherente`() {
-        Files.writeString(archivo, """{"modo":"RAPIDO","ordenAplicada":-1}""")
+    @Test fun `un id de orden con caracteres raros o de mas de 64 es incoherente`() {
+        Files.writeString(archivo, """{"modo":"RAPIDO","ultimaOrden":"x y;"}""")
         assertEquals(Ajuste(), ArchivoDeDibujo.leer(carpeta))
+        Files.writeString(archivo, """{"modo":"RAPIDO","ultimaOrden":"${"a".repeat(65)}"}""")
+        assertEquals(Ajuste(), ArchivoDeDibujo.leer(carpeta))
+        Files.writeString(archivo, """{"modo":"RAPIDO","ultimaOrden":"${"a".repeat(64)}"}""")
+        assertEquals(Ajuste(modo = Modo.RAPIDO, ultimaOrden = "a".repeat(64)), ArchivoDeDibujo.leer(carpeta), "64 sí cabe")
     }
 
     @Test fun `intentando en automatico es incoherente`() {
@@ -48,22 +52,22 @@ class ArchivoDeDibujoTest {
 
     @Test fun `carpeta de solo lectura - guardar devuelve false sin lanzar y el archivo de antes sigue`() {
         assumeTrue("sólo con permisos POSIX", Files.getFileStore(carpeta).supportsFileAttributeView("posix"))
-        val antes = Ajuste(modo = Modo.RAPIDO, ordenAplicada = 2)
+        val antes = Ajuste(modo = Modo.RAPIDO, ultimaOrden = "o2")
         assertTrue(ArchivoDeDibujo.guardar(carpeta, antes))
         Files.setPosixFilePermissions(carpeta, PosixFilePermissions.fromString("r-x------"))
         assumeFalse("corre como root: la carpeta sigue escribible", Files.isWritable(carpeta))
-        assertFalse(ArchivoDeDibujo.guardar(carpeta, Ajuste(modo = Modo.AUTO, ordenAplicada = 3)))
+        assertFalse(ArchivoDeDibujo.guardar(carpeta, Ajuste(modo = Modo.AUTO, ultimaOrden = "o3")))
         assertEquals(antes, ArchivoDeDibujo.leer(carpeta))
     }
 
     @Test fun `tras guardar no queda temporal`() {
         assertTrue(ArchivoDeDibujo.guardar(carpeta, Ajuste(modo = Modo.RAPIDO)))
-        assertTrue(ArchivoDeDibujo.guardar(carpeta, Ajuste(modo = Modo.AUTO, ordenAplicada = 1)))
+        assertTrue(ArchivoDeDibujo.guardar(carpeta, Ajuste(modo = Modo.AUTO, ultimaOrden = "o1")))
         assertEquals(listOf("dibujo.json"), carpeta.listDirectoryEntries().map { it.name })
     }
 
     @Test fun `un campo desconocido se ignora`() {
-        Files.writeString(archivo, """{"modo":"RAPIDO","ordenAplicada":4,"deUnaVersionNueva":"x"}""")
-        assertEquals(Ajuste(modo = Modo.RAPIDO, ordenAplicada = 4), ArchivoDeDibujo.leer(carpeta))
+        Files.writeString(archivo, """{"modo":"RAPIDO","ultimaOrden":"o4","deUnaVersionNueva":"x"}""")
+        assertEquals(Ajuste(modo = Modo.RAPIDO, ultimaOrden = "o4"), ArchivoDeDibujo.leer(carpeta))
     }
 }

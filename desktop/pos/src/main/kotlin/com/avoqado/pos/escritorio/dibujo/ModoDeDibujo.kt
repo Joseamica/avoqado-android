@@ -9,11 +9,14 @@ enum class Rendimiento { FLUIDA, LIGERA, NO_ALCANZA }
 
 enum class Aviso { FALLO_RAPIDO, NO_ALCANZA, OFRECER_RAPIDO }
 
-/** Lo único que se guarda entre aperturas (dibujo.json). */
+/**
+ * Lo único que se guarda entre aperturas (dibujo.json).
+ * `ultimaOrden`: id de la última orden del panel que esta PC aplicó (null = ninguna).
+ */
 @Serializable
 data class Ajuste(
     val modo: Modo = Modo.AUTO,
-    val ordenAplicada: Int = 0,
+    val ultimaOrden: String? = null,
     val intentando: Boolean = false,
     val fallo: Boolean = false,
     val sinAviso: Boolean = false,
@@ -28,7 +31,7 @@ data class Estado(
     val modoLigero: Boolean,
     val rendimiento: Rendimiento?,
     val modo: Modo,
-    val ordenAplicada: Int,
+    val ultimaOrden: String?,
     val forzada: Boolean,
     val fallo: Boolean,
     val aMano: Boolean,
@@ -63,11 +66,13 @@ object ModoDeDibujo {
         else -> regresaAAutomatico(a)   // se fijó el rápido y Skiko abrió con otro motor
     }
 
-    fun alElegir(a: Ajuste, modo: Modo): Ajuste = a.copy(modo = modo, fallo = false, sinAviso = false)
+    // Elegir y ordenar sólo pasan con la ventana ya pintada: quitan la marca de intento, así el archivo nunca queda con
+    // `intentando` y AUTO aunque haya fallado el guardado que la quitaba al pintar.
+    fun alElegir(a: Ajuste, modo: Modo): Ajuste = a.copy(modo = modo, intentando = false, fallo = false, sinAviso = false)
 
-    /** null si `version <= a.ordenAplicada`. Con el mismo modo también se aplica: la orden queda acusada. */
-    fun alRecibirOrden(a: Ajuste, modo: Modo, version: Int): Ajuste? =
-        if (version <= a.ordenAplicada) null else a.copy(modo = modo, ordenAplicada = version, fallo = false, sinAviso = false)
+    /** null si `id == a.ultimaOrden` (ya aplicada: sólo falta que el servidor reciba el acuse). Con el mismo modo también se aplica. */
+    fun alRecibirOrden(a: Ajuste, modo: Modo, id: String): Ajuste? =
+        if (id == a.ultimaOrden) null else a.copy(modo = modo, ultimaOrden = id, intentando = false, fallo = false, sinAviso = false)
 
     fun alCallarAviso(a: Ajuste): Ajuste = a.copy(sinAviso = true)
 
@@ -97,7 +102,7 @@ object ModoDeDibujo {
             modoLigero = if (pinto) software else ap.pidioSoftware,
             rendimiento = rendimiento,
             modo = a.modo,
-            ordenAplicada = a.ordenAplicada,
+            ultimaOrden = a.ultimaOrden,
             forzada = forzada,
             fallo = a.fallo,
             aMano = ap.aMano,

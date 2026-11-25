@@ -28,8 +28,8 @@ class ModoDeDibujoTest {
     }
 
     @Test fun `la apertura rapida anterior no pinto - regresa a automatico con fallo, tambien a mano`() {
-        val a = A.copy(modo = Modo.RAPIDO, intentando = true, ordenAplicada = 3, sinAviso = true)
-        val esperado = AlArrancar(A.copy(modo = Modo.AUTO, ordenAplicada = 3, fallo = true), false)
+        val a = A.copy(modo = Modo.RAPIDO, intentando = true, ultimaOrden = "o3", sinAviso = true)
+        val esperado = AlArrancar(A.copy(modo = Modo.AUTO, ultimaOrden = "o3", fallo = true), false)
         assertEquals(esperado, ModoDeDibujo.alArrancar(a, aMano = false))
         assertEquals(esperado, ModoDeDibujo.alArrancar(a, aMano = true))
     }
@@ -57,23 +57,33 @@ class ModoDeDibujoTest {
         assertEquals(A.copy(modo = Modo.RAPIDO), ModoDeDibujo.alElegir(A.copy(fallo = true, sinAviso = true), Modo.RAPIDO))
     }
 
-    @Test fun `una orden mas nueva se aplica y queda acusada`() {
+    @Test fun `elegir automatico con la marca de intento puesta la quita`() {
+        // Pintó, pero falló el guardado que quitaba la marca: el archivo nunca queda con intentando y AUTO.
+        assertEquals(A.copy(modo = Modo.AUTO), ModoDeDibujo.alElegir(A.copy(modo = Modo.RAPIDO, intentando = true), Modo.AUTO))
+    }
+
+    @Test fun `una orden con otro id se aplica`() {
         assertEquals(
-            A.copy(modo = Modo.RAPIDO, ordenAplicada = 3),
-            ModoDeDibujo.alRecibirOrden(A.copy(ordenAplicada = 2), Modo.RAPIDO, 3),
+            A.copy(modo = Modo.RAPIDO, ultimaOrden = "o3"),
+            ModoDeDibujo.alRecibirOrden(A.copy(ultimaOrden = "o2"), Modo.RAPIDO, "o3"),
         )
     }
 
-    @Test fun `una orden igual o mas vieja se ignora`() {
-        val a = A.copy(modo = Modo.RAPIDO, ordenAplicada = 3)
-        assertNull(ModoDeDibujo.alRecibirOrden(a, Modo.AUTO, 3))
-        assertNull(ModoDeDibujo.alRecibirOrden(a, Modo.AUTO, 2))
+    @Test fun `la orden ya aplicada se ignora`() {
+        assertNull(ModoDeDibujo.alRecibirOrden(A.copy(modo = Modo.RAPIDO, ultimaOrden = "o3"), Modo.AUTO, "o3"))
     }
 
-    @Test fun `una orden mas nueva con el mismo modo tambien queda acusada`() {
+    @Test fun `una orden nueva con el mismo modo tambien queda aplicada`() {
         assertEquals(
-            A.copy(modo = Modo.RAPIDO, ordenAplicada = 4),
-            ModoDeDibujo.alRecibirOrden(A.copy(modo = Modo.RAPIDO, ordenAplicada = 3), Modo.RAPIDO, 4),
+            A.copy(modo = Modo.RAPIDO, ultimaOrden = "o4"),
+            ModoDeDibujo.alRecibirOrden(A.copy(modo = Modo.RAPIDO, ultimaOrden = "o3"), Modo.RAPIDO, "o4"),
+        )
+    }
+
+    @Test fun `una orden a automatico con la marca de intento puesta la quita`() {
+        assertEquals(
+            A.copy(modo = Modo.AUTO, ultimaOrden = "o4"),
+            ModoDeDibujo.alRecibirOrden(A.copy(modo = Modo.RAPIDO, intentando = true, ultimaOrden = "o3"), Modo.AUTO, "o4"),
         )
     }
 
