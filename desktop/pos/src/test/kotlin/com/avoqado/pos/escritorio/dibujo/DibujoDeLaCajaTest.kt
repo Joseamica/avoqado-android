@@ -1,0 +1,271 @@
+package com.avoqado.pos.escritorio.dibujo
+
+import com.avoqado.pos.BuildConfig
+import java.nio.file.Files
+import java.nio.file.attribute.PosixFilePermissions
+import java.util.Collections
+import java.util.concurrent.CountDownLatch
+import kotlin.concurrent.thread
+import kotlin.io.path.exists
+import kotlin.io.path.listDirectoryEntries
+import kotlin.io.path.name
+import kotlin.io.path.readText
+import kotlin.test.AfterTest
+import kotlin.test.BeforeTest
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertNull
+import kotlin.test.assertTrue
+import kotlinx.serialization.json.Json
+import org.junit.Assume.assumeFalse
+import org.junit.Assume.assumeTrue
+
+/** El dueño del modo de dibujo (hz:a5fa2439:D2): reloj falso, carpeta temporal y un `fijar` que anota. */
+class DibujoDeLaCajaTest {
+    private val carpeta = Files.createTempDirectory("dibujo-caja")
+    private val archivo = carpeta.resolve("dibujo.json")
+    private var relojNs = 0L
+    private val fijados = mutableListOf<String>()
+    private var archivoAlFijar: Ajuste? = null
+    private val caja = DibujoDeLaCaja
+    private val e get() = caja.estado.value
+
+    @BeforeTest fun armar() = caja.reiniciarParaPruebas()
+
+    @AfterTest fun limpiar() {
+        caja.reiniciarParaPruebas()
+        carpeta.toFile().setWritable(true)
+        carpeta.toFile().deleteRecursively()
+    }
+
+    /** Un proceso nuevo: se rearma el objeto y abre con este entorno y estas propiedades. */
+    private fun arrancar(entorno: Map<String, String> = emptyMap(), propiedades: Map<String, String> = emptyMap()) {
+        caja.reiniciarParaPruebas()
+        relojNs = 0
+        fijados.clear()
+        caja.alArrancar(carpeta, entorno::get, propiedades::get, fijar = { fijados += it; archivoAlFijar = crudo() }, ahoraNs = { relojNs })
+    }
+
+    private fun pintar(motor: String, ms: Long) {
+        relojNs += ms * 1_000_000
+        caja.alPintar(motor)
+    }
+
+    /** Lo que dice el archivo, sin la lectura indulgente de ArchivoDeDibujo (que tomaría «intentando + AUTO» por automático). */
+    private fun crudo(): Ajuste? = if (archivo.exists()) Json.decodeFromString(Ajuste.serializer(), archivo.readText()) else null
+
+    private fun escribir(a: Ajuste) = assertTrue(ArchivoDeDibujo.guardar(carpeta, a))
+
+    private fun soloLectura() {
+        assumeTrue("sólo con permisos POSIX", Files.getFileStore(carpeta).supportsFileAttributeView("posix"))
+        Files.setPosixFilePermissions(carpeta, PosixFilePermissions.fromString("r-x------"))
+        assumeFalse("corre como root: la carpeta sigue escribible", Files.isWritable(carpeta))
+    }
+
+    private fun escribible() = Files.setPosixFilePermissions(carpeta, PosixFilePermissions.fromString("rwx------"))
+
+    @Test fun `sin archivo no fija ni escribe nada y Direct3D rapido es fluida`() {
+        arrancar()
+        assertEquals(emptyList(), fijados)
+        assertFalse(archivo.exists())
+        pintar("DIRECT3D", 600)
+        assertFalse(archivo.exists())
+        assertEquals(Rendimiento.FLUIDA, e.rendimiento)
+        assertEquals(600L, e.pintarMs)
+    }
+
+    @Test fun `OpenGL lento ofrece el rapido, elegirlo se guarda y la siguiente apertura lo fija`() {
+        val revisiones = mutableListOf<Long>()
+        arrancar()
+        caja.alCambiar = { _, n -> revisiones += n }
+        pintar("OPENGL", 9_400)
+        assertEquals(Aviso.OFRECER_RAPIDO, e.aviso)
+        assertEquals(1, revisiones.size)
+
+        assertTrue(caja.elegir(Modo.RAPIDO))
+        assertEquals(Ajuste(modo = Modo.RAPIDO), crudo())
+        assertTrue(caja.recienElegido.value)
+        assertTrue(e.aplicaAlReabrir)
+        assertEquals(2, revisiones.size)
+        assertTrue(revisiones[1] > revisiones[0])
+
+        // Siguiente proceso: la marca de intento ya está escrita cuando se fija el motor.
+        arrancar()
+        assertEquals(listOf(ModoDeDibujo.MOTOR_RAPIDO), fijados)
+        assertEquals(Ajuste(modo = Modo.RAPIDO, intentando = true), archivoAlFijar)
+        assertTrue(e.modoLigero)
+        assertFalse(caja.recienElegido.value)
+        pintar("SOFTWARE_FAST", 700)
+        assertEquals(Ajuste(modo = Modo.RAPIDO), crudo())
+        assertTrue(e.forzada)
+        assertFalse(e.aplicaAlReabrir)
+    }
+
+    @Test fun `la apertura rapida anterior no pinto - no fija, regresa a automatico y avisa el fallo`() {
+        escribir(Ajuste(modo = Modo.RAPIDO, intentando = true))
+        arrancar()
+        assertEquals(emptyList(), fijados)
+        assertEquals(Ajuste(modo = Modo.AUTO, fallo = true), crudo())
+        pintar("OPENGL", 9_400)
+        assertEquals(Aviso.FALLO_RAPIDO, e.aviso)
+    }
+
+    @Test fun `carpeta de solo lectura con rapido - no fija y nada lanza`() {
+        escribir(Ajuste(modo = Modo.RAPIDO))
+        soloLectura()
+        arrancar()
+        assertEquals(emptyList(), fijados)
+        assertFalse(e.forzada)
+        pintar("OPENGL", 600)
+        assertEquals(emptyList(), fijados)
+        escribible()
+        assertEquals(Ajuste(modo = Modo.RAPIDO), crudo())
+    }
+
+    @Test fun `carpeta de solo lectura con la marca puesta - esta apertura va en automatico con fallo y el archivo la conserva`() {
+        escribir(Ajuste(modo = Modo.RAPIDO, intentando = true))
+        soloLectura()
+        arrancar()
+        assertEquals(emptyList(), fijados)
+        assertEquals(Modo.AUTO, e.modo)
+        assertTrue(e.fallo)
+        pintar("OPENGL", 9_400)
+        assertEquals(Aviso.FALLO_RAPIDO, e.aviso)
+        assertFalse(e.aplicaAlReabrir)
+        escribible()
+        assertEquals(Ajuste(modo = Modo.RAPIDO, intentando = true), crudo())
+    }
+
+    @Test fun `si falla el guardado que quita la marca, la siguiente apertura va en automatico con fallo`() {
+        escribir(Ajuste(modo = Modo.RAPIDO))
+        arrancar()
+        assertEquals(listOf(ModoDeDibujo.MOTOR_RAPIDO), fijados)
+        soloLectura()
+        pintar("SOFTWARE_FAST", 700)
+        escribible()
+        assertEquals(Ajuste(modo = Modo.RAPIDO, intentando = true), crudo())
+
+        arrancar()
+        assertEquals(emptyList(), fijados)
+        assertEquals(Modo.AUTO, e.modo)
+        assertTrue(e.fallo)
+        assertEquals(Ajuste(modo = Modo.AUTO, fallo = true), crudo())
+    }
+
+    @Test fun `pinto sin poder quitar la marca y luego elige automatico - el archivo queda coherente`() {
+        escribir(Ajuste(modo = Modo.RAPIDO))
+        arrancar()
+        soloLectura()
+        pintar("SOFTWARE_FAST", 700)
+        escribible()
+        assertTrue(caja.elegir(Modo.AUTO))
+        assertEquals(Ajuste(modo = Modo.AUTO), crudo())
+
+        arrancar()
+        assertEquals(emptyList(), fijados)
+        assertEquals(Modo.AUTO, e.modo)
+        assertFalse(e.fallo)
+        assertEquals(Ajuste(modo = Modo.AUTO), crudo())
+    }
+
+    @Test fun `elegir sin poder guardar - false y nada cambia`() {
+        arrancar()
+        pintar("OPENGL", 9_400)
+        val antes = e
+        soloLectura()
+        assertFalse(caja.elegir(Modo.RAPIDO))
+        assertEquals(antes, e)
+        assertFalse(caja.recienElegido.value)
+    }
+
+    @Test fun `callar el aviso sin poder guardar lo calla en esta sesion`() {
+        arrancar()
+        pintar("OPENGL", 9_400)
+        soloLectura()
+        assertFalse(caja.callarAviso())
+        assertNull(e.aviso)
+        escribible()
+        assertFalse(archivo.exists())
+    }
+
+    @Test fun `dos hilos eligen a la vez - gana un resultado completo y el ultimo aviso trae ese estado`() {
+        arrancar()
+        pintar("OPENGL", 9_400)
+        repeat(200) {
+            val anotados = Collections.synchronizedList(mutableListOf<Pair<Estado, Long>>())
+            caja.alCambiar = { estado, n -> anotados += estado to n }
+            val salida = CountDownLatch(1)
+            val resultados = Collections.synchronizedList(mutableListOf<Boolean>())
+            val hilos = listOf(Modo.RAPIDO, Modo.AUTO).map { modo -> thread { salida.await(); resultados += caja.elegir(modo) } }
+            salida.countDown()
+            hilos.forEach { it.join() }
+
+            assertEquals(listOf(true, true), resultados.toList())
+            val final = crudo()
+            assertTrue(final == Ajuste(modo = Modo.RAPIDO) || final == Ajuste(modo = Modo.AUTO), "archivo: $final")
+            assertEquals(final!!.modo, e.modo)
+            val (ultimo, revision) = anotados.last()
+            assertEquals(e, ultimo)
+            assertEquals(anotados.maxOf { it.second }, revision)
+        }
+    }
+
+    @Test fun `motor a mano en software - no fija, ligero desde el arranque y elegir no aplica al reabrir`() {
+        escribir(Ajuste(modo = Modo.RAPIDO))
+        arrancar(entorno = mapOf("SKIKO_RENDER_API" to "SOFTWARE"))
+        assertEquals(emptyList(), fijados)
+        assertEquals(Ajuste(modo = Modo.RAPIDO), crudo())
+        assertTrue(e.aMano)
+        assertTrue(e.modoLigero)
+        assertTrue(caja.elegir(Modo.AUTO))
+        assertEquals(Ajuste(modo = Modo.AUTO), crudo())
+        assertFalse(e.aplicaAlReabrir)
+    }
+
+    @Test fun `apagado - ninguna funcion lee, escribe ni fija`() {
+        val inicial = ModoDeDibujo.estado(Ajuste(), Apertura(aMano = false, fijo = false, pidioSoftware = false))
+        assertEquals(inicial, e)
+        val antes = Ajuste(modo = Modo.RAPIDO, intentando = true)
+        escribir(antes)
+        var avisos = 0
+        arrancar(propiedades = mapOf("avoqado.dibujo.apagado" to "true"))
+        caja.alCambiar = { _, _ -> avisos++ }
+        pintar("OPENGL", 9_400)
+        assertFalse(caja.elegir(Modo.RAPIDO))
+        assertFalse(caja.callarAviso())
+        assertEquals(emptyList(), fijados)
+        assertEquals(antes, crudo())
+        assertEquals(listOf("dibujo.json"), carpeta.listDirectoryEntries().map { it.name })
+        assertEquals(inicial, e)
+        assertEquals(0, avisos)
+        assertFalse(caja.recienElegido.value)
+    }
+
+    @Test fun `pintar dos veces - la segunda no hace nada`() {
+        var avisos = 0
+        arrancar()
+        caja.alCambiar = { _, _ -> avisos++ }
+        pintar("OPENGL", 9_400)
+        val despues = e
+        pintar("DIRECT3D", 100)
+        assertEquals(despues, e)
+        assertEquals(1, avisos)
+    }
+
+    @Test fun `desarrollo - fingir el motor y el tiempo, y no fijar trata la apertura como fijada`() {
+        assumeFalse("las propiedades de desarrollo no valen en producción", BuildConfig.PRODUCCION)
+        arrancar(propiedades = mapOf("avoqado.dibujo.fingir" to "OPENGL:9000"))
+        pintar("METAL", 50)
+        assertEquals("OPENGL", e.motor)
+        assertEquals(Rendimiento.NO_ALCANZA, e.rendimiento)
+
+        escribir(Ajuste(modo = Modo.RAPIDO))
+        arrancar(propiedades = mapOf("avoqado.dibujo.noFijar" to "true", "avoqado.dibujo.fingir" to "SOFTWARE_FAST:700"))
+        assertEquals(emptyList(), fijados)
+        assertEquals(Ajuste(modo = Modo.RAPIDO, intentando = true), crudo())
+        pintar("METAL", 50)
+        assertEquals(Ajuste(modo = Modo.RAPIDO), crudo())
+        assertTrue(e.forzada)
+    }
+}

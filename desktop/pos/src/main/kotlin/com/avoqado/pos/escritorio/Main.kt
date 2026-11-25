@@ -31,6 +31,7 @@ import com.avoqado.pos.R
 import com.avoqado.pos.customerdisplay.CustomerDisplayManager
 import com.avoqado.pos.customerdisplay.CustomerDisplayState
 import com.avoqado.pos.customerdisplay.monitoresDivididos
+import com.avoqado.pos.escritorio.dibujo.DibujoDeLaCaja
 import com.avoqado.pos.escritorio.tactil.EscenaDeVentana
 import com.avoqado.pos.escritorio.tactil.PuenteTactilWindows
 import com.avoqado.pos.escritorio.teclado.PistolaDeLaVentana
@@ -76,6 +77,8 @@ fun main() {
         if (System.getProperty("avoqado.version") == null) System.setProperty("avoqado.version", BuildConfig.VERSION_NAME)
         // Preferencias ilegibles o base de otra versión: se niega A PROPÓSITO a arrancar vacía encima de los cobros pendientes.
         Arranque.abrir(carpeta)
+        // El motor de dibujo sólo se puede fijar antes de que exista la ventana (hz:a5fa2439:D2). Nunca lanza.
+        DibujoDeLaCaja.alArrancar(carpeta)
     }
 
     // La primera composición también lee preferencias (AppState → SyncOutbox, ComandasPendientesStore): si truena ahí o
@@ -114,6 +117,7 @@ fun main() {
                     LaunchedEffect(Unit) {
                         withFrameNanos { }   // el primer cuadro se compone…
                         withFrameNanos { }   // …y ya se dibujó (el lienzo nativo ya existe)
+                        runCatching { DibujoDeLaCaja.alPintar(window.renderApi.name) }   // mide y quita la marca de intento
                         // El dedo como DEDO en Windows (Compose 1.7.3 no lo trae): si no se puede, sigue como mouse.
                         val toque = runCatching {
                             PuenteTactilWindows.instalar(window) { motivo ->
