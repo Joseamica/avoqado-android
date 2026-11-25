@@ -28,8 +28,8 @@ class ModoDeDibujoTest {
     }
 
     @Test fun `la apertura rapida anterior no pinto - regresa a automatico con fallo, tambien a mano`() {
-        val a = A.copy(modo = Modo.RAPIDO, intentando = true, ultimaOrden = "o3", sinAviso = true)
-        val esperado = AlArrancar(A.copy(modo = Modo.AUTO, ultimaOrden = "o3", fallo = true), false)
+        val a = A.copy(modo = Modo.RAPIDO, intentando = true, sinAviso = true)
+        val esperado = AlArrancar(A.copy(modo = Modo.AUTO, fallo = true), false)
         assertEquals(esperado, ModoDeDibujo.alArrancar(a, aMano = false))
         assertEquals(esperado, ModoDeDibujo.alArrancar(a, aMano = true))
     }
@@ -51,7 +51,7 @@ class ModoDeDibujoTest {
         assertNull(ModoDeDibujo.alPintar(A, fijo = false, motorReal = "OPENGL"))
     }
 
-    // MARK: - alElegir y alRecibirOrden
+    // MARK: - alElegir
 
     @Test fun `elegir rapido limpia el fallo y el silencio`() {
         assertEquals(A.copy(modo = Modo.RAPIDO), ModoDeDibujo.alElegir(A.copy(fallo = true, sinAviso = true), Modo.RAPIDO))
@@ -60,31 +60,6 @@ class ModoDeDibujoTest {
     @Test fun `elegir automatico con la marca de intento puesta la quita`() {
         // Pintó, pero falló el guardado que quitaba la marca: el archivo nunca queda con intentando y AUTO.
         assertEquals(A.copy(modo = Modo.AUTO), ModoDeDibujo.alElegir(A.copy(modo = Modo.RAPIDO, intentando = true), Modo.AUTO))
-    }
-
-    @Test fun `una orden con otro id se aplica`() {
-        assertEquals(
-            A.copy(modo = Modo.RAPIDO, ultimaOrden = "o3"),
-            ModoDeDibujo.alRecibirOrden(A.copy(ultimaOrden = "o2"), Modo.RAPIDO, "o3"),
-        )
-    }
-
-    @Test fun `la orden ya aplicada se ignora`() {
-        assertNull(ModoDeDibujo.alRecibirOrden(A.copy(modo = Modo.RAPIDO, ultimaOrden = "o3"), Modo.AUTO, "o3"))
-    }
-
-    @Test fun `una orden nueva con el mismo modo tambien queda aplicada`() {
-        assertEquals(
-            A.copy(modo = Modo.RAPIDO, ultimaOrden = "o4"),
-            ModoDeDibujo.alRecibirOrden(A.copy(modo = Modo.RAPIDO, ultimaOrden = "o3"), Modo.RAPIDO, "o4"),
-        )
-    }
-
-    @Test fun `una orden a automatico con la marca de intento puesta la quita`() {
-        assertEquals(
-            A.copy(modo = Modo.AUTO, ultimaOrden = "o4"),
-            ModoDeDibujo.alRecibirOrden(A.copy(modo = Modo.RAPIDO, intentando = true, ultimaOrden = "o3"), Modo.AUTO, "o4"),
-        )
     }
 
     // MARK: - estado

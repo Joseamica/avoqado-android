@@ -12,15 +12,13 @@ import kotlinx.serialization.json.Json
  */
 object ArchivoDeDibujo {
     private const val NOMBRE = "dibujo.json"
-    private val ID_DE_ORDEN = Regex("^[A-Za-z0-9_-]{1,64}$")
     // encodeDefaults: el archivo dice todo, no depende de los valores por defecto de esta versión de la app.
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
 
     /** Ausente, dañado o incoherente ⇒ `Ajuste()` (automático). */
     fun leer(carpeta: Path): Ajuste = try {
         val a = json.decodeFromString(Ajuste.serializer(), Files.readString(carpeta.resolve(NOMBRE)))
-        val idRaro = a.ultimaOrden != null && !ID_DE_ORDEN.matches(a.ultimaOrden)
-        if (idRaro || (a.intentando && a.modo == Modo.AUTO)) Ajuste() else a
+        if (a.intentando && a.modo == Modo.AUTO) Ajuste() else a
     } catch (e: Exception) {
         Ajuste()
     }
