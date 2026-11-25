@@ -62,6 +62,13 @@ class ModoDeDibujoTest {
         assertEquals(A.copy(modo = Modo.AUTO), ModoDeDibujo.alElegir(A.copy(modo = Modo.RAPIDO, intentando = true), Modo.AUTO))
     }
 
+    // MARK: - alCallarAviso
+
+    @Test fun `callar el aviso lo silencia y quita la marca de intento`() {
+        // Un aviso sólo existe con la ventana ya pintada: callarlo nunca debe dejar el archivo rumbo al modo seguro.
+        assertEquals(A.copy(modo = Modo.RAPIDO, sinAviso = true), ModoDeDibujo.alCallarAviso(A.copy(modo = Modo.RAPIDO, intentando = true)))
+    }
+
     // MARK: - estado
 
     @Test fun `Direct3D rapido es fluida, sin modo ligero ni aviso`() {

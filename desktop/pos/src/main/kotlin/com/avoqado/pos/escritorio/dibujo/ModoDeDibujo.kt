@@ -65,7 +65,8 @@ object ModoDeDibujo {
     // AUTO aunque haya fallado el guardado que la quitaba al pintar.
     fun alElegir(a: Ajuste, modo: Modo): Ajuste = a.copy(modo = modo, intentando = false, fallo = false, sinAviso = false)
 
-    fun alCallarAviso(a: Ajuste): Ajuste = a.copy(sinAviso = true)
+    // Un aviso sólo sale con la ventana ya pintada: callarlo también quita la marca, por si falló el guardado que la quitaba.
+    fun alCallarAviso(a: Ajuste): Ajuste = a.copy(sinAviso = true, intentando = false)
 
     fun estado(a: Ajuste, ap: Apertura): Estado {
         val motor = ap.motor

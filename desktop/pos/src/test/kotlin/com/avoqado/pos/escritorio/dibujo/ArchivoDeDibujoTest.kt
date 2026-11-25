@@ -57,8 +57,8 @@ class ArchivoDeDibujoTest {
         assertEquals(listOf("dibujo.json"), carpeta.listDirectoryEntries().map { it.name })
     }
 
-    @Test fun `un campo desconocido se ignora - un archivo con ultimaOrden se lee igual`() {
-        Files.writeString(archivo, """{"modo":"RAPIDO","ultimaOrden":"o4","deUnaVersionNueva":"x"}""")
+    @Test fun `un campo desconocido se ignora`() {
+        Files.writeString(archivo, """{"modo":"RAPIDO","campoDeUnaVersionNueva":"x"}""")
         assertEquals(Ajuste(modo = Modo.RAPIDO), ArchivoDeDibujo.leer(carpeta))
     }
 }
