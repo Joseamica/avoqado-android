@@ -32,8 +32,13 @@ import com.avoqado.escritorio.calendario.CalendarioPendiente
 import com.avoqado.pos.designsystem.LocalModoLigero
 import com.avoqado.pos.designsystem.components.AvoqadoLaunchSplash
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
+import com.avoqado.pos.escritorio.diagnostico.DatosDelEquipo
+import com.avoqado.pos.escritorio.dibujo.AvisoDeDibujo
 import com.avoqado.pos.escritorio.dibujo.DibujoDeLaCaja
+import com.avoqado.pos.escritorio.dibujo.renglonesDeDibujo
 import com.avoqado.pos.navigation.AvoqadoNavGraph
+import com.avoqado.pos.settings.LocalRenglonesDeEscritorio
+import com.avoqado.pos.settings.RenglonDeEscritorio
 import com.avoqado.pos.escritorio.teclado.ConTecladoEnPantalla
 import com.avoqado.pos.escritorio.teclado.TecladoDeLaVentana
 import com.avoqado.pos.escritorio.teclado.TecladoEnPantalla
@@ -61,13 +66,19 @@ internal fun ConModoLigero(ligero: Boolean = DibujoDeLaCaja.estado.value.modoLig
     )
 }
 
-/** Lo que MainActivity.setContent hace en Android, sin barras de sistema ni segunda pantalla. */
+/**
+ * Lo que MainActivity.setContent hace en Android, sin barras de sistema ni segunda pantalla. [datosDelEquipo]: lo que midió
+ * el diagnóstico al abrir, para el renglón «Diagnóstico de esta computadora» de «Más» (null mientras no se escribe).
+ */
 @OptIn(ExperimentalMaterial3WindowSizeClassApi::class)
 @Composable
 fun AppEscritorio(
+    datosDelEquipo: () -> DatosDelEquipo? = { null },
     contenido: @Composable (WindowSizeClass) -> Unit = { AvoqadoNavGraph(windowSizeClass = it) },
 ) = BoxWithConstraints(Modifier.fillMaxSize()) {
     val windowSizeClass = WindowSizeClass.calculateFromSize(DpSize(maxWidth, maxHeight))
+    // Recordado: un valor nuevo de un local estático recompondría toda la app.
+    val renglones: @Composable () -> List<RenglonDeEscritorio> = remember(datosDelEquipo) { { renglonesDeDibujo(datosDelEquipo) } }
     CompositionLocalProvider(
         LocalViewModelStoreOwner provides RaizDeEscritorio,
         LocalLifecycleOwner provides RaizDeEscritorio,
@@ -76,7 +87,7 @@ fun AppEscritorio(
             var splash by remember { mutableStateOf(true) }
             LaunchedEffect(Unit) { delay(1_350L); splash = false }
             AvoqadoTheme(windowSizeClass = windowSizeClass) {
-                ConModoLigero { Box(Modifier.fillMaxSize()) {
+                ConModoLigero { CompositionLocalProvider(LocalRenglonesDeEscritorio provides renglones) { Box(Modifier.fillMaxSize()) {
                     // Teclado híbrido: sólo con un dedo sobre un campo de texto; el contenido se encoge y las teclas van en un Popup.
                     ConTecladoEnPantalla(
                         visible = TecladoDeLaVentana.visible.value,
@@ -85,11 +96,12 @@ fun AppEscritorio(
                     ) { contenido(windowSizeClass) }
                     CalendarioPendiente()   // android.app.DatePickerDialog de Reportes (sustituto en desktop/plataforma)
                     AvisoDeFallaDeGuardado()   // el disco no guardó (antivirus, disco lleno): se le DICE al cajero
+                    AvisoDeDibujo()   // la PC tarda en dibujar (hz:a5fa2439:D2): una banda que no toma el foco
                     // El splash se ve y dura igual en los dos modos: su indicador sí se mueve.
                     AnimatedVisibility(visible = splash, exit = fadeOut(tween(220))) {
                         CompositionLocalProvider(LocalModoLigero provides false) { AvoqadoLaunchSplash() }
                     }
-                } }
+                } } }
             }
         }
     }

@@ -84,6 +84,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -782,6 +783,10 @@ fun MoreMenuScreen(
             )
         }
 
+        // Sólo en WINDOWS: los renglones que pone la raíz del escritorio (hz:a5fa2439:D2). En ANDROID nadie los provee.
+        val esEscritorio = com.avoqado.pos.designsystem.components.LocalEsEscritorio.current
+        val renglonesDelEscritorio = LocalRenglonesDeEscritorio.current
+        val delEscritorio = if (esEscritorio && renglonesDelEscritorio != null) renglonesDelEscritorio() else emptyList()
         val sistema = listOf(
             MenuEntry(
                 icon = Icons.Outlined.Tune,
@@ -794,7 +799,8 @@ fun MoreMenuScreen(
                 label = "Atención al cliente",
                 onClick = { showSupport = true },
             ),
-        ).filter { it.label != "Atención al cliente" || visible(PreferenciasDelMenu.ATENCION_AL_CLIENTE) }
+        ).filter { it.label != "Atención al cliente" || visible(PreferenciasDelMenu.ATENCION_AL_CLIENTE) } +
+            delEscritorio.map { MenuEntry(icon = it.icono, label = it.titulo, onClick = it.alTocar, subtitle = it.valor) }
 
         // El menú era UNA tira en todos los anchos: en una tablet de 1920 px eso dejaba más de la
         // mitad de la pantalla en blanco y obligaba a tres arrastres para llegar al final. Ahora
@@ -1739,6 +1745,15 @@ private fun HeaderCard(
         }
     }
 }
+
+/** Un renglón del grupo de cierre de «Más» que sólo pone el POS de Windows; se pinta igual que los demás. */
+data class RenglonDeEscritorio(val icono: ImageVector, val titulo: String, val valor: String?, val alTocar: () -> Unit)
+
+/**
+ * Los renglones que el POS de Windows agrega al final de «Más» (hz:a5fa2439:D2), y lo que abren. Los provee la raíz del
+ * escritorio; en ANDROID nadie los provee (null) y «Más» se pinta como siempre.
+ */
+val LocalRenglonesDeEscritorio = staticCompositionLocalOf<(@Composable () -> List<RenglonDeEscritorio>)?> { null }
 
 /// Una entrada del menú. Se modela como dato para poder filtrar por rol/plan
 /// ANTES de pintar: el grupo conoce su membresía final y por tanto sabe cuál es

@@ -13,11 +13,14 @@ import java.nio.file.Path
 object Diagnostico {
     fun arranqueMs(): Long = System.currentTimeMillis() - ManagementFactory.getRuntimeMXBean().startTime
 
-    /** [equipo]: lo leído de la máquina (sin motor, arranque, toque ni dibujo); se pasa para no leerla dos veces. */
+    /**
+     * [equipo]: lo leído de la máquina (sin motor, arranque, toque ni dibujo); se pasa para no leerla dos veces. Devuelve los
+     * datos completos con que se escribió (los usa «Más › Diagnóstico de esta computadora»).
+     */
     fun escribir(
         carpeta: Path, motor: String, arranqueMs: Long, toque: String, dibujo: Estado? = null,
         equipo: DatosDelEquipo = leerDatosDelEquipo(carpeta, motor = null, primerCuadroMs = null, toque = null),
-    ) {
+    ): DatosDelEquipo {
         val rt = Runtime.getRuntime()
         val lineaDibujo = dibujo?.let { "\n" + lineaDeDibujo(it) } ?: ""
         val datos = equipo.copy(motorDeDibujo = motor, primerCuadroMs = arranqueMs, toqueConElDedo = toque, dibujo = dibujo)
@@ -34,6 +37,7 @@ object Diagnostico {
             |Backend: ${com.avoqado.pos.BuildConfig.BASE_URL}
             |""".trimMargin(),
         )
+        return datos
     }
 
     /** Cómo dibuja de verdad (hz:a5fa2439:D2), lo que midió DibujoDeLaCaja al pintar. */

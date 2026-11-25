@@ -32,6 +32,7 @@ import com.avoqado.pos.customerdisplay.CustomerDisplayManager
 import com.avoqado.pos.customerdisplay.CustomerDisplayState
 import com.avoqado.pos.customerdisplay.monitoresDivididos
 import com.avoqado.pos.customerdisplay.ResumenDelEquipo
+import com.avoqado.pos.escritorio.diagnostico.DatosDelEquipo
 import com.avoqado.pos.escritorio.diagnostico.leerDatosDelEquipo
 import com.avoqado.pos.escritorio.dibujo.DibujoDeLaCaja
 import com.avoqado.pos.escritorio.dibujo.ID_DE_PROCESO
@@ -53,6 +54,7 @@ import java.awt.KeyboardFocusManager
 import java.beans.PropertyChangeListener
 import java.nio.file.Path
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 import javax.imageio.ImageIO
 import javax.swing.JOptionPane
 import kotlin.system.exitProcess
@@ -71,6 +73,9 @@ fun main() {
     // La máquina se lee una vez y ya con la ventana pintada (el primer aviso de cómo dibuja, o el diagnóstico): antes de la
     // ventana, en automático, sólo se lee dibujo.json (hz:a5fa2439:D1).
     val equipo by lazy { leerDatosDelEquipo(carpeta, motor = null, primerCuadroMs = null, toque = null) }
+    // Lo que escribió el diagnóstico, para «Más › Diagnóstico de esta computadora» (hz:a5fa2439:D2).
+    val diagnostico = AtomicReference<DatosDelEquipo?>()
+    val leerDiagnostico: () -> DatosDelEquipo? = diagnostico::get
     protegido(carpeta) {
         // Esta URL la lee la app por su cuenta (KDS/Waste/Inventory con DEBUG) y no pasa por Urls.api: mismo candado.
         System.getProperty("avoqado.test.baseUrl")?.let { url ->
@@ -162,7 +167,7 @@ fun main() {
                                 ),
                             )
                         }.onFailure { Log.w("PantallaCliente", "Pantalla del cliente omitida: ${it.javaClass.simpleName}: ${it.message}") }
-                        runCatching { Diagnostico.escribir(carpeta, window.renderApi.name, Diagnostico.arranqueMs(), toque, DibujoDeLaCaja.estado.value, equipo) }
+                        runCatching { diagnostico.set(Diagnostico.escribir(carpeta, window.renderApi.name, Diagnostico.arranqueMs(), toque, DibujoDeLaCaja.estado.value, equipo)) }
                             .onFailure { Log.w("Arranque", "No se pudo escribir el diagnóstico", it) }
                     }
                     DisposableEffect(window) {
@@ -173,7 +178,7 @@ fun main() {
                             runCatching { Escritorio.inyector.getInstance(CustomerDisplayManager::class.java).detener() }
                         }
                     }
-                    AppEscritorio()
+                    AppEscritorio(datosDelEquipo = leerDiagnostico)
                 }
             }
         }
