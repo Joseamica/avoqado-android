@@ -21,6 +21,7 @@ import com.avoqado.escritorio.ActividadDeEscritorio
 import com.avoqado.escritorio.Bitacora
 import com.avoqado.escritorio.ContextoDeEscritorio
 import com.avoqado.escritorio.Escritorio
+import com.avoqado.pos.designsystem.components.LocalEsEscritorio
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.pos.data.model.CartItem
 import com.avoqado.pos.pos.data.model.CartItemType
@@ -44,7 +45,10 @@ class MenuDelCarritoEnLaEscenaTest {
     private val context = ContextoDeEscritorio(folder)
     @AfterTest fun cleanup() { folder.toFile().deleteRecursively() }
 
-    /** La hoja llama `ImmersiveWindow`, que pide el contexto de escritorio (como `HojaConXEnLaEscenaTest`). */
+    /**
+     * La hoja llama `ImmersiveWindow`, que pide el contexto de escritorio: se instala una vez si no está, igual que
+     * `HojaConXEnLaEscenaTest` (es el patrón de la casa; ninguna prueba lo desinstala).
+     */
     @BeforeTest fun contextoDeEscritorio() {
         if (runCatching { Escritorio.contexto }.isSuccess) return
         val carpeta = Files.createTempDirectory("Avoqado POS menu del carrito")
@@ -55,11 +59,12 @@ class MenuDelCarritoEnLaEscenaTest {
 
     private class Toques { var importe = 0; var tarjeta = 0; var vaciar = 0 }
 
-    private fun ComposeUiTest.abrirElMenu(t: Toques) {
+    /** [enWindows]: la variante de Windows de la hoja (con su X) o la de Android; el menú es el mismo en las dos. */
+    private fun ComposeUiTest.abrirElMenu(t: Toques, enWindows: Boolean) {
         setContent {
             CompositionLocalProvider(
                 LocalContext provides context, LocalConfiguration provides context.resources.configuration,
-                LocalView provides View(context),
+                LocalView provides View(context), LocalEsEscritorio provides enWindows,
             ) {
                 AvoqadoTheme {
                     Box(Modifier.size(width = 480.dp, height = 700.dp)) {
@@ -87,15 +92,27 @@ class MenuDelCarritoEnLaEscenaTest {
         waitForIdle()
     }
 
-    @Test fun `P1 el menu del carrito no ofrece Canjear recompensa`() = runComposeUiTest {
-        abrirElMenu(Toques())
+    @Test fun `P1 en Windows el menu del carrito no ofrece Canjear recompensa`() = runComposeUiTest {
+        abrirElMenu(Toques(), enWindows = true)
         onAllNodesWithText("Canjear recompensa").assertCountEquals(0)
     }
 
-    @Test fun `P2 las otras opciones del menu siguen y hacen lo suyo`() = runComposeUiTest {
+    @Test fun `P1 en Android el menu del carrito no ofrece Canjear recompensa`() = runComposeUiTest {
+        abrirElMenu(Toques(), enWindows = false)
+        onAllNodesWithText("Canjear recompensa").assertCountEquals(0)
+    }
+
+    @Test fun `P2 en Windows las otras tres opciones siguen y llegan a su accion`() = runComposeUiTest { lasOtrasTres(enWindows = true) }
+
+    @Test fun `P2 en Android las otras tres opciones siguen y llegan a su accion`() = runComposeUiTest { lasOtrasTres(enWindows = false) }
+
+    private fun ComposeUiTest.lasOtrasTres(enWindows: Boolean) {
         val t = Toques()
-        abrirElMenu(t)
-        onAllNodesWithText("Vaciar carrito").assertCountEquals(1)
+        abrirElMenu(t, enWindows)
+        onNodeWithText("Vaciar carrito").performClick()
+        waitForIdle()
+        assertEquals(1, t.vaciar, "«Vaciar carrito» tiene que llegar a su acción")
+        abrirDeNuevo()
         onNodeWithText("Agregar importe personalizado").performClick()
         waitForIdle()
         assertEquals(1, t.importe, "«Agregar importe personalizado» tiene que llegar a su acción")
