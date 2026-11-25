@@ -208,6 +208,9 @@ class DisplayModeRemoteRepository @Inject constructor(
             Request.Builder()
                 .url(venueUrl(venueId).newBuilder().addPathSegment("display-mode-request").build())
                 .header(ForbiddenInterceptor.BACKGROUND_HEADER, BACKGROUND_HEADER_VALUE)
+                // Sólo el POS de Windows lo llena (hz:a5fa2439:D1); en Android es null y la petición es la de siempre. Si
+                // OkHttp lo rechaza, el sondeo sale sin él.
+                .apply { ResumenDelEquipo.cabecera?.let { valor -> runCatching { header(DEVICE_DIAGNOSTICS_HEADER, valor) } } }
                 .get()
                 .build()
         },
@@ -581,6 +584,7 @@ class DisplayModeRemoteRepository @Inject constructor(
         const val DISPLAY_MODE_PROTOCOL_VERSION = 1
         const val INSTALLATION_RACE_CODE = "CUSTOMER_DISPLAY_INSTALLATION_RACE"
         const val BACKGROUND_HEADER_VALUE = "1"
+        const val DEVICE_DIAGNOSTICS_HEADER = "x-device-diagnostics"
         const val MAX_SERVER_ID_LENGTH = 128
         const val MAX_RESPONSE_BODY_BYTES = 64L * 1024L
         const val MAX_ERROR_CODE_LENGTH = 128

@@ -1383,7 +1383,8 @@ private fun ExchangeDestination(navController: androidx.navigation.NavHostContro
  * de la librería. En modo ligero (POS de Windows sin tarjeta de video, hz:a5fa2439:D2) cambia de pantalla sin transición.
  * 🔴 El modo se toma al MONTAR: cambiar de llamada con el NavHost ya montado lo volvería a crear y perdería lo capturado.
  * Si Skiko cae solo a software con una sesión ya abierta, las transiciones se quitan la próxima vez que se monte (entrar,
- * cambiar de sucursal o de modo).
+ * cambiar de sucursal o de modo). Esa PC lo recuerda en su archivo de dibujo y, desde la siguiente apertura, arranca ya en
+ * modo ligero.
  */
 @Composable
 internal fun NavHostDelPos(

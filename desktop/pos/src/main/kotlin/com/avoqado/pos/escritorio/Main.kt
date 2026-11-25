@@ -31,7 +31,11 @@ import com.avoqado.pos.R
 import com.avoqado.pos.customerdisplay.CustomerDisplayManager
 import com.avoqado.pos.customerdisplay.CustomerDisplayState
 import com.avoqado.pos.customerdisplay.monitoresDivididos
+import com.avoqado.pos.customerdisplay.ResumenDelEquipo
+import com.avoqado.pos.escritorio.diagnostico.leerDatosDelEquipo
 import com.avoqado.pos.escritorio.dibujo.DibujoDeLaCaja
+import com.avoqado.pos.escritorio.dibujo.ID_DE_PROCESO
+import com.avoqado.pos.escritorio.dibujo.cabeceraDelEquipo
 import com.avoqado.pos.escritorio.tactil.EscenaDeVentana
 import com.avoqado.pos.escritorio.tactil.PuenteTactilWindows
 import com.avoqado.pos.escritorio.teclado.PistolaDeLaVentana
@@ -77,6 +81,15 @@ fun main() {
         if (System.getProperty("avoqado.version") == null) System.setProperty("avoqado.version", BuildConfig.VERSION_NAME)
         // Preferencias ilegibles o base de otra versión: se niega A PROPÓSITO a arrancar vacía encima de los cobros pendientes.
         Arranque.abrir(carpeta)
+        // Cómo dibuja viaja en el sondeo (hz:a5fa2439:D1). Antes de alArrancar: leer el equipo no cuenta en lo que tarda en
+        // pintar, y el aviso queda conectado antes de alPintar (la revisión 1 no se pierde). Corre dentro del candado de
+        // DibujoDeLaCaja: sólo arma un texto. Nada de esto impide abrir.
+        runCatching {
+            val equipo = leerDatosDelEquipo(carpeta, motor = null, primerCuadroMs = null, toque = null)
+            DibujoDeLaCaja.alCambiar = { e, revision ->
+                runCatching { ResumenDelEquipo.cabecera = cabeceraDelEquipo(e, equipo, ID_DE_PROCESO, revision, esWindows = equipo.windows) }
+            }
+        }.onFailure { Log.w("Dibujo", "El sondeo no llevará cómo dibuja", it) }
         // El motor de dibujo sólo se puede fijar antes de que exista la ventana (hz:a5fa2439:D2). Nunca lanza.
         DibujoDeLaCaja.alArrancar(carpeta)
     }
