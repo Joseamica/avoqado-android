@@ -111,7 +111,8 @@ private fun motor(d: DatosDelEquipo): Punto {
         Rendimiento.NO_ALCANZA -> if (ModoDeDibujo.esDeSoftware(medido)) {
             Punto("Gráficos", Nivel.NO_SIRVE, "$medido: esta computadora tarda demasiado en dibujar la pantalla, aun en modo rápido. La app va a responder lento.")
         } else {
-            val ofrecer = medido != "DIRECT3D" && !e.aMano && e.modo == Modo.AUTO
+            // Si el modo rápido acaba de fallar (modo seguro), no se manda a probarlo otra vez.
+            val ofrecer = medido != "DIRECT3D" && !e.aMano && e.modo == Modo.AUTO && !e.fallo
             Punto(
                 "Gráficos", Nivel.LENTA,
                 "$medido: esta computadora tardó ${segundos(ms)} en dibujar la pantalla al abrir." +

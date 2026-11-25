@@ -75,6 +75,13 @@ class DiagnosticoTest {
         )
     }
 
+    @Test fun `no sugiere el modo rapido y a la vez dice que fallo`() {
+        val l = lineas("OPENGL", estado(Ajuste(fallo = true), motor = "OPENGL", ms = 9_000))
+        assertTrue(l.any { it.endsWith("· el modo rápido falló") }, l.joinToString("\n"))
+        assertTrue(l.any { it.startsWith("⚠️ Gráficos: OPENGL: esta computadora tardó ") && it.endsWith(" en dibujar la pantalla al abrir.") }, l.joinToString("\n"))
+        assertFalse(l.any { "Prueba el modo rápido" in it }, l.joinToString("\n"))
+    }
+
     @Test fun `sin pintar dice sin medir, y sin dueno no hay linea`() {
         assertTrue("Dibujo: sin medir · modo automático · modo ligero no" in lineas("DIRECT3D", estado(Ajuste(), motor = null, ms = null)))
         assertFalse(lineas("DIRECT3D", null).any { it.startsWith("Dibujo:") })

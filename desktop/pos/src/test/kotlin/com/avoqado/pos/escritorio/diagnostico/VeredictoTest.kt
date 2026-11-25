@@ -151,6 +151,17 @@ class VeredictoTest {
         assertEquals(sinOferta("OPENGL", "9.0"), graficos(dibujo("OPENGL", 9_000, modo = Modo.RAPIDO)))
     }
 
+    @Test fun `no sugiere el modo rapido que acaba de fallar`() = conPunto {
+        val e = ModoDeDibujo.estado(
+            Ajuste(fallo = true),
+            Apertura(aMano = false, fijo = false, pidioSoftware = false, motor = "OPENGL", pintarMs = 9_000),
+        )
+        assertEquals(
+            Punto("Gráficos", Nivel.LENTA, "OPENGL: esta computadora tardó 9.0 s en dibujar la pantalla al abrir."),
+            graficos(e),
+        )
+    }
+
     @Test fun `el texto empieza con el encabezado y trae una linea por punto`() {
         val v = veredicto(buena)
         val lineas = v.comoTexto().lines()

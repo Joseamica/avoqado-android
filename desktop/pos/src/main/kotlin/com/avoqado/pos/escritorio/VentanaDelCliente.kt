@@ -213,13 +213,13 @@ private fun ContenidoDelCliente(
         LocalLifecycleOwner provides dueño,
         LocalConfiguration provides configuracion,
     ) {
-        // Modo ligero (hz:a5fa2439:D2): el reposo del letrero queda quieto y sin onda del clic, igual que la caja.
-        ConModoLigero { AvoqadoTheme(darkTheme = false) {
+        // Modo ligero (hz:a5fa2439:D2): el reposo del letrero queda quieto y sin onda del clic. Dentro del tema, como en la caja.
+        AvoqadoTheme(darkTheme = false) { ConModoLigero {
             val kioskOn by kiosco.enabled.collectAsState()
             if (kioskOn) {
                 val venueName by estado.venueName.collectAsState()
                 KioskScreen(state = kiosco, venueName = venueName)
-                return@AvoqadoTheme
+                return@ConModoLigero
             }
             CustomerDisplayScreen(
                 state = estado,
