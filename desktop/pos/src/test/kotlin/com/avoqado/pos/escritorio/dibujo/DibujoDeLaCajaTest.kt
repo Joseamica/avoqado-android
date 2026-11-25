@@ -44,6 +44,7 @@ class DibujoDeLaCajaTest {
         caja.reiniciarParaPruebas()
         relojNs = 0
         fijados.clear()
+        archivoAlFijar = null
         caja.alArrancar(carpeta, entorno::get, propiedades::get, fijar = { fijados += it; archivoAlFijar = crudo() }, ahoraNs = { relojNs })
     }
 
@@ -153,6 +154,24 @@ class DibujoDeLaCajaTest {
         assertEquals(Ajuste(modo = Modo.AUTO, fallo = true), crudo())
     }
 
+    @Test fun `se fijo, Skiko abrio con otro motor y no se puede guardar - esta sesion ya dice automatico con fallo`() {
+        escribir(Ajuste(modo = Modo.RAPIDO))
+        arrancar()
+        assertEquals(listOf(ModoDeDibujo.MOTOR_RAPIDO), fijados)
+        val anotados = mutableListOf<Estado>()
+        caja.alCambiar = { estado, _ -> anotados += estado }
+        soloLectura()
+        pintar("OPENGL", 9_400)
+        assertEquals(Modo.AUTO, e.modo)
+        assertTrue(e.fallo)
+        assertFalse(e.forzada)
+        assertFalse(e.aplicaAlReabrir)
+        assertEquals(Aviso.FALLO_RAPIDO, e.aviso)
+        assertEquals(listOf(e), anotados)
+        escribible()
+        assertEquals(Ajuste(modo = Modo.RAPIDO, intentando = true), crudo())
+    }
+
     @Test fun `pinto sin poder quitar la marca y luego elige automatico - el archivo queda coherente`() {
         escribir(Ajuste(modo = Modo.RAPIDO))
         arrancar()
@@ -204,7 +223,7 @@ class DibujoDeLaCajaTest {
             assertEquals(listOf(true, true), resultados.toList())
             val final = crudo()
             assertTrue(final == Ajuste(modo = Modo.RAPIDO) || final == Ajuste(modo = Modo.AUTO), "archivo: $final")
-            assertEquals(final!!.modo, e.modo)
+            assertEquals(Ajuste(modo = e.modo, fallo = e.fallo), final)   // el archivo entero dice lo mismo que estado, sin marca
             val (ultimo, revision) = anotados.last()
             assertEquals(e, ultimo)
             assertEquals(anotados.maxOf { it.second }, revision)

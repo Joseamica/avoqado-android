@@ -91,11 +91,11 @@ object DibujoDeLaCaja {
             val (motor, ms) = fingido ?: (motorReal to (reloj() - inicioNs) / 1_000_000)
             apertura = apertura.copy(motor = motor, pintarMs = ms.coerceAtLeast(0))
             ModoDeDibujo.alPintar(ajuste, apertura.fijo, motor)?.let { nuevo ->
-                // Si falla al quitar la marca, la siguiente apertura regresa a automático: es el lado seguro.
-                if (guardar(carpeta, nuevo)) {
-                    if (nuevo.modo != ajuste.modo) Log.i(TAG, "modo=${nuevo.modo} por=SEGURO")
-                    ajuste = nuevo
-                }
+                val guardado = guardar(carpeta, nuevo)
+                // Regresar a automático se adopta aunque no se guarde (como al arrancar): la siguiente apertura llega al mismo
+                // AUTO con fallo por la marca. Quitar la marca sólo avanza si guardó; si no, la siguiente va a automático.
+                if (nuevo.modo != ajuste.modo) Log.i(TAG, "modo=${nuevo.modo} por=SEGURO")
+                if (guardado || nuevo.modo != ajuste.modo) ajuste = nuevo
             }
             val e = publicar()
             Log.i(TAG, "motor=${e.motor} pintar=${e.pintarMs} ms modo=${e.modo} ligero=${e.modoLigero} rendimiento=${e.rendimiento} forzada=${e.forzada} fallo=${e.fallo} aMano=${e.aMano}")
