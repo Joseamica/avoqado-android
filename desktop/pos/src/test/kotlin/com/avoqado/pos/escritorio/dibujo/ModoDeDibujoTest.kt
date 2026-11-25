@@ -91,7 +91,12 @@ class ModoDeDibujoTest {
 
     @Test fun `elegir automatico con la marca de intento puesta la quita`() {
         // Pintó, pero falló el guardado que quitaba la marca: el archivo nunca queda con intentando y AUTO.
-        assertEquals(A.copy(modo = Modo.AUTO), ModoDeDibujo.alElegir(A.copy(modo = Modo.RAPIDO, intentando = true), Modo.AUTO))
+        assertEquals(A.copy(modo = Modo.AUTO, sinAviso = true), ModoDeDibujo.alElegir(A.copy(modo = Modo.RAPIDO, intentando = true), Modo.AUTO))
+    }
+
+    @Test fun `elegir automatico a mano calla los avisos - no me ofrezcas el rapido`() {
+        assertEquals(Ajuste(modo = Modo.AUTO, sinAviso = true), ModoDeDibujo.alElegir(Ajuste(modo = Modo.RAPIDO), Modo.AUTO))
+        assertEquals(Ajuste(modo = Modo.AUTO, sinAviso = true), ModoDeDibujo.alElegir(Ajuste(fallo = true), Modo.AUTO))
     }
 
     // MARK: - alCallarAviso

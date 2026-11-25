@@ -68,8 +68,9 @@ object ModoDeDibujo {
     }
 
     // Elegir sólo pasa con la ventana ya pintada: quita la marca de intento, así el archivo nunca queda con `intentando` y
-    // AUTO aunque haya fallado el guardado que la quitaba al pintar.
-    fun alElegir(a: Ajuste, modo: Modo): Ajuste = a.copy(modo = modo, intentando = false, fallo = false, sinAviso = false)
+    // AUTO aunque haya fallado el guardado que la quitaba al pintar. Elegir automático a mano es «no me ofrezcas el modo
+    // rápido»: calla los avisos. El rápido es un modo nuevo, con avisos nuevos. (El modo seguro no pasa por aquí: su aviso sí sale.)
+    fun alElegir(a: Ajuste, modo: Modo): Ajuste = a.copy(modo = modo, intentando = false, fallo = false, sinAviso = modo == Modo.AUTO)
 
     // Un aviso sólo sale con la ventana ya pintada: callarlo también quita la marca, por si falló el guardado que la quitaba.
     fun alCallarAviso(a: Ajuste): Ajuste = a.copy(sinAviso = true, intentando = false)

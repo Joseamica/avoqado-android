@@ -123,8 +123,10 @@ internal fun renglonesDeDibujo(datosDelEquipo: () -> DatosDelEquipo?): List<Reng
     var verDiagnostico by remember { mutableStateOf(false) }
     if (verModo) HojaDeModoDeDibujo(onDismiss = { verModo = false })
     if (verDiagnostico) HojaDeDiagnostico(datosDelEquipo(), onDismiss = { verDiagnostico = false })
-    return listOf(
-        RenglonDeEscritorio(Icons.Outlined.Speed, "Modo de dibujo", nombre(DibujoDeLaCaja.estado.value.modo)) { verModo = true },
+    // Con el apagador de soporte no hay modo que elegir (todo intento diría «No se pudo guardar»); el diagnóstico sí.
+    return listOfNotNull(
+        RenglonDeEscritorio(Icons.Outlined.Speed, "Modo de dibujo", nombre(DibujoDeLaCaja.estado.value.modo)) { verModo = true }
+            .takeUnless { DibujoDeLaCaja.apagado },
         RenglonDeEscritorio(Icons.Outlined.Computer, "Diagnóstico de esta computadora", null) { verDiagnostico = true },
     )
 }

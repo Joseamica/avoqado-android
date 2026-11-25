@@ -43,6 +43,7 @@ import com.avoqado.escritorio.configuracionDeAndroid
 import com.avoqado.pos.designsystem.components.LocalEsEscritorio
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.escritorio.AppEscritorio
+import com.avoqado.pos.escritorio.Diagnostico
 import com.avoqado.pos.escritorio.Arranque
 import com.avoqado.pos.escritorio.RaizDeEscritorio
 import com.avoqado.pos.escritorio.diagnostico.DatosDelEquipo
@@ -56,6 +57,7 @@ import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import org.junit.Assume.assumeFalse
@@ -78,11 +80,11 @@ class AvisoDeDibujoTest {
         carpeta.toFile().deleteRecursively()
     }
 
-    private fun arrancar(archivo: Ajuste? = null, entorno: Map<String, String> = emptyMap()) {
+    private fun arrancar(archivo: Ajuste? = null, entorno: Map<String, String> = emptyMap(), propiedades: Map<String, String> = emptyMap()) {
         DibujoDeLaCaja.reiniciarParaPruebas()
         relojNs = 0
         if (archivo != null) assertTrue(ArchivoDeDibujo.guardar(carpeta, archivo))
-        DibujoDeLaCaja.alArrancar(carpeta, entorno::get, emptyMap<String, String>()::get, fijar = {}, ahoraNs = { relojNs })
+        DibujoDeLaCaja.alArrancar(carpeta, entorno::get, propiedades::get, fijar = {}, ahoraNs = { relojNs })
     }
 
     private fun pintar(motor: String, ms: Long) {
@@ -90,10 +92,10 @@ class AvisoDeDibujoTest {
         DibujoDeLaCaja.alPintar(motor)
     }
 
-    private fun soloLectura() {
-        assumeTrue("sólo con permisos POSIX", Files.getFileStore(carpeta).supportsFileAttributeView("posix"))
-        Files.setPosixFilePermissions(carpeta, PosixFilePermissions.fromString("r-x------"))
-        assumeFalse("corre como root: la carpeta sigue escribible", Files.isWritable(carpeta))
+    private fun soloLectura(dir: Path = carpeta) {
+        assumeTrue("sólo con permisos POSIX", Files.getFileStore(dir).supportsFileAttributeView("posix"))
+        Files.setPosixFilePermissions(dir, PosixFilePermissions.fromString("r-x------"))
+        assumeFalse("corre como root: la carpeta sigue escribible", Files.isWritable(dir))
     }
 
     private val confirmacion = "Listo. Cierra y vuelve a abrir el POS para aplicarlo."
@@ -175,15 +177,39 @@ class AvisoDeDibujoTest {
     }
 
     @Test fun `una sola banda a la vez, la confirmación va antes que el aviso que sigue vivo`() = runComposeUiTest {
-        arrancar(Ajuste(modo = Modo.RAPIDO))
-        pintar("SOFTWARE_FAST", 9_000)
+        arrancar()
+        pintar("SOFTWARE", 9_000)   // en automático, Skiko cayó solo a software y aun así tarda
         ponerBanda()
         soloSale(noAlcanza)
-        runOnIdle { assertTrue(DibujoDeLaCaja.elegir(Modo.AUTO)) }   // desde «Más»: se aplica al reabrir
+        runOnIdle { assertTrue(DibujoDeLaCaja.elegir(Modo.RAPIDO)) }   // desde «Más»: se aplica al reabrir
         assertEquals(Aviso.NO_ALCANZA, DibujoDeLaCaja.estado.value.aviso)
         soloSale(confirmacion)
         onNodeWithText("Entendido").performClick()
         soloSale(noAlcanza)
+    }
+
+    @Test fun `callar que no alcanza, elegir Automático en Más y dar Entendido no trae de vuelta ninguna banda`() = runComposeUiTest {
+        arrancar(Ajuste(modo = Modo.RAPIDO))
+        pintar("SOFTWARE_FAST", 9_000)
+        ponerBanda()
+        soloSale(noAlcanza)
+        onNodeWithText("Entendido").performClick()
+        soloSale(null)
+        runOnIdle { assertTrue(DibujoDeLaCaja.elegir(Modo.AUTO)) }   // desde «Más»: se aplica al reabrir
+        soloSale(confirmacion)
+        onNodeWithText("Entendido").performClick()
+        soloSale(null)
+    }
+
+    @Test fun `elegir Rápido y luego Automático no trae la oferta`() = runComposeUiTest {
+        arrancar()
+        pintar("OPENGL", 9_000)
+        ponerBanda()
+        onNodeWithText("Activar modo rápido").performClick()
+        soloSale(confirmacion)
+        runOnIdle { assertTrue(DibujoDeLaCaja.elegir(Modo.AUTO)) }   // desde «Más»: ya no hay nada que aplicar al reabrir
+        soloSale(null)
+        assertNull(DibujoDeLaCaja.estado.value.aviso)
     }
 
     @Test fun `con FLUIDA, LIGERA o sin medición no sale nada`() = runComposeUiTest {
@@ -284,12 +310,12 @@ class AvisoDeDibujoTest {
         motorDeDibujo = "OPENGL", primerCuadroMs = 9_000, toqueConElDedo = "omitido",
     )
 
-    private fun ComposeUiTest.masDeEscritorio() {
+    private fun ComposeUiTest.masDeEscritorio(delEquipo: DatosDelEquipo? = datos) {
         prepararLaApp()
         mainClock.autoAdvance = false
         setContent {
             CompositionLocalProvider(LocalEsEscritorio provides true) {
-                AppEscritorio(datosDelEquipo = { datos }) { MoreMenuScreen(onLogout = {}) }
+                AppEscritorio(datosDelEquipo = { delEquipo }) { MoreMenuScreen(onLogout = {}) }
             }
         }
         mainClock.advanceTimeBy(3_000)   // ya sin el splash, que se come los toques
@@ -323,6 +349,33 @@ class AvisoDeDibujoTest {
         masDeEscritorio()
         onNodeWithText("Diagnóstico de esta computadora").performClick()
         onNodeWithText(veredicto(datos.copy(dibujo = DibujoDeLaCaja.estado.value)).comoTexto()).assertExists()
+    }
+
+    @Test fun `el diagnóstico se ve en Más aunque no se pueda escribir su archivo`() = runComposeUiTest {
+        arrancar()
+        pintar("OPENGL", 9_000)
+        val sinEscritura = Files.createTempDirectory("diagnostico-sin-escritura")
+        try {
+            soloLectura(sinEscritura)
+            val escritos = Diagnostico.escribir(sinEscritura, "OPENGL", 9_000, "omitido", DibujoDeLaCaja.estado.value, equipo = datos)
+            assertFalse(Files.exists(sinEscritura.resolve("logs/diagnostico.txt")))
+            masDeEscritorio(escritos)
+            onNodeWithText("Diagnóstico de esta computadora").performClick()
+            onNodeWithText(veredicto(escritos.copy(dibujo = DibujoDeLaCaja.estado.value)).comoTexto()).assertExists()
+        } finally {
+            sinEscritura.toFile().setWritable(true)
+            sinEscritura.toFile().deleteRecursively()
+        }
+    }
+
+    @Test fun `con el apagador puesto no sale Modo de dibujo ni ninguna banda, y el diagnóstico sí`() = runComposeUiTest {
+        arrancar(propiedades = mapOf("avoqado.dibujo.apagado" to "true"))
+        assertTrue(DibujoDeLaCaja.apagado)
+        pintar("OPENGL", 9_000)
+        masDeEscritorio()
+        onNodeWithText("Diagnóstico de esta computadora").assertExists()
+        onNodeWithText("Modo de dibujo").assertDoesNotExist()
+        soloSale(null)
     }
 
     @Test fun `en ANDROID esos renglones no existen`() = runComposeUiTest {

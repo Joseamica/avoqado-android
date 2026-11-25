@@ -26,9 +26,16 @@ object DibujoDeLaCaja {
 
     /**
      * Se invoca DENTRO del candado (así dos cambios nunca publican al revés; Codex r6 #5) cada vez que cambia `estado` con la
-     * ventana ya pintada. `revision` = 1, 2, 3… dentro del proceso. Quien se cuelgue aquí debe ser inmediato y no volver a llamar a este objeto.
+     * ventana ya pintada. `revision` = 1, 2, 3… dentro del proceso. Quien se cuelgue aquí no vuelve a llamar a este objeto y
+     * arma algo corto. Excepción a propósito: la PRIMERA llamada en Main.kt lee los datos del equipo (registro, pantalla,
+     * disco), una sola vez, ya pintada la ventana y cuando nadie más espera este candado. No la muevas antes de la ventana: en
+     * automático, antes de abrirla sólo se lee dibujo.json (hz:a5fa2439:D1).
      */
     @Volatile var alCambiar: ((Estado, revision: Long) -> Unit)? = null
+
+    /** El apagador de soporte está puesto: no hay modo que elegir ni avisos que dar en este proceso. */
+    @Volatile var apagado = false
+        private set
 
     private var arranco = false
     private var carpeta: Path? = null   // null = sin arrancar o apagado: nada lee, escribe ni fija
@@ -52,6 +59,7 @@ object DibujoDeLaCaja {
         arranco = true
         try {
             if (propiedad("avoqado.dibujo.apagado") == "true") {
+                apagado = true
                 Log.i(TAG, "apagado por avoqado.dibujo.apagado")
                 return
             }
@@ -147,6 +155,7 @@ object DibujoDeLaCaja {
         fingido = null
         revision = 0L
         alCambiar = null
+        apagado = false
         _estado.value = INICIAL
         _recienElegido.value = false
     }

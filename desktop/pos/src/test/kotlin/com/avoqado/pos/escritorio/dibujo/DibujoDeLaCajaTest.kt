@@ -179,13 +179,13 @@ class DibujoDeLaCajaTest {
         pintar("SOFTWARE_FAST", 700)
         escribible()
         assertTrue(caja.elegir(Modo.AUTO))
-        assertEquals(Ajuste(modo = Modo.AUTO), crudo())
+        assertEquals(Ajuste(modo = Modo.AUTO, sinAviso = true), crudo())
 
         arrancar()
         assertEquals(emptyList(), fijados)
         assertEquals(Modo.AUTO, e.modo)
         assertFalse(e.fallo)
-        assertEquals(Ajuste(modo = Modo.AUTO), crudo())
+        assertEquals(Ajuste(modo = Modo.AUTO, sinAviso = true), crudo())
     }
 
     @Test fun `elegir sin poder guardar - false y nada cambia`() {
@@ -222,8 +222,9 @@ class DibujoDeLaCajaTest {
 
             assertEquals(listOf(true, true), resultados.toList())
             val final = crudo()
-            assertTrue(final == Ajuste(modo = Modo.RAPIDO) || final == Ajuste(modo = Modo.AUTO), "archivo: $final")
-            assertEquals(Ajuste(modo = e.modo, fallo = e.fallo), final)   // el archivo entero dice lo mismo que estado, sin marca
+            assertTrue(final == Ajuste(modo = Modo.RAPIDO) || final == Ajuste(modo = Modo.AUTO, sinAviso = true), "archivo: $final")
+            // el archivo entero dice lo mismo que estado, sin marca (elegir automático calla los avisos)
+            assertEquals(Ajuste(modo = e.modo, fallo = e.fallo, sinAviso = e.modo == Modo.AUTO), final)
             val (ultimo, revision) = anotados.last()
             assertEquals(e, ultimo)
             assertEquals(anotados.maxOf { it.second }, revision)
@@ -238,7 +239,7 @@ class DibujoDeLaCajaTest {
         assertTrue(e.aMano)
         assertTrue(e.modoLigero)
         assertTrue(caja.elegir(Modo.AUTO))
-        assertEquals(Ajuste(modo = Modo.AUTO), crudo())
+        assertEquals(Ajuste(modo = Modo.AUTO, sinAviso = true), crudo())
         assertFalse(e.aplicaAlReabrir)
     }
 

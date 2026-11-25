@@ -1,5 +1,6 @@
 package com.avoqado.pos.escritorio
 
+import android.util.Log
 import com.avoqado.pos.escritorio.diagnostico.DatosDelEquipo
 import com.avoqado.pos.escritorio.diagnostico.leerDatosDelEquipo
 import com.avoqado.pos.escritorio.dibujo.Estado
@@ -15,7 +16,8 @@ object Diagnostico {
 
     /**
      * [equipo]: lo leído de la máquina (sin motor, arranque, toque ni dibujo); se pasa para no leerla dos veces. Devuelve los
-     * datos completos con que se escribió (los usa «Más › Diagnóstico de esta computadora»).
+     * datos completos (los usa «Más › Diagnóstico de esta computadora») aunque el archivo no se pueda escribir: esa falla sólo
+     * se anota.
      */
     fun escribir(
         carpeta: Path, motor: String, arranqueMs: Long, toque: String, dibujo: Estado? = null,
@@ -24,7 +26,7 @@ object Diagnostico {
         val rt = Runtime.getRuntime()
         val lineaDibujo = dibujo?.let { "\n" + lineaDeDibujo(it) } ?: ""
         val datos = equipo.copy(motorDeDibujo = motor, primerCuadroMs = arranqueMs, toqueConElDedo = toque, dibujo = dibujo)
-        Files.writeString(
+        runCatching { Files.writeString(
             Files.createDirectories(carpeta.resolve("logs")).resolve("diagnostico.txt"),
             veredicto(datos).comoTexto() + "\n\n" + """
             |Fecha: ${java.time.LocalDateTime.now().format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"))}
@@ -36,7 +38,7 @@ object Diagnostico {
             |Java: ${System.getProperty("java.version")} · procesadores: ${rt.availableProcessors()} · memoria máx: ${rt.maxMemory() / 1_048_576} MB
             |Backend: ${com.avoqado.pos.BuildConfig.BASE_URL}
             |""".trimMargin(),
-        )
+        ) }.onFailure { Log.w("Arranque", "No se pudo escribir el diagnóstico", it) }
         return datos
     }
 
