@@ -188,8 +188,10 @@ fun SearchOverlayView(
                             Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
                             PrimaryButton(
                                 text = "Crear producto",
-                                onClick = {
-                                    val searchName = query.trim()
+                                onClick = crear@{
+                                    val searchName = viewModel.searchQuery.value.trim()
+                                    // D56 (Codex r3 #1): el clic en el mismo instante en que termina la pistola, antes del redibujo.
+                                    if (com.avoqado.pos.loyalty.data.tarjetaDeClienteEn(searchName) != null) return@crear
                                     viewModel.updateSearchQuery("")
                                     onCreateProduct(searchName)
                                 },

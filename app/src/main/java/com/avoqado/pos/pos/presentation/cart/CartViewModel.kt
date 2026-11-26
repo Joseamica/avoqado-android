@@ -2729,10 +2729,12 @@ class CartViewModel @Inject constructor(
         try {
             val resultado = conLasDosLecturas(rawCode, lecturaUs)
             // D56: la tarjeta pegada al FINAL de lo que ya había en el campo manual de «Escanear» (WINDOWS: la pistola teclea en
-            // el campo). Al último, sólo si nada la reconoció (Codex D56 r2 #2 y #3: un producto sin mayúsculas o por la lectura en
-            // inglés gana).
-            if (resultado !is ScannedBarcodeResult.Unknown) return resultado
-            return com.avoqado.pos.loyalty.data.tarjetaDeClienteEn(rawCode)?.let { leerTarjetaDeCliente(it) } ?: resultado
+            // el campo) nunca ofrece «Crear nuevo». No se lee: se pide volver a escanearla (leerla abría la respuesta tardía que se
+            // liga a otra venta y los choques con el catálogo, Codex D56 r2–r3). Al último: lo que el catálogo reconoce gana.
+            val pegada = resultado is ScannedBarcodeResult.Unknown &&
+                com.avoqado.pos.loyalty.data.tarjetaDeClienteEn(rawCode) != null &&
+                products.value.coincidenciasDeLaLectura(rawCode).isEmpty()
+            return if (pegada) ScannedBarcodeResult.TarjetaDeClienteSinLeer(com.avoqado.pos.loyalty.data.TarjetaSinLeer.FALLO) else resultado
         } finally {
             consultasDeCodigo.update { it - 1 }
         }
