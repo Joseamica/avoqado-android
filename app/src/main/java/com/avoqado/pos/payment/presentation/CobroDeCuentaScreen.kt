@@ -204,8 +204,8 @@ class CobroDeCuentaViewModel @Inject constructor(
     /** Sin permiso todavía: lo que la cuenta ofrece antes del toque. Con un toque en curso no se pinta encima (lo publica él). */
     suspend fun consultarSinRed(orderId: String) {
         if (pedidoEnVuelo?.second?.isActive == true) return
-        // D39 (Codex r4 #1): con un canje de puntos en vuelo o sin respuesta, la copia no sabe cuánto falta: no se cobra desde ella.
-        if (cobroBloqueadoPorCanje(orderId)) { decisionSinRed.value = DecisionSinRed.Gris(RECOMPENSAS_COBRO_ESPERA_AL_CANJE); return }
+        // D39 (Codex r4 #1 y r5 #1): con un canje de puntos en vuelo, sin respuesta o ya mandado desde aquí, la copia no sabe cuánto falta.
+        grisSinRedPorCanje(orderId)?.let { decisionSinRed.value = DecisionSinRed.Gris(it); return }
         val datos = datosSinRed(orderId)
         val nueva = decidirCobroSinRed(datos, permiso = null)
         // Sólo tapa la MISMA causa: el aviso guardado es de contacto perdido Y la caja que la abrió sigue sin verse. Un motivo nuevo, o un
@@ -233,7 +233,7 @@ class CobroDeCuentaViewModel @Inject constructor(
     }
 
     private suspend fun pedirUnaVez(orderId: String): DecisionSinRed {
-        if (cobroBloqueadoPorCanje(orderId)) return DecisionSinRed.Gris(RECOMPENSAS_COBRO_ESPERA_AL_CANJE).also { decisionSinRed.value = it }
+        grisSinRedPorCanje(orderId)?.let { return DecisionSinRed.Gris(it).also { d -> decisionSinRed.value = d } }
         val datos = datosSinRed(orderId)
         val antes = decidirCobroSinRed(datos, permiso = null)
         val cuentas = cuentasEntreCajas
@@ -280,6 +280,7 @@ class CobroDeCuentaViewModel @Inject constructor(
      * cobra (y la cuenta lo enseña). El permiso de la caja que la abrió lo pide la puerta del cobro (`PaymentFlowViewModel`, Opción D).
      */
     suspend fun revalidarCobroSinRed(orderId: String, saldoCents: Int): String? {
+        grisSinRedPorCanje(orderId)?.let { alNoPasarLaPuerta(it); return it }
         val datos = datosSinRed(orderId)
         val decision = decidirCobroSinRed(datos, permiso = null)
         // Caso 4 (aparatos, 12-nov): la caja que la abrió dejó de verse con la cuenta YA apartada con ella: la cajera ya tecleó el
@@ -461,6 +462,14 @@ class CobroDeCuentaViewModel @Inject constructor(
      */
     fun cobroBloqueadoPorCanje(orderId: String): Boolean = canjeando.value || sinRespuesta?.orderId == orderId
 
+    /** Lo que frena el efectivo desde la copia sin red por un canje: el de [cobroBloqueadoPorCanje] o un canje ya mandado desde aquí. */
+    private suspend fun grisSinRedPorCanje(orderId: String): String? = when {
+        cobroBloqueadoPorCanje(orderId) -> RECOMPENSAS_COBRO_ESPERA_AL_CANJE
+        // D39 (Codex r5 #1): la copia pudo guardarse antes del canje; con el canje hecho aquí, sin red no se cobra (como Toast).
+        storage.venueId?.let { v -> cuentasAbiertasAqui?.tieneCanje(v, orderId) } == true -> RECOMPENSAS_SIN_RED_CON_PUNTOS
+        else -> null
+    }
+
     /**
      * Canjea [points] mandando lo que enseñó el diálogo ([montoMostrado]) y la versión de la cuenta que se ve: el SERVIDOR sólo canjea
      * exactamente eso sobre esa misma versión (candado de la oferta, D18; versión, Codex D39 r1 #2), y quema los puntos y pone el
@@ -497,17 +506,23 @@ class CobroDeCuentaViewModel @Inject constructor(
             return
         }
         venueDeLaCuenta?.takeIf { it == storage.venueId } ?: return
-        // Codex r4 #2: lo que frena un canje nuevo también frena repetirlo (un cobro de esta caja sin subir, la cuenta en el carrito).
-        if (ofertaActual.value != com.avoqado.pos.giftcards.domain.OfertaDeLaCuenta.OFRECER || laTraeUnCarrito || !puedeCanjearPuntos) {
-            avisoDeLasRecompensas.value = when {
-                !puedeCanjearPuntos -> RECOMPENSAS_SIN_PERMISO
-                ofertaActual.value == com.avoqado.pos.giftcards.domain.OfertaDeLaCuenta.COBRO_SIN_SINCRONIZAR -> RECOMPENSAS_CON_COBRO_SIN_SUBIR
-                laTraeUnCarrito -> RECOMPENSAS_EN_EL_CARRITO
-                else -> RECOMPENSAS_REINTENTO_NO_SE_PUEDE
+        viewModelScope.launch {
+            // Codex r4 #2: lo que frena un canje nuevo también frena repetirlo (un cobro de esta caja sin subir, la cuenta en el carrito).
+            // Codex r5 #2: con la oferta RELEÍDA aquí, no la guardada (un disco que falló un instante dejaba un «sin subir» viejo).
+            val oferta = if (puedeCanjearPuntos && !laTraeUnCarrito) ofertaParaCobrar(orderId, laTraeUnCarrito) else ofertaActual.value
+            // Un segundo toque mientras se releía: ése ya lo manda el primero.
+            if (canjeando.value || sinRespuesta != intento) return@launch
+            if (oferta != com.avoqado.pos.giftcards.domain.OfertaDeLaCuenta.OFRECER || laTraeUnCarrito || !puedeCanjearPuntos) {
+                avisoDeLasRecompensas.value = when {
+                    !puedeCanjearPuntos -> RECOMPENSAS_SIN_PERMISO
+                    oferta == com.avoqado.pos.giftcards.domain.OfertaDeLaCuenta.COBRO_SIN_SINCRONIZAR -> RECOMPENSAS_CON_COBRO_SIN_SUBIR
+                    laTraeUnCarrito -> RECOMPENSAS_EN_EL_CARRITO
+                    else -> RECOMPENSAS_REINTENTO_NO_SE_PUEDE
+                }
+                return@launch
             }
-            return
+            mandarCanje(intento, laTraeUnCarrito, alTerminar)
         }
-        mandarCanje(intento, laTraeUnCarrito, alTerminar)
     }
 
     private fun mandarCanje(intento: CanjeSinRespuesta, laTraeUnCarrito: Boolean, alTerminar: () -> Unit) {
@@ -518,6 +533,11 @@ class CobroDeCuentaViewModel @Inject constructor(
         avisoDeCanje.value = null
         viewModelScope.launch {
             try {
+                // D39 (Codex r5 #1): la marca «canje mandado desde aquí» va ANTES de la red; sin ella no se manda nada.
+                if (cuentasAbiertasAqui?.marcarCanje(venue, intento.orderId) == false) {
+                    avisoDeLasRecompensas.value = RECOMPENSAS_NO_SE_GUARDO
+                    return@launch
+                }
                 repo.redeemLoyaltyPoints(venue, intento.orderId, intento.customerId, intento.points, intento.monto, intento.version).fold(
                     onSuccess = { aplicado ->
                         sinRespuesta = null
@@ -563,6 +583,8 @@ const val RECOMPENSAS_EN_DUDA =
 const val RECOMPENSAS_REINTENTO_YA_CAMBIO =
     "No se volvió a canjear: la cuenta ya cambió. Si el canje anterior entró, la cuenta ya trae su descuento «Recompensas»; revísalo antes de canjear otra vez."
 const val TEXTO_REINTENTAR_CANJE = "Reintentar el canje"
+const val RECOMPENSAS_SIN_RED_CON_PUNTOS = "Esta cuenta tiene puntos canjeados: se cobra con conexión. Espera a que vuelva la red."
+const val RECOMPENSAS_NO_SE_GUARDO = "No se pudo guardar el canje en el aparato: no se canjeó nada. Intenta otra vez."
 const val RECOMPENSAS_REINTENTO_NO_SE_PUEDE = "No se puede repetir el canje ahora: la cuenta ya no se puede cobrar desde aquí. Vuelve a abrirla."
 const val RECOMPENSAS_COBRO_ESPERA_AL_CANJE =
     "Hay un canje de puntos sin terminar en esta cuenta: no se sabe cuánto falta. Espera a que termine o reinténtalo con red antes de cobrar."

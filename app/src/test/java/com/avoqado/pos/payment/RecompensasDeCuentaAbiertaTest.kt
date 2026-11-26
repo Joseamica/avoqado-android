@@ -355,6 +355,75 @@ class RecompensasDeCuentaAbiertaTest {
         assertEquals("o", m.canjeEnDuda.value)
     }
 
+    @Test fun `r5 #2 - el reintento relee la oferta - un pendiente que ya subio no lo frena`() = runTest {
+        coEvery { repo.getOrderDetail("v", "o") } returns Result.success(cuenta(version = 3))
+        coEvery { repo.getCustomerLoyalty("v", "ana", "o") } returns Result.success(saldo(200))
+        coEvery { repo.redeemLoyaltyPoints(any(), any(), any(), any(), any(), any()) } returns Result.failure(java.io.IOException("sin red"))
+        m.ofertaParaCobrar("o")
+        m.leerLealtad("o")
+        // La relectura de después del canje lee mal los cobros locales: la pantalla guarda «cobro sin subir» (frena de más).
+        var discoFalla = true
+        coEvery { locales.hayPendiente("v", "o") } answers { if (discoFalla) throw java.io.IOException("disco") else false }
+        m.canjear("o", 100, 10.0) {}
+        assertEquals(OfertaDeLaCuenta.COBRO_SIN_SINCRONIZAR, m.oferta.value)
+        // El disco vuelve y no hay nada pendiente: el reintento NO usa la oferta guardada, la relee (Codex r5 #2).
+        discoFalla = false
+        coEvery { repo.redeemLoyaltyPoints(any(), any(), any(), any(), any(), any()) } returns Result.success(RedeemPointsData(100, 10.0, 100))
+        m.reintentarCanje("o") {}
+        coVerify(exactly = 2) { repo.redeemLoyaltyPoints("v", "o", "ana", 100, 10.0, 3) }
+        assertNull(m.canjeEnDuda.value)
+    }
+
+    @Test fun `r5 #1 - un canje que si entro y la red cae antes de releer - la copia sin red no cobra el saldo de antes`() = runTest {
+        val marcas = marcasEnMemoria()
+        val vm = CobroDeCuentaViewModel(repo, storage, red, roles, mockk(relaxed = true), locales, cuentasAbiertasAqui = marcas)
+        coEvery { repo.getOrderDetail("v", "o") } returns Result.success(cuenta(version = 3))
+        coEvery { repo.getCustomerLoyalty("v", "ana", "o") } returns Result.success(saldo(200))
+        vm.ofertaParaCobrar("o")
+        vm.leerLealtad("o")
+        // La marca se guarda ANTES de mandar el canje: si la app muere a media petición, también queda.
+        coEvery { repo.redeemLoyaltyPoints(any(), any(), any(), any(), any(), any()) } coAnswers {
+            assertTrue(marcas.tieneCanje("v", "o"))
+            Result.success(RedeemPointsData(100, 10.0, 100))
+        }
+        // La relectura no llega: se cayó la red.
+        coEvery { repo.getOrderDetail("v", "o") } returns Result.failure(java.io.IOException("sin red"))
+        vm.canjear("o", 100, 10.0) {}
+        assertFalse(vm.cobroBloqueadoPorCanje("o"))
+        val gris = com.avoqado.pos.payment.domain.DecisionSinRed.Gris(com.avoqado.pos.payment.presentation.RECOMPENSAS_SIN_RED_CON_PUNTOS)
+        vm.consultarSinRed("o")
+        assertEquals(gris, vm.sinRed.value)
+        assertEquals(gris, vm.pedirCobroSinRed("o"))
+        assertEquals(com.avoqado.pos.payment.presentation.RECOMPENSAS_SIN_RED_CON_PUNTOS, vm.revalidarCobroSinRed("o", 10_000))
+    }
+
+    @Test fun `r5 #1 - si la marca no se puede guardar, el canje no sale`() = runTest {
+        val marcas = marcasEnMemoria(falla = true)
+        val vm = CobroDeCuentaViewModel(repo, storage, red, roles, mockk(relaxed = true), locales, cuentasAbiertasAqui = marcas)
+        coEvery { repo.getOrderDetail("v", "o") } returns Result.success(cuenta(version = 3))
+        coEvery { repo.getCustomerLoyalty("v", "ana", "o") } returns Result.success(saldo(200))
+        vm.ofertaParaCobrar("o")
+        vm.leerLealtad("o")
+        vm.canjear("o", 100, 10.0) {}
+        coVerify(exactly = 0) { repo.redeemLoyaltyPoints(any(), any(), any(), any(), any(), any()) }
+        assertEquals(com.avoqado.pos.payment.presentation.RECOMPENSAS_NO_SE_GUARDO, vm.avisoDeRecompensas.value)
+        assertFalse(vm.canjeEnVuelo.value)
+    }
+
+    private fun marcasEnMemoria(falla: Boolean = false): com.avoqado.pos.orders.data.CuentasAbiertasAqui {
+        val disco = mutableMapOf<String, com.avoqado.pos.core.data.local.PayloadCache.Cached>()
+        val cache = mockk<com.avoqado.pos.core.data.local.PayloadCache> {
+            coEvery { load(any(), any()) } answers { disco["${firstArg<String>()}|${secondArg<String>()}"] }
+            coEvery { loadDurable(any(), any()) } answers { disco["${firstArg<String>()}|${secondArg<String>()}"] }
+            coEvery { saveDurable(any(), any(), any()) } answers {
+                if (falla) throw IllegalStateException("disco lleno")
+                disco["${firstArg<String>()}|${secondArg<String>()}"] = com.avoqado.pos.core.data.local.PayloadCache.Cached(thirdArg(), 0)
+            }
+        }
+        val copia = com.avoqado.pos.orders.data.CopiaDeCuentas(cache).also { it.io = kotlinx.coroutines.Dispatchers.Unconfined }
+        return com.avoqado.pos.orders.data.CuentasAbiertasAqui(cache, copia)
+    }
+
     @Test fun `un rechazo del SERVIDOR no es duda - dice su motivo`() = runTest {
         coEvery { repo.getOrderDetail("v", "o") } returns Result.success(cuenta(version = 3))
         coEvery { repo.getCustomerLoyalty("v", "ana", "o") } returns Result.success(saldo(200))
