@@ -195,6 +195,20 @@ class CartViewModelTarjetaEscaneadaTest {
         assertEquals("p",(createViewModel().resolveScannedBarcode(sku) as ScannedBarcodeResult.ProductFound).product.id)
         coVerify(exactly=0) { wallet.escanear(any()) }
     }
+    @Test fun `D56 un SKU que termina como la tarjeta se encuentra aunque la pistola cambie las mayusculas`() = runTest {
+        // Codex D56 r2 #2: el catálogo dice «SKU-A1A1…» y la pistola manda «sku-a1a1…»: gana el producto, no la tarjeta.
+        val sku="SKU-"+"A1".repeat(24)
+        every { productsRepository.products } returns MutableStateFlow(listOf(Product(id="p",name="Blusa",priceValue=150.0,sku=sku)))
+        assertEquals("p",(createViewModel().resolveScannedBarcode(sku.lowercase()) as ScannedBarcodeResult.ProductFound).product.id)
+        coVerify(exactly=0) { wallet.escanear(any()) }
+    }
+    @Test fun `D56 la lectura en ingles de D14 gana a la tarjeta del final`() = runTest {
+        // Codex D56 r2 #3: el teclado en español cambia «SKU-» por «SKU'» y deja los 48 del final.
+        val product=Product(id="p",name="Blusa",priceValue=150.0,sku="SKU-"+"a1".repeat(24))
+        every { productsRepository.products } returns MutableStateFlow(listOf(product))
+        assertEquals(ScannedBarcodeResult.ProductFound(product),createViewModel().resolveScannedBarcode("SKU'"+"a1".repeat(24),lecturaUs="SKU-"+"a1".repeat(24)))
+        coVerify(exactly=0) { wallet.escanear(any()) }
+    }
     @Test fun `con forma de tarjeta nunca hay parecido, tampoco en Mesas ni donde no se consulta la tarjeta`() {
         // Codex r3: Mesas llama directo a parecidoACodigo. La guardia vive ahí para que ningún camino se la salte.
         val pase="a1".repeat(24)

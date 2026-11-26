@@ -2727,32 +2727,47 @@ class CartViewModel @Inject constructor(
         if (cobroAbierto) return ScannedBarcodeResult.Error("Se abrió el cobro: vuelve a escanear al terminar.")
         consultasDeCodigo.update { it + 1 }
         try {
-            // D14 (rediseño tras Codex r6): primero la lectura del aparato, EXACTAMENTE como antes (vales, báscula, tarjetas,
-            // productos). La de EE. UU. sólo entra después y sólo para productos del catálogo.
-            val resultado = resolverCodigo(rawCode)
-            if (lecturaUs == null) return resultado
-            // Las teclas de «AB-123» con la pistola en inglés y de «AB'123» con la pistola en español son LAS MISMAS: si cada
-            // lectura es un producto distinto, no se adivina (como el PLU de báscula repetido).
-            val enIngles = products.value.coincidenciasDeLaLectura(lecturaUs)
-            val doble = ScannedBarcodeResult.CodigoDoble(avisoDeCodigoDoble(rawCode.trim(), lecturaUs.trim()))
-            return when (resultado) {
-                is ScannedBarcodeResult.ProductFound -> if (enIngles.any { it.id != resultado.product.id }) doble else resultado
-                // Codex r7 #1: la tarjeta de regalo NO se adivina con la segunda lectura (un SKU de proveedor podía abrir la hoja
-                // de saldo): con el teclado en español se lee en la hoja de tarjetas, que tiene su propio lector, como hoy.
-                is ScannedBarcodeResult.Unknown -> when {
-                    // Codex r8 #2: la del aparato no encontró nada porque empataron dos productos (sin mayúsculas): se avisa
-                    // «Producto no encontrado» como en develop, no se elige uno de la otra lectura.
-                    products.value.coincidenciasDeLaLectura(rawCode).isNotEmpty() -> resultado
-                    enIngles.size > 1 -> doble
-                    enIngles.size == 1 -> ScannedBarcodeResult.ProductFound(enIngles.single())
-                    else -> resultado
-                }
-                else -> resultado
-            }
+            val resultado = conLasDosLecturas(rawCode, lecturaUs)
+            // D56: la tarjeta pegada al FINAL de lo que ya había en el campo manual de «Escanear» (WINDOWS: la pistola teclea en
+            // el campo). Al último, sólo si nada la reconoció (Codex D56 r2 #2 y #3: un producto sin mayúsculas o por la lectura en
+            // inglés gana).
+            if (resultado !is ScannedBarcodeResult.Unknown) return resultado
+            return com.avoqado.pos.loyalty.data.tarjetaDeClienteEn(rawCode)?.let { leerTarjetaDeCliente(it) } ?: resultado
         } finally {
             consultasDeCodigo.update { it - 1 }
         }
     }
+
+    private suspend fun conLasDosLecturas(rawCode: String, lecturaUs: String?): ScannedBarcodeResult {
+        // D14 (rediseño tras Codex r6): primero la lectura del aparato, EXACTAMENTE como antes (vales, báscula, tarjetas,
+        // productos). La de EE. UU. sólo entra después y sólo para productos del catálogo.
+        val resultado = resolverCodigo(rawCode)
+        if (lecturaUs == null) return resultado
+        // Las teclas de «AB-123» con la pistola en inglés y de «AB'123» con la pistola en español son LAS MISMAS: si cada
+        // lectura es un producto distinto, no se adivina (como el PLU de báscula repetido).
+        val enIngles = products.value.coincidenciasDeLaLectura(lecturaUs)
+        val doble = ScannedBarcodeResult.CodigoDoble(avisoDeCodigoDoble(rawCode.trim(), lecturaUs.trim()))
+        return when (resultado) {
+            is ScannedBarcodeResult.ProductFound -> if (enIngles.any { it.id != resultado.product.id }) doble else resultado
+            // Codex r7 #1: la tarjeta de regalo NO se adivina con la segunda lectura (un SKU de proveedor podía abrir la hoja
+            // de saldo): con el teclado en español se lee en la hoja de tarjetas, que tiene su propio lector, como hoy.
+            is ScannedBarcodeResult.Unknown -> when {
+                // Codex r8 #2: la del aparato no encontró nada porque empataron dos productos (sin mayúsculas): se avisa
+                // «Producto no encontrado» como en develop, no se elige uno de la otra lectura.
+                products.value.coincidenciasDeLaLectura(rawCode).isNotEmpty() -> resultado
+                enIngles.size > 1 -> doble
+                enIngles.size == 1 -> ScannedBarcodeResult.ProductFound(enIngles.single())
+                else -> resultado
+            }
+            else -> resultado
+        }
+    }
+
+    private suspend fun leerTarjetaDeCliente(tarjeta: String): ScannedBarcodeResult =
+        when (val lectura = walletScanRepository.escanear(tarjeta)) {
+            is com.avoqado.pos.loyalty.data.LecturaDeTarjeta.Leida -> ScannedBarcodeResult.CustomerCardFound(lectura.tarjeta)
+            is com.avoqado.pos.loyalty.data.LecturaDeTarjeta.SinLeer -> ScannedBarcodeResult.TarjetaDeClienteSinLeer(lectura.motivo)
+        }
 
     private suspend fun resolverCodigo(rawCode: String): ScannedBarcodeResult {
         val code = rawCode.trim()
@@ -2797,14 +2812,8 @@ class CartViewModel @Inject constructor(
             // hacer un viaje al servidor por cada producto mal dado de alta — en una
             // caja con fila esa latencia se nota.
             com.avoqado.pos.giftcards.domain.ReconocedorDeTarjeta.reconocer(code)?.let { return ScannedBarcodeResult.GiftCardFound(it) }
-            // D56: también la tarjeta pegada al final de lo que ya había en el campo manual de «Escanear» (WINDOWS).
-            com.avoqado.pos.loyalty.data.tarjetaDeClienteEn(code)?.let { tarjeta ->
-                // D53: con forma de tarjeta, nunca «Producto no encontrado · Crear nuevo» (`parecidoACodigo` ya no la empata).
-                return when (val lectura = walletScanRepository.escanear(tarjeta)) {
-                    is com.avoqado.pos.loyalty.data.LecturaDeTarjeta.Leida -> ScannedBarcodeResult.CustomerCardFound(lectura.tarjeta)
-                    is com.avoqado.pos.loyalty.data.LecturaDeTarjeta.SinLeer -> ScannedBarcodeResult.TarjetaDeClienteSinLeer(lectura.motivo)
-                }
-            }
+            // D53: con forma de tarjeta, nunca «Producto no encontrado · Crear nuevo» (`parecidoACodigo` ya no la empata).
+            if (com.avoqado.pos.loyalty.data.pareceTarjetaDeCliente(code)) return leerTarjetaDeCliente(code)
 
             products.value.parecidoACodigo(code)?.let { return ScannedBarcodeResult.ProductFound(it) }
             return ScannedBarcodeResult.Unknown(code)

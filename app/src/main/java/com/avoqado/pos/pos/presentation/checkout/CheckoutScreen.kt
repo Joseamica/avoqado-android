@@ -1572,6 +1572,11 @@ fun CheckoutScreen(
             // El cliente de ANTES de la consulta: si el cajero lo quitó o eligió otro mientras respondía, su toque gana
             // y la tarjeta escaneada no se vuelve a ligar (Codex, cliente en cobrar r3 #1).
             val clienteAlEscanear = cartViewModel.selectedCustomer.value?.id
+            // D56 (Codex r2 #1): y la venta. «Guardar carrito» mientras respondía deja otra venta, también sin cliente: comparar
+            // sólo «sin cliente» con «sin cliente» ligaba la tarjeta a la venta siguiente.
+            val ventaAlEscanear = cartViewModel.cartState.value.identidadDeVenta
+            fun sigueLaMismaVenta() = cartViewModel.selectedCustomer.value?.id == clienteAlEscanear &&
+                cartViewModel.cartState.value.identidadDeVenta == ventaAlEscanear
             // D7: la captura de peso abierta AL LEER; sólo en ella avisa su etiqueta. «Agregar» no espera a la lectura (Codex D7
             // r5 #1: esperar descartaba el toque y la porción se perdía al pasar al siguiente producto): si la cajera lo toca antes
             // de que la etiqueta de esa misma pieza termine de leerse, entran las dos, como en develop.
@@ -1585,8 +1590,7 @@ fun CheckoutScreen(
             // cierra nada. Sólo un producto que abre la ficha la deja: cambia a él, o sigue igual si es el mismo (D3).
             val abreLaFicha = result is ScannedBarcodeResult.ProductFound && !result.product.soldByWeight && result.product.hasModifiers
             // La tarjeta de un cliente leída antes de que el cajero eligiera otro no se aplica (abajo): no cierra nada (Codex r3 #1).
-            val seAplica = result !is ScannedBarcodeResult.CustomerCardFound ||
-                cartViewModel.selectedCustomer.value?.id == clienteAlEscanear
+            val seAplica = result !is ScannedBarcodeResult.CustomerCardFound || sigueLaMismaVenta()
             if (seAplica) {
                 cartViewModel.cerrarHojas()
                 if (!isTablet && !abreLaFicha) selectedProduct = null
@@ -1621,7 +1625,7 @@ fun CheckoutScreen(
                 }
                 is ScannedBarcodeResult.AreaTicketsAdded ->
                     areaTicketAddedCount = result.ticketCount
-                is ScannedBarcodeResult.CustomerCardFound -> if (cartViewModel.selectedCustomer.value?.id == clienteAlEscanear) {
+                is ScannedBarcodeResult.CustomerCardFound -> if (sigueLaMismaVenta()) {
                     // 🔴 Escanear la tarjeta LIGA la venta al cliente, y eso es lo
                     // que hace que el sello suba solo al cobrar. Sin esta línea el
                     // cajero vería el nombre pero la compra no contaría para su
