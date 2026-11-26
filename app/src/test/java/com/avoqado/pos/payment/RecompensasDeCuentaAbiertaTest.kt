@@ -573,4 +573,48 @@ class RecompensasDeCuentaAbiertaTest {
         assertFalse(com.avoqado.pos.payment.presentation.cierraEnCero(enCero.copy(preBillBalance = null,
             payments = listOf(com.avoqado.pos.tables.data.OrderDetailPayment("p1", status = "COMPLETED")))))
     }
+
+    @Test fun `r11 - Codex r10 #1 - una cuenta que quedó en cero con productos se ofrece cobrar (cerrar), no NADA`() = runTest {
+        val item = com.avoqado.pos.tables.data.OrderDetailItem("i1", productName = "Café", quantity = 1, unitPrice = 10.0, total = 10.0)
+        coEvery { repo.getOrderDetail("v", "o") } returns Result.success(cuenta(version = 4, subtotal = 10.0, descuento = 10.0).copy(items = listOf(item)))
+        assertEquals(OfertaDeLaCuenta.OFRECER, m.ofertaParaCobrar("o"))
+        // Sin productos sigue sin ofrecerse.
+        coEvery { repo.getOrderDetail("v", "o") } returns Result.success(cuenta(version = 4, subtotal = 10.0, descuento = 10.0))
+        assertEquals(OfertaDeLaCuenta.NADA, m.ofertaParaCobrar("o"))
+    }
+
+    @Test fun `r11 - Codex r10 #2 - el canje total que se queda sin respuesta se puede reintentar aunque la relectura traiga cero`() = runTest {
+        val item = com.avoqado.pos.tables.data.OrderDetailItem("i1", productName = "Café", quantity = 1, unitPrice = 10.0, total = 10.0)
+        coEvery { repo.getOrderDetail("v", "o") } returnsMany listOf(
+            Result.success(cuenta(version = 3, subtotal = 10.0).copy(items = listOf(item))),
+            Result.success(cuenta(version = 4, subtotal = 10.0, descuento = 10.0).copy(items = listOf(item))),
+        )
+        coEvery { repo.getCustomerLoyalty("v", "ana", "o") } returns Result.success(saldo(500).copy(maxRedeemablePoints = 100, maxRedeemableValue = 10.0))
+        val llaves = mutableListOf<String?>()
+        coEvery { repo.redeemLoyaltyPoints(any(), any(), any(), any(), any(), any(), captureNullable(llaves)) } returns
+            Result.failure(java.io.IOException("se perdió la respuesta"))
+        m.ofertaParaCobrar("o")
+        m.leerLealtad("o")
+        m.canjear("o", 100, 10.0) {}
+        assertEquals("o", m.canjeEnDuda.value)
+        coEvery { repo.redeemLoyaltyPoints(any(), any(), any(), any(), any(), any(), captureNullable(llaves)) } returns Result.success(RedeemPointsData(100, 10.0, 400))
+        m.reintentarCanje("o") {}
+        assertEquals(2, llaves.size)
+        assertEquals(llaves[0], llaves[1])
+        assertNull(m.canjeEnDuda.value)
+    }
+
+    @Test fun `r11 - Codex r10 sobra - con llave, un rechazo con recibo al reintentar dice su motivo, no «si el anterior entró»`() = runTest {
+        coEvery { repo.getOrderDetail("v", "o") } returns Result.success(cuenta(version = 3))
+        coEvery { repo.getCustomerLoyalty("v", "ana", "o") } returns Result.success(saldo(200))
+        coEvery { repo.redeemLoyaltyPoints(any(), any(), any(), any(), any(), any(), any()) } returns Result.failure(java.io.IOException("sin red"))
+        m.ofertaParaCobrar("o")
+        m.leerLealtad("o")
+        m.canjear("o", 100, 10.0) {}
+        coEvery { repo.redeemLoyaltyPoints(any(), any(), any(), any(), any(), any(), any()) } returns
+            Result.failure(CanjeRechazado(null, "Puntos insuficientes", definitivo = true, conLlave = true))
+        m.reintentarCanje("o") {}
+        assertEquals("Puntos insuficientes", m.avisoDeRecompensas.value)
+        assertNull(m.canjeEnDuda.value)
+    }
 }

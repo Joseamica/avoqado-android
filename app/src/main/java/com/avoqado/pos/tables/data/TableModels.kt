@@ -650,7 +650,7 @@ const val LOYALTY_OFFER_CHANGED = "LOYALTY_OFFER_CHANGED"
  * el que trae el recibo del SERVIDOR (`httpOperation.outcome = REJECTED`): un 4xx de la puerta (permiso, plan) antes de la llave no dice
  * nada del primer envío, que pudo entrar.
  */
-class CanjeRechazado(val code: String?, override val message: String, val definitivo: Boolean = true) : Exception(message) {
+class CanjeRechazado(val code: String?, override val message: String, val definitivo: Boolean = true, val conLlave: Boolean = false) : Exception(message) {
     val ofertaCambio: Boolean get() = code == LOYALTY_OFFER_CHANGED
 }
 
@@ -662,7 +662,7 @@ fun canjeRechazadoDe(cuerpo: String?, conLlave: Boolean = false): CanjeRechazado
     fun texto(o: kotlinx.serialization.json.JsonObject?, llave: String) =
         (o?.get(llave) as? kotlinx.serialization.json.JsonPrimitive)?.takeIf { it.isString }?.content
     val recibo = texto(raiz?.get("httpOperation") as? kotlinx.serialization.json.JsonObject, "outcome") == "REJECTED"
-    return CanjeRechazado(texto(raiz, "code"), texto(raiz, "message").orEmpty(), definitivo = !conLlave || recibo)
+    return CanjeRechazado(texto(raiz, "code"), texto(raiz, "message").orEmpty(), definitivo = !conLlave || recibo, conLlave = conLlave)
 }
 
 // MARK: - Cobros por servicio (propina automática por grupo, descorche…)

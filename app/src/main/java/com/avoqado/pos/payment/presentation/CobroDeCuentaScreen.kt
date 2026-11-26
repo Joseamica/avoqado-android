@@ -141,7 +141,8 @@ class CobroDeCuentaViewModel @Inject constructor(
         // Una consulta superada no publica oferta: decidiría con la foto de otra (Codex D14 r2 P2).
         if (turno != turnos.get() || storage.venueId != venue || foto.value?.id != orderId) return com.avoqado.pos.giftcards.domain.OfertaDeLaCuenta.NADA
         val resultado = com.avoqado.pos.giftcards.domain.ofertaDeLaCuenta(cuenta?.let(::restanteCents),
-            cuenta == null || cuenta.esDeMesa != false && !cuenta.esCuentaDeTarjetas, laTraeUnCarrito, pendiente)
+            cuenta == null || cuenta.esDeMesa != false && !cuenta.esCuentaDeTarjetas, laTraeUnCarrito, pendiente,
+            cierraEnCero = cuenta?.let(::cierraEnCero) == true)
         ofertaActual.value = resultado
         dineroConocido = fotoDelDinero
         return resultado
@@ -475,6 +476,13 @@ class CobroDeCuentaViewModel @Inject constructor(
      */
     suspend fun tieneCanjeAqui(orderId: String): Boolean = storage.venueId?.let { v -> cuentasAbiertasAqui?.tieneCanje(v, orderId) } == true
 
+    /**
+     * D39 r11 (Codex r10 #6): justo antes de recibir el efectivo de un cobro «sólo con conexión», ¿hay red? Sin ella no se recibe el billete:
+     * el cobro se cierra y la cuenta queda gris con su texto (sin red no se guarda en el aparato). null = sigue.
+     */
+    fun sinConexionParaElEfectivo(): String? =
+        if (red.isConnected.value && red.isServerReachable.value) null else RECOMPENSAS_SIN_RED_CON_PUNTOS
+
     /** Lo que frena el efectivo desde la copia sin red por un canje: el de [cobroBloqueadoPorCanje] o un canje ya mandado desde aquí. */
     private suspend fun grisSinRedPorCanje(orderId: String): String? = when {
         cobroBloqueadoPorCanje(orderId) -> RECOMPENSAS_COBRO_ESPERA_AL_CANJE
@@ -571,19 +579,23 @@ class CobroDeCuentaViewModel @Inject constructor(
                                 sinRespuesta = intento
                                 avisoDeLasRecompensas.value = RECOMPENSAS_EN_DUDA
                             }
-                            // Un rechazo definitivo del SERVIDOR: el canje no se hizo con ESTE intento.
-                            e is com.avoqado.pos.tables.data.CanjeRechazado && esReintento -> {
+                            // Un rechazo definitivo del SERVIDOR: el canje no se hizo con ESTE intento. Sin llave (un aparato sin identidad
+                            // UUID), el 409 de un reintento puede ser el canje anterior que sí entró: se dice. Con llave el recibo ya lo descarta.
+                            e is com.avoqado.pos.tables.data.CanjeRechazado && esReintento && !e.conLlave -> {
                                 sinRespuesta = null
                                 // La cuenta ya no es la de entonces: o el canje anterior sí entró (subió la versión), u otra cosa la cambió.
                                 avisoDeLasRecompensas.value = if (e.ofertaCambio) RECOMPENSAS_REINTENTO_YA_CAMBIO else
                                     com.avoqado.pos.core.data.network.ServerErrorText.humanize(e, "No se pudo canjear los puntos")
                             }
                             e is com.avoqado.pos.tables.data.CanjeRechazado && e.ofertaCambio -> {
+                                sinRespuesta = null
                                 avisoDeCanje.value = "La cuenta cambió: revisa los puntos."
                                 dialogoDeRecompensas.value = true
                             }
-                            e is com.avoqado.pos.tables.data.CanjeRechazado ->
+                            e is com.avoqado.pos.tables.data.CanjeRechazado -> {
+                                sinRespuesta = null
                                 avisoDeLasRecompensas.value = com.avoqado.pos.core.data.network.ServerErrorText.humanize(e, "No se pudo canjear los puntos")
+                            }
                             // Sin respuesta (red, tiempo agotado, 5xx): no se sabe si entró. Lo único que se ofrece es repetirlo idéntico.
                             else -> {
                                 sinRespuesta = intento
@@ -733,6 +745,7 @@ fun CobroDeCuentaScreen(
                 // antes de que la terminal reciba el cobro, el SERVIDOR no cobra y lo dice.
                 saldoLeidoDeLaCuenta = saldoLeidoDelServidor(cuenta, cents),
                 soloConConexion = soloConConexion,
+                antesDeRecibirEfectivo = if (soloConConexion) suspend { viewModel.sinConexionParaElEfectivo() } else null,
                 onCuentaConSaldo = { cobrar = false; scope.launch { if (enLinea) viewModel.ofertaParaCobrar(orderId, cuentaDelCarrito() == orderId) } },
                 onPaymentCommitted = { restanteTrasCobrar = it.remainingBalanceCents },
                 onDone = {
@@ -1043,7 +1056,8 @@ fun AccionesDeCuentaAbierta(
         if (!viewModel.puedeCobrar) Text("No tienes permiso para cobrar. Pídeselo a tu gerente.")
     } else if (ofreceReintentarDetalle(order, enLinea)) TextButton(onClick = onReintentar) { Text(TextosDeTarjetas.REINTENTAR) }
     // D39 fase 1: el canje de Mesas en una cuenta abierta de Mostrador con cliente (las de «Pagar después»). Sin red, gris con su texto.
-    if (ofreceRecompensas(order, detalle, conCopia, elegible, cents)) RecompensasDeLaCuenta(order.id, enLinea, viewModel, onActualizar)
+    // D39 r11 (Codex r10 #2): con un canje en duda, su «Reintentar el canje» sigue a la vista aunque la relectura traiga la cuenta en $0.
+    if (ofreceRecompensas(order, detalle, conCopia, elegible, cents) || canjeEnDuda == order.id) RecompensasDeLaCuenta(order.id, enLinea, viewModel, onActualizar)
     if (!order.esCuentaDeTarjetas) RegresarSaldoDeCuenta(order.id, order.cobrosConSaldo ?: 0,
         order.orderPaymentStatus == com.avoqado.pos.orders.data.model.PaymentStatus.PAID || order.status in listOf("CANCELLED", "DELETED"),
         onCancelada = { onCancelada(); onActualizar() })
