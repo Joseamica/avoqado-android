@@ -84,11 +84,18 @@ class CuentasAbiertasAqui @Inject constructor(private val cache: PayloadCache, p
     /** D12 · Opción D: todas las que abrió esta caja en [venueId]. LANZA si el disco falla (quien pregunta no contesta por ninguna). */
     suspend fun todas(venueId: String): Set<String> = leerDelDisco(venueId).keys
 
-    /** LANZA si el disco falla; un JSON ilegible cuenta como «sin marcas» (no hay nada que conservar). */
+    /**
+     * LANZA si el disco falla. Un JSON ilegible de «abiertas aquí» cuenta como «sin marcas» (sin prueba, la cuenta queda en gris). D39
+     * (Codex r9 #2): uno ilegible de canjes NO se sabe y también LANZA: así [tieneCanje] dice que sí (sin red no se cobra) y [marcarCanje]
+     * no escribe encima de lo ilegible (borraría las marcas de las demás cuentas).
+     */
     private suspend fun leerDelDisco(venueId: String, tipo: String = PayloadCache.TYPE_CUENTAS_ABIERTAS_AQUI): Map<String, Long> {
         val guardado = cache.loadDurable(tipo, venueId) ?: return emptyMap()
-        return runCatching { json.decodeFromString<Map<String, Long>>(guardado.json) }
-            .getOrElse { Log.w(TAG, "⚠️ marcas ilegibles de $venueId: ${it.message}"); emptyMap() }
+        return runCatching { json.decodeFromString<Map<String, Long>>(guardado.json) }.getOrElse {
+            Log.w(TAG, "⚠️ marcas ilegibles de $venueId ($tipo): ${it.message}")
+            if (tipo == PayloadCache.TYPE_CUENTAS_CON_CANJE_AQUI) throw IllegalStateException("marcas de canje ilegibles", it)
+            emptyMap()
+        }
     }
 
     private companion object {

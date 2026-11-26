@@ -476,6 +476,21 @@ class RecompensasDeCuentaAbiertaTest {
         assertTrue(marcas.tieneCanje("v", "o"))
     }
 
+    @Test fun `r9 #2 - unas marcas de canje ilegibles en el disco cuentan como canje - sin red la cuenta no se cobra`() = runTest {
+        val cache = mockk<com.avoqado.pos.core.data.local.PayloadCache> {
+            coEvery { load(any(), any()) } returns null
+            coEvery { loadDurable(com.avoqado.pos.core.data.local.PayloadCache.TYPE_CUENTAS_CON_CANJE_AQUI, "v") } returns
+                com.avoqado.pos.core.data.local.PayloadCache.Cached("{esto no es json", 0)
+            coEvery { loadDurable(com.avoqado.pos.core.data.local.PayloadCache.TYPE_CUENTAS_ABIERTAS_AQUI, "v") } returns null
+            coEvery { saveDurable(any(), any(), any()) } returns Unit
+        }
+        val copia = com.avoqado.pos.orders.data.CopiaDeCuentas(cache).also { it.io = kotlinx.coroutines.Dispatchers.Unconfined }
+        val marcas = com.avoqado.pos.orders.data.CuentasAbiertasAqui(cache, copia)
+        assertTrue(marcas.tieneCanje("v", "o"))
+        // Y no se escribe encima de lo ilegible (borraría las marcas de las demás cuentas): el canje no sale.
+        assertFalse(marcas.marcarCanje("v", "otra"))
+    }
+
     private fun marcasEnMemoria(falla: Boolean = false): com.avoqado.pos.orders.data.CuentasAbiertasAqui {
         val disco = mutableMapOf<String, com.avoqado.pos.core.data.local.PayloadCache.Cached>()
         val cache = mockk<com.avoqado.pos.core.data.local.PayloadCache> {
