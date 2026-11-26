@@ -93,6 +93,8 @@ sealed interface ScannedBarcodeResult {
      * el momento de más prisa del mostrador.
      */
     data class CustomerCardFound(val card: com.avoqado.pos.loyalty.data.WalletScanResponse) : ScannedBarcodeResult
+    /** D53: tenía forma de tarjeta digital y no se pudo leer. Dice por qué y nunca ofrece crear producto. */
+    data class TarjetaDeClienteSinLeer(val motivo: com.avoqado.pos.loyalty.data.TarjetaSinLeer) : ScannedBarcodeResult
     /** D14: la etiqueta puede ser dos productos del catálogo según cómo esté configurada la pistola: no se agrega ninguno. */
     data class CodigoDoble(val aviso: String) : ScannedBarcodeResult
     data class Unknown(val code: String) : ScannedBarcodeResult
@@ -2796,7 +2798,11 @@ class CartViewModel @Inject constructor(
             // caja con fila esa latencia se nota.
             com.avoqado.pos.giftcards.domain.ReconocedorDeTarjeta.reconocer(code)?.let { return ScannedBarcodeResult.GiftCardFound(it) }
             if (com.avoqado.pos.loyalty.data.pareceTarjetaDeCliente(code)) {
-                walletScanRepository.escanear(code)?.let { return ScannedBarcodeResult.CustomerCardFound(it) }
+                // D53: con forma de tarjeta, nunca «Producto no encontrado · Crear nuevo» (`parecidoACodigo` ya no la empata).
+                return when (val lectura = walletScanRepository.escanear(code)) {
+                    is com.avoqado.pos.loyalty.data.LecturaDeTarjeta.Leida -> ScannedBarcodeResult.CustomerCardFound(lectura.tarjeta)
+                    is com.avoqado.pos.loyalty.data.LecturaDeTarjeta.SinLeer -> ScannedBarcodeResult.TarjetaDeClienteSinLeer(lectura.motivo)
+                }
             }
 
             products.value.parecidoACodigo(code)?.let { return ScannedBarcodeResult.ProductFound(it) }
