@@ -2,6 +2,7 @@ package com.avoqado.pos.loyalty.domain
 
 import com.avoqado.pos.loyalty.data.SaleStampOutcome
 import com.avoqado.pos.loyalty.data.SaleStampReason
+import com.avoqado.pos.loyalty.data.StampThisSale
 
 /**
  * Textos del renglón del sello en «Cobro exitoso». 🔴 Espejo EXACTO de iOS (mismo contrato): cambiar uno aquí sin
@@ -24,6 +25,24 @@ object TextosDelSello {
 
     fun selloSumado(stampsEarned: Int, stampsRequired: Int): String =
         "✓ +1 sello · $stampsEarned de $stampsRequired"
+
+    // MARK: - Aviso del escaneo de la tarjeta digital (D50, hz:b37dd7ea:D50): va después del avance, «3 de 7 sellos · …».
+    const val ESTA_COMPRA_SUMA = "esta compra le suma otro"
+    const val ESTA_COMPRA_YA_SELLO_HOY = "ya recibió su sello de hoy"
+    const val ESTA_COMPRA_SELLOS_APAGADOS = "la tarjeta de sellos está apagada"
+    const val ESTA_COMPRA_NO_SUMA = "esta compra no suma sello"
+
+    /**
+     * Lo que el aviso dice de ESTA compra. Sin el dato (servidor viejo), lo de siempre; una razón nueva no promete el sello.
+     * `UNCHECKED` (el servidor no pudo comprobar a tiempo) → null: el aviso sólo enseña el avance, sin prometer ni negar.
+     */
+    fun estaCompra(pronostico: StampThisSale?): String? = when {
+        pronostico == null || pronostico.willStamp -> ESTA_COMPRA_SUMA
+        pronostico.reason == "DAILY_LIMIT_REACHED" -> ESTA_COMPRA_YA_SELLO_HOY
+        pronostico.reason == "STAMPS_DISABLED" -> ESTA_COMPRA_SELLOS_APAGADOS
+        pronostico.reason == "UNCHECKED" -> null
+        else -> ESTA_COMPRA_NO_SUMA
+    }
 
     // MARK: - Tarjetita de sellos (21-oct)
     /** «+1 sello» / «+2 sellos». */

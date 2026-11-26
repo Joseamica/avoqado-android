@@ -41,6 +41,16 @@ data class ScannedReward(
     val rewardValue: Double? = null,
 )
 
+/**
+ * D50 (hz:b37dd7ea:D50): si una venta de AHORA le suma sello, según el servidor (la misma regla que usa al sellar: plan,
+ * interruptor de sellos y tope del día). `reason`: `DAILY_LIMIT_REACHED` · `STAMPS_DISABLED`. Es un pronóstico, no una reserva.
+ */
+@Serializable
+data class StampThisSale(
+    val willStamp: Boolean = true,
+    val reason: String? = null,
+)
+
 @Serializable
 data class WalletScanResponse(
     val found: Boolean = false,
@@ -49,6 +59,8 @@ data class WalletScanResponse(
     val stampsRequired: Int = 0,
     val rewardLabel: String? = null,
     val rewardsToClaim: List<ScannedReward> = emptyList(),
+    /** D50, aditivo: un servidor viejo no lo manda y el aviso dice lo de siempre. */
+    val stampThisSale: StampThisSale? = null,
 )
 
 /**
