@@ -177,6 +177,10 @@ fun textoDeCuentaCambiada(aviso: PaymentFlowViewModel.CuentaDeValesCambio, carri
 /** hz:bdd815fd:D4: cuánto espera la relectura de los vales tras «la cuenta cambió» antes de salir con el saldo del rechazo. */
 const val RELEER_VALES_TRAS_CAMBIO_MS = 5_000L
 
+/** D39 (D3, 26-nov): el cobro de una cuenta con canje de esta caja se quedó sin respuesta; «Reintentar» manda la misma llave. */
+const val COBRO_SIN_RESPUESTA_SOLO_CON_RED =
+    "No se sabe si el pago entró. Toca «Reintentar» con conexión: si ya había entrado, no se cobra otra vez."
+
 /** Mismo texto en iOS (`AreaTicketPaymentError.ventaConAbono`) y en «Vaciar» (D5, 20-oct). */
 const val VALES_CON_ABONO = "Esta venta de vales ya tiene un abono: cobra su saldo pendiente para terminarla."
 
@@ -4781,7 +4785,12 @@ class PaymentFlowViewModel @Inject constructor(
      */
     private fun mensajeDelCobroFallido(error: Throwable): String {
         val delServidor = (error as? OrderRepository.ServerException)?.takeIf { it.code in 400..499 }?.message
-        return if (!delServidor.isNullOrBlank()) delServidor else "No se pudo registrar el pago: ${error.message ?: "error desconocido"}"
+        if (!delServidor.isNullOrBlank()) return delServidor
+        // D39 (D3, 26-nov): la cuenta con canje no guarda el cobro en el aparato; sin respuesta no se sabe si entró, y la llave es la misma.
+        val sinRespuesta = OrderRepository.isQueueableError(error) ||
+            (error is OrderRepository.ServerException && OrderRepository.isQueueableHttpCode(error.code))
+        return if (soloConConexion && sinRespuesta) COBRO_SIN_RESPUESTA_SOLO_CON_RED
+        else "No se pudo registrar el pago: ${error.message ?: "error desconocido"}"
     }
 
     private suspend fun recordCashPaymentForOrder(

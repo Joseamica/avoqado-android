@@ -6776,6 +6776,25 @@ class PaymentFlowViewModelTest {
         assertFalse("no dice «cobrado»", viewModel.state.value is PaymentFlowState.Success)
     }
 
+    /**
+     * D39 fase 1, aparato (D3, 26-nov): el SERVIDOR tardó 11 s, la app se rindió a los 10 y el pago SÍ había entrado. La pantalla decía
+     * «No se pudo registrar el pago: timeout». Sin respuesta no se sabe: lo dice así, y «Reintentar» manda la misma llave.
+     */
+    @Test
+    fun `D39 aparato - cuenta con canje sin respuesta del efectivo dice que no se sabe, no que no se registro`() = runTest {
+        conLaCajaDeLaCopia()
+        alCobrarEnEfectivo(Result.failure(java.net.SocketTimeoutException("timeout")))
+        viewModel.startPaymentFlow(carritoDeLaCopia(), resumeOrderId = "o1", soloConConexion = true)
+        viewModel.confirmCashPreset(tenderedCents = 10000)
+        advanceUntilIdle()
+
+        val error = viewModel.state.value as PaymentFlowState.Error
+        assertEquals(
+            "No se sabe si el pago entró. Toca «Reintentar» con conexión: si ya había entrado, no se cobra otra vez.",
+            error.message,
+        )
+    }
+
     @Test
     fun `D39 r10 sin canje la misma cuenta sí guarda el efectivo en el aparato (control)`() = runTest {
         conLaCajaDeLaCopia()
