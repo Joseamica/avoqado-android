@@ -5565,7 +5565,7 @@ class PaymentFlowViewModel @Inject constructor(
      * C4: el gerente tecleó su PIN. Se repite la MISMA declaración con el PIN en el cuerpo, y la respuesta se aplica por el
      * camino único de su origen. Devuelve lo que muestra el teclado:
      * - el PIN no sirvió (otra vez `SUPERVISOR_AUTHORIZATION_REQUIRED`: el servidor contesta igual a un PIN equivocado y al
-     *   de alguien sin el permiso) ⇒ [OverrideResult.Insufficient], «Ese código tampoco tiene este permiso», que es cierto en
+     *   de alguien sin el permiso) ⇒ [OverrideResult.Insufficient], «Ese PIN tampoco tiene este permiso», que es cierto en
      *   los dos casos. El teclado se queda;
      * - demasiados intentos (429) ⇒ [OverrideResult.TooManyAttempts]. El teclado se queda;
      * - cualquier otra respuesta (liberada, otro rechazo, sesión renovada, sin red) cierra el teclado y la dice la pantalla.

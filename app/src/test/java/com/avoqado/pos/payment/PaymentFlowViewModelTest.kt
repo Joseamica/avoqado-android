@@ -4737,7 +4737,7 @@ class PaymentFlowViewModelTest {
         val peticion = viewModel.pidiendoPinDeGerente.value
         assertNotNull("montaje: el teclado está abierto", peticion)
 
-        // «Ese código tampoco tiene este permiso» cubre los dos casos sin mentir; el tope tiene su texto.
+        // «Ese PIN tampoco tiene este permiso» cubre los dos casos sin mentir; el tope tiene su texto.
         assertEquals(com.avoqado.pos.core.data.network.OverrideResult.Insufficient, viewModel.enviarPinDeGerente("0000"))
         assertEquals(com.avoqado.pos.core.data.network.OverrideResult.TooManyAttempts, viewModel.enviarPinDeGerente("1111"))
         advanceUntilIdle()
