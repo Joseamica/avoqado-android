@@ -3,11 +3,14 @@ package com.avoqado.pos.giftcards.presentation
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.avoqado.pos.customerdisplay.QrCode
@@ -85,9 +88,14 @@ fun ResultadoDeVentaScreen(llave: String?, orderId: String, onSalir: () -> Unit,
                 }
                 if(accion=="CHANGE_DESTINATION") {
                     if(fijado) Text("Para corregir el destino, cierra esta ventana y vuelve a abrirla.")
+                    // D40: toda la fila (círculo + palabra) elige el canal, y cambiarlo quita el aviso del destino que ya no aplica.
                     Row {
-                        RadioButton(selected=canal=="WHATSAPP",enabled=!fijado,onClick={canal="WHATSAPP"});Text(TextosDeTarjetas.WHATSAPP)
-                        RadioButton(selected=canal=="EMAIL",enabled=!fijado,onClick={canal="EMAIL"});Text(TextosDeTarjetas.CORREO)
+                        listOf("WHATSAPP" to TextosDeTarjetas.WHATSAPP,"EMAIL" to TextosDeTarjetas.CORREO).forEach { (opcion,nombre) ->
+                            Row(Modifier.selectable(selected=canal==opcion,enabled=!fijado,role=Role.RadioButton,onClick={if(canal!=opcion) {canal=opcion;viewModel.cambiarCanal()}})
+                                .minimumInteractiveComponentSize().padding(end=AvoqadoTheme.spacing.md),verticalAlignment=Alignment.CenterVertically) {
+                                RadioButton(selected=canal==opcion,onClick=null,enabled=!fijado);Text(nombre,Modifier.padding(start=AvoqadoTheme.spacing.xs))
+                            }
+                        }
                     }
                     if(canal=="WHATSAPP") AvoqadoPillTextField(value=telefono,enabled=!fijado && !ocupado,onValueChange={if(!fijado) telefono=filtrarTecleoDeTelefono(it)},placeholder=TextosDeTarjetas.EJEMPLO_DE_CELULAR,keyboardType=KeyboardType.Phone)
                     else AvoqadoPillTextField(value=correo,enabled=!fijado && !ocupado,onValueChange={if(!fijado) correo=it},placeholder=TextosDeTarjetas.CORREO_DE_QUIEN_LA_RECIBE,keyboardType=KeyboardType.Email)
