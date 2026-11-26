@@ -540,6 +540,7 @@ class CobroDeCuentaViewModel @Inject constructor(
                     avisoDeLasRecompensas.value = RECOMPENSAS_NO_SE_GUARDO
                     return@launch
                 }
+                var quitarMarcaSiNoCambio = false
                 repo.redeemLoyaltyPoints(venue, intento.orderId, intento.customerId, intento.points, intento.monto, intento.version).fold(
                     onSuccess = { aplicado ->
                         sinRespuesta = null
@@ -548,12 +549,9 @@ class CobroDeCuentaViewModel @Inject constructor(
                     },
                     onFailure = { e ->
                         if (e is CancellationException) throw e
-                        // D39 (Codex r6 #2): un rechazo del primer envío dice que ESTE canje no entró; sin otro de aquí, la cuenta no trae
-                        // puntos y la marca sobra (dejaba la cuenta gris sin red para siempre). En un reintento, el 409 puede ser el canje
-                        // anterior que sí entró: ahí la marca se queda.
-                        if (e is com.avoqado.pos.tables.data.CanjeRechazado && !esReintento && !yaHabiaCanje) {
-                            cuentasAbiertasAqui?.desmarcarCanje(venue, intento.orderId)
-                        }
+                        // D39 (Codex r6 #2 y r7 #1): un rechazo del primer envío NO prueba que el canje no entró (OkHttp puede reenviar el POST
+                        // y el reenvío choca con la versión que subió el primero). Sólo la cuenta releída lo prueba: abajo.
+                        quitarMarcaSiNoCambio = e is com.avoqado.pos.tables.data.CanjeRechazado && !esReintento && !yaHabiaCanje
                         when {
                             // Un rechazo del SERVIDOR (4xx) es definitivo: el canje no se hizo con ESTE envío.
                             e is com.avoqado.pos.tables.data.CanjeRechazado && esReintento -> {
@@ -578,6 +576,14 @@ class CobroDeCuentaViewModel @Inject constructor(
                 )
                 enDuda.value = sinRespuesta?.orderId
                 releerConSaldo(intento.orderId, laTraeUnCarrito)
+                // D39 (Codex r7 #1): el canje sube la versión de la cuenta. Si el SERVIDOR la devuelve con la MISMA versión que se mandó,
+                // el canje no entró y la marca sobra (sin esto, la cuenta quedaba gris sin red para siempre, r6 #2). Sin relectura, o con
+                // otra versión (pudo ser el canje), la marca se queda: sin red, la cuenta sólo se cobra con conexión. `foto` sólo la llena
+                // la respuesta del SERVIDOR (`consultar`), nunca la copia sin red.
+                val releida = foto.value?.takeIf { it.id == intento.orderId }
+                if (quitarMarcaSiNoCambio && intento.version != null && releida?.version == intento.version) {
+                    cuentasAbiertasAqui?.desmarcarCanje(venue, intento.orderId)
+                }
             } finally {
                 canjeando.value = false
             }

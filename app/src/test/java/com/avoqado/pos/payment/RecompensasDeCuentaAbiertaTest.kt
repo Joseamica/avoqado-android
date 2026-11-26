@@ -425,6 +425,37 @@ class RecompensasDeCuentaAbiertaTest {
         assertTrue(vm.revalidarCobroSinRed("o", 10_000) != com.avoqado.pos.payment.presentation.RECOMPENSAS_SIN_RED_CON_PUNTOS)
     }
 
+    @Test fun `r7 #1 - el primer envio rechazado por un reenvio de OkHttp - la cuenta releida subio de version - la marca se queda`() = runTest {
+        val marcas = marcasEnMemoria()
+        val vm = CobroDeCuentaViewModel(repo, storage, red, roles, mockk(relaxed = true), locales, cuentasAbiertasAqui = marcas)
+        coEvery { repo.getOrderDetail("v", "o") } returns Result.success(cuenta(version = 3))
+        coEvery { repo.getCustomerLoyalty("v", "ana", "o") } returns Result.success(saldo(200))
+        vm.ofertaParaCobrar("o")
+        vm.leerLealtad("o")
+        // El primer POST sí entró (la versión pasó a 4); el reenvío automático choca con la versión y es lo único que llega.
+        coEvery { repo.redeemLoyaltyPoints(any(), any(), any(), any(), any(), any()) } coAnswers {
+            coEvery { repo.getOrderDetail("v", "o") } returns Result.success(cuenta(version = 4, descuento = 10.0))
+            Result.failure(CanjeRechazado(LOYALTY_OFFER_CHANGED, "La cuenta cambió"))
+        }
+        vm.canjear("o", 100, 10.0) {}
+        assertTrue(marcas.tieneCanje("v", "o"))
+    }
+
+    @Test fun `r7 #1 - el primer envio rechazado y la relectura falla - la marca se queda`() = runTest {
+        val marcas = marcasEnMemoria()
+        val vm = CobroDeCuentaViewModel(repo, storage, red, roles, mockk(relaxed = true), locales, cuentasAbiertasAqui = marcas)
+        coEvery { repo.getOrderDetail("v", "o") } returns Result.success(cuenta(version = 3))
+        coEvery { repo.getCustomerLoyalty("v", "ana", "o") } returns Result.success(saldo(200))
+        vm.ofertaParaCobrar("o")
+        vm.leerLealtad("o")
+        coEvery { repo.redeemLoyaltyPoints(any(), any(), any(), any(), any(), any()) } coAnswers {
+            coEvery { repo.getOrderDetail("v", "o") } returns Result.failure(java.io.IOException("sin red"))
+            Result.failure(CanjeRechazado(LOYALTY_OFFER_CHANGED, "La cuenta cambió"))
+        }
+        vm.canjear("o", 100, 10.0) {}
+        assertTrue(marcas.tieneCanje("v", "o"))
+    }
+
     @Test fun `r6 #2 - si ya habia un canje de aqui, un segundo canje rechazado conserva la marca`() = runTest {
         val marcas = marcasEnMemoria()
         val vm = CobroDeCuentaViewModel(repo, storage, red, roles, mockk(relaxed = true), locales, cuentasAbiertasAqui = marcas)
