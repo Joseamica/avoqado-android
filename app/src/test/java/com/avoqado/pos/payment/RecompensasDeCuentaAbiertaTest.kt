@@ -22,6 +22,8 @@ import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
@@ -616,5 +618,26 @@ class RecompensasDeCuentaAbiertaTest {
         m.reintentarCanje("o") {}
         assertEquals("Puntos insuficientes", m.avisoDeRecompensas.value)
         assertNull(m.canjeEnDuda.value)
+    }
+
+    // D39 fase 1, aparato (D3, 26-nov): la relectura de «Recompensas» vacía la cuenta un momento; el botón sale de la pantalla y su
+    // `rememberCoroutineScope` se cancela. La relectura tiene que vivir en el ViewModel (como Mesas), no en el botón.
+    @Test fun `aparato - abrir Recompensas termina su relectura aunque el boton salga de la pantalla`() = runTest {
+        var llamadas = 0
+        val respuesta = CompletableDeferred<Result<OrderDetail>>()
+        coEvery { repo.getOrderDetail("v", "o") } coAnswers { if (++llamadas == 1) Result.success(cuenta(version = 3)) else respuesta.await() }
+        coEvery { repo.getCustomerLoyalty("v", "ana", "o") } returns Result.success(saldo(200))
+        m.ofertaParaCobrar("o")
+        m.leerLealtad("o")
+        val boton = kotlinx.coroutines.CoroutineScope(coroutineContext + kotlinx.coroutines.Job())
+        boton.launch { m.abrirRecompensas("o") }
+        testScheduler.runCurrent()
+        assertNull(m.detalle.value) // la relectura vació la cuenta: el botón ya no se dibuja
+        boton.cancel()             // y se lleva su scope
+        respuesta.complete(Result.success(cuenta(version = 3)))
+        testScheduler.advanceUntilIdle()
+        assertEquals(3, m.detalle.value?.version)
+        assertEquals(200, m.lealtadDeLaCuenta()?.lealtad?.balance)
+        assertTrue(m.recompensasAbiertas.value)
     }
 }

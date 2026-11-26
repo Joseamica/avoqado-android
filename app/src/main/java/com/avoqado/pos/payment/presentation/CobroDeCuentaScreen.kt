@@ -428,12 +428,15 @@ class CobroDeCuentaViewModel @Inject constructor(
         )
     }
 
-    /** Tocar «Recompensas»: abre el diálogo y relee cuenta → saldo; el diálogo sólo pinta esa lectura fresca (como Mesas). */
-    suspend fun abrirRecompensas(orderId: String, laTraeUnCarrito: Boolean = false) {
+    /**
+     * Tocar «Recompensas»: abre el diálogo y relee cuenta → saldo; el diálogo sólo pinta esa lectura fresca (como Mesas). La relectura
+     * corre en el ViewModel, como en Mesas: vacía la cuenta un momento, el botón sale de la pantalla y su scope se cancelaba con él (D3, 26-nov).
+     */
+    fun abrirRecompensas(orderId: String, laTraeUnCarrito: Boolean = false) {
         avisoDeCanje.value = null
         avisoDeLasRecompensas.value = null
         dialogoDeRecompensas.value = true
-        releerConSaldo(orderId, laTraeUnCarrito)
+        viewModelScope.launch { releerConSaldo(orderId, laTraeUnCarrito) }
     }
 
     fun cerrarRecompensas() {
@@ -1102,7 +1105,6 @@ private fun RecompensasDeLaCuenta(orderId: String, enLinea: Boolean, viewModel: 
     val resultado by viewModel.avisoDeRecompensas.collectAsState()
     val enVuelo by viewModel.canjeEnVuelo.collectAsState()
     val cuentaDelCarrito = LocalCuentaDelCarrito.current
-    val scope = rememberCoroutineScope()
     val cuenta = detalle?.takeIf { it.id == orderId }
     // Cada cuenta nueva (otra versión, otra clienta) o la red que vuelve relee el saldo contra ella.
     LaunchedEffect(cuenta?.id, cuenta?.version, cuenta?.customerId, enLinea) { if (enLinea && cuenta != null) viewModel.leerLealtad(orderId) }
@@ -1114,7 +1116,7 @@ private fun RecompensasDeLaCuenta(orderId: String, enLinea: Boolean, viewModel: 
         TextButton(enabled = !enVuelo && enLinea, onClick = { viewModel.reintentarCanje(orderId, enCarrito, onActualizar) }) {
             Text(TEXTO_REINTENTAR_CANJE)
         }
-    } else TextButton(enabled = !enVuelo && motivo == null, onClick = { scope.launch { viewModel.abrirRecompensas(orderId, enCarrito) } }) {
+    } else TextButton(enabled = !enVuelo && motivo == null, onClick = { viewModel.abrirRecompensas(orderId, enCarrito) }) {
         Text("Recompensas")
     }
     // Sin red es un estado normal: el mismo color de las notas, nunca rojo.
