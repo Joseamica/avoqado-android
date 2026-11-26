@@ -46,6 +46,7 @@ object TextosDeTarjetas {
     /** Ejemplo del campo: sin «+52» delante, que invitaba a escribirlo cuando el campo no lo aceptaba (Flautas, 19-nov). */
     const val EJEMPLO_DE_CELULAR = "Ej. 55 1234 5678"
     const val CELULAR_INVALIDO = "Escribe el celular a 10 dígitos, con o sin +52"
+    const val CORREO_INVALIDO = "Revisa el correo"
     const val REVISA_LOS_CAMPOS = "Revisa los campos de la tarjeta"
     const val O_ESCRIBE_OTRO_MONTO = "O escribe otro monto"
     const val CORREO_DE_QUIEN_LA_RECIBE = "Correo de quien la recibe"
