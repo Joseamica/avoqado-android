@@ -280,22 +280,27 @@ private fun SellPackDialog(
     )
 
     // Confirm before granting — a stray tap would otherwise sell a paid pack.
+    // D35 (hz:be99f328:D35): este botón NO cobra, sólo registra la venta y entrega el paquete; la cajera cobra aparte. Antes decía
+    // «Cobrar $X y vender», que contradecía el aviso. Los dos textos dicen ahora lo mismo.
     pendingPack?.let { pack ->
         BarreraDeAtajos()
         AlertDialog(
             onDismissRequest = { pendingPack = null },
             title = { Text("Vender paquete") },
             text = {
+                val queSeLleva =
+                    if (pack.isUnlimited) "Se otorgará un paquete Ilimitado a ${customer.fullName}."
+                    else "Se otorgarán ${pack.creditCount} créditos a ${customer.fullName}."
                 Text(
-                    if (pack.isUnlimited) "Se otorgará un paquete Ilimitado a ${customer.fullName}. Cobra el pago antes de confirmar."
-                    else "Se otorgarán ${pack.creditCount} créditos a ${customer.fullName}. Cobra el pago antes de confirmar.",
+                    "$queSeLleva Este botón no cobra: cobra primero los ${pack.displayPrice} (efectivo, terminal u otro " +
+                        "método) y luego confirma.",
                 )
             },
             confirmButton = {
                 TextButton(onClick = {
                     pendingPack = null
                     viewModel.sell(pack, customer.id, customer.fullName, onDone = onDismiss)
-                }) { Text("Cobrar ${pack.displayPrice} y vender") }
+                }) { Text("Ya cobré ${pack.displayPrice}: vender") }
             },
             dismissButton = { TextButton(onClick = { pendingPack = null }) { Text("Cancelar") } },
         )
