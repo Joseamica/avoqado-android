@@ -410,6 +410,40 @@ class RecompensasDeCuentaAbiertaTest {
         assertFalse(vm.canjeEnVuelo.value)
     }
 
+    @Test fun `r6 #2 - un canje rechazado por el SERVIDOR no deja la cuenta gris sin red`() = runTest {
+        val marcas = marcasEnMemoria()
+        val vm = CobroDeCuentaViewModel(repo, storage, red, roles, mockk(relaxed = true), locales, cuentasAbiertasAqui = marcas)
+        coEvery { repo.getOrderDetail("v", "o") } returns Result.success(cuenta(version = 3))
+        coEvery { repo.getCustomerLoyalty("v", "ana", "o") } returns Result.success(saldo(200))
+        coEvery { repo.redeemLoyaltyPoints(any(), any(), any(), any(), any(), any()) } returns
+            Result.failure(CanjeRechazado(LOYALTY_OFFER_CHANGED, "La cuenta cambió"))
+        vm.ofertaParaCobrar("o")
+        vm.leerLealtad("o")
+        vm.canjear("o", 100, 10.0) {}
+        // El SERVIDOR dijo que no con ESTE envío y no había otro canje de aquí: la cuenta no trae puntos, así que la marca se quita.
+        assertFalse(marcas.tieneCanje("v", "o"))
+        assertTrue(vm.revalidarCobroSinRed("o", 10_000) != com.avoqado.pos.payment.presentation.RECOMPENSAS_SIN_RED_CON_PUNTOS)
+    }
+
+    @Test fun `r6 #2 - si ya habia un canje de aqui, un segundo canje rechazado conserva la marca`() = runTest {
+        val marcas = marcasEnMemoria()
+        val vm = CobroDeCuentaViewModel(repo, storage, red, roles, mockk(relaxed = true), locales, cuentasAbiertasAqui = marcas)
+        coEvery { repo.getOrderDetail("v", "o") } returns Result.success(cuenta(version = 3))
+        coEvery { repo.getCustomerLoyalty("v", "ana", "o") } returns Result.success(saldo(200))
+        coEvery { repo.redeemLoyaltyPoints(any(), any(), any(), any(), any(), any()) } returns Result.success(RedeemPointsData(100, 10.0, 100))
+        vm.ofertaParaCobrar("o")
+        vm.leerLealtad("o")
+        vm.canjear("o", 100, 10.0) {}
+        assertTrue(marcas.tieneCanje("v", "o"))
+        // El segundo canje se rechaza; el primero sí entró: la cuenta trae puntos y sin red no se cobra.
+        coEvery { repo.redeemLoyaltyPoints(any(), any(), any(), any(), any(), any()) } returns
+            Result.failure(CanjeRechazado("X", "El programa de lealtad no está activo en esta sucursal"))
+        vm.ofertaParaCobrar("o")
+        vm.leerLealtad("o")
+        vm.canjear("o", 100, 10.0) {}
+        assertTrue(marcas.tieneCanje("v", "o"))
+    }
+
     private fun marcasEnMemoria(falla: Boolean = false): com.avoqado.pos.orders.data.CuentasAbiertasAqui {
         val disco = mutableMapOf<String, com.avoqado.pos.core.data.local.PayloadCache.Cached>()
         val cache = mockk<com.avoqado.pos.core.data.local.PayloadCache> {

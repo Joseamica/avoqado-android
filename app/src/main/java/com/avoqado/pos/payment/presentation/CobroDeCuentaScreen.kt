@@ -533,6 +533,8 @@ class CobroDeCuentaViewModel @Inject constructor(
         avisoDeCanje.value = null
         viewModelScope.launch {
             try {
+                // D39 (Codex r6 #2): si ya había un canje de aquí (o no se puede leer), un rechazo de éste no quita la marca.
+                val yaHabiaCanje = cuentasAbiertasAqui?.tieneCanje(venue, intento.orderId) ?: true
                 // D39 (Codex r5 #1): la marca «canje mandado desde aquí» va ANTES de la red; sin ella no se manda nada.
                 if (cuentasAbiertasAqui?.marcarCanje(venue, intento.orderId) == false) {
                     avisoDeLasRecompensas.value = RECOMPENSAS_NO_SE_GUARDO
@@ -546,6 +548,12 @@ class CobroDeCuentaViewModel @Inject constructor(
                     },
                     onFailure = { e ->
                         if (e is CancellationException) throw e
+                        // D39 (Codex r6 #2): un rechazo del primer envío dice que ESTE canje no entró; sin otro de aquí, la cuenta no trae
+                        // puntos y la marca sobra (dejaba la cuenta gris sin red para siempre). En un reintento, el 409 puede ser el canje
+                        // anterior que sí entró: ahí la marca se queda.
+                        if (e is com.avoqado.pos.tables.data.CanjeRechazado && !esReintento && !yaHabiaCanje) {
+                            cuentasAbiertasAqui?.desmarcarCanje(venue, intento.orderId)
+                        }
                         when {
                             // Un rechazo del SERVIDOR (4xx) es definitivo: el canje no se hizo con ESTE envío.
                             e is com.avoqado.pos.tables.data.CanjeRechazado && esReintento -> {
