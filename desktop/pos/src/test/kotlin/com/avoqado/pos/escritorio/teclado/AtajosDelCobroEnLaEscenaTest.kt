@@ -6,6 +6,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.test.assertIsFocused
+import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
@@ -365,6 +366,34 @@ class AtajosDelCobroEnLaEscenaTest {
         }
         assertNull(cobro.metodo)
     }
+
+    /**
+     * hz:a5fa2439:D5. Esc (o «atrás») sobre la propina la escondía sin avisarle al cobro, y la ventana vacía de la hoja se
+     * quedaba encima tragándose el teclado y los clics: la venta se perdía. El Esc va a la ventana REAL de la hoja (desde un
+     * botón suyo con el foco), no a `AtajosDeTeclado`, que es otro camino. Las dos ramas de la hoja: Windows y Android.
+     */
+    private fun escEnLaPropina(enWindows: Boolean) = runComposeUiTest {
+        val cobro = Cobro()
+        var sinPropina = 0
+        setContent {
+            CompositionLocalProvider(LocalEsEscritorio provides enWindows) {
+                MaterialTheme {
+                    // Como `PaymentFlowScreen` en `CollectingTip`: el cobro abajo y la hoja de propina encima.
+                    Selector(cobro)
+                    TipSelectionSheet(amountCents = 13_700, tipBaseCents = 13_700, tipSuggestions = listOf(10, 15, 20),
+                        onTipSelected = {}, onSkip = { sinPropina++ }, onDismiss = {})
+                }
+            }
+        }
+        onNodeWithText("Sin propina").performSemanticsAction(SemanticsActions.RequestFocus)
+        onNodeWithText("Sin propina").performKeyInput { pressKey(Key.Escape) }
+        waitForIdle()
+        onNodeWithText("Propina").assertIsDisplayed()
+        onNodeWithText("Sin propina").assertIsDisplayed().performClick()
+        runOnIdle { assertEquals(1, sinPropina); assertEquals(0, cobro.cancelado); assertNull(cobro.efectivo) }
+    }
+    @Test fun `P1 D5 Esc sobre la propina no la esconde y Sin propina sigue respondiendo en Windows`() = escEnLaPropina(enWindows = true)
+    @Test fun `P1 D5 atras sobre la propina no la esconde y Sin propina sigue respondiendo en Android`() = escEnLaPropina(enWindows = false)
 
     @Test fun `F4 otra vez elige la primera terminal y Esc cancela - los numeros no hacen nada`() = runComposeUiTest {
         var elegida: String? = null
