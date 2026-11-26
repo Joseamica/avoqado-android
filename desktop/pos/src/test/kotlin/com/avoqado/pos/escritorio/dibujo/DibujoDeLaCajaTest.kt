@@ -1,6 +1,7 @@
 package com.avoqado.pos.escritorio.dibujo
 
 import com.avoqado.pos.BuildConfig
+import com.avoqado.pos.escritorio.Diagnostico
 import java.nio.file.Files
 import java.nio.file.attribute.PosixFilePermissions
 import java.util.Collections
@@ -247,6 +248,21 @@ class DibujoDeLaCajaTest {
         assertTrue(caja.elegir(Modo.AUTO))
         assertEquals(Ajuste(modo = Modo.AUTO, sinAviso = true), crudo())
         assertFalse(e.aplicaAlReabrir)
+    }
+
+    @Test fun `con el apagador el diagnostico no habla de como dibuja`() {
+        arrancar(propiedades = mapOf("avoqado.dibujo.apagado" to "true"))
+        assertNull(caja.paraElDiagnostico())
+        val logs = Files.createTempDirectory("diag-apagado")
+        try {
+            Diagnostico.escribir(logs, "DIRECT3D", 1234, "omitido: no es Windows", caja.paraElDiagnostico())
+            val lineas = logs.resolve("logs/diagnostico.txt").readText().lines()
+            assertFalse(lineas.any { it.startsWith("Dibujo:") }, lineas.joinToString("\n"))
+        } finally {
+            logs.toFile().deleteRecursively()
+        }
+        arrancar()
+        assertEquals(e, caja.paraElDiagnostico())   // sin el apagador, lo de siempre
     }
 
     // MARK: - La pista: la computadora cae sola a software

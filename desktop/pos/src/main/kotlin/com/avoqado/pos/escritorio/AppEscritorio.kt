@@ -5,6 +5,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -88,15 +89,21 @@ fun AppEscritorio(
             LaunchedEffect(Unit) { delay(1_350L); splash = false }
             AvoqadoTheme(windowSizeClass = windowSizeClass) {
                 ConModoLigero { CompositionLocalProvider(LocalRenglonesDeEscritorio provides renglones) { Box(Modifier.fillMaxSize()) {
-                    // Teclado híbrido: sólo con un dedo sobre un campo de texto; el contenido se encoge y las teclas van en un Popup.
-                    ConTecladoEnPantalla(
-                        visible = TecladoDeLaVentana.visible.value,
-                        generacion = TecladoDeLaVentana.generacion.value,
-                        teclado = { TecladoEnPantalla(TecladoDeLaVentana::alPresionar, TecladoDeLaVentana.estado, Modifier.fillMaxWidth()) },
-                    ) { contenido(windowSizeClass) }
+                    Column(Modifier.fillMaxSize()) {
+                        // La PC tarda en dibujar (hz:a5fa2439:D2): la banda va en su propio renglón y la app se recorre lo que
+                        // mide mientras se ve. Nada queda debajo de ella y la pantalla no se vuelve a crear cuando se va.
+                        AvisoDeDibujo()
+                        Box(Modifier.weight(1f)) {
+                            // Teclado híbrido: sólo con un dedo sobre un campo de texto; el contenido se encoge y las teclas van en un Popup.
+                            ConTecladoEnPantalla(
+                                visible = TecladoDeLaVentana.visible.value,
+                                generacion = TecladoDeLaVentana.generacion.value,
+                                teclado = { TecladoEnPantalla(TecladoDeLaVentana::alPresionar, TecladoDeLaVentana.estado, Modifier.fillMaxWidth()) },
+                            ) { contenido(windowSizeClass) }
+                        }
+                    }
                     CalendarioPendiente()   // android.app.DatePickerDialog de Reportes (sustituto en desktop/plataforma)
                     AvisoDeFallaDeGuardado()   // el disco no guardó (antivirus, disco lleno): se le DICE al cajero
-                    AvisoDeDibujo()   // la PC tarda en dibujar (hz:a5fa2439:D2): una banda que no toma el foco
                     // El splash se ve y dura igual en los dos modos: su indicador sí se mueve.
                     AnimatedVisibility(visible = splash, exit = fadeOut(tween(220))) {
                         CompositionLocalProvider(LocalModoLigero provides false) { AvoqadoLaunchSplash() }

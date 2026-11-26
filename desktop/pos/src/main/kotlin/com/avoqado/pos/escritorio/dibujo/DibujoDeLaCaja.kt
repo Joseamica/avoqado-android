@@ -114,6 +114,9 @@ object DibujoDeLaCaja {
         }
     }
 
+    /** Lo que el diagnóstico cuenta de cómo dibuja. null con el apagador: para este proceso la función no existe. */
+    fun paraElDiagnostico(): Estado? = if (apagado) null else _estado.value
+
     /** El botón. `false` = no se pudo guardar y nada cambió. */
     @Synchronized
     fun elegir(modo: Modo): Boolean {

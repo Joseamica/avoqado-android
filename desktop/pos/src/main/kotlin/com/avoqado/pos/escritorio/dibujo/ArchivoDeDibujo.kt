@@ -14,8 +14,9 @@ object ArchivoDeDibujo {
     private const val NOMBRE = "dibujo.json"
     /** El archivo pesa menos de 200 bytes: uno más grande no es nuestro y ni se lee. */
     const val TAMANO_MAXIMO_BYTES = 4_096
-    // encodeDefaults: el archivo dice todo, no depende de los valores por defecto de esta versión de la app.
-    private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
+    // encodeDefaults: el archivo dice todo, no depende de los valores por defecto de esta versión de la app. Perezoso: sin
+    // archivo, abrir en automático no carga el lector de JSON antes de la ventana.
+    private val json by lazy { Json { ignoreUnknownKeys = true; encodeDefaults = true } }
 
     /**
      * Ausente, dañado, de más de [TAMANO_MAXIMO_BYTES] o incoherente ⇒ `Ajuste()` (automático). Incoherente: la marca de intento
@@ -23,7 +24,7 @@ object ArchivoDeDibujo {
      */
     fun leer(carpeta: Path): Ajuste = try {
         val ruta = carpeta.resolve(NOMBRE)
-        if (Files.size(ruta) > TAMANO_MAXIMO_BYTES) {
+        if (!Files.isRegularFile(ruta) || Files.size(ruta) > TAMANO_MAXIMO_BYTES) {   // sin archivo: una comprobación y nada más
             Ajuste()
         } else {
             val a = json.decodeFromString(Ajuste.serializer(), Files.readString(ruta))

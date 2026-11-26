@@ -1,17 +1,25 @@
 package com.avoqado.pos.escritorio.dibujo
 
 import android.content.Context
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.windowsizeclass.WindowSizeClass
+import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.input.key.Key
@@ -25,6 +33,11 @@ import androidx.compose.ui.test.ComposeUiTest
 import androidx.compose.ui.test.ExperimentalTestApi
 import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertIsFocused
+import androidx.compose.ui.test.assertTextEquals
+import androidx.compose.ui.test.click
+import androidx.compose.ui.test.onRoot
+import androidx.compose.ui.test.performTextInput
+import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
@@ -40,6 +53,7 @@ import com.avoqado.escritorio.Bitacora
 import com.avoqado.escritorio.ConfiguracionDeAndroid
 import com.avoqado.escritorio.Escritorio
 import com.avoqado.escritorio.configuracionDeAndroid
+import com.avoqado.pos.designsystem.components.ConnectivityBanner
 import com.avoqado.pos.designsystem.components.LocalEsEscritorio
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.escritorio.AppEscritorio
@@ -283,24 +297,32 @@ class AvisoDeDibujoTest {
      * el campo enfocado sube hasta el `onKeyEvent` de la pantalla de abajo con la banda a la vista (los atajos de la ventana
      * reciben lo que nadie usó, igual que ese `onKeyEvent`).
      */
-    @Test fun `la banda no toma el foco, el campo enfocado lo conserva y F12 llega a la pantalla`() = runComposeUiTest {
-        arrancar()
+    /** La raíz real con [contenido] en lugar de la navegación, ya sin el splash (que se come los toques). */
+    private fun ComposeUiTest.raiz(contenido: @Composable () -> Unit) {
         prepararLaApp()
         mainClock.autoAdvance = false
+        setContent { AppEscritorio { _: WindowSizeClass -> contenido() } }
+        mainClock.advanceTimeBy(3_000)
+        mainClock.autoAdvance = true   // con el reloj parado no se atienden los toques
+    }
+
+    private fun ComposeUiTest.limites(etiqueta: String): Rect = onNodeWithTag(etiqueta).fetchSemanticsNode().boundsInRoot
+
+    @Test fun `la banda no toma el foco, el campo enfocado lo conserva y F12 llega a la pantalla`() = runComposeUiTest {
+        arrancar()
         val teclas = mutableListOf<Key>()
         val foco = FocusRequester()
-        setContent {
-            AppEscritorio { _: WindowSizeClass ->
-                var texto by remember { mutableStateOf("") }
-                Box(Modifier.fillMaxSize().onKeyEvent { if (it.type == KeyEventType.KeyDown) teclas += it.key; false }) {
-                    BasicTextField(texto, { texto = it }, Modifier.testTag("campo").focusRequester(foco))
-                }
+        var montajes = 0
+        raiz {
+            var texto by remember { mutableStateOf("") }
+            DisposableEffect(Unit) { montajes++; onDispose { } }
+            Box(Modifier.fillMaxSize().testTag("contenido").onKeyEvent { if (it.type == KeyEventType.KeyDown) teclas += it.key; false }) {
+                BasicTextField(texto, { texto = it }, Modifier.testTag("campo").focusRequester(foco))
             }
         }
-        mainClock.advanceTimeBy(3_000)   // ya sin el splash, que se come los toques
-        mainClock.autoAdvance = true   // con el reloj parado no se atienden los toques
         runOnIdle { foco.requestFocus() }
         onNodeWithTag("campo").assertIsFocused()
+        onNodeWithTag("campo").performTextInput("hola")
 
         runOnIdle { pintar("OPENGL", 9_000) }
         onNodeWithText(ofrecer).assertExists()
@@ -311,6 +333,53 @@ class AvisoDeDibujoTest {
         onNodeWithText("Ahora no").performClick()   // tocar la banda tampoco se lleva el foco
         onNodeWithText(ofrecer).assertDoesNotExist()
         onNodeWithTag("campo").assertIsFocused()
+        onNodeWithTag("campo").assertTextEquals("hola")
+        assertEquals(1, montajes, "la pantalla no se vuelve a crear al ir y venir la banda")
+        assertEquals(onRoot().fetchSemanticsNode().boundsInRoot, limites("contenido"), "sin banda, la pantalla recupera su lugar")
+    }
+
+    /** Lo de arriba de «Cobrar»: la franja de sin conexión y el encabezado con sus acciones. */
+    @Composable private fun pantallaConEncabezado(alTocarElEncabezado: () -> Unit) {
+        Column(Modifier.fillMaxSize().testTag("contenido")) {
+            ConnectivityBanner(visible = true, pendingSync = 2)
+            Box(Modifier.fillMaxWidth().height(56.dp).testTag("encabezado").clickable(onClick = alTocarElEncabezado))
+        }
+    }
+
+    @Test fun `con la banda a la vista la pantalla empieza donde la banda termina y la franja de sin conexión queda libre`() = runComposeUiTest {
+        arrancar()
+        pintar("OPENGL", 9_000)
+        raiz { pantallaConEncabezado {} }
+        onNodeWithText(ofrecer).assertExists()
+        val banda = limites(ETIQUETA_DE_LA_BANDA)
+        val contenido = limites("contenido")
+        assertEquals(0f, banda.top)
+        assertFalse(banda.overlaps(contenido), "banda $banda, contenido $contenido")
+        assertTrue(contenido.top >= banda.bottom, "banda $banda, contenido $contenido")
+        val franja = onNodeWithText("Sin conexión — 2 por sincronizar (todo se guarda aquí)").fetchSemanticsNode().boundsInRoot
+        assertFalse(banda.overlaps(franja), "banda $banda, franja $franja")
+    }
+
+    @Test fun `un toque donde está el encabezado de la pantalla llega al encabezado y no activa el modo rápido`() = runComposeUiTest {
+        arrancar()
+        pintar("OPENGL", 9_000)
+        var toques = 0
+        raiz { pantallaConEncabezado { toques++ } }
+        val boton = onNodeWithText("Activar modo rápido").fetchSemanticsNode().boundsInRoot
+        val encabezado = limites("encabezado")
+        onRoot().performTouchInput { click(Offset(boton.center.x, encabezado.center.y)) }   // donde caía «Agregar cliente»
+        assertEquals(1, toques)
+        assertFalse(Files.exists(carpeta.resolve("dibujo.json")), "dibujo.json no cambia")
+        assertEquals(Modo.AUTO, DibujoDeLaCaja.estado.value.modo)
+        soloSale(ofrecer)
+    }
+
+    @Test fun `sin banda la pantalla ocupa toda la ventana`() = runComposeUiTest {
+        arrancar()
+        pintar("OPENGL", 600)
+        raiz { pantallaConEncabezado {} }
+        soloSale(null)
+        assertEquals(onRoot().fetchSemanticsNode().boundsInRoot, limites("contenido"))
     }
 
     // MARK: - «Más»
@@ -387,6 +456,8 @@ class AvisoDeDibujoTest {
         onNodeWithText("Diagnóstico de esta computadora").assertExists()
         onNodeWithText("Modo de dibujo").assertDoesNotExist()
         soloSale(null)
+        onNodeWithText("Diagnóstico de esta computadora").performClick()   // sin la línea de cómo dibuja: la función no existe
+        onNodeWithText(veredicto(datos).comoTexto()).assertExists()
     }
 
     @Test fun `en ANDROID esos renglones no existen`() = runComposeUiTest {
