@@ -309,4 +309,41 @@ class HojaConXEnLaEscenaTest {
     }
     @Test fun `P1 D5 en Windows el papel del aparato no lleva X mientras guarda`() = xDelPapel(guardando = true, equis = 0)
     @Test fun `en Windows el papel del aparato lleva su X sin guardar`() = xDelPapel(guardando = false, equis = 1)
+
+    /**
+     * Codex r2 #1: el clic en «Guardar» y el de la X caen antes del siguiente cuadro ⇒ la X que todavía se ve ya no debe
+     * esconder: le pregunta a la hoja, y si la hoja dice «todavía no» (guardando), se queda a la vista. Aquí el cierre que
+     * se niega hace de ese «todavía no». Lo mismo en el retiro.
+     */
+    private fun xQueSeNiega(hoja: @Composable (cerrar: () -> Unit) -> Unit, titulo: String) = runDesktopComposeUiTest(1280, 800) {
+        var pedidos = 0
+        setContent {
+            CompositionLocalProvider(LocalEsEscritorio provides true) {
+                MaterialTheme { hoja { pedidos++ } }
+            }
+        }
+        waitForIdle()
+        onNodeWithContentDescription("Cerrar").performClick()
+        waitForIdle()
+        assertEquals(1, pedidos, "la X no le avisó a la hoja")
+        onNodeWithText(titulo).assertIsDisplayed()
+    }
+    @Test fun `P1 D5 la X del papel del aparato no lo esconde si la hoja no se deja cerrar`() = xQueSeNiega({ cerrar ->
+        PapelDelAparatoSheet(estado = papel(guardando = false), hayRed = true, onElegir = {}, onGuardar = {}, onAhoraNo = null,
+            onCerrar = cerrar)
+    }, tituloDeLaHoja(true))
+    @Test fun `P1 D5 la X del retiro no lo esconde si la hoja no se deja cerrar`() = xQueSeNiega({ cerrar ->
+        PayInOutSheet(isPayIn = false, onConfirm = { _, _ -> }, onDismiss = cerrar)
+    }, "Registrar egreso")
+
+    /** La X de una hoja con guardia que SÍ se deja cerrar la cierra y avisa una vez. */
+    @Test fun `D5 la X del retiro sin registrar lo cierra`() = runDesktopComposeUiTest(1280, 800) {
+        val cierresDelRetiro = hojaConGuardia(enWindows = true) { cerrar ->
+            PayInOutSheet(isPayIn = false, onConfirm = { _, _ -> }, onDismiss = cerrar)
+        }
+        onNodeWithContentDescription("Cerrar").performClick()
+        waitForIdle()
+        assertEquals(1, cierresDelRetiro())
+        onNodeWithText("Registrar egreso").assertDoesNotExist()
+    }
 }

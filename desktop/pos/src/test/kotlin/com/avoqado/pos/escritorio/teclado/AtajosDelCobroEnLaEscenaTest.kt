@@ -28,6 +28,8 @@ import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.ExperimentalTestApi
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.hasText
+import androidx.compose.runtime.remember
+import androidx.compose.ui.test.hasClickAction
 import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.isFocused
 import androidx.compose.ui.test.onNodeWithText
@@ -378,10 +380,12 @@ class AtajosDelCobroEnLaEscenaTest {
         setContent {
             CompositionLocalProvider(LocalEsEscritorio provides enWindows) {
                 MaterialTheme {
-                    // Como `PaymentFlowScreen` en `CollectingTip`: el cobro abajo y la hoja de propina encima.
+                    // Como `PaymentFlowScreen` en `CollectingTip`: el cobro abajo y la hoja de propina encima; «Sin propina»
+                    // la quita y sigue el método (Codex r2 #3: se comprueba hasta cobrar en efectivo).
+                    var enPropina by remember { mutableStateOf(true) }
                     Selector(cobro)
-                    TipSelectionSheet(amountCents = 13_700, tipBaseCents = 13_700, tipSuggestions = listOf(10, 15, 20),
-                        onTipSelected = {}, onSkip = { sinPropina++ }, onDismiss = {})
+                    if (enPropina) TipSelectionSheet(amountCents = 13_700, tipBaseCents = 13_700, tipSuggestions = listOf(10, 15, 20),
+                        onTipSelected = {}, onSkip = { sinPropina++; enPropina = false }, onDismiss = {})
                 }
             }
         }
@@ -390,7 +394,12 @@ class AtajosDelCobroEnLaEscenaTest {
         waitForIdle()
         onNodeWithText("Propina").assertIsDisplayed()
         onNodeWithText("Sin propina").assertIsDisplayed().performClick()
+        waitForIdle()
         runOnIdle { assertEquals(1, sinPropina); assertEquals(0, cobro.cancelado); assertNull(cobro.efectivo) }
+        onNodeWithText("Propina").assertDoesNotExist()
+        // El cobro de abajo responde: la primera sugerencia de efectivo cobra.
+        onAllNodes(hasClickAction() and hasText("$", substring = true))[0].performClick()
+        runOnIdle { assertTrue((cobro.efectivo ?: 0) >= 13_700, "el efectivo no cobró tras la propina: ${cobro.efectivo}") }
     }
     @Test fun `P1 D5 Esc sobre la propina no la esconde y Sin propina sigue respondiendo en Windows`() = escEnLaPropina(enWindows = true)
     @Test fun `P1 D5 atras sobre la propina no la esconde y Sin propina sigue respondiendo en Android`() = escEnLaPropina(enWindows = false)
