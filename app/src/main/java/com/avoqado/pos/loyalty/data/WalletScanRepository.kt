@@ -84,6 +84,14 @@ fun pareceTarjetaDeCliente(code: String): Boolean {
 }
 
 /**
+ * D56 (hz:b37dd7ea:D56): la tarjeta digital, sola o pegada al FINAL de otro texto. En WINDOWS la pistola teclea dentro del campo
+ * con foco (el buscador con F3, el campo manual de «Escanear»), y si ya había algo escrito los 48 caracteres se le pegan: salía
+ * «Crear producto» con el QR como nombre. El lector de teclas no lo separa a propósito (retener teclas en un campo le comía
+ * dígitos a la persona: docs/audit/2026-11-17-cantidad-tecleada/). @return la tarjeta (los últimos 48), o null.
+ */
+fun tarjetaDeClienteEn(texto: String): String? = texto.trim().takeLast(48).takeIf(::pareceTarjetaDeCliente)
+
+/**
  * D53 (hz:b37dd7ea:D53): por qué no se leyó la tarjeta digital. Decide el aviso de la caja; 🔴 ninguno ofrece crear producto
  * (antes caía en «Producto no encontrado · Crear nuevo» y se podía dar de alta un producto con el código de una tarjeta).
  */

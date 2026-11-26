@@ -177,6 +177,33 @@ class CartViewModelTarjetaEscaneadaTest {
         assertEquals(ScannedBarcodeResult.CustomerCardFound(tarjeta),vm.resolveScannedBarcode(pase))
         assertEquals(ScannedBarcodeResult.Unknown("SKU-NUEVO-1"),vm.resolveScannedBarcode("SKU-NUEVO-1"))
     }
+    @Test fun `P1 D56 la tarjeta pegada a lo que ya habia en el campo nunca ofrece crear ni se liga`() = runTest {
+        // WINDOWS, campo manual de «Escanear» con «camisa»: la pistola le pega la tarjeta y Enter manda todo junto. Sin viaje al
+        // SERVIDOR (no se liga a nadie): «No se pudo leer la tarjeta · Vuelve a escanearla».
+        val pase="a1".repeat(24)
+        assertEquals(ScannedBarcodeResult.TarjetaDeClienteSinLeer(TarjetaSinLeer.FALLO),createViewModel().resolveScannedBarcode("camisa$pase"))
+        coVerify(exactly=0) { wallet.escanear(any()) }
+    }
+    @Test fun `D56 un producto cuyo codigo termina como la tarjeta gana si existe`() = runTest {
+        val sku="SKU-"+"a1".repeat(24)
+        every { productsRepository.products } returns MutableStateFlow(listOf(Product(id="p",name="Blusa",priceValue=150.0,sku=sku)))
+        assertEquals("p",(createViewModel().resolveScannedBarcode(sku) as ScannedBarcodeResult.ProductFound).product.id)
+        coVerify(exactly=0) { wallet.escanear(any()) }
+    }
+    @Test fun `D56 un SKU que termina como la tarjeta se encuentra aunque la pistola cambie las mayusculas`() = runTest {
+        // Codex D56 r2 #2: el catálogo dice «SKU-A1A1…» y la pistola manda «sku-a1a1…»: gana el producto, no la tarjeta.
+        val sku="SKU-"+"A1".repeat(24)
+        every { productsRepository.products } returns MutableStateFlow(listOf(Product(id="p",name="Blusa",priceValue=150.0,sku=sku)))
+        assertEquals("p",(createViewModel().resolveScannedBarcode(sku.lowercase()) as ScannedBarcodeResult.ProductFound).product.id)
+        coVerify(exactly=0) { wallet.escanear(any()) }
+    }
+    @Test fun `D56 la lectura en ingles de D14 gana a la tarjeta del final`() = runTest {
+        // Codex D56 r2 #3: el teclado en español cambia «SKU-» por «SKU'» y deja los 48 del final.
+        val product=Product(id="p",name="Blusa",priceValue=150.0,sku="SKU-"+"a1".repeat(24))
+        every { productsRepository.products } returns MutableStateFlow(listOf(product))
+        assertEquals(ScannedBarcodeResult.ProductFound(product),createViewModel().resolveScannedBarcode("SKU'"+"a1".repeat(24),lecturaUs="SKU-"+"a1".repeat(24)))
+        coVerify(exactly=0) { wallet.escanear(any()) }
+    }
     @Test fun `con forma de tarjeta nunca hay parecido, tampoco en Mesas ni donde no se consulta la tarjeta`() {
         // Codex r3: Mesas llama directo a parecidoACodigo. La guardia vive ahí para que ningún camino se la salte.
         val pase="a1".repeat(24)
