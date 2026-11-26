@@ -52,21 +52,6 @@ class CuentasAbiertasAqui @Inject constructor(private val cache: PayloadCache, p
         }
     }
 
-    /**
-     * D39 (Codex r6 #2): quita la marca cuando el SERVIDOR rechazó el canje y no había otro de aquí (la cuenta no trae puntos). Si el disco
-     * falla, la marca se queda: la cuenta sólo se cobra con conexión, que es el lado seguro.
-     */
-    suspend fun desmarcarCanje(venueId: String, orderId: String): Unit = withContext(NonCancellable) {
-        try {
-            mutex.withLock {
-                val quedan = leerDelDisco(venueId, PayloadCache.TYPE_CUENTAS_CON_CANJE_AQUI) - orderId
-                cache.saveDurable(PayloadCache.TYPE_CUENTAS_CON_CANJE_AQUI, venueId, json.encodeToString(quedan))
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "⚠️ no se pudo quitar la marca de canje de $orderId en $venueId: ${e.message}")
-        }
-    }
-
     /** Si el disco falla, true: sin saber, la cuenta no se cobra sin red. */
     suspend fun tieneCanje(venueId: String, orderId: String): Boolean = try {
         orderId in leerDelDisco(venueId, PayloadCache.TYPE_CUENTAS_CON_CANJE_AQUI)

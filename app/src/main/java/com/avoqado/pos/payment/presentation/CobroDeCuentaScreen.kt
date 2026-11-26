@@ -533,14 +533,14 @@ class CobroDeCuentaViewModel @Inject constructor(
         avisoDeCanje.value = null
         viewModelScope.launch {
             try {
-                // D39 (Codex r6 #2): si ya había un canje de aquí (o no se puede leer), un rechazo de éste no quita la marca.
-                val yaHabiaCanje = cuentasAbiertasAqui?.tieneCanje(venue, intento.orderId) ?: true
-                // D39 (Codex r5 #1): la marca «canje mandado desde aquí» va ANTES de la red; sin ella no se manda nada.
+                // D39 (Codex r5 #1): la marca «canje mandado desde aquí» va ANTES de la red; sin ella no se manda nada. Nunca se quita
+                // (Codex r6 #2, r7 #1, r8 #2 y #3): un rechazo no prueba que no entró (OkHttp reenvía el POST y el primero puede confirmar
+                // después). Límite declarado: si esta caja intentó canjear en una cuenta, desde esta caja esa cuenta sólo se cobra con
+                // conexión, aunque el canje no haya entrado (founder, «Sí, como Toast»).
                 if (cuentasAbiertasAqui?.marcarCanje(venue, intento.orderId) == false) {
                     avisoDeLasRecompensas.value = RECOMPENSAS_NO_SE_GUARDO
                     return@launch
                 }
-                var quitarMarcaSiNoCambio = false
                 repo.redeemLoyaltyPoints(venue, intento.orderId, intento.customerId, intento.points, intento.monto, intento.version).fold(
                     onSuccess = { aplicado ->
                         sinRespuesta = null
@@ -549,9 +549,6 @@ class CobroDeCuentaViewModel @Inject constructor(
                     },
                     onFailure = { e ->
                         if (e is CancellationException) throw e
-                        // D39 (Codex r6 #2 y r7 #1): un rechazo del primer envío NO prueba que el canje no entró (OkHttp puede reenviar el POST
-                        // y el reenvío choca con la versión que subió el primero). Sólo la cuenta releída lo prueba: abajo.
-                        quitarMarcaSiNoCambio = e is com.avoqado.pos.tables.data.CanjeRechazado && !esReintento && !yaHabiaCanje
                         when {
                             // Un rechazo del SERVIDOR (4xx) es definitivo: el canje no se hizo con ESTE envío.
                             e is com.avoqado.pos.tables.data.CanjeRechazado && esReintento -> {
@@ -576,14 +573,6 @@ class CobroDeCuentaViewModel @Inject constructor(
                 )
                 enDuda.value = sinRespuesta?.orderId
                 releerConSaldo(intento.orderId, laTraeUnCarrito)
-                // D39 (Codex r7 #1): el canje sube la versión de la cuenta. Si el SERVIDOR la devuelve con la MISMA versión que se mandó,
-                // el canje no entró y la marca sobra (sin esto, la cuenta quedaba gris sin red para siempre, r6 #2). Sin relectura, o con
-                // otra versión (pudo ser el canje), la marca se queda: sin red, la cuenta sólo se cobra con conexión. `foto` sólo la llena
-                // la respuesta del SERVIDOR (`consultar`), nunca la copia sin red.
-                val releida = foto.value?.takeIf { it.id == intento.orderId }
-                if (quitarMarcaSiNoCambio && intento.version != null && releida?.version == intento.version) {
-                    cuentasAbiertasAqui?.desmarcarCanje(venue, intento.orderId)
-                }
             } finally {
                 canjeando.value = false
             }

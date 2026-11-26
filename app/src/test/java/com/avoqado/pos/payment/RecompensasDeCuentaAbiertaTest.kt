@@ -410,7 +410,7 @@ class RecompensasDeCuentaAbiertaTest {
         assertFalse(vm.canjeEnVuelo.value)
     }
 
-    @Test fun `r6 #2 - un canje rechazado por el SERVIDOR no deja la cuenta gris sin red`() = runTest {
+    @Test fun `r8 #2 y #3 - un canje intentado aqui deja la cuenta para cobrarse solo con conexion aunque el SERVIDOR lo rechace`() = runTest {
         val marcas = marcasEnMemoria()
         val vm = CobroDeCuentaViewModel(repo, storage, red, roles, mockk(relaxed = true), locales, cuentasAbiertasAqui = marcas)
         coEvery { repo.getOrderDetail("v", "o") } returns Result.success(cuenta(version = 3))
@@ -420,9 +420,10 @@ class RecompensasDeCuentaAbiertaTest {
         vm.ofertaParaCobrar("o")
         vm.leerLealtad("o")
         vm.canjear("o", 100, 10.0) {}
-        // El SERVIDOR dijo que no con ESTE envío y no había otro canje de aquí: la cuenta no trae puntos, así que la marca se quita.
-        assertFalse(marcas.tieneCanje("v", "o"))
-        assertTrue(vm.revalidarCobroSinRed("o", 10_000) != com.avoqado.pos.payment.presentation.RECOMPENSAS_SIN_RED_CON_PUNTOS)
+        // Un rechazo no prueba que el canje no entró (OkHttp reenvía el POST y el primero puede confirmar después): la marca se queda y,
+        // sin red, la cuenta sólo se cobra con conexión desde esta caja. Es el límite declarado (founder, «Sí, como Toast»).
+        assertTrue(marcas.tieneCanje("v", "o"))
+        assertEquals(com.avoqado.pos.payment.presentation.RECOMPENSAS_SIN_RED_CON_PUNTOS, vm.revalidarCobroSinRed("o", 10_000))
     }
 
     @Test fun `r7 #1 - el primer envio rechazado por un reenvio de OkHttp - la cuenta releida subio de version - la marca se queda`() = runTest {
