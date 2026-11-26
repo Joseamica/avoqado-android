@@ -1,7 +1,6 @@
 package com.avoqado.pos.escritorio.teclado
 
 import android.util.Log
-import com.avoqado.pos.loyalty.data.pareceTarjetaDeCliente
 import com.avoqado.pos.pos.data.LectorHidBus
 import java.awt.KeyEventDispatcher
 import java.awt.KeyboardFocusManager
@@ -21,11 +20,8 @@ import javax.swing.Timer
  * es un código y ninguna de sus teclas llega a la app; si no, se DEVUELVEN todas, en su orden. A una persona le cuesta una
  * demora de [esperaMs] como mucho.
  *
- * 🔴 Con un campo de texto escribiendo, la pistola teclea ahí como un teclado (el campo manual de «Escanear» y los buscadores
- * dependen de eso), salvo la tarjeta digital de un cliente (D56, hz:b37dd7ea:D56): esa le gana al campo, como fuera de él,
- * y va al lector. Antes se pegaba al texto del buscador y salía «Crear producto» con el QR como nombre. Para eso, en un campo
- * se retienen sólo las teclas que pueden ser de la tarjeta (0-9 y a-f, [esDeTarjeta]); las demás pasan al instante y sueltan
- * antes lo retenido. Si la ráfaga no tiene la forma de la tarjeta ([pareceTarjetaDeCliente]), todo llega al campo en su orden.
+ * 🔴 Con un campo de texto escribiendo no se toca nada: la pistola teclea ahí como un teclado (el campo manual de
+ * «Escanear» y los buscadores dependen de eso).
  *
  * Todo corre en el hilo de Swing (el despachador de teclas y el Timer). Lógica pura salvo las tres funciones que recibe.
  */
@@ -73,12 +69,12 @@ class LectorDePistola(
         tragarTipeoDelFinal = false
         // La letra ya trae su Shift en los modificadores: un Shift suelto ni parte la ráfaga ni se retiene.
         if (e.keyCode in MODIFICADORES) return false
-        val esFinal = e.keyCode == KeyEvent.VK_ENTER || e.keyCode == KeyEvent.VK_TAB
-        if (escribiendo && !esFinal && !esDeTarjeta(e.keyChar)) {
+        if (escribiendo) {
             soltar()
             partida = false
             return false
         }
+        val esFinal = e.keyCode == KeyEvent.VK_ENTER || e.keyCode == KeyEvent.VK_TAB
         // De una mayúscula a otra, con el Shift completo en medio (Shift↑ Shift↓), caben dos eventos más que entre dos números, y en
         // Windows cada uno gasta un salto de su reloj: con SendKeys, 62-64 ms contra 31 (medido el 2-nov en la Alienware). De
         // «PIZZAS-001» sólo llegaba «S-001». El plazo extra es sólo para ese caso: quien sostiene Shift no lo suelta entre letras, y
@@ -97,8 +93,7 @@ class LectorDePistola(
         }
         if (esFinal) {
             val codigo = texto.toString().trim()
-            // En un campo sólo la tarjeta le gana al campo: cualquier otro código (un producto en el buscador) se escribe ahí.
-            if (retenidas.isEmpty() || !seguida || codigo.length < largoMinimo || (escribiendo && !pareceTarjetaDeCliente(codigo))) {
+            if (retenidas.isEmpty() || !seguida || codigo.length < largoMinimo) {
                 soltar()
                 return false
             }
@@ -129,9 +124,6 @@ class LectorDePistola(
         }
         return true
     }
-
-    /** Lo que puede traer la tarjeta digital (0-9, a-f, en las dos cajas). Una tecla que no escribe trae CHAR_UNDEFINED: no lo es. */
-    private fun esDeTarjeta(c: Char) = c in '0'..'9' || c in 'a'..'f' || c in 'A'..'F'
 
     /** Ctrl o Alt solos (no los dos: Ctrl+Alt es AltGr, que escribe «@» en teclado español) o la tecla Windows. */
     private fun esAtajo(e: KeyEvent) = e.isControlDown != e.isAltDown || e.isMetaDown
