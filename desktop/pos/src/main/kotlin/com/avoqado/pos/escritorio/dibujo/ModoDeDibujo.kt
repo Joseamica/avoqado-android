@@ -39,12 +39,16 @@ data class Estado(
 object ModoDeDibujo {
     const val MOTOR_RAPIDO = "SOFTWARE_FAST"
 
-    /** Los valores de software que acepta Skiko 0.8.18 en `SKIKO_RENDER_API` / `-Dskiko.renderApi`. */
+    /**
+     * Los valores de software que acepta Skiko 0.8.18 en `SKIKO_RENDER_API` / `-Dskiko.renderApi` (`SkikoProperties.parseRenderApi`):
+     * en Windows, SOFTWARE, SOFTWARE_FAST y DIRECT_SOFTWARE ⇒ SOFTWARE_FAST, y SOFTWARE_COMPAT. Compara letra por letra: lo demás
+     * (minúsculas, espacios) Skiko lo ignora y abre con su motor de siempre.
+     */
     private val VALORES_DE_SOFTWARE = setOf("SOFTWARE", "SOFTWARE_FAST", "SOFTWARE_COMPAT", "DIRECT_SOFTWARE")
 
     fun esDeSoftware(motor: String): Boolean = motor.startsWith("SOFTWARE")
 
-    fun pideSoftware(valor: String?): Boolean = valor?.trim()?.uppercase() in VALORES_DE_SOFTWARE
+    fun pideSoftware(valor: String?): Boolean = valor in VALORES_DE_SOFTWARE
 
     /** `guardar`: lo que hay que escribir ANTES de la ventana (null = nada). `fijar` sólo vale si ese guardado salió bien. */
     data class AlArrancar(val guardar: Ajuste?, val fijar: Boolean)
@@ -58,6 +62,8 @@ object ModoDeDibujo {
     /**
      * Tras el primer ciclo de dibujo. null = el archivo no cambia. Sin fijar ni ajuste a mano, recuerda si Skiko cayó solo a
      * software: la siguiente apertura arranca ya en modo ligero (sin fijar nada) y el NavHost se monta sin transiciones.
+     * Límite aceptado: si la PC vuelve a usar la tarjeta, esa sesión se queda sin transiciones entre pantallas (el NavHost leyó
+     * el modo al montarse) y la pista se corrige al pintar; no se corrige recreando la navegación.
      */
     fun alPintar(a: Ajuste, fijo: Boolean, aMano: Boolean, motorReal: String): Ajuste? = when {
         fijo && esDeSoftware(motorReal) -> a.copy(intentando = false)

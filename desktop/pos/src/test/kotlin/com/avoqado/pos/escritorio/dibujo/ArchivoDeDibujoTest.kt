@@ -22,9 +22,13 @@ class ArchivoDeDibujoTest {
     }
 
     @Test fun `ida y vuelta devuelve el mismo ajuste`() {
-        val a = Ajuste(modo = Modo.RAPIDO, intentando = true, fallo = true, sinAviso = true)
-        assertTrue(ArchivoDeDibujo.guardar(carpeta, a))
-        assertEquals(a, ArchivoDeDibujo.leer(carpeta))
+        for (a in listOf(
+            Ajuste(modo = Modo.RAPIDO, intentando = true, sinAviso = true),
+            Ajuste(modo = Modo.AUTO, fallo = true, sinAviso = true, caeSolaASoftware = true),
+        )) {
+            assertTrue(ArchivoDeDibujo.guardar(carpeta, a))
+            assertEquals(a, ArchivoDeDibujo.leer(carpeta))
+        }
     }
 
     @Test fun `sin archivo es automatico`() {
@@ -33,6 +37,22 @@ class ArchivoDeDibujoTest {
 
     @Test fun `archivo danado es automatico sin lanzar`() {
         Files.writeString(archivo, "{basura")
+        assertEquals(Ajuste(), ArchivoDeDibujo.leer(carpeta))
+    }
+
+    @Test fun `rapido con fallo es incoherente`() {
+        // Ninguna transición lo produce (el fallo sólo nace al regresar a automático y elegir lo limpia): sólo a mano.
+        Files.writeString(archivo, """{"modo":"RAPIDO","fallo":true}""")
+        assertEquals(Ajuste(), ArchivoDeDibujo.leer(carpeta))
+    }
+
+    @Test fun `un archivo de mas de 4 096 bytes es automatico sin leerlo, y uno de 4 096 se lee`() {
+        val cabe = """{"modo":"RAPIDO"}"""
+        Files.writeString(archivo, cabe.dropLast(1) + " ".repeat(ArchivoDeDibujo.TAMANO_MAXIMO_BYTES - cabe.length) + "}")
+        assertEquals(ArchivoDeDibujo.TAMANO_MAXIMO_BYTES.toLong(), Files.size(archivo))
+        assertEquals(Modo.RAPIDO, ArchivoDeDibujo.leer(carpeta).modo)
+
+        Files.writeString(archivo, cabe.dropLast(1) + " ".repeat(1_048_576) + "}")   // 1 MB que sí sería RAPIDO
         assertEquals(Ajuste(), ArchivoDeDibujo.leer(carpeta))
     }
 

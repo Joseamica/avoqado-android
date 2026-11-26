@@ -1,11 +1,15 @@
 package com.avoqado.pos.escritorio.dibujo
 
 import com.avoqado.pos.escritorio.diagnostico.DatosDelEquipo
-import java.security.SecureRandom
 import java.util.Locale
+import kotlin.random.Random
 
-/** «Misma apertura»: 8 hex al azar, uno por proceso. No es una hora; el reloj de la PC nunca viaja (hz:a5fa2439:D1). */
-internal val ID_DE_PROCESO: String = String.format(Locale.ROOT, "%08x", SecureRandom().nextInt())
+/**
+ * «Misma apertura»: 8 hex al azar, uno por proceso. Se crea al armar la primera cabecera (ya pintada la ventana; con el
+ * apagador o fuera de Windows, nunca). Es una etiqueta, no un secreto: no hace falta SecureRandom. No es una hora; el reloj de
+ * la PC nunca viaja (hz:a5fa2439:D1).
+ */
+internal val ID_DE_PROCESO: String by lazy { String.format(Locale.ROOT, "%08x", Random.nextInt()) }
 
 // Lo que acepta el servidor (avoqado-server, deviceDiagnostics.ts): fuera de esto no se manda nada que lo haga tirar el reporte.
 private val MOTORES = setOf("DIRECT3D", "OPENGL", "SOFTWARE_FAST", "SOFTWARE_COMPAT")
@@ -17,7 +21,7 @@ private const val TOPE = 512
  * La cabecera `x-device-diagnostics` del sondeo: `v=1;proc=…;rev=…;api=…;paint=…;light=…;perf=…;set=…;forced=…;fail=…;hand=…`
  * y, si se conocen, `cpu`, `cores`, `ram` y `screen`. null fuera de Windows, sin pintar o con algo que el servidor rechazaría.
  */
-fun cabeceraDelEquipo(e: Estado, equipo: DatosDelEquipo, proceso: String, revision: Long, esWindows: Boolean): String? {
+fun cabeceraDelEquipo(e: Estado, equipo: DatosDelEquipo, revision: Long, esWindows: Boolean, proceso: () -> String = { ID_DE_PROCESO }): String? {
     val api = e.motor?.takeIf { it in MOTORES } ?: return null
     val paint = e.pintarMs?.coerceIn(0, PINTAR_TOPE_MS) ?: return null
     val perf = when (e.rendimiento) {
@@ -26,10 +30,11 @@ fun cabeceraDelEquipo(e: Estado, equipo: DatosDelEquipo, proceso: String, revisi
         Rendimiento.NO_ALCANZA -> "INSUFFICIENT"
         null -> return null
     }
-    if (!esWindows || revision !in 1..REVISION_MAX || !PROCESO.matches(proceso)) return null
+    if (!esWindows || revision !in 1..REVISION_MAX) return null
+    val proc = proceso().takeIf { PROCESO.matches(it) } ?: return null   // se pide al final: sólo si de verdad hay cabecera
     val set = when (e.modo) { Modo.AUTO -> "AUTO"; Modo.RAPIDO -> "FAST" }
     val texto = StringBuilder(
-        "v=1;proc=$proceso;rev=$revision;api=$api;paint=$paint;light=${uno(e.modoLigero)};perf=$perf;set=$set;" +
+        "v=1;proc=$proc;rev=$revision;api=$api;paint=$paint;light=${uno(e.modoLigero)};perf=$perf;set=$set;" +
             "forced=${uno(e.forzada)};fail=${uno(e.fallo)};hand=${uno(e.aMano)}",
     )
     val cpu = equipo.procesador?.filter { it in ' '..'~' && it != ';' && it != '=' }?.trim()?.take(80)?.trim()?.takeIf { it.isNotEmpty() }

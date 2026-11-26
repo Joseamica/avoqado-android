@@ -71,6 +71,7 @@ import org.junit.Assume.assumeTrue
 class AvisoDeDibujoTest {
     private val carpeta = Files.createTempDirectory("aviso-de-dibujo")
     private var relojNs = 0L
+    private val fijados = mutableListOf<String>()
 
     @BeforeTest fun armar() = DibujoDeLaCaja.reiniciarParaPruebas()
 
@@ -83,8 +84,9 @@ class AvisoDeDibujoTest {
     private fun arrancar(archivo: Ajuste? = null, entorno: Map<String, String> = emptyMap(), propiedades: Map<String, String> = emptyMap()) {
         DibujoDeLaCaja.reiniciarParaPruebas()
         relojNs = 0
+        fijados.clear()
         if (archivo != null) assertTrue(ArchivoDeDibujo.guardar(carpeta, archivo))
-        DibujoDeLaCaja.alArrancar(carpeta, entorno::get, propiedades::get, fijar = {}, ahoraNs = { relojNs })
+        DibujoDeLaCaja.alArrancar(carpeta, entorno::get, propiedades::get, fijar = { fijados += it }, ahoraNs = { relojNs })
     }
 
     private fun pintar(motor: String, ms: Long) {
@@ -165,6 +167,15 @@ class AvisoDeDibujoTest {
         onNodeWithText("Entendido").performClick()
         soloSale(null)
         assertTrue(ArchivoDeDibujo.leer(carpeta).sinAviso)
+    }
+
+    @Test fun `un archivo en rapido con fallo, editado a mano, no fija el motor ni avisa que falló`() = runComposeUiTest {
+        arrancar(Ajuste(modo = Modo.RAPIDO, fallo = true))
+        assertEquals(emptyList(), fijados)
+        pintar("OPENGL", 600)
+        ponerBanda()
+        soloSale(null)
+        assertEquals(Modo.AUTO, DibujoDeLaCaja.estado.value.modo)
     }
 
     @Test fun `en modo rápido y aun lento dice que no alcanza`() = runComposeUiTest {

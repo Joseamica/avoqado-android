@@ -201,11 +201,12 @@ class ModoDeDibujoTest {
 
     // MARK: - pideSoftware
 
-    @Test fun `pideSoftware reconoce los alias de software de Skiko`() {
-        for (valor in listOf("software", " SOFTWARE_FAST ", "DIRECT_SOFTWARE", "SOFTWARE_COMPAT")) {
+    @Test fun `pideSoftware acepta sólo lo que Skiko acepta, letra por letra`() {
+        // Skiko 0.8.18 (SkikoProperties.parseRenderApi) compara el valor tal cual: sin recortar ni pasar a mayúsculas.
+        for (valor in listOf("SOFTWARE", "SOFTWARE_FAST", "DIRECT_SOFTWARE", "SOFTWARE_COMPAT")) {
             assertTrue(ModoDeDibujo.pideSoftware(valor), valor)
         }
-        for (valor in listOf("OPENGL", "", null)) {
+        for (valor in listOf("software", " SOFTWARE_FAST ", "Software_Fast", "OPENGL", "", null)) {
             assertFalse(ModoDeDibujo.pideSoftware(valor), valor.toString())
         }
     }

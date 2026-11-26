@@ -231,6 +231,12 @@ class DibujoDeLaCajaTest {
         }
     }
 
+    @Test fun `un valor a mano que Skiko no entiende no prende el modo ligero antes de pintar`() {
+        arrancar(entorno = mapOf("SKIKO_RENDER_API" to "software"))   // Skiko lo ignora y abre con su motor de siempre
+        assertTrue(e.aMano)
+        assertFalse(e.modoLigero)
+    }
+
     @Test fun `motor a mano en software - no fija, ligero desde el arranque y elegir no aplica al reabrir`() {
         escribir(Ajuste(modo = Modo.RAPIDO))
         arrancar(entorno = mapOf("SKIKO_RENDER_API" to "SOFTWARE"))

@@ -12,13 +12,23 @@ import kotlinx.serialization.json.Json
  */
 object ArchivoDeDibujo {
     private const val NOMBRE = "dibujo.json"
+    /** El archivo pesa menos de 200 bytes: uno más grande no es nuestro y ni se lee. */
+    const val TAMANO_MAXIMO_BYTES = 4_096
     // encodeDefaults: el archivo dice todo, no depende de los valores por defecto de esta versión de la app.
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
 
-    /** Ausente, dañado o incoherente ⇒ `Ajuste()` (automático). */
+    /**
+     * Ausente, dañado, de más de [TAMANO_MAXIMO_BYTES] o incoherente ⇒ `Ajuste()` (automático). Incoherente: la marca de intento
+     * en automático, o el fallo en rápido (el fallo sólo nace al regresar a automático y elegir lo limpia: sólo pasa a mano).
+     */
     fun leer(carpeta: Path): Ajuste = try {
-        val a = json.decodeFromString(Ajuste.serializer(), Files.readString(carpeta.resolve(NOMBRE)))
-        if (a.intentando && a.modo == Modo.AUTO) Ajuste() else a
+        val ruta = carpeta.resolve(NOMBRE)
+        if (Files.size(ruta) > TAMANO_MAXIMO_BYTES) {
+            Ajuste()
+        } else {
+            val a = json.decodeFromString(Ajuste.serializer(), Files.readString(ruta))
+            if ((a.intentando && a.modo == Modo.AUTO) || (a.fallo && a.modo == Modo.RAPIDO)) Ajuste() else a
+        }
     } catch (e: Exception) {
         Ajuste()
     }

@@ -35,7 +35,6 @@ import com.avoqado.pos.customerdisplay.ResumenDelEquipo
 import com.avoqado.pos.escritorio.diagnostico.DatosDelEquipo
 import com.avoqado.pos.escritorio.diagnostico.leerDatosDelEquipo
 import com.avoqado.pos.escritorio.dibujo.DibujoDeLaCaja
-import com.avoqado.pos.escritorio.dibujo.ID_DE_PROCESO
 import com.avoqado.pos.escritorio.dibujo.cabeceraDelEquipo
 import com.avoqado.pos.escritorio.tactil.EscenaDeVentana
 import com.avoqado.pos.escritorio.tactil.PuenteTactilWindows
@@ -90,12 +89,11 @@ fun main() {
         // Preferencias ilegibles o base de otra versión: se niega A PROPÓSITO a arrancar vacía encima de los cobros pendientes.
         Arranque.abrir(carpeta)
         // Cómo dibuja viaja en el sondeo (hz:a5fa2439:D1). Se conecta antes de alArrancar para que la revisión 1 no se pierda.
-        // Corre dentro del candado de DibujoDeLaCaja, ya pintada la ventana: arma un texto y, la primera vez, lee la máquina.
-        // Nada de esto impide abrir.
+        // Corre dentro del candado de DibujoDeLaCaja, ya pintada la ventana: arma un texto y, la primera vez, lee la máquina y
+        // crea el id del proceso. Nada de esto impide abrir.
         runCatching {
-            val proceso = ID_DE_PROCESO   // se inicializa aquí (SecureRandom), no dentro del candado
             DibujoDeLaCaja.alCambiar = { e, revision ->
-                runCatching { ResumenDelEquipo.cabecera = cabeceraDelEquipo(e, equipo, proceso, revision, esWindows = equipo.windows) }
+                runCatching { ResumenDelEquipo.cabecera = cabeceraDelEquipo(e, equipo, revision, esWindows = equipo.windows) }
             }
         }.onFailure { Log.w("Dibujo", "El sondeo no llevará cómo dibuja", it) }
         // El motor de dibujo sólo se puede fijar antes de que exista la ventana (hz:a5fa2439:D2). Nunca lanza.

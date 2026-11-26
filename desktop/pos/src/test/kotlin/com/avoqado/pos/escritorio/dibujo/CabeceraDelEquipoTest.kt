@@ -21,7 +21,7 @@ class CabeceraDelEquipoTest {
     private val obligatorios = "v=1;proc=0a1b2c3d;rev=3;api=OPENGL;paint=6200;light=0;perf=INSUFFICIENT;set=AUTO;forced=0;fail=0;hand=0"
 
     private fun cabecera(e: Estado = pintada, d: DatosDelEquipo = equipo, rev: Long = 3, windows: Boolean = true) =
-        cabeceraDelEquipo(e, d, proceso = "0a1b2c3d", revision = rev, esWindows = windows)
+        cabeceraDelEquipo(e, d, revision = rev, esWindows = windows, proceso = { "0a1b2c3d" })
 
     @Test fun `el ejemplo completo`() {
         assertEquals("$obligatorios;cpu=Intel(R) Core(TM) i5-3470 CPU @ 3.20GHz;cores=4;ram=3.9;screen=1366x768", cabecera())
@@ -68,4 +68,20 @@ class CabeceraDelEquipoTest {
     }
 
     @Test fun `el id del proceso son 8 hex en minúscula`() = assertTrue(Regex("[0-9a-f]{8}").matches(ID_DE_PROCESO), ID_DE_PROCESO)
+
+    @Test fun `dos cabeceras del mismo proceso llevan el mismo proc`() {
+        val proc = { c: String? -> Regex("proc=([^;]*);").find(c!!)!!.groupValues[1] }
+        val uno = proc(cabeceraDelEquipo(pintada, equipo, revision = 1, esWindows = true))
+        val dos = proc(cabeceraDelEquipo(pintada, equipo, revision = 2, esWindows = true))
+        assertEquals(uno, dos)
+        assertTrue(Regex("^[0-9a-f]{8}$").matches(uno), uno)
+    }
+
+    @Test fun `fuera de Windows o sin pintar el id del proceso no se pide`() {
+        var pedidos = 0
+        val contar = { pedidos++; "0a1b2c3d" }
+        assertNull(cabeceraDelEquipo(pintada, equipo, revision = 1, esWindows = false, proceso = contar))
+        assertNull(cabeceraDelEquipo(pintada.copy(motor = null), equipo, revision = 1, esWindows = true, proceso = contar))
+        assertEquals(0, pedidos)
+    }
 }
