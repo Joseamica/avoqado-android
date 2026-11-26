@@ -31,6 +31,11 @@ import com.avoqado.pos.R
 import com.avoqado.pos.customerdisplay.CustomerDisplayManager
 import com.avoqado.pos.customerdisplay.CustomerDisplayState
 import com.avoqado.pos.customerdisplay.monitoresDivididos
+import com.avoqado.pos.customerdisplay.ResumenDelEquipo
+import com.avoqado.pos.escritorio.diagnostico.DatosDelEquipo
+import com.avoqado.pos.escritorio.diagnostico.leerDatosDelEquipo
+import com.avoqado.pos.escritorio.dibujo.DibujoDeLaCaja
+import com.avoqado.pos.escritorio.dibujo.SondeoDelDibujo
 import com.avoqado.pos.escritorio.tactil.EscenaDeVentana
 import com.avoqado.pos.escritorio.tactil.PuenteTactilWindows
 import com.avoqado.pos.escritorio.teclado.PistolaDeLaVentana
@@ -48,6 +53,7 @@ import java.awt.KeyboardFocusManager
 import java.beans.PropertyChangeListener
 import java.nio.file.Path
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 import javax.imageio.ImageIO
 import javax.swing.JOptionPane
 import kotlin.system.exitProcess
@@ -63,6 +69,15 @@ fun main() {
     Thread.setDefaultUncaughtExceptionHandler { _, e -> Log.e("SinCapturar", "Excepción no atrapada", e) }
     // Sin carpeta o sin bitácora, el aviso no apunta a unos logs que no existen.
     val carpeta = protegido(carpeta = null) { CarpetaDeDatos.resolver(BuildConfig.PRODUCCION).also(Bitacora::iniciar) }
+    // Cómo dibuja viaja en el sondeo (hz:a5fa2439:D1). La máquina (registro, pantalla, disco) se lee UNA vez y donde siempre:
+    // al escribir el diagnóstico, ya tomada la marca del arranque. Al pintar, la cabecera sale sin esos datos.
+    val sondeo = SondeoDelDibujo(
+        esWindows = System.getProperty("os.name").orEmpty().startsWith("Windows"),
+        leerEquipo = { leerDatosDelEquipo(carpeta, motor = null, primerCuadroMs = null, toque = null) },
+    ) { ResumenDelEquipo.cabecera = it }
+    // Lo que escribió el diagnóstico, para «Más › Diagnóstico de esta computadora» (hz:a5fa2439:D2).
+    val diagnostico = AtomicReference<DatosDelEquipo?>()
+    val leerDiagnostico: () -> DatosDelEquipo? = diagnostico::get
     protegido(carpeta) {
         // Esta URL la lee la app por su cuenta (KDS/Waste/Inventory con DEBUG) y no pasa por Urls.api: mismo candado.
         System.getProperty("avoqado.test.baseUrl")?.let { url ->
@@ -76,6 +91,10 @@ fun main() {
         if (System.getProperty("avoqado.version") == null) System.setProperty("avoqado.version", BuildConfig.VERSION_NAME)
         // Preferencias ilegibles o base de otra versión: se niega A PROPÓSITO a arrancar vacía encima de los cobros pendientes.
         Arranque.abrir(carpeta)
+        // Se conecta antes de alArrancar para que la revisión 1 no se pierda.
+        DibujoDeLaCaja.alCambiar = sondeo.alCambiar
+        // El motor de dibujo sólo se puede fijar antes de que exista la ventana (hz:a5fa2439:D2). Nunca lanza.
+        DibujoDeLaCaja.alArrancar(carpeta)
     }
 
     // La primera composición también lee preferencias (AppState → SyncOutbox, ComandasPendientesStore): si truena ahí o
@@ -114,6 +133,7 @@ fun main() {
                     LaunchedEffect(Unit) {
                         withFrameNanos { }   // el primer cuadro se compone…
                         withFrameNanos { }   // …y ya se dibujó (el lienzo nativo ya existe)
+                        runCatching { DibujoDeLaCaja.alPintar(window.renderApi.name) }   // mide y quita la marca de intento
                         // El dedo como DEDO en Windows (Compose 1.7.3 no lo trae): si no se puede, sigue como mouse.
                         val toque = runCatching {
                             PuenteTactilWindows.instalar(window) { motivo ->
@@ -142,8 +162,11 @@ fun main() {
                                 ),
                             )
                         }.onFailure { Log.w("PantallaCliente", "Pantalla del cliente omitida: ${it.javaClass.simpleName}: ${it.message}") }
-                        runCatching { Diagnostico.escribir(carpeta, window.renderApi.name, Diagnostico.arranqueMs(), toque) }
-                            .onFailure { Log.w("Arranque", "No se pudo escribir el diagnóstico", it) }
+                        runCatching {
+                            val arranque = Diagnostico.arranqueMs()   // antes de leer la máquina: esa lectura no cuenta en la apertura
+                            val equipo = sondeo.equipo()   // y la cabecera del sondeo se vuelve a publicar, completa
+                            diagnostico.set(Diagnostico.escribir(carpeta, window.renderApi.name, arranque, toque, DibujoDeLaCaja.paraElDiagnostico(), equipo))
+                        }.onFailure { Log.w("Arranque", "No se pudo armar el diagnóstico", it) }
                     }
                     DisposableEffect(window) {
                         onDispose {
@@ -153,7 +176,7 @@ fun main() {
                             runCatching { Escritorio.inyector.getInstance(CustomerDisplayManager::class.java).detener() }
                         }
                     }
-                    AppEscritorio()
+                    AppEscritorio(datosDelEquipo = leerDiagnostico)
                 }
             }
         }

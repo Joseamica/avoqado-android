@@ -1,5 +1,6 @@
 package com.avoqado.pos.escritorio.diagnostico
 
+import com.avoqado.pos.escritorio.dibujo.Estado
 import com.sun.jna.platform.win32.Advapi32Util
 import com.sun.jna.platform.win32.WinReg
 import com.sun.jna.platform.win32.User32
@@ -8,7 +9,7 @@ import java.nio.file.Files
 import java.nio.file.Path
 
 /** Lee el equipo (Windows: JNA; fuera: lo que se pueda). Nunca lanza. */
-fun leerDatosDelEquipo(carpetaDeDatos: Path, motor: String?, primerCuadroMs: Long?, toque: String?): DatosDelEquipo {
+fun leerDatosDelEquipo(carpetaDeDatos: Path, motor: String?, primerCuadroMs: Long?, toque: String?, dibujo: Estado? = null): DatosDelEquipo {
     val windows = System.getProperty("os.name").orEmpty().startsWith("Windows")
     val pantalla = runCatching {
         java.awt.GraphicsEnvironment.getLocalGraphicsEnvironment().defaultScreenDevice.displayMode
@@ -31,6 +32,6 @@ fun leerDatosDelEquipo(carpetaDeDatos: Path, motor: String?, primerCuadroMs: Lon
         }.getOrNull(),
         anchoPx = pantalla?.width, altoPx = pantalla?.height,
         puntosTactiles = if (!windows) null else runCatching { User32.INSTANCE.GetSystemMetrics(95) }.getOrNull(),
-        motorDeDibujo = motor, primerCuadroMs = primerCuadroMs, toqueConElDedo = toque,
+        motorDeDibujo = motor, primerCuadroMs = primerCuadroMs, toqueConElDedo = toque, dibujo = dibujo,
     )
 }

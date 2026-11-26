@@ -1,7 +1,14 @@
 package com.avoqado.pos.escritorio.diagnostico
 
+import com.avoqado.pos.escritorio.dibujo.Ajuste
+import com.avoqado.pos.escritorio.dibujo.Apertura
+import com.avoqado.pos.escritorio.dibujo.Estado
+import com.avoqado.pos.escritorio.dibujo.Modo
+import com.avoqado.pos.escritorio.dibujo.ModoDeDibujo
+import java.util.Locale
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
 
 class VeredictoTest {
@@ -70,6 +77,89 @@ class VeredictoTest {
         val t = punto(v, "Pantalla táctil")
         assertEquals(Nivel.INFO, t.nivel)
         assertTrue("mouse" in t.texto)
+    }
+
+    // MARK: - Gráficos con la medición del primer cuadro (hz:a5fa2439:D2)
+
+    private fun dibujo(motor: String?, ms: Long?, modo: Modo = Modo.AUTO, aMano: Boolean = false, fijo: Boolean = false) =
+        ModoDeDibujo.estado(Ajuste(modo = modo), Apertura(aMano = aMano, fijo = fijo, pidioSoftware = fijo, motor = motor, pintarMs = ms))
+
+    private fun graficos(e: Estado?, motorDeDibujo: String? = e?.motor) =
+        punto(veredicto(buena.copy(motorDeDibujo = motorDeDibujo, dibujo = e)), "Gráficos")
+
+    /** Los segundos salen con el formato de números de la computadora: la prueba fija uno para no depender de esta Mac. */
+    private fun <T> conPunto(bloque: () -> T): T {
+        val antes = Locale.getDefault(Locale.Category.FORMAT)
+        Locale.setDefault(Locale.Category.FORMAT, Locale.ROOT)
+        return try { bloque() } finally { Locale.setDefault(Locale.Category.FORMAT, antes) }
+    }
+
+    @Test fun `sin medicion el punto Graficos es el de hoy, byte a byte`() {
+        val deHoy = mapOf(
+            null to Punto("Gráficos", Nivel.SIN_MEDIR, "no se pudo medir (no cuenta en contra)."),
+            "SOFTWARE_FAST" to Punto("Gráficos", Nivel.LENTA, "SOFTWARE_FAST: dibuja sin la tarjeta de video, las animaciones van a ir lentas. Actualiza el controlador de video."),
+            "DIRECT3D" to Punto("Gráficos", Nivel.BIEN, "usa la tarjeta de video (DIRECT3D)."),
+            "OPENGL" to Punto("Gráficos", Nivel.BIEN, "usa la tarjeta de video (OPENGL)."),
+            "METAL" to Punto("Gráficos", Nivel.INFO, "METAL"),
+        )
+        for ((motor, esperado) in deHoy) {
+            assertEquals(esperado, graficos(null, motor), "sin dibujo, $motor")
+            // Con el dueño arrancado pero sin pintar todavía (o apagado): tampoco hay medición.
+            assertEquals(esperado, graficos(dibujo(motor = null, ms = null), motor), "sin pintar, $motor")
+            assertEquals(esperado, graficos(dibujo(motor = motor, ms = null), motor), "sin tiempo, $motor")
+        }
+        assertEquals(veredicto(buena).comoTexto(), veredicto(buena.copy(dibujo = dibujo(null, null))).comoTexto())
+    }
+
+    @Test fun `fluida usa la tarjeta de video`() {
+        assertEquals(Punto("Gráficos", Nivel.BIEN, "usa la tarjeta de video (DIRECT3D)."), graficos(dibujo("DIRECT3D", 700)))
+        assertEquals(Punto("Gráficos", Nivel.BIEN, "usa la tarjeta de video (OPENGL)."), graficos(dibujo("OPENGL", 900)))
+    }
+
+    @Test fun `ligera es el modo rapido`() {
+        assertEquals(
+            Punto("Gráficos", Nivel.LENTA, "SOFTWARE_FAST: modo rápido. La app dibuja sin la tarjeta de video y con menos animaciones."),
+            graficos(dibujo("SOFTWARE_FAST", 900, modo = Modo.RAPIDO, fijo = true)),
+        )
+    }
+
+    @Test fun `no alcanza aun en software no sirve`() {
+        val e = dibujo("SOFTWARE_FAST", 9_000, modo = Modo.RAPIDO, fijo = true)
+        assertEquals(
+            Punto("Gráficos", Nivel.NO_SIRVE, "SOFTWARE_FAST: esta computadora tarda demasiado en dibujar la pantalla, aun en modo rápido. La app va a responder lento."),
+            graficos(e),
+        )
+        assertEquals(Nivel.NO_SIRVE, veredicto(buena.copy(motorDeDibujo = "SOFTWARE_FAST", dibujo = e)).global)
+    }
+
+    @Test fun `OpenGL que no alcanza ya no da bien y ofrece el modo rapido`() = conPunto {
+        val e = dibujo("OPENGL", 9_000)
+        val p = graficos(e)
+        assertNotEquals(Nivel.BIEN, p.nivel)
+        assertEquals(
+            Punto("Gráficos", Nivel.LENTA, "OPENGL: esta computadora tardó 9.0 s en dibujar la pantalla al abrir. Prueba el modo rápido en Más › Modo de dibujo."),
+            p,
+        )
+        assertEquals(Nivel.LENTA, veredicto(buena.copy(motorDeDibujo = "OPENGL", dibujo = e)).global)
+    }
+
+    @Test fun `no alcanza sin ofrecer el modo rapido con Direct3D, a mano o ya en rapido`() = conPunto {
+        val sinOferta = { m: String, s: String -> Punto("Gráficos", Nivel.LENTA, "$m: esta computadora tardó $s s en dibujar la pantalla al abrir.") }
+        assertEquals(sinOferta("DIRECT3D", "12.3"), graficos(dibujo("DIRECT3D", 12_340)))
+        assertEquals(sinOferta("OPENGL", "9.0"), graficos(dibujo("OPENGL", 9_000, aMano = true)))
+        // Recién eligió el rápido: se aplica al volver a abrir, ya no se le ofrece.
+        assertEquals(sinOferta("OPENGL", "9.0"), graficos(dibujo("OPENGL", 9_000, modo = Modo.RAPIDO)))
+    }
+
+    @Test fun `no sugiere el modo rapido que acaba de fallar`() = conPunto {
+        val e = ModoDeDibujo.estado(
+            Ajuste(fallo = true),
+            Apertura(aMano = false, fijo = false, pidioSoftware = false, motor = "OPENGL", pintarMs = 9_000),
+        )
+        assertEquals(
+            Punto("Gráficos", Nivel.LENTA, "OPENGL: esta computadora tardó 9.0 s en dibujar la pantalla al abrir."),
+            graficos(e),
+        )
     }
 
     @Test fun `el texto empieza con el encabezado y trae una linea por punto`() {
