@@ -26,6 +26,7 @@ import androidx.compose.ui.semantics.progressBarRangeInfo
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import com.avoqado.pos.designsystem.LocalModoLigero
 import com.avoqado.pos.designsystem.theme.AvoqadoLoaderGreen
 import com.avoqado.pos.designsystem.theme.AvoqadoLoaderSeed
 import kotlin.math.min
@@ -107,7 +108,8 @@ fun AvoqadoBrandLoader(
     modifier: Modifier = Modifier,
     size: Dp = 72.dp,
 ) {
-    if (ValueAnimator.areAnimatorsEnabled()) {
+    // Light mode (Windows POS drawing without the video card, hz:a5fa2439:D2) shows the still frame too. Never on Android.
+    if (ValueAnimator.areAnimatorsEnabled() && !LocalModoLigero.current) {
         val transition = rememberInfiniteTransition(label = "avoqadoLoader")
         val cycleProgress by transition.animateFloat(
             initialValue = 0f,

@@ -2,6 +2,7 @@ package com.avoqado.pos.customerdisplay
 
 import com.avoqado.pos.core.data.network.ForbiddenInterceptor
 import java.time.Instant
+import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
@@ -46,6 +47,7 @@ class DisplayModeRemoteRepositoryTest {
 
     @After
     fun tearDown() {
+        ResumenDelEquipo.cabecera = null
         server.shutdown()
     }
 
@@ -772,6 +774,70 @@ class DisplayModeRemoteRepositoryTest {
         )
     }
 
+    // ── El POS de Windows reporta cómo dibuja (hz:a5fa2439:D1): una cabecera más, SÓLO en el sondeo ──
+
+    /** Lo que arma el repositorio, antes de las cabeceras de transporte que agrega OkHttp. */
+    private fun repositorioQueAnota(armadas: MutableList<okhttp3.Request>) = repositoryWith(
+        OkHttpClient.Builder().addInterceptor { chain -> armadas += chain.request(); chain.proceed(chain.request()) }.build(),
+    )
+
+    private val sondeoConSobre =
+        "{\"data\":{\"terminalId\":\"t1\",\"request\":null,\"fingerprints\":{\"customerDisplay\":\"$HUELLA_A\"}," +
+            "\"capabilities\":{\"customerDisplayDesign\":2},\"capabilityReport\":{\"requested\":true}}}"
+    private val sondeoDecodificado = DisplayModeRemoteOutcome.NoRequest(
+        "t1",
+        PollSignals(PollFingerprints(customerDisplay = HUELLA_A), designCapability = 2, capabilityReportRequested = true),
+    )
+
+    @Test
+    fun `con resumen del equipo el sondeo lo lleva y ninguna otra peticion del repositorio`() = runTest {
+        val armadas = CopyOnWriteArrayList<okhttp3.Request>()
+        val subject = repositorioQueAnota(armadas)
+        ResumenDelEquipo.cabecera = RESUMEN
+        server.enqueue(MockResponse().setBody(sondeoConSobre))
+        repeat(4) { server.enqueue(MockResponse().setBody("{}")) }
+
+        assertEquals(sondeoDecodificado, subject.fetchDisplayModeRequest("venue-1"))
+        subject.reportCapabilities("venue-1", DisplayCapabilitySnapshot(present = false, invertible = false))
+        subject.fetchCustomerDisplay("venue-1")
+        subject.acknowledgeCustomerDisplay("venue-1", acuse())
+        subject.acknowledgeDisplayMode("venue-1", "t1", "r1", false, DisplayModeAcknowledgement.Applied)
+
+        assertEquals(
+            listOf(ForbiddenInterceptor.BACKGROUND_HEADER to "1", "x-device-diagnostics" to RESUMEN),
+            armadas[0].headers.toList(),
+        )
+        assertEquals(listOf(RESUMEN), server.takeRequest(1, TimeUnit.SECONDS)!!.headers.values("x-device-diagnostics"))
+        assertEquals(5, armadas.size)
+        armadas.drop(1).forEach { assertNull(it.url.toString(), it.header("x-device-diagnostics")) }
+        repeat(4) { assertNull(server.takeRequest(1, TimeUnit.SECONDS)!!.getHeader("x-device-diagnostics")) }
+    }
+
+    @Test
+    fun `sin resumen del equipo el sondeo se arma como hoy`() = runTest {
+        val armadas = CopyOnWriteArrayList<okhttp3.Request>()
+        server.enqueue(MockResponse().setBody(sondeoConSobre))
+
+        assertEquals(sondeoDecodificado, repositorioQueAnota(armadas).fetchDisplayModeRequest("venue /café"))
+
+        val armada = armadas.single()
+        assertEquals("GET", armada.method)
+        assertEquals("/api/v1/mobile/venues/venue%20%2Fcaf%C3%A9/display-mode-request", armada.url.encodedPath)
+        assertEquals(listOf(ForbiddenInterceptor.BACKGROUND_HEADER to "1"), armada.headers.toList())
+        assertNull(armada.body)
+        assertNull(server.takeRequest(1, TimeUnit.SECONDS)!!.getHeader("x-device-diagnostics"))
+    }
+
+    @Test
+    fun `un resumen que OkHttp no acepta no altera el sondeo`() = runTest {
+        val armadas = CopyOnWriteArrayList<okhttp3.Request>()
+        ResumenDelEquipo.cabecera = "v=1\nproc=malo"
+        server.enqueue(MockResponse().setBody(sondeoConSobre))
+
+        assertEquals(sondeoDecodificado, repositorioQueAnota(armadas).fetchDisplayModeRequest("venue-1"))
+        assertEquals(listOf(ForbiddenInterceptor.BACKGROUND_HEADER to "1"), armadas.single().headers.toList())
+    }
+
     private fun repositoryWith(client: OkHttpClient): DisplayModeRemoteRepository =
         DisplayModeRemoteRepository(client) {
             server.url("/api/v1").toString().removeSuffix("/")
@@ -805,5 +871,6 @@ class DisplayModeRemoteRepositoryTest {
         const val HUELLA_B = "fedcba9876543210fedcba9876543210"
         const val HUELLA_C = "00000000000000000000000000000000"
         const val INSTALACION = "3f2a9c1e-7b4d-4e8a-9f10-2c3d4e5f6a7b"
+        const val RESUMEN = "v=1;proc=0a1b2c3d;rev=1;api=OPENGL;paint=6200;light=0;perf=INSUFFICIENT;set=AUTO;forced=0;fail=0;hand=0"
     }
 }

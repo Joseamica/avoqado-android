@@ -29,7 +29,6 @@ import androidx.compose.material.icons.filled.AttachMoney
 import androidx.compose.material.icons.automirrored.filled.CallSplit
 import androidx.compose.material.icons.filled.CardGiftcard
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Campaign
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.LocalOffer
@@ -1197,13 +1196,9 @@ private fun CartOptionsSheet(
                 HorizontalDivider(modifier = Modifier.padding(start = 56.dp))
             }
 
-            CartOptionButton(
-                icon = Icons.Filled.Campaign,
-                title = "Canjear recompensa",
-                onClick = { onDismiss() },
-            )
-
-            HorizontalDivider(modifier = Modifier.padding(start = 56.dp))
+            // D31: aquí había «Canjear recompensa» y sólo cerraba el menú. Los puntos se canjean en Mesas › «Recompensas», sobre una
+            // orden que ya existe en el SERVIDOR; la venta de Mostrador se crea hasta cobrar y el SERVIDOR no acepta puntos al
+            // crearla. La opción vuelve sólo con ese canje (MenuDelCarritoEnLaEscenaTest).
 
             CartOptionButton(
                 icon = Icons.Filled.AttachMoney,

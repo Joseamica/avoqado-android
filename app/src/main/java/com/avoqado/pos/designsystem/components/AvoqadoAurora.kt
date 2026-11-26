@@ -10,7 +10,10 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.State
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -18,6 +21,8 @@ import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.withTransform
+import com.avoqado.pos.designsystem.LocalModoLigero
+import com.avoqado.pos.designsystem.relojAPasos
 import com.avoqado.pos.designsystem.theme.AvoqadoLoaderGreen
 import com.avoqado.pos.designsystem.theme.AvoqadoLoaderSeed
 import com.avoqado.pos.designsystem.theme.Success
@@ -47,17 +52,22 @@ fun AvoqadoAuroraBackground(
     contentAlignment: Alignment = Alignment.Center,
     content: @Composable BoxScope.() -> Unit,
 ) {
-    val t = rememberInfiniteTransition(label = "aurora")
+    // Modo ligero (POS de Windows sin tarjeta de video, hz:a5fa2439:D2): sin reloj
+    // infinito, las manchas saltan a su siguiente lugar cada 30 s. Siguen sin quedarse
+    // quietas, que es la defensa contra el burn-in de arriba. En Android nunca.
+    val phases = if (LocalModoLigero.current) fasesAPasos() else {
+        val t = rememberInfiniteTransition(label = "aurora")
 
-    // Una fase 0→1 por mancha. LinearEasing porque un ease haría que la luz
-    // frene y acelere en los extremos, y eso se nota como tirón.
-    val phases = AuroraBlobs.map { blob ->
-        t.animateFloat(
-            initialValue = 0f,
-            targetValue = 1f,
-            animationSpec = infiniteRepeatable(tween(blob.periodMs, easing = LinearEasing)),
-            label = "phase",
-        )
+        // Una fase 0→1 por mancha. LinearEasing porque un ease haría que la luz
+        // frene y acelere en los extremos, y eso se nota como tirón.
+        AuroraBlobs.map { blob ->
+            t.animateFloat(
+                initialValue = 0f,
+                targetValue = 1f,
+                animationSpec = infiniteRepeatable(tween(blob.periodMs, easing = LinearEasing)),
+                label = "phase",
+            )
+        }
     }
 
     Box(modifier = modifier, contentAlignment = contentAlignment) {
@@ -136,6 +146,15 @@ fun AvoqadoAuroraBackground(
             )
         }
         content()
+    }
+}
+
+/** La misma fase de cada mancha, pero leída en el reloj de 30 s en 30 s del modo ligero. */
+@Composable
+private fun fasesAPasos(): List<State<Float>> {
+    val reloj = relojAPasos()
+    return remember(reloj) {
+        AuroraBlobs.map { blob -> derivedStateOf { (reloj.value % blob.periodMs).toFloat() / blob.periodMs } }
     }
 }
 

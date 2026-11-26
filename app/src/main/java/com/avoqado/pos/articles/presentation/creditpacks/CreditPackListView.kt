@@ -374,7 +374,7 @@ private fun CreditPackCard(
                             modifier = Modifier.weight(1f),
                         )
                         Text(
-                            text = "x${item.quantity}",
+                            text = if (item.unlimited) "Ilimitado" else "x${item.quantity}",
                             style = if (denseMode) MaterialTheme.typography.labelSmall else MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )

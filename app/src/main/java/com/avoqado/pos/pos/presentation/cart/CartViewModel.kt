@@ -1966,7 +1966,7 @@ class CartViewModel @Inject constructor(
         val item = CartItem(
             type = CartItemType.CreditPack(pack.id, pack.saleProof),
             name = pack.name,
-            subtitle = if (pack.creditCount > 0) "${pack.creditCount} créditos" else "Membresía",
+            subtitle = if (pack.creditCount > 0) pack.creditsLabel else "Membresía",   // D679: «Ilimitado», nunca 99999
             unitPrice = pack.price.aCentavos(),
         )
         _cartState.update { it.copy(items = it.items + item) }
@@ -2356,6 +2356,7 @@ class CartViewModel @Inject constructor(
                     },
                     packId = (item.type as? CartItemType.CreditPack)?.packId,
                     packSaleProof = (item.type as? CartItemType.CreditPack)?.saleProof,
+                    packSubtitle = item.subtitle.takeIf { item.type is CartItemType.CreditPack },
                     name = item.name,
                     unitPrice = item.unitPrice,
                     quantity = item.quantity,
@@ -3610,7 +3611,8 @@ class CartViewModel @Inject constructor(
                 comboConExtras = savedItem.comboConExtras,
                 serviceCourse = savedItem.serviceCourse,
                 catalogAt = savedItem.catalogAt,
-                subtitle = savedItem.promotionName,
+                // D679 (Codex android r1 #4): la línea de un paquete vuelve con su «Ilimitado» o «10 créditos».
+                subtitle = savedItem.packSubtitle ?: savedItem.promotionName,
             )
         }
         // Referral-sourced discounts must NOT survive a restore without a live

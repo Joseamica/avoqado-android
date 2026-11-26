@@ -111,7 +111,7 @@ class CustomerCreditsViewModel @Inject constructor(
      * la respuesta, la cola reintenta con la misma llave y el servidor contesta la misma compra, en vez de vender otra.
      */
     fun sell(pack: CreditPack, customerId: String, customerName: String?, onDone: () -> Unit) {
-        // Un doble toque en «Cobrar y vender» llega dos veces antes de que se cierre la confirmación: la segunda no vende otra.
+        // Un doble toque en «Ya cobré: vender» llega dos veces antes de que se cierre la confirmación: la segunda no vende otra.
         if (_sellingPackId.value != null) return
         _sellingPackId.value = pack.id
         viewModelScope.launch {
@@ -165,8 +165,11 @@ class CustomerCreditsViewModel @Inject constructor(
     }
 
     fun redeem(balanceId: String, customerId: String) {
+        // hz:73e6a32c:D687: un doble toque llega dos veces antes de que el botón se apague; con un canje en vuelo el segundo no
+        // registra otro uso (con un Ilimitado no se nota en la pantalla). Se marca ANTES de lanzar, como `sell`.
+        if (_busyBalanceId.value != null) return
+        _busyBalanceId.value = balanceId
         viewModelScope.launch {
-            _busyBalanceId.value = balanceId
             val ok = articlesRepository.redeemCredit(balanceId)
             _busyBalanceId.value = null
             if (ok) load(customerId)

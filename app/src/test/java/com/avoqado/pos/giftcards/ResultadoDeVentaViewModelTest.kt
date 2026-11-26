@@ -377,4 +377,26 @@ class ResultadoDeVentaViewModelTest {
     }
     @Test fun limiteAceptadoR2CuentaSinExitoFingidoConservaPendienteYReabrirRecupera() = runBlocking { ventanaAceptadaDeResultadoSeRecuperaAlReabrir(false) }
     @Test fun limiteAceptadoR3IndividualSinExitoFingidoConservaPendienteYReabrirRecupera() = runBlocking { ventanaAceptadaDeResultadoSeRecuperaAlReabrir(true) }
+    // D40 (hz:be99f328:D40): en «Cambiar destino», pasar de WhatsApp a Correo (o al revés) quita el aviso de validación del
+    // destino que ya no aplica, y sólo ése: el del servidor sigue, porque la pantalla de afuera lo usa para «Volver a consultar».
+    @Test fun d40CambiarDeCanalQuitaSoloElAvisoDeValidacionDelDestino() = runBlocking {
+        canal="EMAIL";val vm=vm(false);vm.refrescar();vm.abrirDialogo(tarjeta,"CHANGE_DESTINATION")
+        vm.cambiarDestino(tarjeta,"WHATSAPP","123","")
+        assertEquals(com.avoqado.pos.giftcards.domain.TextosDeTarjetas.CELULAR_INVALIDO,vm.aviso.value)
+        vm.cambiarCanal();assertNull(vm.aviso.value)
+        vm.cambiarDestino(tarjeta,"EMAIL","","no-es-correo")
+        assertEquals(com.avoqado.pos.giftcards.domain.TextosDeTarjetas.CORREO_INVALIDO,vm.aviso.value)
+        vm.cambiarCanal();assertNull(vm.aviso.value)
+        assertFalse(vm.dialogoFijado.value);assertEquals(0,peticiones.count { it.path!!.endsWith("/change-destination") })
+        vm.cerrarDialogo();vm.abrirDialogo(tarjeta,"RESEND");statusAccion=409;vm.reenviar(tarjeta)
+        assertEquals("Texto exacto del servidor",vm.aviso.value)
+        vm.cambiarCanal();assertEquals("Texto exacto del servidor",vm.aviso.value)
+    }
+    @Test fun d40CadaOpcionDeCambiarDestinoEsUnaFilaTocableEntera() {
+        val pantalla=java.io.File("src/main/java/com/avoqado/pos/giftcards/presentation/ResultadoDeVentaScreen.kt").readText()
+        val bloque=pantalla.substring(pantalla.indexOf("if(accion==\"CHANGE_DESTINATION\")"))
+        assertTrue("la fila entera (círculo + texto) responde al toque",bloque.contains(".selectable(selected=canal==opcion,enabled=!fijado,role=Role.RadioButton"))
+        assertTrue("el círculo no tiene toque propio: lo maneja la fila",bloque.contains("RadioButton(selected=canal==opcion,onClick=null,enabled=!fijado)"))
+        assertTrue("cambiar de canal limpia el aviso del destino",bloque.contains("viewModel.cambiarCanal()"))
+    }
 }

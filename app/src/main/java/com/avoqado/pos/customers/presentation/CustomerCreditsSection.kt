@@ -39,6 +39,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.avoqado.pos.articles.data.model.CreditBalanceItem
 import com.avoqado.pos.articles.data.model.CreditPack
+import com.avoqado.pos.articles.data.model.textoDelSaldo
 import com.avoqado.pos.customers.data.model.Customer
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 
@@ -114,7 +115,7 @@ fun CustomerCreditsSection(
                                         color = MaterialTheme.colorScheme.onSurface,
                                     )
                                     Text(
-                                        text = "${item.remainingQuantity} de ${item.originalQuantity} disponibles",
+                                        text = purchase.textoDelSaldo(item),
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     )
@@ -133,17 +134,13 @@ fun CustomerCreditsSection(
     }
 
     showRedeemConfirm?.let { item ->
-        AvoqadoDialog(
-            title = "Canjear crédito",
-            description = "Se descontará 1 de ${item.productName}. Esta acción no se puede deshacer.",
+        ConfirmarCanjeDialog(
+            item = item,
             onDismiss = { showRedeemConfirm = null },
-            actionButton = {
-                PrimaryButton(text = "Canjear", onClick = {
-                    viewModel.redeem(item.id, customer.id)
-                    showRedeemConfirm = null
-                })
+            onConfirm = {
+                viewModel.redeem(item.id, customer.id)
+                showRedeemConfirm = null
             },
-            content = {},
         )
     }
 
@@ -154,6 +151,19 @@ fun CustomerCreditsSection(
             onDismiss = { showSell = false },
         )
     }
+}
+
+/** La confirmación antes de registrar un uso. La usan la ficha del cliente y la tarjeta «Membresías» del carrito (D687). */
+@Composable
+internal fun ConfirmarCanjeDialog(item: CreditBalanceItem, onDismiss: () -> Unit, onConfirm: () -> Unit) {
+    AvoqadoDialog(
+        title = "Canjear crédito",
+        description = if (item.unlimited) "Se registrará 1 uso del Ilimitado de ${item.productName}. Esta acción no se puede deshacer."
+        else "Se descontará 1 de ${item.productName}. Esta acción no se puede deshacer.",
+        onDismiss = onDismiss,
+        actionButton = { PrimaryButton(text = "Canjear", onClick = onConfirm) },
+        content = {},
+    )
 }
 
 @Composable
@@ -241,7 +251,7 @@ private fun SellPackDialog(
                                     color = MaterialTheme.colorScheme.onSurface,
                                 )
                                 Text(
-                                    text = "${pack.creditCount} créditos · ${pack.displayPrice}",
+                                    text = "${pack.creditsLabel} · ${pack.displayPrice}",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
@@ -270,19 +280,27 @@ private fun SellPackDialog(
     )
 
     // Confirm before granting — a stray tap would otherwise sell a paid pack.
+    // D35 (hz:be99f328:D35): este botón NO cobra, sólo registra la venta y entrega el paquete; la cajera cobra aparte. Antes decía
+    // «Cobrar $X y vender», que contradecía el aviso. Los dos textos dicen ahora lo mismo.
     pendingPack?.let { pack ->
         BarreraDeAtajos()
         AlertDialog(
             onDismissRequest = { pendingPack = null },
             title = { Text("Vender paquete") },
             text = {
-                Text("Se otorgarán ${pack.creditCount} créditos a ${customer.fullName}. Cobra el pago antes de confirmar.")
+                val queSeLleva =
+                    if (pack.isUnlimited) "Se otorgará un paquete Ilimitado a ${customer.fullName}."
+                    else "Se otorgarán ${pack.creditCount} créditos a ${customer.fullName}."
+                Text(
+                    "$queSeLleva Este botón no cobra: cobra primero los ${pack.displayPrice} (efectivo, terminal u otro " +
+                        "método) y luego confirma.",
+                )
             },
             confirmButton = {
                 TextButton(onClick = {
                     pendingPack = null
                     viewModel.sell(pack, customer.id, customer.fullName, onDone = onDismiss)
-                }) { Text("Cobrar ${pack.displayPrice} y vender") }
+                }) { Text("Ya cobré ${pack.displayPrice}: vender") }
             },
             dismissButton = { TextButton(onClick = { pendingPack = null }) { Text("Cancelar") } },
         )

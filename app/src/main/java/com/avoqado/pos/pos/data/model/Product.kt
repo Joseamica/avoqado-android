@@ -113,7 +113,10 @@ data class Product(
         get() = !modifierGroups.isNullOrEmpty() &&
             modifierGroups.any { it.group != null && it.group.modifiers.isNotEmpty() }
 
-    /** Flattened modifier groups for UI consumption. */
+    /**
+     * Flattened modifier groups for UI consumption. De menor a mayor `displayOrder` (sin él cuenta como 0), como los manda el
+     * servidor y los pintan el panel, la terminal y el iPad; antes iba al revés (hz:960ee149:D1).
+     */
     val sortedModifierGroups: List<ProductModifierGroup>
         get() = modifierGroups
             ?.mapNotNull { entry ->
@@ -131,7 +134,7 @@ data class Product(
                     )
                 }
             }
-            ?.sortedWith(compareBy({ -(it.sortOrder ?: 0) }, { it.name }))
+            ?.sortedWith(compareBy({ it.sortOrder ?: 0 }, { it.name }))
             ?: emptyList()
 }
 
