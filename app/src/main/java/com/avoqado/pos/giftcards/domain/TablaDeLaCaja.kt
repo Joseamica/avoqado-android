@@ -5,8 +5,11 @@ import com.avoqado.pos.giftcards.data.EstadoDeAjustes
 enum class FilaDeLaCaja { T0,T1,T2,T3,T4,T5,T6,T7,T8,T9,T10,T11,T12,T13 }
 data class ConductaDeTarjeta(val fila: FilaDeLaCaja, val visible: Boolean, val habilitada: Boolean, val motivo: String?)
 enum class OfertaDeLaCuenta { OFRECER, COBRO_SIN_SINCRONIZAR, NADA }
-fun ofertaDeLaCuenta(restanteDelServerCents: Int?, cuentaTerminada: Boolean, laTraeUnCarrito: Boolean, cobroLocalPendiente: Boolean): OfertaDeLaCuenta = when {
-    cuentaTerminada || restanteDelServerCents == null || restanteDelServerCents <= 0 || laTraeUnCarrito -> OfertaDeLaCuenta.NADA
+/** [cierraEnCero] (D39 r11, Codex r10 #1): una cuenta abierta con productos que quedó en $0.00 se ofrece «cerrar» (cobro de $0, como Mesas). */
+fun ofertaDeLaCuenta(restanteDelServerCents: Int?, cuentaTerminada: Boolean, laTraeUnCarrito: Boolean, cobroLocalPendiente: Boolean,
+    cierraEnCero: Boolean = false): OfertaDeLaCuenta = when {
+    cuentaTerminada || restanteDelServerCents == null || laTraeUnCarrito -> OfertaDeLaCuenta.NADA
+    restanteDelServerCents < 0 || restanteDelServerCents == 0 && !cierraEnCero -> OfertaDeLaCuenta.NADA
     cobroLocalPendiente -> OfertaDeLaCuenta.COBRO_SIN_SINCRONIZAR
     else -> OfertaDeLaCuenta.OFRECER
 }

@@ -105,7 +105,11 @@ class CobroNoEfectivoDeEstaCajaTest {
             mockk<RoleManager>(relaxed = true) { every { hasVenuePermission("payments:create") } returns true }, store,
             CobrosLocalesDeLaCuenta(dao, storage, store),
             copiaDeCuentas = copia,
-            cuentasAbiertasAqui = mockk<CuentasAbiertasAqui> { coEvery { laAbrioAqui(any(), any()) } returns true },
+            cuentasAbiertasAqui = mockk<CuentasAbiertasAqui> {
+                coEvery { laAbrioAqui(any(), any()) } returns true
+                // D39: sin canje de puntos de esta caja (la puerta sin red lo consulta).
+                coEvery { tieneCanje(any(), any()) } returns false
+            },
             cashPaymentRepository = mockk<CashPaymentRepository> { coEvery { huboEfectivoSubido(any()) } returns false },
             planManager = mockk<PlanManager> { every { tieneAcreditada(any()) } returns false },
             payLaterQueue = mockk<PayLaterQueue> { every { filas } returns MutableStateFlow(emptyList<PayLaterRow>()) },

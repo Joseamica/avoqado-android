@@ -115,6 +115,8 @@ data class OrderSummary(
     @Serializable(with = CentavosTolerantes::class) val pagosCompletados: Int? = null,
     /** D12, aditivo: la cuenta es de vales por área. */
     val esDeVales: Boolean? = null,
+    /** D39, aditivo: «Pagar después» a propósito (`Order.payLater`); la copia sin red lo guarda. null = no se sabe. */
+    val payLater: Boolean? = null,
 ) {
     @Transient
     val orderStatus: OrderStatus = when (status.uppercase()) {
@@ -193,7 +195,7 @@ fun OrderSummary.comoDetalle(): OrderDetail = OrderDetail(
     orderNumber = orderNumber, status = status, paymentStatus = paymentStatus, type = type, source = source,
     subtotal = subtotal, taxAmount = taxAmount, discountAmount = discountAmount, total = total, itemCount = itemCount,
     staffName = staffName, customerName = customerName, createdAt = createdAt, items = null, payments = null,
-    refundState = refundState, refundedAmount = refundedAmount, deLaCopia = true,
+    refundState = refundState, refundedAmount = refundedAmount, deLaCopia = true, payLater = payLater,
 )
 
 /** D12 (Codex r3 H1): lo que este detalle bueno sabe de la cuenta, para poner la copia al día. */
@@ -245,6 +247,8 @@ data class OrderDetail(
     val customerName: String? = null,
     val createdAt: String = "",
     val specialRequests: String? = null,
+    /** D39, aditivo: «Pagar después» a propósito (`Order.payLater`). Lo trae el detalle y la fila de la copia sin red. */
+    val payLater: Boolean? = null,
     val items: List<OrderDetailItem>? = null,
     val payments: List<OrderPaymentInfo>? = null,
     /** ADITIVO (server 2026-08-18). Ausente en servers viejos ⇒ "NONE". */

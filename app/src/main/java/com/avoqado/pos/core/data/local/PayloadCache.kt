@@ -81,6 +81,9 @@ class PayloadCache @Inject constructor(
         /** D12: las cuentas que abrió ESTE aparato, por sucursal (`orders.data.CuentasAbiertasAqui`). */
         const val TYPE_CUENTAS_ABIERTAS_AQUI = "cuentas_abiertas_aqui"
 
+        /** D39 (Codex r5 #1): las cuentas a las que ESTE aparato les mandó un canje de puntos; sin red no se cobran (`CuentasAbiertasAqui.tieneCanje`). */
+        const val TYPE_CUENTAS_CON_CANJE_AQUI = "cuentas_con_canje_aqui"
+
         /** D12 · Opción D: el registro de la caja DUEÑA de cada cuenta que abrió (`core.data.lan.DuenoDeCuentas`). */
         const val TYPE_REGISTRO_DE_CUENTAS = "registro_de_cuentas"
 
