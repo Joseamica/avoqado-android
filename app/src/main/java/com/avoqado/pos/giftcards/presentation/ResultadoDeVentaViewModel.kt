@@ -301,7 +301,7 @@ data class SobreEnResultado(val sobre: SobreDeLaCuenta?, val activando: Boolean,
             "EMAIL"->correo.trim().takeIf {it.length<=120 && it.matches(Regex("[^@\\s]+@[^@\\s]+\\.[^@\\s]+"))}?.let {Triple(canal,null,it)}
             else->null
         }
-        if(datos==null) {avisoValor.value=if(canal=="WHATSAPP") TextosDeTarjetas.CELULAR_INVALIDO else "Revisa el correo";return@accion}
+        if(datos==null) {avisoValor.value=if(canal=="WHATSAPP") TextosDeTarjetas.CELULAR_INVALIDO else TextosDeTarjetas.CORREO_INVALIDO;return@accion}
         datosCambio=datos;fijado.value=true;codigoValor.value=null;valor.value=valor.value.map {it.copy(qr=null)}
         when(val r=repo.cambiarDestino(venue!!,id,key,datos.first,datos.second,datos.third)) {
             is Respuesta.Ok -> if(vigente(g) && versionDialogo==vd) {dialogoTerminado=true;primeraRevelacion=true;sinLigas.remove(id);revisionSondeo++;exitoValor.value="Destino actualizado";refrescarDentro()}
@@ -309,6 +309,8 @@ data class SobreEnResultado(val sobre: SobreDeLaCuenta?, val activando: Boolean,
             Respuesta.SinRespuesta -> if(vigente(g)) avisoValor.value=TextosDeTarjetas.SIN_RED
         }
     }
+    /** D40: el aviso del celular o del correo ya no aplica al cambiar de canal; los demás avisos (servidor, impresión, red) se quedan. */
+    fun cambiarCanal() { if (avisoValor.value in setOf(TextosDeTarjetas.CELULAR_INVALIDO,TextosDeTarjetas.CORREO_INVALIDO)) avisoValor.value=null }
     fun cerrar() {
         // Cerrar la pantalla no acredita que haya cesado un envío suspendido.
         if (reclamada && llave != llaveImpresionEnVuelo) llave?.let {store.enVueloDeEsteProceso.remove(it)}
