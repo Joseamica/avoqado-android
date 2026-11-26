@@ -2797,9 +2797,10 @@ class CartViewModel @Inject constructor(
             // hacer un viaje al servidor por cada producto mal dado de alta — en una
             // caja con fila esa latencia se nota.
             com.avoqado.pos.giftcards.domain.ReconocedorDeTarjeta.reconocer(code)?.let { return ScannedBarcodeResult.GiftCardFound(it) }
-            if (com.avoqado.pos.loyalty.data.pareceTarjetaDeCliente(code)) {
+            // D56: también la tarjeta pegada al final de lo que ya había en el campo manual de «Escanear» (WINDOWS).
+            com.avoqado.pos.loyalty.data.tarjetaDeClienteEn(code)?.let { tarjeta ->
                 // D53: con forma de tarjeta, nunca «Producto no encontrado · Crear nuevo» (`parecidoACodigo` ya no la empata).
-                return when (val lectura = walletScanRepository.escanear(code)) {
+                return when (val lectura = walletScanRepository.escanear(tarjeta)) {
                     is com.avoqado.pos.loyalty.data.LecturaDeTarjeta.Leida -> ScannedBarcodeResult.CustomerCardFound(lectura.tarjeta)
                     is com.avoqado.pos.loyalty.data.LecturaDeTarjeta.SinLeer -> ScannedBarcodeResult.TarjetaDeClienteSinLeer(lectura.motivo)
                 }

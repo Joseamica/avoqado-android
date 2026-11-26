@@ -1,7 +1,10 @@
 package com.avoqado.pos.loyalty
 
 import com.avoqado.pos.loyalty.data.pareceTarjetaDeCliente
+import com.avoqado.pos.loyalty.data.tarjetaDeClienteEn
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -52,6 +55,20 @@ class PareceTarjetaDeClienteTest {
         // tarjeta. La forma tiene que cumplirse entera, no sólo el largo.
         assertFalse(pareceTarjetaDeCliente("z".repeat(48)))
         assertFalse(pareceTarjetaDeCliente("TICKET-" + "a".repeat(41)))
+    }
+
+    @Test
+    fun `D56 la tarjeta pegada al final de otro texto se reconoce`() {
+        // WINDOWS: la pistola teclea dentro del buscador (o del campo de «Escanear») que ya tenía «camisa».
+        val tarjeta = "0123456789abcdef".repeat(3)
+        assertEquals(tarjeta, tarjetaDeClienteEn("camisa$tarjeta"))
+        assertEquals(tarjeta, tarjetaDeClienteEn(" $tarjeta "))
+        assertEquals(tarjeta, tarjetaDeClienteEn(tarjeta))
+        assertNull("después de la tarjeta ya no es la tarjeta", tarjetaDeClienteEn("${tarjeta}x"))
+        assertNull("47 no es la tarjeta", tarjetaDeClienteEn("xyz" + tarjeta.drop(1)))
+        assertNull(tarjetaDeClienteEn("7501055310838"))
+        assertNull(tarjetaDeClienteEn("SKU-NUEVO-1"))
+        assertNull(tarjetaDeClienteEn(""))
     }
 
     @Test
