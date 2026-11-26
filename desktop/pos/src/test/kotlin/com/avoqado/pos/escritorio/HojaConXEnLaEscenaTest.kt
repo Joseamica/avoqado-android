@@ -26,11 +26,11 @@ import androidx.compose.ui.test.ExperimentalTestApi
 import androidx.compose.material3.Button
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.SemanticsNodeInteraction
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.click
-import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.performKeyInput
 import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.pressKey
@@ -265,7 +265,8 @@ class HojaConXEnLaEscenaTest {
         val cierresDelRetiro = hojaConGuardia(enWindows) { cerrar ->
             PayInOutSheet(isPayIn = false, onConfirm = { _, _ -> }, onDismiss = cerrar, ocupado = ocupado)
         }
-        escDesde(onAllNodes(hasSetTextAction())[0])
+        // Mientras registra, los campos van en sólo lectura y pierden la acción de escribir: se busca a quién se le puede dar el foco.
+        escDesde(onAllNodes(SemanticsMatcher.keyIsDefined(SemanticsActions.RequestFocus))[0])
         assertEquals(0, cierresDelRetiro(), "Esc cerró el retiro (registrando: $ocupado)")
         onNodeWithText("Registrar egreso").assertIsDisplayed()
     }
