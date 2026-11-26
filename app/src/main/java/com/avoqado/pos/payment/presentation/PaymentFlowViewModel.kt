@@ -1155,6 +1155,9 @@ class PaymentFlowViewModel @Inject constructor(
     /** D12 (Codex r3 H3): la revalidación en vivo justo antes de recibir el efectivo ([startPaymentFlow]); null = como siempre. */
     private var antesDeRecibirEfectivo: (suspend () -> String?)? = null
 
+    /** D39 r10: el efectivo de este cobro no se guarda en el aparato si la red se cae ([startPaymentFlow]); false = como siempre. */
+    private var soloConConexion = false
+
     /** D12 · Opción D: a quién decirle que la puerta dijo que no (la cuenta enseña ese gris); null = el flujo lo enseña como error. */
     private var alNoPasarLaPuerta: ((String) -> Unit)? = null
 
@@ -2776,6 +2779,12 @@ class PaymentFlowViewModel @Inject constructor(
          * saldo arma el aparato y no viene de una lectura del SERVIDOR).
          */
         saldoLeidoDeLaCuenta: Int? = null,
+        /**
+         * D39 r10 (Codex r9 #1, founder «Sí, como Toast»): una cuenta en la que esta caja canjeó (o intentó canjear) puntos se cobra sólo
+         * con conexión desde esta caja: si la red se cae a media petición, el efectivo NO se guarda en el aparato (su importe pudo ser el
+         * de antes del canje). La venta con la respuesta comprobada (2xx) sigue como siempre.
+         */
+        soloConConexion: Boolean = false,
     ) {
         // 🔴 La MISMA apertura (un toque de «Cobrar») no reinicia el cobro. La pantalla vuelve a
         // componerse al cambiar de pestaña o girar la tablet y relanza este arranque con lo que
@@ -2794,6 +2803,7 @@ class PaymentFlowViewModel @Inject constructor(
         origenDelCobro = origen
         siLaCuentaSeCancelo = textoSiLaCuentaSeCancelo
         this.antesDeRecibirEfectivo = antesDeRecibirEfectivo
+        this.soloConConexion = soloConConexion
         this.alNoPasarLaPuerta = alNoPasarLaPuerta
         terminarPermiso(cobrado = false) // otra venta: el permiso de la anterior lo decide lo durable
         // hz:e0b12f00:D2: el PIN y la marca del servidor son de UNA venta.
@@ -3570,7 +3580,7 @@ class PaymentFlowViewModel @Inject constructor(
             (it.isProvisional || it.cobroSinRed) && it.orderId == ordenCapturada
         } == true
         val valesCapturados = valesDelCobro()
-        val permiteColaCapturada = valesCapturados == null
+        val permiteColaCapturada = valesCapturados == null && !soloConConexion
         val empleadoCapturado = selectedStaffId()
         val clienteCapturado = attachedCustomerId
         val ratingCapturado = currentRating
@@ -4172,7 +4182,7 @@ class PaymentFlowViewModel @Inject constructor(
             (it.isProvisional || it.cobroSinRed) && it.orderId == ordenCapturada
         } == true
         val valesCapturados = valesDelCobro()
-        val permiteColaCapturada = valesCapturados == null
+        val permiteColaCapturada = valesCapturados == null && !soloConConexion
         val empleadoCapturado = selectedStaffId()
         val clienteCapturado = attachedCustomerId
         val ratingCapturado = currentRating

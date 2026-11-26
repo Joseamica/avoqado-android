@@ -108,6 +108,8 @@ fun PaymentFlowScreen(
     dineroConocido: com.avoqado.pos.payment.domain.DineroConocido? = null,
     /** hz:bdd815fd:D5: lo que faltaba según la pantalla que abre el cobro («Pedidos → Cobrar»). Ver `PaymentFlowViewModel.startPaymentFlow`. */
     saldoLeidoDeLaCuenta: Int? = null,
+    /** D39 r10: el efectivo no se guarda en el aparato si se cae la red. Ver `PaymentFlowViewModel.startPaymentFlow`. */
+    soloConConexion: Boolean = false,
 ) {
     val scopeDeSaldo = rememberCoroutineScope()
     // C5: la máquina de efectivo de esta PC (sólo WINDOWS). null = todo como hoy.
@@ -230,6 +232,7 @@ fun PaymentFlowScreen(
             alNoPasarLaPuerta = alNoPasarLaPuerta,
             dineroConocido = dineroConocido,
             saldoLeidoDeLaCuenta = saldoLeidoDeLaCuenta,
+            soloConConexion = soloConConexion,
         )
         aperturaIniciada = true
     }

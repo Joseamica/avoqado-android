@@ -614,7 +614,25 @@ data class RedeemPointsRequest(
     val expectedDiscountAmount: Double? = null,
     /** D39: la versión de la cuenta que enseñó el diálogo; el SERVIDOR sólo canjea sobre esa misma versión (null = no la compara). */
     val expectedVersion: Int? = null,
+    /**
+     * D39 r10 (founder, «Sí, de raíz»): la llave del canje, una por intento y la misma en cada reenvío. El SERVIDOR guarda su recibo: un
+     * reenvío espera al primero y recibe SU desenlace, nunca un rechazo que no dice si entró. Sin llave (Mesas) la llave NO viaja: el
+     * SERVIDOR rechaza un `httpOperation: null` (`parseHttpOperation`).
+     */
+    @kotlinx.serialization.EncodeDefault(kotlinx.serialization.EncodeDefault.Mode.NEVER)
+    val httpOperation: HttpOperationToken? = null,
 )
+
+/** La llave de una operación del POS (`httpOperation` del SERVIDOR: `version` 1, `id` y `deviceId`, los dos UUID). */
+@Serializable
+data class HttpOperationToken(val version: Int = 1, val id: String, val deviceId: String)
+
+private val UUID_DEL_SERVIDOR = Regex("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+
+/** PURA: la llave del canje [operationId] desde este aparato, o null si no hay intento o la identidad del aparato no es un UUID (el
+ * SERVIDOR contestaría 400 sin recibo, siempre: el canje quedaría en duda para siempre). */
+fun llaveDelCanje(operationId: String?, deviceId: String): HttpOperationToken? =
+    operationId?.let { id -> deviceId.takeIf { UUID_DEL_SERVIDOR.matches(it) }?.let { HttpOperationToken(id = id, deviceId = it) } }
 
 /** Lo que el SERVIDOR aplicó de verdad: el «aplicada» dice esto, nunca lo pedido. */
 @Serializable
@@ -627,17 +645,24 @@ data class RedeemPointsResponse(val success: Boolean = true, val data: RedeemPoi
 const val LOYALTY_OFFER_CHANGED = "LOYALTY_OFFER_CHANGED"
 
 /** El rechazo del canje (4xx) con su código y el mensaje del SERVIDOR, leídos una sola vez del cuerpo. */
-class CanjeRechazado(val code: String?, override val message: String) : Exception(message) {
+/**
+ * [definitivo]: el canje NO entró ni puede entrar con ese intento. Sin llave, todo 4xx lo es (como siempre). Con llave (D39 r10), sólo
+ * el que trae el recibo del SERVIDOR (`httpOperation.outcome = REJECTED`): un 4xx de la puerta (permiso, plan) antes de la llave no dice
+ * nada del primer envío, que pudo entrar.
+ */
+class CanjeRechazado(val code: String?, override val message: String, val definitivo: Boolean = true) : Exception(message) {
     val ofertaCambio: Boolean get() = code == LOYALTY_OFFER_CHANGED
 }
 
 private val jsonDelRechazo = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
 
 /** PURA: el cuerpo de un rechazo del canje → su código y mensaje (vacíos si no se puede leer). */
-fun canjeRechazadoDe(cuerpo: String?): CanjeRechazado {
+fun canjeRechazadoDe(cuerpo: String?, conLlave: Boolean = false): CanjeRechazado {
     val raiz = runCatching { cuerpo?.let { jsonDelRechazo.parseToJsonElement(it) as? kotlinx.serialization.json.JsonObject } }.getOrNull()
-    fun texto(llave: String) = (raiz?.get(llave) as? kotlinx.serialization.json.JsonPrimitive)?.takeIf { it.isString }?.content
-    return CanjeRechazado(texto("code"), texto("message").orEmpty())
+    fun texto(o: kotlinx.serialization.json.JsonObject?, llave: String) =
+        (o?.get(llave) as? kotlinx.serialization.json.JsonPrimitive)?.takeIf { it.isString }?.content
+    val recibo = texto(raiz?.get("httpOperation") as? kotlinx.serialization.json.JsonObject, "outcome") == "REJECTED"
+    return CanjeRechazado(texto(raiz, "code"), texto(raiz, "message").orEmpty(), definitivo = !conLlave || recibo)
 }
 
 // MARK: - Cobros por servicio (propina automática por grupo, descorche…)

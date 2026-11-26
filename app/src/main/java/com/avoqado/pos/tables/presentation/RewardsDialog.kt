@@ -40,10 +40,8 @@ internal fun RewardsDialog(
     nota: (com.avoqado.pos.tables.data.CustomerLoyalty) -> String = {
         "Mínimo ${it.minPointsRedeem} puntos. Si quitas la recompensa de la cuenta, los puntos regresan."
     },
-    /** D39: un tope más bajo que el del SERVIDOR (Pedidos: sin dejar la cuenta en $0.00). null = el del SERVIDOR. */
-    tope: Int? = null,
 ) {
-    val maximo = minOf(loyalty?.maxRedeemablePoints ?: 0, tope ?: Int.MAX_VALUE)
+    val maximo = loyalty?.maxRedeemablePoints ?: 0
     // Arranca en el máximo canjeable de ESTA lectura: cada lectura nueva vuelve a empezar ahí.
     var points by remember(loyalty, maximo) { mutableStateOf(maximo) }
     val step = (loyalty?.minPointsRedeem ?: 0).coerceAtLeast(1)

@@ -662,13 +662,16 @@ class TableServiceRepository @Inject constructor(
         venueId: String, orderId: String, customerId: String, points: Int, expectedDiscountAmount: Double,
         /** D39: Pedidos la manda (el canje sube la versión: una respuesta perdida no se vuelve a canjear); Mesas, todavía no. */
         expectedVersion: Int? = null,
+        /** D39 r10: el intento del canje (Pedidos; Mesas, todavía no). Viaja como la llave del SERVIDOR si el aparato tiene identidad UUID. */
+        operationId: String? = null,
     ): Result<RedeemPointsData> = runCatching {
+        val llave = llaveDelCanje(operationId, syncOutbox.deviceId)
         try {
-            apiService.redeemLoyaltyPoints(venueId, orderId, RedeemPointsRequest(customerId, points, expectedDiscountAmount, expectedVersion)).data
+            apiService.redeemLoyaltyPoints(venueId, orderId, RedeemPointsRequest(customerId, points, expectedDiscountAmount, expectedVersion, llave)).data
                 ?: error("Respuesta del canje sin datos")
         } catch (e: retrofit2.HttpException) {
             if (e.code() !in 400..499) throw e
-            throw canjeRechazadoDe(runCatching { e.response()?.errorBody()?.string() }.getOrNull())
+            throw canjeRechazadoDe(runCatching { e.response()?.errorBody()?.string() }.getOrNull(), conLlave = llave != null)
         }
     }.onFailure { Log.e(TAG, "❌ redeemLoyaltyPoints failed: ${it.message}") }
 
