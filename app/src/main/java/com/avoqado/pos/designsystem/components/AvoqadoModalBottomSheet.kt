@@ -17,6 +17,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.ModalBottomSheetProperties
 import androidx.compose.material3.SheetState
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
@@ -71,8 +72,17 @@ fun AvoqadoModalBottomSheet(
      * `TableOrderScreen`).
      */
     aPantallaCompleta: Boolean = false,
+    /**
+     * Esc (Windows) o «atrás» (Android) la cierran. Material la esconde con esas teclas SIN consultar `confirmValueChange`
+     * y luego avisa a `onDismissRequest`: una hoja que se niega a esconderse (la Propina, o una que está guardando) quedaba
+     * escondida, la app no se enteraba y su ventana vacía se quedaba encima tragándose teclado y clics (hz:a5fa2439:D5).
+     * Esas hojas pasan `false` FIJO desde que abren: un valor que cambia con la hoja abierta puede no llegarle a la librería
+     * (su `equals()` ignora este campo). Arrastrar, tocar fuera y la X sí consultan `confirmValueChange`.
+     */
+    seCierraConAtras: Boolean = true,
     content: @Composable ColumnScope.() -> Unit,
 ) {
+    val propiedades = ModalBottomSheetProperties(shouldDismissOnBackPress = seCierraConAtras)
     BarreraDeAtajos()
     val anchoMaximo = if (aPantallaCompleta) Dp.Unspecified else BottomSheetDefaults.SheetMaxWidth
     val forma = if (aPantallaCompleta) RectangleShape else BottomSheetDefaults.ExpandedShape
@@ -86,6 +96,7 @@ fun AvoqadoModalBottomSheet(
             shape = forma,
             containerColor = containerColor,
             dragHandle = dragHandle,
+            properties = propiedades,
         ) {
             ImmersiveWindow()
             contenido()
@@ -114,6 +125,7 @@ fun AvoqadoModalBottomSheet(
                 }
             }
         }),
+        properties = propiedades,
         content = contenido,
     )
 }

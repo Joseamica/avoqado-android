@@ -66,6 +66,8 @@ fun PayInOutSheet(
         ),
         // En Windows la X baja la hoja sin preguntar: mientras se registra, sin X.
         conXPropia = ocupado,
+        // Esc/atrás la esconden sin preguntar: apagado FIJO, no sólo al registrar (hz:a5fa2439:D5). Se cierra con su X.
+        seCierraConAtras = false,
     ) {
         com.avoqado.pos.designsystem.components.ImmersiveWindow()
         Column(

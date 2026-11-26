@@ -120,6 +120,8 @@ fun TipSelectionSheet(
         conXPropia = true,
         onDismissRequest = { /* explicit choice required — see confirmValueChange */ },
         sheetState = sheetState,
+        // Esc/atrás la escondían sin preguntar y el cobro se congelaba (hz:a5fa2439:D5): se elige con sus botones o su X.
+        seCierraConAtras = false,
     ) {
         com.avoqado.pos.designsystem.components.ImmersiveWindow()
         Column(

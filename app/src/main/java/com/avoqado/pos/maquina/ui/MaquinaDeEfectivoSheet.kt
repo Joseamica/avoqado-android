@@ -52,6 +52,9 @@ fun MaquinaDeEfectivoSheet(onDismiss: () -> Unit, viewModel: MaquinaDeEfectivoVi
         dragHandle = null,
         conXPropia = true,
         aPantallaCompleta = true,
+        // Esc/atrás la esconden sin preguntar y, al emparejar, `cerrar` no hace nada: hoja invisible encima
+        // (hz:a5fa2439:D5). Apagado FIJO; se cierra con la X de su cabecera.
+        seCierraConAtras = false,
     ) {
         Box(Modifier.fillMaxSize()) {
             ContenidoDeLaMaquina(
