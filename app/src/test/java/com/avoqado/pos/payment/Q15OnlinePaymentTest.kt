@@ -46,7 +46,7 @@ class Q15OnlinePaymentTest {
     @get:Rule val tope: org.junit.rules.Timeout = org.junit.rules.Timeout.builder()
         .withTimeout(90, java.util.concurrent.TimeUnit.SECONDS).withLookingForStuckThread(true).build()
 
-    private class Fixture(retenerSello: Boolean = false) : AutoCloseable {
+    private class Fixture(retenerSello: Boolean = false, frenarSelloMs: Long = 0) : AutoCloseable {
         val directory=Files.createTempDirectory("q15-online-owned").toFile()
         private val db:Connection=DriverManager.getConnection("jdbc:sqlite:"+directory.resolve("online.sqlite").absolutePath)
         val dao=mockk<PendingPaymentDao>(relaxed=true)
@@ -99,8 +99,9 @@ class Q15OnlinePaymentTest {
                     // D7: la consulta de sello no espera la respuesta financiera y devuelve 404 por defecto.
                     // Sólo Task13 retiene esta GET para probar que el cierre espera el regreso real de IO.
                     if (request.path?.substringBefore('?')?.endsWith("/loyalty") == true) {
+                        // MockWebServer ya la contó (requestCount) antes de llamar aquí: esperar esta señal hace exacto el conteo.
+                        selloEntrado.complete(request)
                         if (retenerSello) {
-                            selloEntrado.complete(request)
                             check(respuestaDelSello.await(5,TimeUnit.SECONDS)) { "La prueba no liberó su GET de sello" }
                         }
                         return MockResponse().setResponseCode(404)
@@ -112,6 +113,8 @@ class Q15OnlinePaymentTest {
             }
             server.start()
             client=OkHttpClient.Builder().addInterceptor { chain -> val request=chain.request()
+                // D3: frena la GET del sello ANTES de que llegue al servidor, como una máquina cargada.
+                if (frenarSelloMs>0 && request.url.encodedPath.endsWith("/loyalty")) Thread.sleep(frenarSelloMs)
                 chain.proceed(request.newBuilder().url(server.url(request.url.encodedPath)).build())
             }.build()
             cash=CashPaymentRepository(storage,dao);order=OrderRepository(storage,client,dao)
@@ -143,6 +146,8 @@ class Q15OnlinePaymentTest {
         fun rows()=query("SELECT * FROM pending_payments ORDER BY createdAt,id").map(::decode)
         fun row(v:String,id:String)=query("SELECT * FROM pending_payments WHERE venueId=:v AND id=:id",mapOf("v" to v,"id" to id)).singleOrNull()?.let(::decode)
         suspend fun arrival():RecordedRequest=withContext(Dispatchers.Default) { withTimeout(5000) { entered.await() } }
+        /** D3: la GET del sello sale sola tras «Cobro exitoso», en IO y sin esperar a nadie; quien cuente peticiones la espera aquí. */
+        suspend fun llegadaDelSello():RecordedRequest=withContext(Dispatchers.Default) { withTimeout(5000) { selloEntrado.await() } }
         suspend fun awaitRelease(id:String)=withContext(Dispatchers.Default) { withTimeout(5000) {
             assertEquals(id,released.await().id)
         } }
@@ -172,7 +177,7 @@ class Q15OnlinePaymentTest {
             val drawer=mockk<CashDrawerRepository>(relaxed=true);coEvery { drawer.sincronizarCajonPrimero() } returns true
             val service=PaymentSyncService(dao,storage,client,network,drawer,mockk<SyncOutbox>(relaxed=true),cash)
             service.usarContextoDeSincronizacion(StandardTestDispatcher(testScheduler))
-            try { service.start();runCurrent();service.syncNow();runCurrent();assertEquals(esperadas,server.requestCount) } finally { service.stop() }
+            try { service.start();runCurrent();service.syncNow();runCurrent();assertEquals("peticiones que llegaron al servidor",esperadas,server.requestCount) } finally { service.stop() }
         }
         // Cancelar no espera el retorno de IO: todos los scopes deben terminar antes de retirar Main.
         suspend fun cerrarTrabajosPropios() {
@@ -222,7 +227,7 @@ class Q15OnlinePaymentTest {
         }
     }
     @Test fun `FAST VM real guarda antes POST y conserva diferencia antes liberacion`() = runTest {
-        Fixture().use { f -> val vm=f.vm();open(vm);vm.processCashPayment(5000);runCurrent()
+        Fixture(frenarSelloMs=300).use { f -> val vm=f.vm();open(vm);vm.processCashPayment(5000);runCurrent()
             val http=f.arrival();val reserved=f.rows().single();assertEquals("EN_VUELO",reserved.syncStatus)
             val capture=ConciliacionDelCobro.leerCaptura(reserved.q15CaptureJson,VENUE,reserved.id)!!
             assertEquals(4000,capture.amountCents);assertEquals(500,capture.tipCents);assertEquals("FULLPAYMENT",capture.splitType)
@@ -231,6 +236,8 @@ class Q15OnlinePaymentTest {
             val applied=f.rows().single();assertEquals("SYNCED",applied.syncStatus);assertEquals(ConciliacionDelCobro.DIFERENCIA,applied.q15Reason)
             assertEquals(reserved.q15CaptureJson,applied.q15CaptureJson);assertNotNull(applied.q15ResultJson);assertEquals(1,f.releases.size)
             // D2 etapa 2: la venta ya es completa y con cliente, así que tras el cobro se consulta su sello (una petición más).
+            // D3: esa GET va sola en IO; frenada 300 ms (como una máquina cargada) llegaba después del conteo. Se espera antes.
+            f.llegadaDelSello()
             with(f) { verifyNoReplayOfApplied(esperadas=2) }
         }
     }

@@ -1,0 +1,75 @@
+package com.avoqado.pos.escritorio.dibujo
+
+import com.avoqado.pos.escritorio.diagnostico.DatosDelEquipo
+import java.util.Locale
+import kotlin.random.Random
+
+/**
+ * «Misma apertura»: 8 hex al azar, uno por proceso. Se crea al armar la primera cabecera (ya pintada la ventana; con el
+ * apagador o fuera de Windows, nunca). Es una etiqueta, no un secreto: no hace falta SecureRandom. No es una hora; el reloj de
+ * la PC nunca viaja (hz:a5fa2439:D1).
+ */
+internal val ID_DE_PROCESO: String by lazy { String.format(Locale.ROOT, "%08x", Random.nextInt()) }
+
+// Lo que acepta el servidor (avoqado-server, deviceDiagnostics.ts): fuera de esto no se manda nada que lo haga tirar el reporte.
+private val MOTORES = setOf("DIRECT3D", "OPENGL", "SOFTWARE_FAST", "SOFTWARE_COMPAT")
+private val PROCESO = Regex("[0-9a-f]{8}")
+private const val REVISION_MAX = 1_000_000_000L
+private const val TOPE = 512
+
+/**
+ * La cabecera `x-device-diagnostics` del sondeo: `v=1;proc=…;rev=…;api=…;paint=…;light=…;perf=…;set=…;forced=…;fail=…;hand=…`
+ * y, si se conocen, `cpu`, `cores`, `ram` y `screen`. null fuera de Windows, sin pintar o con algo que el servidor rechazaría.
+ */
+fun cabeceraDelEquipo(e: Estado, equipo: DatosDelEquipo?, revision: Long, esWindows: Boolean, proceso: () -> String = { ID_DE_PROCESO }): String? {
+    val api = e.motor?.takeIf { it in MOTORES } ?: return null
+    val paint = e.pintarMs?.coerceIn(0, PINTAR_TOPE_MS) ?: return null
+    val perf = when (e.rendimiento) {
+        Rendimiento.FLUIDA -> "FLUID"
+        Rendimiento.LIGERA -> "LIGHT"
+        Rendimiento.NO_ALCANZA -> "INSUFFICIENT"
+        null -> return null
+    }
+    if (!esWindows || revision !in 1..REVISION_MAX) return null
+    val proc = proceso().takeIf { PROCESO.matches(it) } ?: return null   // se pide al final: sólo si de verdad hay cabecera
+    val set = when (e.modo) { Modo.AUTO -> "AUTO"; Modo.RAPIDO -> "FAST" }
+    val texto = StringBuilder(
+        "v=1;proc=$proc;rev=$revision;api=$api;paint=$paint;light=${uno(e.modoLigero)};perf=$perf;set=$set;" +
+            "forced=${uno(e.forzada)};fail=${uno(e.fallo)};hand=${uno(e.aMano)}",
+    )
+    val cpu = equipo?.procesador?.filter { it in ' '..'~' && it != ';' && it != '=' }?.trim()?.take(80)?.trim()?.takeIf { it.isNotEmpty() }
+    val ancho = equipo?.anchoPx?.takeIf { it in 100..99_999 }
+    val alto = equipo?.altoPx?.takeIf { it in 100..99_999 }
+    listOfNotNull(
+        cpu?.let { "cpu=$it" },
+        equipo?.nucleos?.takeIf { it in 1..512 }?.let { "cores=$it" },
+        equipo?.ramGb?.takeIf { it in 0.0..4096.0 }?.let { "ram=" + String.format(Locale.ROOT, "%.1f", it) },
+        if (ancho != null && alto != null) "screen=${ancho}x$alto" else null,
+    ).forEach { par -> if (texto.length + 1 + par.length <= TOPE) texto.append(';').append(par) }   // nunca se corta un par
+    return texto.toString()
+}
+
+private fun uno(b: Boolean) = if (b) "1" else "0"
+
+/**
+ * La cabecera del sondeo, fuera del camino de la apertura (hz:a5fa2439:D2). Al pintar se arma SIN los datos del equipo (sólo
+ * los pares obligatorios): leerlos (registro, pantalla, disco) en el hilo de la ventana atrasaba el primer cuadro ~0.19 s en
+ * el laboratorio. [leerEquipo] se llama sólo desde [equipo], donde el diagnóstico siempre lo leyó, y entonces la cabecera se
+ * vuelve a publicar completa, con una revisión mayor.
+ */
+class SondeoDelDibujo(
+    private val esWindows: Boolean,
+    private val leerEquipo: () -> DatosDelEquipo,
+    private val publicar: (String?) -> Unit,
+) {
+    @Volatile private var leido: DatosDelEquipo? = null
+
+    /** Para `DibujoDeLaCaja.alCambiar` (dentro de su candado, en el hilo de la ventana): sólo arma un texto. */
+    val alCambiar: (Estado, Long) -> Unit = { e, revision -> publicar(cabeceraDelEquipo(e, leido, revision, esWindows)) }
+
+    /** Lee el equipo y vuelve a publicar la cabecera, ya completa. */
+    fun equipo(): DatosDelEquipo = leerEquipo().also {
+        leido = it
+        DibujoDeLaCaja.republicar()
+    }
+}
