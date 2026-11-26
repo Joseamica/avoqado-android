@@ -27,9 +27,10 @@ object DibujoDeLaCaja {
     /**
      * Se invoca DENTRO del candado (así dos cambios nunca publican al revés; Codex r6 #5) cada vez que cambia `estado` con la
      * ventana ya pintada. `revision` = 1, 2, 3… dentro del proceso. Quien se cuelgue aquí no vuelve a llamar a este objeto y
-     * arma algo corto. Excepción a propósito: la PRIMERA llamada en Main.kt lee los datos del equipo (registro, pantalla,
-     * disco) y crea el id del proceso, una sola vez, ya pintada la ventana y cuando nadie más espera este candado. No la muevas
-     * antes de la ventana: en automático, antes de abrirla sólo se lee dibujo.json (hz:a5fa2439:D1).
+     * sólo arma algo corto: la primera llamada va en el hilo de la ventana, en el camino de la apertura. Por eso aquí NO se leen
+     * los datos del equipo (atrasaban el primer cuadro ~0.19 s en el laboratorio): `SondeoDelDibujo` los lee después, donde el
+     * diagnóstico siempre los leyó, y llama [republicar]. Tampoco se muevan antes de la ventana: en automático, antes de abrirla
+     * sólo se mira dibujo.json (hz:a5fa2439:D1).
      */
     @Volatile var alCambiar: ((Estado, revision: Long) -> Unit)? = null
 
@@ -116,6 +117,13 @@ object DibujoDeLaCaja {
 
     /** Lo que el diagnóstico cuenta de cómo dibuja. null con el apagador: para este proceso la función no existe. */
     fun paraElDiagnostico(): Estado? = if (apagado) null else _estado.value
+
+    /** Avisa otra vez el mismo estado con una revisión mayor (la cabecera ya con los datos del equipo). Sin pintar o apagado, nada. */
+    @Synchronized
+    fun republicar() {
+        if (carpeta == null || apertura.motor == null) return
+        publicar()
+    }
 
     /** El botón. `false` = no se pudo guardar y nada cambió. */
     @Synchronized

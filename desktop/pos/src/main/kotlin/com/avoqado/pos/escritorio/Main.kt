@@ -35,7 +35,7 @@ import com.avoqado.pos.customerdisplay.ResumenDelEquipo
 import com.avoqado.pos.escritorio.diagnostico.DatosDelEquipo
 import com.avoqado.pos.escritorio.diagnostico.leerDatosDelEquipo
 import com.avoqado.pos.escritorio.dibujo.DibujoDeLaCaja
-import com.avoqado.pos.escritorio.dibujo.cabeceraDelEquipo
+import com.avoqado.pos.escritorio.dibujo.SondeoDelDibujo
 import com.avoqado.pos.escritorio.tactil.EscenaDeVentana
 import com.avoqado.pos.escritorio.tactil.PuenteTactilWindows
 import com.avoqado.pos.escritorio.teclado.PistolaDeLaVentana
@@ -69,9 +69,12 @@ fun main() {
     Thread.setDefaultUncaughtExceptionHandler { _, e -> Log.e("SinCapturar", "Excepción no atrapada", e) }
     // Sin carpeta o sin bitácora, el aviso no apunta a unos logs que no existen.
     val carpeta = protegido(carpeta = null) { CarpetaDeDatos.resolver(BuildConfig.PRODUCCION).also(Bitacora::iniciar) }
-    // La máquina se lee una vez y ya con la ventana pintada (el primer aviso de cómo dibuja, o el diagnóstico): antes de la
-    // ventana, en automático, sólo se lee dibujo.json (hz:a5fa2439:D1).
-    val equipo by lazy { leerDatosDelEquipo(carpeta, motor = null, primerCuadroMs = null, toque = null) }
+    // Cómo dibuja viaja en el sondeo (hz:a5fa2439:D1). La máquina (registro, pantalla, disco) se lee UNA vez y donde siempre:
+    // al escribir el diagnóstico, ya tomada la marca del arranque. Al pintar, la cabecera sale sin esos datos.
+    val sondeo = SondeoDelDibujo(
+        esWindows = System.getProperty("os.name").orEmpty().startsWith("Windows"),
+        leerEquipo = { leerDatosDelEquipo(carpeta, motor = null, primerCuadroMs = null, toque = null) },
+    ) { ResumenDelEquipo.cabecera = it }
     // Lo que escribió el diagnóstico, para «Más › Diagnóstico de esta computadora» (hz:a5fa2439:D2).
     val diagnostico = AtomicReference<DatosDelEquipo?>()
     val leerDiagnostico: () -> DatosDelEquipo? = diagnostico::get
@@ -88,14 +91,8 @@ fun main() {
         if (System.getProperty("avoqado.version") == null) System.setProperty("avoqado.version", BuildConfig.VERSION_NAME)
         // Preferencias ilegibles o base de otra versión: se niega A PROPÓSITO a arrancar vacía encima de los cobros pendientes.
         Arranque.abrir(carpeta)
-        // Cómo dibuja viaja en el sondeo (hz:a5fa2439:D1). Se conecta antes de alArrancar para que la revisión 1 no se pierda.
-        // Corre dentro del candado de DibujoDeLaCaja, ya pintada la ventana: arma un texto y, la primera vez, lee la máquina y
-        // crea el id del proceso. Nada de esto impide abrir.
-        runCatching {
-            DibujoDeLaCaja.alCambiar = { e, revision ->
-                runCatching { ResumenDelEquipo.cabecera = cabeceraDelEquipo(e, equipo, revision, esWindows = equipo.windows) }
-            }
-        }.onFailure { Log.w("Dibujo", "El sondeo no llevará cómo dibuja", it) }
+        // Se conecta antes de alArrancar para que la revisión 1 no se pierda.
+        DibujoDeLaCaja.alCambiar = sondeo.alCambiar
         // El motor de dibujo sólo se puede fijar antes de que exista la ventana (hz:a5fa2439:D2). Nunca lanza.
         DibujoDeLaCaja.alArrancar(carpeta)
     }
@@ -165,8 +162,11 @@ fun main() {
                                 ),
                             )
                         }.onFailure { Log.w("PantallaCliente", "Pantalla del cliente omitida: ${it.javaClass.simpleName}: ${it.message}") }
-                        runCatching { diagnostico.set(Diagnostico.escribir(carpeta, window.renderApi.name, Diagnostico.arranqueMs(), toque, DibujoDeLaCaja.paraElDiagnostico(), equipo)) }
-                            .onFailure { Log.w("Arranque", "No se pudo armar el diagnóstico", it) }
+                        runCatching {
+                            val arranque = Diagnostico.arranqueMs()   // antes de leer la máquina: esa lectura no cuenta en la apertura
+                            val equipo = sondeo.equipo()   // y la cabecera del sondeo se vuelve a publicar, completa
+                            diagnostico.set(Diagnostico.escribir(carpeta, window.renderApi.name, arranque, toque, DibujoDeLaCaja.paraElDiagnostico(), equipo))
+                        }.onFailure { Log.w("Arranque", "No se pudo armar el diagnóstico", it) }
                     }
                     DisposableEffect(window) {
                         onDispose {

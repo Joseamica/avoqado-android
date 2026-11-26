@@ -20,7 +20,7 @@ class CabeceraDelEquipoTest {
     private val sinDatos = DatosDelEquipo(true, null, null, null, null, null, null, null, null, null, null, null)
     private val obligatorios = "v=1;proc=0a1b2c3d;rev=3;api=OPENGL;paint=6200;light=0;perf=INSUFFICIENT;set=AUTO;forced=0;fail=0;hand=0"
 
-    private fun cabecera(e: Estado = pintada, d: DatosDelEquipo = equipo, rev: Long = 3, windows: Boolean = true) =
+    private fun cabecera(e: Estado = pintada, d: DatosDelEquipo? = equipo, rev: Long = 3, windows: Boolean = true) =
         cabeceraDelEquipo(e, d, revision = rev, esWindows = windows, proceso = { "0a1b2c3d" })
 
     @Test fun `el ejemplo completo`() {
@@ -43,6 +43,10 @@ class CabeceraDelEquipoTest {
     @Test fun `si el filtro deja espacios al principio, el procesador conserva sus primeros 80 caracteres reales`() {
         val c = cabecera(d = sinDatos.copy(procesador = "®™   " + "Z".repeat(100)))!!
         assertTrue(c.endsWith(";cpu=${"Z".repeat(80)}"), c)
+    }
+
+    @Test fun `sin los datos del equipo (todavia no se leen) trae solo los pares obligatorios`() {
+        assertEquals(obligatorios, cabecera(d = null))
     }
 
     @Test fun `fuera de Windows no hay cabecera`() = assertNull(cabecera(windows = false))

@@ -2,6 +2,7 @@ package com.avoqado.pos.escritorio.dibujo
 
 import com.avoqado.pos.BuildConfig
 import com.avoqado.pos.escritorio.Diagnostico
+import com.avoqado.pos.escritorio.diagnostico.DatosDelEquipo
 import java.nio.file.Files
 import java.nio.file.attribute.PosixFilePermissions
 import java.util.Collections
@@ -248,6 +249,53 @@ class DibujoDeLaCajaTest {
         assertTrue(caja.elegir(Modo.AUTO))
         assertEquals(Ajuste(modo = Modo.AUTO, sinAviso = true), crudo())
         assertFalse(e.aplicaAlReabrir)
+    }
+
+    // MARK: - La cabecera del sondeo, fuera del camino de la apertura
+
+    private val equipoFalso = DatosDelEquipo(
+        windows = true, versionSO = "10.0", ramGb = 3.87, nucleos = 4, procesador = "Intel(R) Core(TM) i5-3470 CPU @ 3.20GHz",
+        discoLibreGb = 40.0, anchoPx = 1366, altoPx = 768, puntosTactiles = 0,
+        motorDeDibujo = null, primerCuadroMs = null, toqueConElDedo = null,
+    )
+
+    @Test fun `al pintar la cabecera sale sin leer el equipo, y al leerlo se republica completa con una revision mayor`() {
+        val lecturas = mutableListOf<Boolean>()   // true = se leyó DURANTE alPintar
+        var pintando = false
+        val cabeceras = mutableListOf<String?>()
+        val sondeo = SondeoDelDibujo(esWindows = true, leerEquipo = { lecturas += pintando; equipoFalso }) { cabeceras += it }
+        arrancar()
+        caja.alCambiar = sondeo.alCambiar
+        pintando = true
+        pintar("OPENGL", 9_400)
+        pintando = false
+        assertEquals(emptyList(), lecturas, "el equipo no se lee en el camino de la apertura")
+        val primera = cabeceras.single()!!
+        assertTrue(";rev=1;" in primera && primera.endsWith(";hand=0"), primera)   // sólo los pares obligatorios
+
+        val antes = e
+        assertEquals(equipoFalso, sondeo.equipo())
+        assertEquals(listOf(false), lecturas)
+        assertEquals(antes, e, "republicar no cambia el estado")
+        val segunda = cabeceras.last()!!
+        assertEquals(2, cabeceras.size)
+        assertTrue(";rev=2;" in segunda, segunda)
+        assertTrue(segunda.endsWith(";cpu=Intel(R) Core(TM) i5-3470 CPU @ 3.20GHz;cores=4;ram=3.9;screen=1366x768"), segunda)
+        assertEquals(primera.substringAfter(";rev=1"), segunda.substringAfter(";rev=2").substringBefore(";cpu="))
+    }
+
+    @Test fun `republicar sin pintar o con el apagador no hace nada`() {
+        val revisiones = mutableListOf<Long>()
+        arrancar()
+        caja.alCambiar = { _, n -> revisiones += n }
+        caja.republicar()
+        assertEquals(emptyList(), revisiones)
+
+        arrancar(propiedades = mapOf("avoqado.dibujo.apagado" to "true"))
+        caja.alCambiar = { _, n -> revisiones += n }
+        pintar("OPENGL", 9_400)
+        caja.republicar()
+        assertEquals(emptyList(), revisiones)
     }
 
     @Test fun `con el apagador el diagnostico no habla de como dibuja`() {

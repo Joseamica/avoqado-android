@@ -21,7 +21,7 @@ private const val TOPE = 512
  * La cabecera `x-device-diagnostics` del sondeo: `v=1;proc=…;rev=…;api=…;paint=…;light=…;perf=…;set=…;forced=…;fail=…;hand=…`
  * y, si se conocen, `cpu`, `cores`, `ram` y `screen`. null fuera de Windows, sin pintar o con algo que el servidor rechazaría.
  */
-fun cabeceraDelEquipo(e: Estado, equipo: DatosDelEquipo, revision: Long, esWindows: Boolean, proceso: () -> String = { ID_DE_PROCESO }): String? {
+fun cabeceraDelEquipo(e: Estado, equipo: DatosDelEquipo?, revision: Long, esWindows: Boolean, proceso: () -> String = { ID_DE_PROCESO }): String? {
     val api = e.motor?.takeIf { it in MOTORES } ?: return null
     val paint = e.pintarMs?.coerceIn(0, PINTAR_TOPE_MS) ?: return null
     val perf = when (e.rendimiento) {
@@ -37,16 +37,39 @@ fun cabeceraDelEquipo(e: Estado, equipo: DatosDelEquipo, revision: Long, esWindo
         "v=1;proc=$proc;rev=$revision;api=$api;paint=$paint;light=${uno(e.modoLigero)};perf=$perf;set=$set;" +
             "forced=${uno(e.forzada)};fail=${uno(e.fallo)};hand=${uno(e.aMano)}",
     )
-    val cpu = equipo.procesador?.filter { it in ' '..'~' && it != ';' && it != '=' }?.trim()?.take(80)?.trim()?.takeIf { it.isNotEmpty() }
-    val ancho = equipo.anchoPx?.takeIf { it in 100..99_999 }
-    val alto = equipo.altoPx?.takeIf { it in 100..99_999 }
+    val cpu = equipo?.procesador?.filter { it in ' '..'~' && it != ';' && it != '=' }?.trim()?.take(80)?.trim()?.takeIf { it.isNotEmpty() }
+    val ancho = equipo?.anchoPx?.takeIf { it in 100..99_999 }
+    val alto = equipo?.altoPx?.takeIf { it in 100..99_999 }
     listOfNotNull(
         cpu?.let { "cpu=$it" },
-        equipo.nucleos?.takeIf { it in 1..512 }?.let { "cores=$it" },
-        equipo.ramGb?.takeIf { it in 0.0..4096.0 }?.let { "ram=" + String.format(Locale.ROOT, "%.1f", it) },
+        equipo?.nucleos?.takeIf { it in 1..512 }?.let { "cores=$it" },
+        equipo?.ramGb?.takeIf { it in 0.0..4096.0 }?.let { "ram=" + String.format(Locale.ROOT, "%.1f", it) },
         if (ancho != null && alto != null) "screen=${ancho}x$alto" else null,
     ).forEach { par -> if (texto.length + 1 + par.length <= TOPE) texto.append(';').append(par) }   // nunca se corta un par
     return texto.toString()
 }
 
 private fun uno(b: Boolean) = if (b) "1" else "0"
+
+/**
+ * La cabecera del sondeo, fuera del camino de la apertura (hz:a5fa2439:D2). Al pintar se arma SIN los datos del equipo (sólo
+ * los pares obligatorios): leerlos (registro, pantalla, disco) en el hilo de la ventana atrasaba el primer cuadro ~0.19 s en
+ * el laboratorio. [leerEquipo] se llama sólo desde [equipo], donde el diagnóstico siempre lo leyó, y entonces la cabecera se
+ * vuelve a publicar completa, con una revisión mayor.
+ */
+class SondeoDelDibujo(
+    private val esWindows: Boolean,
+    private val leerEquipo: () -> DatosDelEquipo,
+    private val publicar: (String?) -> Unit,
+) {
+    @Volatile private var leido: DatosDelEquipo? = null
+
+    /** Para `DibujoDeLaCaja.alCambiar` (dentro de su candado, en el hilo de la ventana): sólo arma un texto. */
+    val alCambiar: (Estado, Long) -> Unit = { e, revision -> publicar(cabeceraDelEquipo(e, leido, revision, esWindows)) }
+
+    /** Lee el equipo y vuelve a publicar la cabecera, ya completa. */
+    fun equipo(): DatosDelEquipo = leerEquipo().also {
+        leido = it
+        DibujoDeLaCaja.republicar()
+    }
+}
