@@ -19,8 +19,11 @@ class LectorDePistolaTest {
     private val reenviadas = mutableListOf<KeyEvent>()
     private val codigos = mutableListOf<String>()
     private val pendientes = mutableListOf<() -> Unit>()
+
+    /** Lo que le llega al campo, en el orden en que le llega: lo devuelto y lo que pasó directo (ver [alCampo]). */
+    private val llegadas = mutableListOf<KeyEvent>()
     private val lector = LectorDePistola(
-        reenviar = { reenviadas += it },
+        reenviar = { reenviadas += it; llegadas += it },
         emitir = { codigos += it },
         programar = { _, f -> pendientes += f },
     )
@@ -184,21 +187,77 @@ class LectorDePistolaTest {
         assertTrue(respuestaA.all { it }, "se retuvo y luego se devolvió: no pasó dos veces")
     }
 
-    @Test fun `P1 con un campo escribiendo la pistola teclea en el campo como un teclado`() {
-        // Así funciona hoy la pantalla «Escanear» (su campo de código manual) y cualquier buscador.
-        val respuestas = mandar(pistola("9040586673"), escribiendo = true)
+    /** Manda [eventos] con un campo escribiendo y anota en [llegadas] los que pasan directo, después de lo que se devolvió. */
+    private fun alCampo(eventos: List<KeyEvent>): List<Boolean> =
+        eventos.map { e -> lector.procesar(e, escribiendo = true).also { retenida -> if (!retenida) llegadas += e } }
 
-        assertTrue(respuestas.none { it }, "con un campo escribiendo no se toca nada")
+    @Test fun `P1 con un campo escribiendo la pistola teclea en el campo como un teclado`() {
+        // Así funciona la pantalla «Escanear» (su campo de código manual) y cualquier buscador: un código que NO es la tarjeta
+        // de un cliente llega al campo entero y en su orden (D56 sólo aparta la tarjeta).
+        val eventos = pistola("9040586673")
+        alCampo(eventos)
+        vencenLosTemporizadores()
+
         assertTrue(codigos.isEmpty())
-        assertTrue(reenviadas.isEmpty())
+        assertEquals(eventos, llegadas, "todas, una sola vez y en su orden, con su Enter al final")
+    }
+
+    @Test fun `P1 D56 con un campo escribiendo la tarjeta del cliente va al lector y no al campo`() {
+        // hz:b37dd7ea:D56: en WINDOWS, con el buscador (F3) o el campo manual de «Escanear» con texto, la pistola le pegaba los 48
+        // caracteres de la tarjeta digital al texto y salía «Crear producto» con el QR como nombre. Ahora gana el lector, como fuera
+        // de un campo: la tarjeta va a Cobrar y el campo se queda con lo que la persona escribió.
+        val camisa = "camisa".flatMapIndexed { i, c -> tecla(c, 1_000 + i * 150L) }
+        alCampo(camisa)
+        vencenLosTemporizadores()
+        val respuestas = alCampo(pistola(TARJETA, desdeMs = 5_000))
+        vencenLosTemporizadores()
+
+        assertEquals(listOf(TARJETA), codigos)
+        assertTrue(respuestas.all { it }, "ninguna tecla de la tarjeta (ni su Enter) llega al campo")
+        assertEquals(camisa, llegadas, "el campo sólo tiene lo que tecleó la persona, en su orden")
+    }
+
+    @Test fun `D56 la tarjeta en mayusculas con Shift tambien va al lector`() {
+        alCampo(conShift(TARJETA.uppercase() + "\n", pasoMs = 2))
+
+        assertEquals(listOf(TARJETA.uppercase()), codigos)
+        assertTrue(llegadas.none { it.keyCode != KeyEvent.VK_SHIFT }, "sólo los Shift pasan, como fuera de un campo")
+    }
+
+    @Test fun `P1 D56 en un campo una persona no pierde teclas ni cambia su orden`() {
+        // Lo que se teclea en un buscador, un monto o un nombre: letras que no pueden ser de la tarjeta pasan al instante y sueltan
+        // antes lo retenido; las que sí (0-9, a-f) esperan un instante y llegan en su orden. Ni con un Enter pegado sale un código.
+        var desde = 1_000L
+        for (texto in listOf("camisa", "250.50", "Café", "abc1", "dead beef", "1234567890abcdef")) for (cada in listOf(30L, 80L, 150L)) for (enter in listOf(10L, 100L)) {
+            codigos.clear(); llegadas.clear(); pendientes.clear()
+            desde += 10_000
+            val letras = texto.flatMapIndexed { i, c -> tecla(c, desde + i * cada) }
+            val eventos = letras + tecla('\n', desde + (texto.length - 1) * cada + enter)
+            alCampo(eventos)
+            vencenLosTemporizadores()
+            val caso = "«$texto» cada $cada ms, Enter a $enter ms"
+            assertTrue(codigos.isEmpty(), "no es una tarjeta: $caso")
+            assertEquals(eventos, llegadas, "todas, una sola vez y en su orden: $caso")
+        }
+    }
+
+    @Test fun `D56 en un campo un codigo de 48 que no es la tarjeta llega al campo`() {
+        // 48 caracteres con una «g»: no tiene la forma de la tarjeta (sólo 0-9 y a-f).
+        val casi = TARJETA.dropLast(1) + "g"
+        val eventos = pistola(casi)
+        alCampo(eventos)
+        vencenLosTemporizadores()
+
+        assertTrue(codigos.isEmpty())
+        assertEquals(eventos, llegadas)
     }
 
     @Test fun `lo retenido sale ANTES que la tecla que si pasa`() {
         val unoDos = tecla('1', 1_000) + tecla('2', 1_008)
         mandar(unoDos)
-        // Se abrió un campo a media ráfaga: la tecla nueva pasa, pero lo retenido tiene que llegar primero.
-        val tres = tecla('3', 1_016)
-        val respuesta = lector.procesar(tres.first(), escribiendo = true)
+        // Se abrió un campo a media ráfaga: la tecla nueva (que no puede ser de la tarjeta) pasa, pero lo retenido llega primero.
+        val equis = tecla('x', 1_016)
+        val respuesta = lector.procesar(equis.first(), escribiendo = true)
 
         assertFalse(respuesta)
         assertEquals(unoDos, reenviadas)
@@ -293,5 +352,10 @@ class LectorDePistolaTest {
 
         assertEquals(listOf("7501055310838"), codigos)
         assertTrue(reenviadas.isEmpty())
+    }
+
+    private companion object {
+        /** La forma de la tarjeta digital de un cliente: 48 caracteres de 0-9 y a-f (`pareceTarjetaDeCliente`). */
+        const val TARJETA = "0123456789abcdef0123456789abcdef0123456789abcdef"
     }
 }
