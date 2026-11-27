@@ -11,6 +11,7 @@ import androidx.compose.ui.window.DialogProperties
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import androidx.lifecycle.compose.currentStateAsState
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.domain.RoleManager
 import com.avoqado.pos.core.util.ConnectivityMonitor
@@ -1138,8 +1139,12 @@ private fun RecompensasDeLaCuenta(orderId: String, enLinea: Boolean, viewModel: 
     val motivo = motivoSinRecompensasDeCuenta(cuenta, leida, enLinea, consultas > 0, oferta, viewModel.puedeCanjearPuntos, prohibida, enCarrito)
     // D39 (atajo «Usar puntos»): la cuenta que pidió el atajo abre su diálogo sola al quedar lista; con una razón final, la razón ya se
     // ve aquí abajo (con el folio arriba) y la solicitud se da por atendida (Codex r1 #6). Nunca canjea: eso es «Canjear».
-    LaunchedEffect(orderId, motivo, consultas, cuenta?.version) {
-        if (!viewModel.aperturaPedida(orderId)) return@LaunchedEffect
+    // Codex r5: al salir por la barra, Pedidos y la pantalla nueva conviven ~700 ms (como el lector de Mesas, Codex d2 #1): sólo se
+    // abre con esta pantalla RESUMED; si se va, `OrdersScreen` suelta la cuenta al desmontarse.
+    val activa = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle.currentStateAsState().value
+        .isAtLeast(androidx.lifecycle.Lifecycle.State.RESUMED)
+    LaunchedEffect(orderId, motivo, consultas, cuenta?.version, activa) {
+        if (!activa || !viewModel.aperturaPedida(orderId)) return@LaunchedEffect
         when (com.avoqado.pos.pos.presentation.cart.aperturaDeRecompensas(true, consultas > 0, motivo, orderId)) {
             com.avoqado.pos.pos.presentation.cart.AperturaDeRecompensas.Abrir -> {
                 viewModel.aperturaAtendida(orderId)
