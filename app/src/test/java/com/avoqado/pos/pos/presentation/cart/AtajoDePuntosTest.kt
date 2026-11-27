@@ -164,7 +164,7 @@ class AtajoDePuntosTest {
 
     // Codex C1-r2/r3 #5: cobrada en efectivo desde la copia sin red: pudo subir, seguir en cola o quedar por revisar; el aviso no promete.
     @Test fun `cobrada sin red lo dice sin prometer`() =
-        assertEquals("Se cobró en efectivo sin conexión la cuenta de Ana (#ORD-14): revisa en Pedidos que quedó pagada.",
+        assertEquals("La cuenta de Ana (#ORD-14) quedó en Pedidos: revisa ahí si el efectivo sin conexión quedó guardado.",
             avisoCobradaSinRed("Ana", "#ORD-14"))
 
     @Test fun `sin red espera a que vuelva`() =

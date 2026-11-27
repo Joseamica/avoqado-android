@@ -76,6 +76,7 @@ fun CuentaDelAtajo(
     // Codex C1-r1 #5: el cobro dijo «pagada» al tocar «Listo»; se cierra cuando la relectura confirma que quedó cerrada (si queda saldo,
     // la ventana sigue con lo que falta).
     val cobroTerminado = cobrada
+    var huboCobroSinRed by remember(orderId) { mutableStateOf(false) }
     LaunchedEffect(cerrada, cobrando, cobroTerminado) {
         if (cerrada == false) vioAbierta = true
         if (cerrada == true && !cobrando && cierraLaVentana(vioAbierta || cobroTerminado, cerrada)) onCerrar(null)
@@ -87,6 +88,7 @@ fun CuentaDelAtajo(
         if (!cobrando) onCerrar(when {
             cerrada == true -> null
             cobroTerminado -> avisoCobradaSinConfirmar(cliente, folio)
+            huboCobroSinRed -> avisoCobradaSinRed(cliente, folio)
             else -> avisoCuentaEnPedidos(cliente, folio)
         })
     }
@@ -99,8 +101,9 @@ fun CuentaDelAtajo(
             // Codex v3-r2 #5: se cierra con lo que dice el cobro al terminar («Listo»), sin esperar a releer la cuenta.
             CompositionLocalProvider(LocalAlSalirDelCobroDeCuenta provides { id, cierre, sinRed ->
                 if (id == orderId && cierre == CierreDeCuenta.CANCELADA) onCerrar(null)
-                // Codex C1-r2 #5: cobrada desde la copia sin red: no hay SERVIDOR que confirme; se cierra y se dice que se sube sola.
-                if (id == orderId && cierre == CierreDeCuenta.PAGADA && sinRed) onCerrar(avisoCobradaSinRed(cliente, folioVisible()))
+                // El cobro desde la copia sin red siempre vuelve ABIERTA (la cuenta vuelve a decidir, como en Pedidos): no se sabe si se
+                // cobró; al cerrar la ventana el aviso manda a revisar (Codex C1-r2/r3 #5).
+                if (id == orderId && sinRed) huboCobroSinRed = true
                 if (id == orderId && cierre == CierreDeCuenta.PAGADA && !sinRed) onCobrada()
             }) {
                 DetalleDeUnaCuenta(viewModel, onBack = salir, onCuentaCancelada = { onCerrar(null) }) {}

@@ -406,7 +406,7 @@ class OrdersRepository @Inject constructor(
                 listaDeLas(listaVistaA, sinRed = true)
             }
         }
-        principal.alPerderLaRed(actual)
+        respaldarConLaCopia(principal, actual)
     }
 
     // MARK: - El detalle a la vista (D39 C1: una libreta por pantalla)
@@ -415,122 +415,127 @@ class OrdersRepository @Inject constructor(
      * D39 C1 (founder, «memoria propia», 26-nov): la cuenta abierta, su carga, su aviso y su respaldo sin red. Pedidos usa [principal]; la
      * cuenta que abre el atajo «Usar puntos» encima de Cobrar pide la suya ([lectorPropio]), así una no pisa a la otra (Codex v3-r2 #2).
      */
-    inner class LectorDeCuenta {
-        private val _selectedOrder = MutableStateFlow<OrderDetail?>(null)
+    class LectorDeCuenta internal constructor(private val repo: OrdersRepository) {
+        internal val _selectedOrder = MutableStateFlow<OrderDetail?>(null)
         val selectedOrder: StateFlow<OrderDetail?> = _selectedOrder.asStateFlow()
-        private var detalleSolicitado: Pair<String, Any>? = null
+        internal var detalleSolicitado: Pair<String, Any>? = null
 
-        private val _isLoadingDetail = MutableStateFlow(false)
+        internal val _isLoadingDetail = MutableStateFlow(false)
         val isLoadingDetail: StateFlow<Boolean> = _isLoadingDetail.asStateFlow()
 
-        private val _errorMessage = MutableStateFlow<String?>(null)
+        internal val _errorMessage = MutableStateFlow<String?>(null)
         val errorMessage: StateFlow<String?> = _errorMessage.asStateFlow()
 
-        private val _detalleSinRed = MutableStateFlow<String?>(null)
+        internal val _detalleSinRed = MutableStateFlow<String?>(null)
         /** D22: el pedido cuyo detalle no abrió porque nadie contestó, o `null`. Lo deja cada carga vigente al terminar. */
         val detalleSinRed: StateFlow<String?> = _detalleSinRed.asStateFlow()
 
-        private val _detalleDeLaCopia = MutableStateFlow<CuentaGuardada?>(null)
+        internal val _detalleDeLaCopia = MutableStateFlow<CuentaGuardada?>(null)
         /** La cuenta de la copia que respalda el detalle a la vista sin red, o null. */
         val detalleDeLaCopia: StateFlow<CuentaGuardada?> = _detalleDeLaCopia.asStateFlow()
 
-        /**
-         * @param silencioso actualiza el pedido que ya se ve: sin círculo de carga, y si falla se queda lo que hay en pantalla.
-         * @param reintento D22: vuelve a pedir un pedido que no abrió por falta de red. Su «Sin conexión…» se queda a la vista
-         *   mientras consulta (sin círculo), y si la consulta se corta (otra selección, se fue la red, se cerró «Pedidos») no
-         *   cambia nada (Codex r3 #3). Al terminar dice lo que toque, igual que un toque.
-         */
-        suspend fun loadOrderDetail(orderId: String, silencioso: Boolean = false, reintento: Boolean = false) {
-            val solicitud = orderId to Any()
-            detalleSolicitado = solicitud
-            val venueId = secureStorage.venueId
-            val turno = copia?.abrirLectura() // D12 (Codex r3 H1): lo que diga este detalle pone la copia al día
-            if (!silencioso && !reintento) {
-                _isLoadingDetail.value = true
-                _errorMessage.value = null
-                _detalleSinRed.value = null // un toque manda: corta la reapertura automática en curso (Codex r4 #1)
-            }
+        suspend fun loadOrderDetail(orderId: String, silencioso: Boolean = false, reintento: Boolean = false) =
+            repo.cargarEn(this, orderId, silencioso, reintento)
+        fun clearSelectedOrder() = repo.limpiar(this)
+        suspend fun alPerderLaRed(actual: String) = repo.respaldarConLaCopia(this, actual)
+    }
 
-            try {
-                val detail = fetchOrderDetail(orderId)
-                if (copia != null && venueId != null && turno != null) {
-                    copia.alLeerDetalle(venueId, orderId, detail?.comoEvidencia() ?: EvidenciaDelDetalle.NoExiste, turno)
-                }
-                if (detalleSolicitado != solicitud || (silencioso && detail == null)) return
-                if (_detalleDeLaCopia.value != null) _errorMessage.value = null // su «Sin conexión · como estaba…»
-                _detalleDeLaCopia.value = null
-                _selectedOrder.value = detail
-                _detalleSinRed.value = null
-                if (detail == null) {
-                    _errorMessage.value = "No se encontró la orden"
-                } else if (reintento) {
-                    _errorMessage.value = null // el «Sin conexión…» que se quedó a la vista mientras consultaba
-                }
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                if (detalleSolicitado != solicitud || silencioso) return
-                Log.e(TAG, "❌ loadOrderDetail exception: ${e.message}", e)
-                val sinRed = FalloDeLectura.de(e) == FalloDeLectura.SIN_RED
-                // Final fix (F3, I-1): la reapertura del pedido que se VE y el servidor contesta mal (5xx): se queda a la vista con la razón
-                // real, deja de estar sin red (la copia ya no cobra: `copiaParaCobrar`) y no se repite solo (D22). Antes de D12 nada lo recargaba.
-                val respaldo = _detalleDeLaCopia.value
-                if (reintento && !sinRed && respaldo != null && _selectedOrder.value?.id == orderId) {
-                    _errorMessage.value = TextosDeCuentaSinRed.pedidoNoSeCargoDeLas(horaDeLaCopia(respaldo.vistaEn, secureStorage.venueTimezone))
-                    _detalleSinRed.value = null
-                    return
-                }
-                // D12: sin red, la cuenta de la copia VIGENTE de la sucursal ACTUAL se enseña con su hora; la reapertura sigue.
-                val actual = secureStorage.venueId
-                val guardada = if (sinRed && copia != null && actual != null) copia.cuenta(actual, orderId) else null
-                if (detalleSolicitado != solicitud) return
-                if (guardada != null) {
-                    // Una reapertura que falla no desmonta lo que ya se ve de esa cuenta (Codex r3 #3).
-                    if (!reintento || _selectedOrder.value?.id != orderId) _selectedOrder.value = guardada.cuenta.comoDetalle()
-                    _detalleDeLaCopia.value = guardada
-                    _errorMessage.value = avisoDeLaCopia(guardada)
-                    _detalleSinRed.value = orderId
-                    return
-                }
-                _detalleDeLaCopia.value = null
-                // Como antes de D22 (ahí el fallo llegaba como `null`): volver a pedir el pedido que se ve y fallar enseña el
-                // fallo, no la foto anterior sin aviso (Codex r5).
-                _selectedOrder.value = null
-                _errorMessage.value = if (sinRed) TEXTO_PEDIDO_SIN_RED else "Error al cargar detalle de orden"
-                _detalleSinRed.value = orderId.takeIf { sinRed }
-            } finally {
-                if (detalleSolicitado == solicitud) _isLoadingDetail.value = false
-            }
+    /**
+     * @param silencioso actualiza el pedido que ya se ve: sin círculo de carga, y si falla se queda lo que hay en pantalla.
+     * @param reintento D22: vuelve a pedir un pedido que no abrió por falta de red. Su «Sin conexión…» se queda a la vista
+     *   mientras consulta (sin círculo), y si la consulta se corta (otra selección, se fue la red, se cerró «Pedidos») no
+     *   cambia nada (Codex r3 #3). Al terminar dice lo que toque, igual que un toque.
+     */
+    internal suspend fun cargarEn(l: LectorDeCuenta, orderId: String, silencioso: Boolean = false, reintento: Boolean = false) {
+        val solicitud = orderId to Any()
+        l.detalleSolicitado = solicitud
+        val venueId = secureStorage.venueId
+        val turno = copia?.abrirLectura() // D12 (Codex r3 H1): lo que diga este detalle pone la copia al día
+        if (!silencioso && !reintento) {
+            l._isLoadingDetail.value = true
+            l._errorMessage.value = null
+            l._detalleSinRed.value = null // un toque manda: corta la reapertura automática en curso (Codex r4 #1)
         }
 
-        fun clearSelectedOrder() {
-            detalleSolicitado = null
-            _detalleSinRed.value = null
-            _detalleDeLaCopia.value = null
-            _selectedOrder.value = null
-            _isLoadingDetail.value = false
-        }
-
-        /** La parte del detalle de [OrdersRepository.alPerderLaRed]: si el detalle a la vista vino del servidor, se respalda con la copia. */
-        suspend fun alPerderLaRed(actual: String) {
-            val visto = _selectedOrder.value ?: return
-            // Ya está sin red (lo dejó su lectura): nada que hacer. Un pedido respaldado que dejó de estarlo (final fix F3: el servidor
-            // contestó mal al volver) sí vuelve a estar sin red.
-            if (copia == null || _detalleSinRed.value == visto.id) return
-            val solicitud = detalleSolicitado
-            val guardada = copia.cuenta(actual, visto.id) ?: return
-            if (detalleSolicitado !== solicitud || _selectedOrder.value !== visto || secureStorage.venueId != actual) return
-            _detalleDeLaCopia.value = guardada
-            _errorMessage.value = avisoDeLaCopia(guardada)
-            _detalleSinRed.value = visto.id // al volver la red, la reapertura de D22 lo pide y quita el aviso
+        try {
+            val detail = fetchOrderDetail(orderId)
+            if (copia != null && venueId != null && turno != null) {
+                copia.alLeerDetalle(venueId, orderId, detail?.comoEvidencia() ?: EvidenciaDelDetalle.NoExiste, turno)
+            }
+            if (l.detalleSolicitado != solicitud || (silencioso && detail == null)) return
+            if (l._detalleDeLaCopia.value != null) l._errorMessage.value = null // su «Sin conexión · como estaba…»
+            l._detalleDeLaCopia.value = null
+            l._selectedOrder.value = detail
+            l._detalleSinRed.value = null
+            if (detail == null) {
+                l._errorMessage.value = "No se encontró la orden"
+            } else if (reintento) {
+                l._errorMessage.value = null // el «Sin conexión…» que se quedó a la vista mientras consultaba
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            if (l.detalleSolicitado != solicitud || silencioso) return
+            Log.e(TAG, "❌ loadOrderDetail exception: ${e.message}", e)
+            val sinRed = FalloDeLectura.de(e) == FalloDeLectura.SIN_RED
+            // Final fix (F3, I-1): la reapertura del pedido que se VE y el servidor contesta mal (5xx): se queda a la vista con la razón
+            // real, deja de estar sin red (la copia ya no cobra: `copiaParaCobrar`) y no se repite solo (D22). Antes de D12 nada lo recargaba.
+            val respaldo = l._detalleDeLaCopia.value
+            if (reintento && !sinRed && respaldo != null && l._selectedOrder.value?.id == orderId) {
+                l._errorMessage.value = TextosDeCuentaSinRed.pedidoNoSeCargoDeLas(horaDeLaCopia(respaldo.vistaEn, secureStorage.venueTimezone))
+                l._detalleSinRed.value = null
+                return
+            }
+            // D12: sin red, la cuenta de la copia VIGENTE de la sucursal ACTUAL se enseña con su hora; la reapertura sigue.
+            val actual = secureStorage.venueId
+            val guardada = if (sinRed && copia != null && actual != null) copia.cuenta(actual, orderId) else null
+            if (l.detalleSolicitado != solicitud) return
+            if (guardada != null) {
+                // Una reapertura que falla no desmonta lo que ya se ve de esa cuenta (Codex r3 #3).
+                if (!reintento || l._selectedOrder.value?.id != orderId) l._selectedOrder.value = guardada.cuenta.comoDetalle()
+                l._detalleDeLaCopia.value = guardada
+                l._errorMessage.value = avisoDeLaCopia(guardada)
+                l._detalleSinRed.value = orderId
+                return
+            }
+            l._detalleDeLaCopia.value = null
+            // Como antes de D22 (ahí el fallo llegaba como `null`): volver a pedir el pedido que se ve y fallar enseña el
+            // fallo, no la foto anterior sin aviso (Codex r5).
+            l._selectedOrder.value = null
+            l._errorMessage.value = if (sinRed) TEXTO_PEDIDO_SIN_RED else "Error al cargar detalle de orden"
+            l._detalleSinRed.value = orderId.takeIf { sinRed }
+        } finally {
+            if (l.detalleSolicitado == solicitud) l._isLoadingDetail.value = false
         }
     }
 
+    internal fun limpiar(l: LectorDeCuenta) {
+        l.detalleSolicitado = null
+        l._detalleSinRed.value = null
+        l._detalleDeLaCopia.value = null
+        l._selectedOrder.value = null
+        l._isLoadingDetail.value = false
+    }
+
+    /** La parte del detalle de [alPerderLaRed]: si el detalle a la vista vino del servidor, se respalda con la copia. */
+    internal suspend fun respaldarConLaCopia(l: LectorDeCuenta, actual: String) {
+        val visto = l._selectedOrder.value ?: return
+        // Ya está sin red (lo dejó su lectura): nada que hacer. Un pedido respaldado que dejó de estarlo (final fix F3: el servidor
+        // contestó mal al volver) sí vuelve a estar sin red.
+        if (copia == null || l._detalleSinRed.value == visto.id) return
+        val solicitud = l.detalleSolicitado
+        val guardada = copia.cuenta(actual, visto.id) ?: return
+        if (l.detalleSolicitado !== solicitud || l._selectedOrder.value !== visto || secureStorage.venueId != actual) return
+        l._detalleDeLaCopia.value = guardada
+        l._errorMessage.value = avisoDeLaCopia(guardada)
+        l._detalleSinRed.value = visto.id // al volver la red, la reapertura de D22 lo pide y quita el aviso
+    }
+
     /** La libreta de Pedidos. */
-    val principal = LectorDeCuenta()
+    val principal = LectorDeCuenta(this)
 
     /** Una libreta aparte (la cuenta del atajo encima de Cobrar). */
-    fun lectorPropio() = LectorDeCuenta()
+    fun lectorPropio() = LectorDeCuenta(this)
 
     val selectedOrder: StateFlow<OrderDetail?> get() = principal.selectedOrder
     val isLoadingDetail: StateFlow<Boolean> get() = principal.isLoadingDetail
@@ -540,8 +545,9 @@ class OrdersRepository @Inject constructor(
     /** La cuenta de la copia que respalda el detalle a la vista sin red, o null. */
     val detalleDeLaCopia: StateFlow<CuentaGuardada?> get() = principal.detalleDeLaCopia
 
+    // La carga corre AQUÍ (no en la libreta): las pruebas que espían el repositorio (spyk) ven sus llamadas.
     suspend fun loadOrderDetail(orderId: String, silencioso: Boolean = false, reintento: Boolean = false) =
-        principal.loadOrderDetail(orderId, silencioso, reintento)
+        cargarEn(principal, orderId, silencioso, reintento)
 
-    fun clearSelectedOrder() = principal.clearSelectedOrder()
+    fun clearSelectedOrder() = limpiar(principal)
 }

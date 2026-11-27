@@ -894,8 +894,7 @@ private fun CobroDesdeLaCopia(orderId: String, cents: Int, onSalir: (CierreDeCue
             antesDeRecibirEfectivo = { viewModel.revalidarCobroSinRed(orderId, cents) },
             alNoPasarLaPuerta = viewModel::alNoPasarLaPuerta,
             onPaymentCommitted = {},
-            // D39 C1: cobrado desde la copia (se sube solo): la cuenta del atajo se cierra sin decir «quedó por cobrar».
-            onDone = { viewModel.soltarCobroSinRed(); onSalir(CierreDeCuenta.PAGADA) },
+            onDone = { salir() },
             onCancel = { salir() },
             onPreviousChargeResolved = { texto -> avisoLocal = texto },
         )
@@ -1007,6 +1006,17 @@ internal val LocalSolicitudesDeSaldo = compositionLocalOf<List<SolicitudDeTarjet
 internal val LocalCuentasDeSaldoCerradas = compositionLocalOf<List<String>> { emptyList() }
 internal val LocalCerrarCuentaDeSaldo = compositionLocalOf<(String) -> Unit> { {} }
 
+/** D39 (atajo, Codex r2/r3 #5): la cuenta que pidió el atajo ya no está abierta: su aviso con el folio, y la apertura se da por atendida. */
+@Composable
+private fun AvisoDeCuentaYaCerrada(order: com.avoqado.pos.orders.data.model.OrderDetail, viewModel: CobroDeCuentaViewModel) {
+    var avisoDelAtajo by rememberSaveable(order.id) { mutableStateOf<String?>(null) }
+    if (viewModel.aperturaPedida(order.id)) LaunchedEffect(order.id) {
+        avisoDelAtajo = com.avoqado.pos.pos.presentation.cart.avisoCuentaYaCerrada("#" + order.orderNumber)
+        viewModel.aperturaAtendida(order.id)
+    }
+    avisoDelAtajo?.let { Text(it) }
+}
+
 /**
  * D39 C1 (Codex v3-r2 #5): cómo terminó el cobro de una cuenta (pagada, cancelada o la cajera salió sin cobrar), al cerrarse su pantalla
  * (después de «Listo»). La cuenta del atajo encima de Cobrar se cierra con esto, sin esperar a releer la cuenta. Fuera de ella, nada.
@@ -1096,16 +1106,9 @@ fun AccionesDeCuentaAbierta(
             alSalirDelCobro(order.id, cierre, true)
         }, viewModel = viewModel, saldoSinRed = saldo)
     }
-    if (!pinta.acciones) {
-        // D39 (atajo, Codex r2/r3 #5): la cuenta ya no está abierta (pagada o cancelada): se dice con su folio y se da por atendida.
-        var avisoDelAtajo by rememberSaveable(order.id) { mutableStateOf<String?>(null) }
-        if (viewModel.aperturaPedida(order.id)) LaunchedEffect(order.id) {
-            avisoDelAtajo = com.avoqado.pos.pos.presentation.cart.avisoCuentaYaCerrada("#" + order.orderNumber)
-            viewModel.aperturaAtendida(order.id)
-        }
-        avisoDelAtajo?.let { Text(it) }
-        return
-    }
+    // D39 (atajo, Codex r2/r3 #5): la cuenta ya no está abierta (pagada o cancelada): se dice con su folio y se da por atendida.
+    if (!pinta.acciones) AvisoDeCuentaYaCerrada(order, viewModel)
+    if (!pinta.acciones) return
     val solicitudes by viewModel.solicitudes.collectAsState()
     val oferta by viewModel.oferta.collectAsState()
     val detalle by viewModel.detalle.collectAsState()
