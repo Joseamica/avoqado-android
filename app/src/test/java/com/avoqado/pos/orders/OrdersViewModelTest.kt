@@ -85,6 +85,30 @@ class OrdersViewModelTest {
         }
     }
 
+    // MARK: - D39 v3 (Codex v3 #2): el atajo de Cobrar comparte el repositorio de Pedidos
+
+    @Test
+    fun `al reabrir Pedidos vuelve a pedir su cuenta si el repositorio trae otra`() = runTest {
+        val otra = MutableStateFlow<com.avoqado.pos.orders.data.model.OrderDetail?>(null)
+        every { repository.selectedOrder } returns otra
+        val viewModel = createViewModel()
+        viewModel.selectOrder("A")
+        otra.value = com.avoqado.pos.orders.data.model.OrderDetail(id = "B")
+        viewModel.reafirmarSeleccion()
+        coVerify(exactly = 2) { repository.loadOrderDetail("A", any(), any()) }
+    }
+
+    @Test
+    fun `al reabrir Pedidos con su misma cuenta no vuelve a pedir`() = runTest {
+        val misma = MutableStateFlow<com.avoqado.pos.orders.data.model.OrderDetail?>(null)
+        every { repository.selectedOrder } returns misma
+        val viewModel = createViewModel()
+        viewModel.selectOrder("A")
+        misma.value = com.avoqado.pos.orders.data.model.OrderDetail(id = "A")
+        viewModel.reafirmarSeleccion()
+        coVerify(exactly = 1) { repository.loadOrderDetail("A", any(), any()) }
+    }
+
     // MARK: - Search
 
     @Test

@@ -120,6 +120,7 @@ class UsarPuntosCarritoTest {
 
     @Test fun `creada, pide abrir ESA cuenta en Pedidos con la sesion y la sucursal`() = runTest {
         val vm = vm()
+        vm.cobrarSeMonto()
         ventaDeAna(vm)
         vm.leerPuntosParaElAtajo()
         advanceUntilIdle()
@@ -133,8 +134,60 @@ class UsarPuntosCarritoTest {
         advanceUntilIdle()
         assertEquals(ResultadoPagarDespues.Creada, vm.resultadoUsarPuntos.value)
         assertNull("no es el «Pagar después» de Atajos", vm.resultadoPagarDespues.value)
-        assertEquals(SolicitudDeRecompensas("ord-1", "venue-1", 7L), puerta.solicitud.value)
+        assertEquals(SolicitudDeRecompensas("ord-1", "venue-1", 7L, "Ana"), puerta.solicitud.value)
+        // v3 «C»: la cuenta se abre encima de Cobrar, no en Más › Pedidos.
+        assertEquals("ord-1", vm.cuentaDelAtajoDeEstaSesion()?.orderId)
         assertTrue(vm.cartState.value.isEmpty)
+    }
+
+    // v3 «C»: cerrar la ventana (X, cobrada o al salir de Cobrar) la olvida y suelta la apertura de «Recompensas».
+    @Test fun `cerrar la ventana de la cuenta la olvida y suelta Recompensas`() = runTest {
+        val vm = vm()
+        vm.cobrarSeMonto()
+        ventaDeAna(vm)
+        vm.leerPuntosParaElAtajo()
+        advanceUntilIdle()
+        responde(201, """{"success":true,"order":{"id":"ord-1","total":100.0}}""")
+        vm.usarPuntos()
+        advanceUntilIdle()
+        vm.cerrarCuentaDelAtajo()
+        assertNull(vm.cuentaDelAtajoDeEstaSesion())
+        assertNull(puerta.solicitud.value)
+    }
+
+    // Codex v3 #3: si la cajera salió de Cobrar mientras se creaba la cuenta, la ventana no aparece al volver; se dice dónde quedó.
+    @Test fun `si Cobrar se desmonto mientras se creaba, no se abre la ventana`() = runTest {
+        val vm = vm()
+        vm.cobrarSeMonto()
+        ventaDeAna(vm)
+        vm.leerPuntosParaElAtajo()
+        advanceUntilIdle()
+        val respuesta = CompletableDeferred<OrderRepository.RespuestaCruda>()
+        coEvery { ordenes.enviarPagarDespues(any(), any()) } coAnswers { respuesta.await() }
+        vm.usarPuntos()
+        runCurrent()
+        vm.cobrarSeDesmonto()
+        vm.cobrarSeMonto()
+        respuesta.complete(OrderRepository.RespuestaCruda(201, "application/json", null, """{"success":true,"order":{"id":"ord-1","total":100.0}}"""))
+        advanceUntilIdle()
+        assertNull(vm.cuentaDelAtajo.value)
+        assertNull(puerta.solicitud.value)
+        assertEquals(ResultadoPagarDespues.Aviso(avisoCuentaEnPedidos("Ana", "")), vm.resultadoUsarPuntos.value)
+    }
+
+    // v3 «C»: con otra sesión (cambio de usuario por PIN) o en otra sucursal, la ventana no se enseña.
+    @Test fun `con otra sesion la ventana no se enseña`() = runTest {
+        val vm = vm()
+        vm.cobrarSeMonto()
+        ventaDeAna(vm)
+        vm.leerPuntosParaElAtajo()
+        advanceUntilIdle()
+        responde(201, """{"success":true,"order":{"id":"ord-1","total":100.0}}""")
+        vm.usarPuntos()
+        advanceUntilIdle()
+        every { secureStorage.selloYAccess() } returns (8L to "token")
+        assertNull(vm.cuentaDelAtajoDeEstaSesion())
+        assertNull(puerta.solicitud.value)
     }
 
     // Codex r1 #4: la lectura es de Ana y el seleccionado ya es Beto: no se crea nada.

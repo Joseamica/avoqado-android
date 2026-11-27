@@ -86,51 +86,31 @@ class AtajoDePuntosTest {
 
     // --- La puerta (Codex r1 #5): la cuenta por abrir viaja con su sucursal y su sesión, y se atiende una sola vez.
 
-    @Test fun `la puerta entrega la solicitud a la misma sesion y sucursal`() {
+    @Test fun `la puerta abre Recompensas en la misma sesion y sucursal, una vez`() {
         val puerta = PuertaDeRecompensas()
         puerta.pedir(SolicitudDeRecompensas("o1", "v1", 7))
-        assertEquals("o1", puerta.vigente("v1", 7)?.orderId)
-        assertEquals("o1", puerta.vigente("v1", 7)?.orderId) // ver no la consume
+        assertEquals(true, puerta.porAbrir("v1", 7, "o1"))
+        assertEquals(true, puerta.porAbrir("v1", 7, "o1")) // ver no la consume
+        assertEquals(false, puerta.porAbrir("v1", 7, "o2"))
         puerta.atendida("o1")
-        assertNull(puerta.vigente("v1", 7))
+        assertEquals(false, puerta.porAbrir("v1", 7, "o1"))
     }
 
     @Test fun `otra sesion u otra sucursal la descartan`() {
         val puerta = PuertaDeRecompensas()
         puerta.pedir(SolicitudDeRecompensas("o1", "v1", 7))
-        assertNull(puerta.vigente("v1", 8))
-        assertNull(puerta.vigente("v1", 7)) // ya se descartó: no revive
-        puerta.pedir(SolicitudDeRecompensas("o2", "v1", 7))
-        assertNull(puerta.vigente("v2", 7))
-        assertNull(puerta.vigente("v1", 7))
-    }
-
-    // Codex r2 #5: una vez que Más abrió Pedidos, la solicitud ya no vuelve a mover la pestaña ni a reabrir Pedidos; sólo queda
-    // «por abrir» para esa cuenta hasta que se abra su diálogo o se cierre Pedidos.
-    @Test fun `ya en Pedidos no vuelve a navegar y queda por abrir hasta descartarla`() {
-        val puerta = PuertaDeRecompensas()
-        puerta.pedir(SolicitudDeRecompensas("o1", "v1", 7))
-        puerta.enPedidos("o1")
-        assertNull(puerta.vigente("v1", 7))
-        assertEquals(true, puerta.porAbrir("v1", 7, "o1"))
-        assertEquals(false, puerta.porAbrir("v1", 7, "o2"))
-        puerta.descartar()
-        assertEquals(false, puerta.porAbrir("v1", 7, "o1"))
-    }
-
-    @Test fun `por abrir con otra sesion se descarta`() {
-        val puerta = PuertaDeRecompensas()
-        puerta.pedir(SolicitudDeRecompensas("o1", "v1", 7))
-        puerta.enPedidos("o1")
         assertEquals(false, puerta.porAbrir("v1", 8, "o1"))
-        assertEquals(false, puerta.porAbrir("v1", 7, "o1"))
+        assertEquals(false, puerta.porAbrir("v1", 7, "o1")) // ya se descartó: no revive
+        puerta.pedir(SolicitudDeRecompensas("o2", "v1", 7))
+        assertEquals(false, puerta.porAbrir("v2", 7, "o2"))
+        assertEquals(false, puerta.porAbrir("v1", 7, "o2"))
     }
 
     @Test fun `atender otra cuenta no la consume`() {
         val puerta = PuertaDeRecompensas()
         puerta.pedir(SolicitudDeRecompensas("o1", "v1", 7))
         puerta.atendida("o2")
-        assertEquals("o1", puerta.vigente("v1", 7)?.orderId)
+        assertEquals(true, puerta.porAbrir("v1", 7, "o1"))
     }
 
     // --- Cuándo se abre «Recompensas» (Codex r1 #6): al quedar lista, o con una razón final y aviso con el folio.
@@ -154,6 +134,28 @@ class AtajoDePuntosTest {
         AperturaDeRecompensas.Avisar("La cuenta ORD-14 quedó en Pedidos, pero ya no admite puntos: revísala antes de cobrar."),
         aperturaDeRecompensas(ofrece = false, consultando = false, motivo = null, folio = "ORD-14"),
     )
+
+    // --- v3 «C»: la ventana de la cuenta encima de Cobrar.
+
+    @Test fun `la ventana se cierra sola sólo si se vio abierta y quedó cerrada`() {
+        assertEquals(true, cierraLaVentana(vioAbierta = true, cerrada = true))
+        assertEquals(false, cierraLaVentana(vioAbierta = false, cerrada = true)) // llegó ya pagada: se queda con su aviso
+        assertEquals(false, cierraLaVentana(vioAbierta = true, cerrada = false))
+    }
+
+    @Test fun `cuenta cerrada es pagada, cancelada o borrada`() {
+        assertEquals(true, cuentaCerrada(status = "CONFIRMED", pagada = true))
+        assertEquals(true, cuentaCerrada(status = "CANCELLED", pagada = false))
+        assertEquals(true, cuentaCerrada(status = "DELETED", pagada = false))
+        assertEquals(false, cuentaCerrada(status = "CONFIRMED", pagada = false))
+    }
+
+    // Codex v3 #8: con el nombre del cliente y el folio si se conoce; sin prometer una ruta del menú que el aparato pudo esconder.
+    @Test fun `al cerrarla sin cobrar dice dónde quedó`() {
+        assertEquals("La cuenta de Ana (#ORD-14) quedó por cobrar: está en Pedidos y en Cuentas por cobrar del panel web.",
+            avisoCuentaEnPedidos("Ana", "#ORD-14"))
+        assertEquals("La cuenta de Ana quedó por cobrar: está en Pedidos y en Cuentas por cobrar del panel web.", avisoCuentaEnPedidos("Ana", ""))
+    }
 
     @Test fun `sin red espera a que vuelva`() =
         assertEquals(AperturaDeRecompensas.Esperar, aperturaDeRecompensas(true, false, motivo = RECOMPENSAS_SIN_RED, folio = "ORD-14"))

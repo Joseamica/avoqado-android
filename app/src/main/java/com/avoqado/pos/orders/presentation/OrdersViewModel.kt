@@ -190,6 +190,15 @@ class OrdersViewModel @Inject constructor(
         }
     }
 
+    /**
+     * D39 v3 (Codex v3 #2): el atajo «Usar puntos» abre otra cuenta encima de Cobrar con el mismo repositorio (`selectedOrder` es de un
+     * @Singleton). Al reabrir Pedidos, si su cuenta elegida ya no es la del repositorio, se vuelve a pedir.
+     */
+    fun reafirmarSeleccion() {
+        val id = _selectedOrderId.value ?: return
+        if (repository.selectedOrder.value?.id != id) selectOrder(id)
+    }
+
     /** Actualiza el pedido a la vista sin desmontarlo: quitarlo borraba su aviso y cortaba sus peticiones. */
     fun refrescarDetalle(orderId: String) {
         viewModelScope.launch { repository.loadOrderDetail(orderId, silencioso = true) }

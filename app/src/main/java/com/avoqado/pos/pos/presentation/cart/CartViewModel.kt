@@ -3757,6 +3757,34 @@ class CartViewModel @Inject constructor(
     val resultadoUsarPuntos: StateFlow<ResultadoPagarDespues?> = _resultadoUsarPuntos.asStateFlow()
     fun consumirResultadoUsarPuntos() { _resultadoUsarPuntos.value = null }
 
+    private val _cuentaDelAtajo = MutableStateFlow<SolicitudDeRecompensas?>(null)
+    /** v3 «C» (founder, 26-nov): la cuenta que el atajo abre ENCIMA de Cobrar (como Square y Toast, sin salir de la venta). */
+    val cuentaDelAtajo: StateFlow<SolicitudDeRecompensas?> = _cuentaDelAtajo.asStateFlow()
+
+    /** La cuenta por enseñar, sólo si es de esta sesión y esta sucursal; si no, se olvida (como la puerta). */
+    fun cuentaDelAtajoDeEstaSesion(): SolicitudDeRecompensas? {
+        val s = _cuentaDelAtajo.value ?: return null
+        if (s.venueId == secureStorage.venueId && s.sello == secureStorage.selloYAccess().first) return s
+        cerrarCuentaDelAtajo()
+        return null
+    }
+
+    /**
+     * Codex v3 #3: la ventana pertenece a la visita de Cobrar que mandó la venta. Si Cobrar se desmontó (otra pestaña, girar la pantalla)
+     * mientras se creaba la cuenta, al volver no aparece: se dice dónde quedó.
+     */
+    private var visitaDeCobrar = 0
+    private var cobrarMontado = false
+    fun cobrarSeMonto() { visitaDeCobrar++; cobrarMontado = true }
+    fun cobrarSeDesmonto() { cobrarMontado = false; cerrarCuentaDelAtajo() }
+
+    /** La ventana se cerró (X, cobrada, cancelada o al salir de Cobrar): se olvida y su «Recompensas» ya no se abre solo. */
+    fun cerrarCuentaDelAtajo() {
+        val s = _cuentaDelAtajo.value ?: return
+        _cuentaDelAtajo.value = null
+        puertaDeRecompensas?.atendida(s.orderId)
+    }
+
     private fun enLineaParaElAtajo(): Boolean =
         connectivityMonitor?.let { it.isConnected.value && it.isServerReachable.value } ?: true
 
@@ -3834,13 +3862,21 @@ class CartViewModel @Inject constructor(
         val customerId = cliente?.id ?: return
         val venue = secureStorage.venueId ?: return
         val sello = secureStorage.selloYAccess().first
+        val visita = visitaDeCobrar
         viewModelScope.launch {
             folioCreado = null
             atajoEnCurso = true
             val r = try { createPayLaterOrder(customerId) } finally { atajoEnCurso = false }
             val folio = folioCreado.takeIf { r == ResultadoPagarDespues.Creada }
             folioCreado = null
-            if (folio != null) puertaDeRecompensas?.pedir(SolicitudDeRecompensas(folio, venue, sello))
+            val sigueEnCobrar = cobrarMontado && visita == visitaDeCobrar
+            if (folio != null && sigueEnCobrar) {
+                SolicitudDeRecompensas(folio, venue, sello, cliente.name).let { puertaDeRecompensas?.pedir(it); _cuentaDelAtajo.value = it }
+            }
+            if (folio != null && !sigueEnCobrar) {
+                _resultadoUsarPuntos.value = ResultadoPagarDespues.Aviso(avisoCuentaEnPedidos(cliente.name, ""))
+                return@launch
+            }
             // Sin respuesta puede ser la red o el SERVIDOR (503): el aviso no afirma cuál (Codex r3 #7).
             _resultadoUsarPuntos.value = if (r is ResultadoPagarDespues.Aviso && r.texto == pagarDespuesGuardadaSinRed(cliente.name)) {
                 ResultadoPagarDespues.Aviso(usarPuntosCuentaEnLaFila(cliente.name))

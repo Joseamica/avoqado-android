@@ -122,7 +122,6 @@ interface FormatterEntryPoint {
     fun secureStorage(): com.avoqado.pos.core.data.local.SecureStorage
     fun vigilanteDePedidosEnLinea(): com.avoqado.pos.onlineorders.data.VigilanteDePedidosEnLinea
     fun vigilanteDeReparto(): com.avoqado.pos.kds.data.VigilanteDeReparto
-    fun puertaDeRecompensas(): com.avoqado.pos.pos.presentation.cart.PuertaDeRecompensas
 }
 
 @Composable
@@ -409,9 +408,6 @@ private fun MainScaffold(
     }
 
     val vigilanteDePedidos = remember { entryPoint.vigilanteDePedidosEnLinea() }
-    // D39 (atajo «Usar puntos»): la cuenta que se abre en Más › Pedidos con «Recompensas».
-    val puertaDeRecompensas = remember { entryPoint.puertaDeRecompensas() }
-    val storageDeLaPuerta = remember { entryPoint.secureStorage() }
     // Rappi/Uber: la franja «Nuevo pedido de Rappi #folio» en cualquier pantalla (12-nov-2026).
     val vigilanteDeReparto = remember { entryPoint.vigilanteDeReparto() }
     // Los rechazos por permiso (403) eran invisibles: el botón simplemente no
@@ -481,13 +477,6 @@ private fun MainScaffold(
     val bandejaSolicitada by vigilanteDePedidos.bandejaSolicitada.collectAsState()
     LaunchedEffect(bandejaSolicitada) {
         if (bandejaSolicitada && pestanaDeLaRuta != MainTab.MORE) navigateToTab(MainTab.MORE)
-    }
-    // D39 (atajo): igual que la bandeja, pero sólo si la solicitud sigue siendo de esta sesión y esta sucursal (Codex r1 #5).
-    val cuentaConPuntos by puertaDeRecompensas.solicitud.collectAsState()
-    LaunchedEffect(cuentaConPuntos) {
-        if (cuentaConPuntos == null) return@LaunchedEffect
-        if (puertaDeRecompensas.vigente(storageDeLaPuerta.venueId, storageDeLaPuerta.selloYAccess().first) == null) return@LaunchedEffect
-        if (pestanaDeLaRuta != MainTab.MORE) navigateToTab(MainTab.MORE)
     }
     fun tocarPestana(tab: MainTab) {
         if (tab == MainTab.MORE && tab == pestanaMarcada) moreTabReselectionTick++

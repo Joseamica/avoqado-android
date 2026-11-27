@@ -50,7 +50,6 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.lifecycle.Lifecycle
@@ -139,21 +138,7 @@ fun OrdersScreen(
     // filtro puesto de una visita anterior, se resetea (ver
     // applyInitialStatusFilter más abajo).
     initialStatusFilter: String? = null,
-    /** D39 (atajo «Usar puntos»): el folio que se abre al entrar (su «Recompensas» se abre solo, `PuertaDeRecompensas`). */
-    cuentaPorAbrir: String? = null,
-    /** D39 (Codex r3 #5): la cajera dejó la cuenta que pidió el atajo; su «Recompensas» ya no se abre sola. */
-    onSoltarCuentaPorAbrir: (String) -> Unit = {},
 ) {
-    LaunchedEffect(cuentaPorAbrir) { cuentaPorAbrir?.let { viewModel.selectOrder(it) } }
-    // Una vez seleccionada, si la selección cambia (Atrás, otra cuenta, el detalle no cargó y salió) la apertura pedida se suelta.
-    val seleccionada by viewModel.selectedOrderId.collectAsState()
-    var laTomo by remember(cuentaPorAbrir) { mutableStateOf(false) }
-    LaunchedEffect(seleccionada, cuentaPorAbrir) {
-        val folio = cuentaPorAbrir ?: return@LaunchedEffect
-        if (seleccionada == folio) laTomo = true else if (laTomo) onSoltarCuentaPorAbrir(folio)
-    }
-    // Codex r4 #5: salir de Pedidos por la barra (o cerrarlo) antes de que cargue la cuenta también la suelta.
-    DisposableEffect(cuentaPorAbrir) { onDispose { cuentaPorAbrir?.let(onSoltarCuentaPorAbrir) } }
     // Overlay del Más (spec de refresco §4.8): LaunchedEffect cubre el "al
     // mostrarse" (el ON_RESUME de la Activity NO dispara al abrir un overlay)
     // y LifecycleResumeEffect el regreso desde background. La duplicación la
@@ -172,6 +157,8 @@ fun OrdersScreen(
     // en applyInitialStatusFilter (que lee el filtro ACTUAL del ViewModel),
     // no en esta llave.
     LaunchedEffect(Unit) { applyInitialStatusFilter(viewModel, initialStatusFilter) }
+    // D39 v3 (Codex v3 #2): la ventana del atajo en Cobrar pudo dejar otra cuenta en el repositorio compartido.
+    LaunchedEffect(Unit) { viewModel.reafirmarSeleccion() }
     LifecycleResumeEffect(Unit) {
         viewModel.autoRefresh()
         onPauseOrDispose { }
@@ -342,6 +329,27 @@ private fun PhoneOrdersLayout(
     onDismiss: () -> Unit,
     onCuentaCancelada: () -> Unit,
 ) {
+    DetalleDeUnaCuenta(viewModel, onBack = { viewModel.clearSelection() }, onCuentaCancelada = onCuentaCancelada) {
+        OrderListView(
+            viewModel = viewModel,
+            isTablet = false,
+            onBack = onDismiss,
+            modifier = Modifier.fillMaxSize(),
+        )
+    }
+}
+
+/**
+ * El detalle de la cuenta elegida a pantalla completa (el del teléfono): cargando, falló o la cuenta con sus acciones. Sin cuenta elegida
+ * pinta [sinCuenta]. D39 v3: el atajo «Usar puntos» lo abre encima de Cobrar con su propio [OrdersViewModel].
+ */
+@Composable
+internal fun DetalleDeUnaCuenta(
+    viewModel: OrdersViewModel,
+    onBack: () -> Unit,
+    onCuentaCancelada: () -> Unit,
+    sinCuenta: @Composable () -> Unit,
+) {
     val selectedOrder by viewModel.selectedOrder.collectAsState()
     val selectedOrderId by viewModel.selectedOrderId.collectAsState()
     val isLoadingDetail by viewModel.isLoadingDetail.collectAsState()
@@ -366,7 +374,7 @@ private fun PhoneOrdersLayout(
                 onCuentaActualizada = { viewModel.invalidateAndRefresh(); viewModel.selectOrder(pedido.id) },
                 onSalioSinCobrar = { viewModel.invalidateAndRefresh(); viewModel.refrescarDetalle(pedido.id) },
                 onCuentaCancelada = onCuentaCancelada,
-                onBack = { viewModel.clearSelection() },
+                onBack = onBack,
                 modifier = Modifier.fillMaxSize(),
                 isReimprimiendoComanda = isReimprimiendoComanda,
                 mensajeDeReimpresion = mensajeDeReimpresion,
@@ -384,15 +392,8 @@ private fun PhoneOrdersLayout(
         }
         is EstadoDelDetalle.Fallo -> FalloDelDetalle(estado.mensaje,
             onReintentar = { selectedOrderId?.let(viewModel::selectOrder) },
-            onBack = viewModel::clearSelection)
-        else -> {
-            OrderListView(
-                viewModel = viewModel,
-                isTablet = false,
-                onBack = onDismiss,
-                modifier = Modifier.fillMaxSize(),
-            )
-        }
+            onBack = onBack)
+        else -> sinCuenta()
     }
 }
 

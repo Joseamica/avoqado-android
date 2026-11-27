@@ -88,15 +88,13 @@ fun cambioDuranteElAtajo(clienteEsperado: String, clienteAhora: String?, sinFila
     else -> null
 }
 
-/**
- * La cuenta de «Pagar después» que el atajo pidió abrir, con la sucursal y el sello de la sesión que la mandó (Codex r1 #5). [enPedidos]:
- * Más ya abrió Pedidos con ella; desde ahí no vuelve a mover la pestaña (Codex r2 #5).
- */
-data class SolicitudDeRecompensas(val orderId: String, val venueId: String, val sello: Long, val enPedidos: Boolean = false)
+/** La cuenta de «Pagar después» que el atajo pidió abrir, con la sucursal y el sello de la sesión que la mandó (Codex r1 #5) y su cliente. */
+data class SolicitudDeRecompensas(val orderId: String, val venueId: String, val sello: Long, val cliente: String = "")
 
 /**
- * Lleva la cuenta por abrir de Cobrar a Más › Pedidos (como `VigilanteDePedidosEnLinea.bandejaSolicitada`). Una sola a la vez. Se descarta si
- * la sesión o la sucursal ya no son las que la mandaron, y se da por atendida al abrir «Recompensas» o al avisar su razón (Codex r1 #6).
+ * Le dice a «Recompensas» de la cuenta que abrió el atajo que se abra sola (v3 «C»: la cuenta está encima de Cobrar). Una sola a la vez. Se
+ * descarta si la sesión o la sucursal ya no son las que la mandaron, y se da por atendida al abrir «Recompensas», al avisar su razón o al
+ * cerrar la ventana (Codex r1 #6).
  */
 @Singleton
 class PuertaDeRecompensas @Inject constructor() {
@@ -105,19 +103,10 @@ class PuertaDeRecompensas @Inject constructor() {
 
     fun pedir(s: SolicitudDeRecompensas) { _solicitud.value = s }
 
-    /** Para NAVEGAR: la solicitud si sigue siendo de esta sesión y esta sucursal y Pedidos todavía no se abrió con ella; otra sesión la descarta. */
-    fun vigente(venueId: String?, sello: Long): SolicitudDeRecompensas? = deEstaSesion(venueId, sello)?.takeIf { !it.enPedidos }
-
-    /** Más ya abrió Pedidos con esta cuenta: no vuelve a navegar. */
-    fun enPedidos(orderId: String) { _solicitud.value?.takeIf { it.orderId == orderId }?.let { _solicitud.compareAndSet(it, it.copy(enPedidos = true)) } }
-
     /** Para ABRIR el diálogo: ¿esta cuenta sigue pedida por esta sesión y sucursal? */
     fun porAbrir(venueId: String?, sello: Long, orderId: String): Boolean = deEstaSesion(venueId, sello)?.orderId == orderId
 
     fun atendida(orderId: String) { _solicitud.value?.takeIf { it.orderId == orderId }?.let { _solicitud.compareAndSet(it, null) } }
-
-    /** Pedidos se cerró (o Más cerró sus pantallas): lo pendiente se olvida (Codex r2 #5). */
-    fun descartar() { _solicitud.value = null }
 
     private fun deEstaSesion(venueId: String?, sello: Long): SolicitudDeRecompensas? {
         val s = _solicitud.value ?: return null
@@ -136,6 +125,19 @@ sealed interface AperturaDeRecompensas {
 /** Textos de espera de «Recompensas»: mientras salgan, la cuenta todavía no decide. Sin red también se espera a que vuelva. */
 private val ESPERAS = setOf(USAR_PUNTOS_LEYENDO, "Actualizando la cuenta…", RECOMPENSAS_LEYENDO_LA_CUENTA, RECOMPENSAS_SIN_RED,
     "La cuenta todavía no llega del servidor, así que no se sabe si tiene cliente. Intenta en un momento.")
+
+/** v3 «C»: la cuenta ya no está abierta (pagada, cancelada o borrada). */
+fun cuentaCerrada(status: String, pagada: Boolean): Boolean = pagada || status in setOf("CANCELLED", "DELETED")
+
+/** v3 «C»: la ventana de la cuenta se cierra sola sólo si se vio abierta y después quedó cerrada (la cobró o la canceló la cajera). */
+fun cierraLaVentana(vioAbierta: Boolean, cerrada: Boolean): Boolean = vioAbierta && cerrada
+
+/**
+ * v3 «C»: la cajera cerró la ventana sin cobrar (o salió de Cobrar antes de que se creara); la cuenta sigue como cualquier «Pagar después».
+ * Con el cliente y el folio si se conoce, sin prometer una ruta del menú que el aparato pudo esconder (Codex v3 #8).
+ */
+fun avisoCuentaEnPedidos(cliente: String, folio: String) =
+    "La cuenta de $cliente${if (folio.isBlank()) "" else " ($folio)"} quedó por cobrar: está en Pedidos y en Cuentas por cobrar del panel web."
 
 /** La cuenta que pidió el atajo ya está pagada o cancelada cuando Pedidos la abre (Codex r3 #5). */
 fun avisoCuentaYaCerrada(folio: String) = "La cuenta $folio ya no está abierta (pagada o cancelada): ya no admite puntos."

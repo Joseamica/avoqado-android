@@ -173,8 +173,6 @@ fun MoreMenuScreen(
     // null = "Pedidos" normal, sin tocar filtro. Con valor: Cierre del día
     // → "Cuentas abiertas" abre la lista YA filtrada a abiertas.
     var ordersInitialStatusFilter by remember { mutableStateOf<String?>(null) }
-    /** D39 (atajo «Usar puntos»): el folio que Pedidos selecciona al abrirse. */
-    var ordersCuentaPorAbrir by remember { mutableStateOf<String?>(null) }
     var showCashDrawer by remember { mutableStateOf(false) }
     var showEndOfDay by remember { mutableStateOf(false) }
     var showEstimates by remember { mutableStateOf(false) }
@@ -208,7 +206,6 @@ fun MoreMenuScreen(
         showOrders = false
         showOnlineOrders = false
         ordersInitialStatusFilter = null
-        ordersCuentaPorAbrir = null
         showCashDrawer = false
         showEndOfDay = false
         showEstimates = false
@@ -225,13 +222,9 @@ fun MoreMenuScreen(
         showCashMachine = false
     }
 
-    // D39 (Codex r3 R1): el contador sigue arriba cuando «Más» se vuelve a montar; un toque de ANTES no descarta la cuenta que el atajo
-    // pidió DESPUÉS. Sólo un toque nuevo (otro número) la descarta.
-    val toqueAlMontar = remember { moreTabReselectionTick }
     LaunchedEffect(moreTabReselectionTick) {
         if (moreTabReselectionTick > 0) {
             closeAllOverlays()
-            if (moreTabReselectionTick != toqueAlMontar) viewModel.descartarCuentaConPuntos()
         }
     }
 
@@ -243,21 +236,10 @@ fun MoreMenuScreen(
     val tarjetasPorAbrir by viewModel.tarjetasPorAbrir.collectAsState()
     val hayPedidosEnLineaAbiertos by viewModel.hayPedidosEnLineaAbiertos.collectAsState()
     val hayRepartoPorCobrarGuardado by viewModel.hayRepartoPorCobrarGuardado.collectAsState()
-    // D39 (atajo): Cobrar pidió abrir una cuenta de «Pagar después» con «Recompensas». Pedidos la selecciona; la cuenta la da por
-    // atendida al abrir el diálogo o al decir su razón (Codex r1 #6).
-    val cuentaConPuntos = viewModel.cuentaConPuntos?.collectAsState()?.value
-    LaunchedEffect(cuentaConPuntos) {
-        val folio = cuentaConPuntos?.let { viewModel.cuentaConPuntosVigente() } ?: return@LaunchedEffect
-        closeAllOverlays()
-        ordersCuentaPorAbrir = folio
-        showOrders = true
-        viewModel.cuentaConPuntosEnPedidos(folio)
-    }
     LaunchedEffect(bandejaSolicitada) {
         if (bandejaSolicitada) {
             if (com.avoqado.pos.onlineorders.presentation.debeAbrirBandeja(true, viewModel.entradaPedidosEnLinea)) {
                 closeAllOverlays()
-                viewModel.descartarCuentaConPuntos()
                 showOnlineOrders = true
             }
             viewModel.bandejaAtendida()
@@ -989,10 +971,8 @@ fun MoreMenuScreen(
             val isTablet = maxWidth >= 600.dp
             OrdersScreen(
                 isTablet = isTablet,
-                onDismiss = { showOrders = false; ordersCuentaPorAbrir = null; viewModel.descartarCuentaConPuntos() },
+                onDismiss = { showOrders = false },
                 initialStatusFilter = ordersInitialStatusFilter,
-                cuentaPorAbrir = ordersCuentaPorAbrir,
-                onSoltarCuentaPorAbrir = viewModel::soltarCuentaConPuntos,
             )
         }
     }

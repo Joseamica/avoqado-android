@@ -63,19 +63,7 @@ class MoreMenuViewModel @Inject constructor(
     private val cashDrawerRepository: com.avoqado.pos.cashdrawer.data.CashDrawerRepository? = null,
     /** R5#2: los cobros de la máquina sin subir o en duda frenan el cambio de sucursal. Default para las pruebas que lo construyen a mano. */
     private val cobrosEnMaquinaDao: com.avoqado.pos.maquina.CobroEnMaquinaDao? = null,
-    /** D39 (atajo «Usar puntos»): la cuenta por abrir en Pedidos. Default para las pruebas que lo construyen a mano. */
-    private val puertaDeRecompensas: com.avoqado.pos.pos.presentation.cart.PuertaDeRecompensas? = null,
 ) : ViewModel() {
-    val cuentaConPuntos = puertaDeRecompensas?.solicitud
-    /** El folio por abrir, si la solicitud sigue siendo de esta sesión y esta sucursal (si no, se descarta). */
-    fun cuentaConPuntosVigente(): String? =
-        puertaDeRecompensas?.vigente(secureStorage.venueId, secureStorage.selloYAccess().first)?.orderId
-    /** Pedidos ya se abrió con ese folio: la solicitud no vuelve a mover la pestaña (Codex r2 #5). */
-    fun cuentaConPuntosEnPedidos(orderId: String) { puertaDeRecompensas?.enPedidos(orderId) }
-    /** Pedidos se cerró, o Más cerró sus pantallas por otra razón: lo pendiente se olvida (Codex r2 #5). */
-    fun descartarCuentaConPuntos() { puertaDeRecompensas?.descartar() }
-    /** La cajera dejó ESA cuenta en Pedidos (Atrás, otra cuenta, el detalle no cargó): abrirla después a mano ya no lanza «Recompensas». */
-    fun soltarCuentaConPuntos(orderId: String) { puertaDeRecompensas?.atendida(orderId) }
 
     // MARK: - Pedidos en línea (A3)
 

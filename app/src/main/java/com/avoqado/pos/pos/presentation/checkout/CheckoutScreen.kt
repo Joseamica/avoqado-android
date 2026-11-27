@@ -467,9 +467,11 @@ fun CheckoutScreen(
         showUsarPuntos = true
     }) else null
     val resultadoUsarPuntos by cartViewModel.resultadoUsarPuntos.collectAsState()
+    // D39 v3 «C»: la cuenta que dejó el atajo, abierta encima de Cobrar. Mientras está, Cobrar no recibe códigos ni teclas (Codex v3 #7).
+    val cuentaDelAtajo by cartViewModel.cuentaDelAtajo.collectAsState()
     LaunchedEffect(resultadoUsarPuntos) {
         when (val r = resultadoUsarPuntos ?: return@LaunchedEffect) {
-            // Creada: la caja abre la cuenta en Más › Pedidos (PuertaDeRecompensas); aquí sólo se cierra la ventana.
+            // Creada: la cuenta se abre encima de Cobrar (`cuentaDelAtajo`, v3 «C»); aquí sólo se cierra esta ventana.
             com.avoqado.pos.pos.presentation.cart.ResultadoPagarDespues.Creada -> showUsarPuntos = false
             // Sin red o por otro importe: la venta ya salió como «Pagar después»; se dice en ámbar.
             is com.avoqado.pos.pos.presentation.cart.ResultadoPagarDespues.Aviso -> { showUsarPuntos = false; payLaterAviso = r.texto }
@@ -756,18 +758,18 @@ fun CheckoutScreen(
     AtajoDeTeclado(
         Key.F12,
         // El botón Cobrar sólo existe con artículos en el carrito (CartPanelView): sin ellos, F12 tampoco.
-        activo = !cartState.isEmpty && !showPaymentFlow && !showSearch && upsellMoment == null && !areaOperationsState.issuing,
+        activo = !cartState.isEmpty && !showPaymentFlow && !showSearch && upsellMoment == null && !areaOperationsState.issuing && cuentaDelAtajo == null,
     ) {
         runPrimaryAction(closePhoneCart = true)
     }
-    AtajoDeTeclado(Key.F3, activo = !showPaymentFlow && !showSearch) { if (!cartViewModel.detenerPorPagarDespues()) showSearch = true }
+    AtajoDeTeclado(Key.F3, activo = !showPaymentFlow && !showSearch && cuentaDelAtajo == null) { if (!cartViewModel.detenerPorPagarDespues()) showSearch = true }
     // Esc regresa, como en el cobro: cierra la búsqueda que abrió F3 (prueba en Windows real, 19-oct).
     AtajoDeTeclado(Key.Escape, activo = showSearch && !showPaymentFlow) { showSearch = false }
 
     if (isTablet) {
         // iPad-style: 50/50 split con entrada + carrito — o 50/25/25 cuando el
         // panel de promociones entra como TERCERA columna.
-        BoxWithConstraints(modifier = Modifier.fillMaxSize().sinTeclasDetrasDelCobro { showPaymentFlow }) {
+        BoxWithConstraints(modifier = Modifier.fillMaxSize().sinTeclasDetrasDelCobro { showPaymentFlow || cuentaDelAtajo != null }) {
             // 🔴 Manda el ancho REAL de esta superficie, no el booleano `isTablet`:
             // ese colapsa "tablet chica" y "tablet grande" en el mismo valor, y aquí
             // hay que decidir si cabe una tercera columna. Además `maxWidth` ya viene
@@ -1027,7 +1029,7 @@ fun CheckoutScreen(
         }
     } else {
         // iPhone-style: full-screen with bottom cart bar
-        BoxWithConstraints(modifier = Modifier.fillMaxSize().sinTeclasDetrasDelCobro { showPaymentFlow }) {
+        BoxWithConstraints(modifier = Modifier.fillMaxSize().sinTeclasDetrasDelCobro { showPaymentFlow || cuentaDelAtajo != null }) {
             // Un teléfono es siempre Compact (<600dp), o sea que el lateral SIEMPRE
             // cae a pestaña aquí. Se calcula con el ancho real igual, para no tener
             // dos reglas; y la pestaña se muestra con cualquier modo que no sea
@@ -1590,7 +1592,7 @@ fun CheckoutScreen(
         showBarcodeScanner = false
         checkoutScope.launch {
             val entra = {
-                codigoEntraALaVenta(cobroAbierto = showPaymentFlow || cartViewModel.cobroAbierto || aperturaDeTarjetas != null, emitiendoVale = areaOperationsState.issuing)
+                codigoEntraALaVenta(cobroAbierto = showPaymentFlow || cartViewModel.cobroAbierto || aperturaDeTarjetas != null || cartViewModel.cuentaDelAtajo.value != null, emitiendoVale = areaOperationsState.issuing)
             }
             // El cliente de ANTES de la consulta: si el cajero lo quitó o eligió otro mientras respondía, su toque gana
             // y la tarjeta escaneada no se vuelve a ligar (Codex, cliente en cobrar r3 #1).
@@ -2506,6 +2508,20 @@ fun CheckoutScreen(
             onDismiss = { cartViewModel.descartarAvisoDelPremio() },
             secondaryLabel = "Entendido",
         )
+    }
+
+    // D39 v3 «C»: la cuenta que dejó el atajo se abre ENCIMA de Cobrar (sin saltar a Pedidos). Otra sesión o sucursal la olvida; salir de
+    // Cobrar también, y una cuenta que se termina de crear con Cobrar ya desmontado no se abre al volver (Codex v3 #3).
+    LaunchedEffect(cuentaDelAtajo) { if (cuentaDelAtajo != null) cartViewModel.cuentaDelAtajoDeEstaSesion() }
+    androidx.compose.runtime.DisposableEffect(Unit) {
+        cartViewModel.cobrarSeMonto()
+        onDispose { cartViewModel.cobrarSeDesmonto() }
+    }
+    cuentaDelAtajo?.let { s ->
+        CuentaDelAtajo(s.orderId, s.cliente, onCerrar = { aviso ->
+            cartViewModel.cerrarCuentaDelAtajo()
+            if (aviso != null) payLaterAviso = aviso
+        })
     }
 
     if (showUsarPuntos) UsarPuntosModal(
