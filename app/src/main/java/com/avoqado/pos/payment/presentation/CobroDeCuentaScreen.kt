@@ -52,6 +52,27 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
+/**
+ * D39 (Codex r3 #2): el canje que se quedó sin respuesta, tal cual se mandó (con la versión de entonces). D39 r10: con su llave
+ * ([operationId], una por intento): repetirlo manda la MISMA, y el SERVIDOR contesta el desenlace del primero.
+ */
+internal data class CanjeSinRespuesta(
+    val orderId: String, val customerId: String, val points: Int, val monto: Double, val version: Int?,
+    val operationId: String = java.util.UUID.randomUUID().toString(),
+)
+
+/**
+ * D39 C1 (founder, «memoria propia», 26-nov): el canje en vuelo y el que se quedó sin respuesta son de la CAJA, no de una pantalla. La
+ * cuenta del atajo (encima de Cobrar) y Pedidos tienen cada una su ViewModel; con esto las dos ven el mismo «Reintentar el canje» y el
+ * mismo cobro bloqueado (Codex v3-r2: antes cada pantalla perdía el de la otra).
+ */
+@javax.inject.Singleton
+class CanjesDeLaCaja @Inject constructor() {
+    internal val enVuelo = MutableStateFlow(false)
+    internal var sinRespuesta: CanjeSinRespuesta? = null
+    internal val enDuda = MutableStateFlow<String?>(null)
+}
+
 @HiltViewModel
 class CobroDeCuentaViewModel @Inject constructor(
     private val repo: TableServiceRepository,
@@ -73,7 +94,10 @@ class CobroDeCuentaViewModel @Inject constructor(
     private val terminalPaymentService: com.avoqado.pos.payment.data.TerminalPaymentService? = null,
     /** D39 (atajo «Usar puntos»): la cuenta que Cobrar pidió abrir con «Recompensas». Default para las pruebas. */
     private val puertaDeRecompensas: com.avoqado.pos.pos.presentation.cart.PuertaDeRecompensas? = null,
+    /** D39 C1: el canje en vuelo o sin respuesta es de la CAJA (lo ven Pedidos y la cuenta del atajo). Default por ViewModel en las pruebas. */
+    canjesDeLaCaja: CanjesDeLaCaja? = null,
 ) : ViewModel() {
+    private val canjes = canjesDeLaCaja ?: CanjesDeLaCaja()
     /** D39 (atajo): ¿el atajo pidió abrir ESTA cuenta, con esta sesión y esta sucursal? */
     fun aperturaPedida(orderId: String): Boolean =
         puertaDeRecompensas?.porAbrir(storage.venueId, storage.selloYAccess().first, orderId) == true
@@ -411,8 +435,8 @@ class CobroDeCuentaViewModel @Inject constructor(
     private val avisoDeLasRecompensas = MutableStateFlow<String?>(null)
     /** Lo que pasó con el último canje (aplicado o por qué no). Aparte de [mensaje]: la relectura de la cuenta lo borraría. */
     val avisoDeRecompensas: StateFlow<String?> = avisoDeLasRecompensas.asStateFlow()
-    private val canjeando = MutableStateFlow(false)
-    val canjeEnVuelo: StateFlow<Boolean> = canjeando.asStateFlow()
+    private val canjeando get() = canjes.enVuelo
+    val canjeEnVuelo: StateFlow<Boolean> = canjes.enVuelo.asStateFlow()
 
     /** Lee el saldo de la clienta de la cuenta que se ve, contra ESA cuenta (`?orderId=`: el máximo es de ella). */
     suspend fun leerLealtad(orderId: String) {
@@ -462,14 +486,12 @@ class CobroDeCuentaViewModel @Inject constructor(
      * D39 (Codex r3 #2): el canje que se quedó sin respuesta, tal cual se mandó (con la versión de entonces). null = ninguno. D39 r10: con
      * su llave ([operationId], una por intento): repetirlo manda la MISMA, y el SERVIDOR contesta el desenlace del primero.
      */
-    private data class CanjeSinRespuesta(
-        val orderId: String, val customerId: String, val points: Int, val monto: Double, val version: Int?,
-        val operationId: String = java.util.UUID.randomUUID().toString(),
-    )
-    private var sinRespuesta: CanjeSinRespuesta? = null
-    private val enDuda = MutableStateFlow<String?>(null)
+    private var sinRespuesta: CanjeSinRespuesta?
+        get() = canjes.sinRespuesta
+        set(v) { canjes.sinRespuesta = v }
+    private val enDuda get() = canjes.enDuda
     /** La cuenta con un canje sin respuesta: su botón es «Reintentar el canje», que manda EXACTAMENTE lo mismo. null = ninguna. */
-    val canjeEnDuda: StateFlow<String?> = enDuda.asStateFlow()
+    val canjeEnDuda: StateFlow<String?> = canjes.enDuda.asStateFlow()
 
     /**
      * D39 (Codex r2 #2, r3 #1, r4 #1, pasada completa de la familia «cobro durante el canje»): ninguna entrada de cobro de esta cuenta
@@ -833,7 +855,8 @@ private fun CobroDesdeLaCopia(orderId: String, cents: Int, onSalir: (CierreDeCue
             antesDeRecibirEfectivo = { viewModel.revalidarCobroSinRed(orderId, cents) },
             alNoPasarLaPuerta = viewModel::alNoPasarLaPuerta,
             onPaymentCommitted = {},
-            onDone = { salir() },
+            // D39 C1: cobrado desde la copia (se sube solo): la cuenta del atajo se cierra sin decir «quedó por cobrar».
+            onDone = { viewModel.soltarCobroSinRed(); onSalir(CierreDeCuenta.PAGADA) },
             onCancel = { salir() },
             onPreviousChargeResolved = { texto -> avisoLocal = texto },
         )
@@ -945,6 +968,12 @@ internal val LocalSolicitudesDeSaldo = compositionLocalOf<List<SolicitudDeTarjet
 internal val LocalCuentasDeSaldoCerradas = compositionLocalOf<List<String>> { emptyList() }
 internal val LocalCerrarCuentaDeSaldo = compositionLocalOf<(String) -> Unit> { {} }
 
+/**
+ * D39 C1 (Codex v3-r2 #5): cómo terminó el cobro de una cuenta (pagada, cancelada o la cajera salió sin cobrar), al cerrarse su pantalla
+ * (después de «Listo»). La cuenta del atajo encima de Cobrar se cierra con esto, sin esperar a releer la cuenta. Fuera de ella, nada.
+ */
+val LocalAlSalirDelCobroDeCuenta = staticCompositionLocalOf<(orderId: String, cierre: CierreDeCuenta) -> Unit> { { _, _ -> } }
+
 val LocalResultadoDeTarjetas = staticCompositionLocalOf<(String) -> Unit> {
     { error("Falta el anfitrión del resultado de tarjetas") }
 }
@@ -1006,6 +1035,7 @@ fun AccionesDeCuentaAbierta(
     // aunque vuelva la red a medio cobro. T12b (O2): sobrevive a reconstruir la Activity, como `abierta`.
     var cobroSinRed by rememberSaveable(order.id) { mutableStateOf<Int?>(null) }
     val cuentaDelCarrito = LocalCuentaDelCarrito.current
+    val alSalirDelCobro = LocalAlSalirDelCobroDeCuenta.current
     DisposableEffect(viewModel) { onDispose { viewModel.soltarCobroSinRed() } }
     // I1: los cobros abiertos van ANTES de la salida temprana (ver `loQueSePinta`).
     val pinta = loQueSePinta(order, abierta, cobroSinRed)
@@ -1016,13 +1046,15 @@ fun AccionesDeCuentaAbierta(
             if (cierre == CierreDeCuenta.ABIERTA) onSalioSinCobrar else onActualizar, onCancelada, onResultadoDeTarjetas)
         // T12b (M-n2): la oferta también (recarga la cuenta): si la recarga trae la misma cuenta, el efecto de abajo no corre.
         scope.launch { if (enLinea) viewModel.ofertaParaCobrar(order.id, cuentaDelCarrito() == order.id) }
+        alSalirDelCobro(order.id, cierre)
     }, viewModel = viewModel)
     // Al volver, sin «La venta quedó en Cuentas abiertas» (un cobro guardado no es salir sin cobrar). Si la revalidación dijo que no,
     // la cuenta se queda con ese gris; si no, se vuelve a decidir y se refresca (un cobro encolado se ve «sin sincronizar»).
     pinta.cobroSinRed?.let { saldo ->
-        CobroDeCuentaScreen(order.id, onSalir = {
+        CobroDeCuentaScreen(order.id, onSalir = { cierre ->
             cobroSinRed = null
             scope.launch { if (viewModel.alVolverDelCobroSinRed(order.id)) onActualizar() }
+            alSalirDelCobro(order.id, cierre)
         }, viewModel = viewModel, saldoSinRed = saldo)
     }
     if (!pinta.acciones) {

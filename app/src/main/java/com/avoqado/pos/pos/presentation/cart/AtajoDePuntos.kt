@@ -89,7 +89,7 @@ fun cambioDuranteElAtajo(clienteEsperado: String, clienteAhora: String?, sinFila
 }
 
 /** La cuenta de «Pagar después» que el atajo pidió abrir, con la sucursal y el sello de la sesión que la mandó (Codex r1 #5) y su cliente. */
-data class SolicitudDeRecompensas(val orderId: String, val venueId: String, val sello: Long, val cliente: String = "")
+data class SolicitudDeRecompensas(val orderId: String, val venueId: String, val sello: Long, val cliente: String = "", val numero: String = "")
 
 /**
  * Le dice a «Recompensas» de la cuenta que abrió el atajo que se abra sola (v3 «C»: la cuenta está encima de Cobrar). Una sola a la vez. Se

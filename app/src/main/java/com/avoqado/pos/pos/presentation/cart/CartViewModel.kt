@@ -3750,6 +3750,8 @@ class CartViewModel @Inject constructor(
     private var atajoEnCurso = false
     /** El folio de la última cuenta creada por el camino con fila con el importe exacto (lo que el atajo abre). */
     private var folioCreado: String? = null
+    /** Codex v3-r2 #8: el número visible de esa cuenta (`#ORD-…`), si el SERVIDOR lo mandó; para el aviso al cerrar sin cobrar. */
+    private var numeroCreado: String? = null
     private val _lecturaDelAtajo = MutableStateFlow<LecturaDelAtajo?>(null)
     val lecturaDelAtajo: StateFlow<LecturaDelAtajo?> = _lecturaDelAtajo.asStateFlow()
     private val _resultadoUsarPuntos = MutableStateFlow<ResultadoPagarDespues?>(null)
@@ -3872,16 +3874,20 @@ class CartViewModel @Inject constructor(
         val visita = visitaDeCobrar
         viewModelScope.launch {
             folioCreado = null
+            numeroCreado = null
             atajoEnCurso = true
             val r = try { createPayLaterOrder(customerId) } finally { atajoEnCurso = false }
             val folio = folioCreado.takeIf { r == ResultadoPagarDespues.Creada }
             folioCreado = null
+            val numero = numeroCreado?.takeIf { it.isNotBlank() && folio != null }?.let { "#$it" } ?: ""
+            numeroCreado = null
             val sigueEnCobrar = cobrarMontado && visita == visitaDeCobrar
             if (folio != null && sigueEnCobrar) {
-                SolicitudDeRecompensas(folio, venue, sello, cliente.name).let { puertaDeRecompensas?.pedir(it); _cuentaDelAtajo.value = it }
+                SolicitudDeRecompensas(folio, venue, sello, cliente.name, numero)
+                    .let { puertaDeRecompensas?.pedir(it); _cuentaDelAtajo.value = it }
             }
             if (folio != null && !sigueEnCobrar) {
-                _resultadoUsarPuntos.value = ResultadoPagarDespues.Aviso(avisoCuentaEnPedidos(cliente.name, ""))
+                _resultadoUsarPuntos.value = ResultadoPagarDespues.Aviso(avisoCuentaEnPedidos(cliente.name, numero))
                 return@launch
             }
             // Sin respuesta puede ser la red o el SERVIDOR (503): el aviso no afirma cuál (Codex r3 #7).
@@ -4075,7 +4081,9 @@ class CartViewModel @Inject constructor(
                         ResultadoPagarDespues.Error(d.motivoRevision + "\n\n" + PAGAR_DESPUES_NO_SE_GUARDO)
                     }
                 } else when (val total = d.totalCents) {
-                    s.venta.totalCents -> { cola.cerrarAceptada(llave); folioCreado = d.orderId; ResultadoPagarDespues.Creada }
+                    s.venta.totalCents -> {
+                        cola.cerrarAceptada(llave); folioCreado = d.orderId; numeroCreado = d.orden?.orderNumber; ResultadoPagarDespues.Creada
+                    }
                     // Existe, pero no se sabe por cuánto: queda por revisar (y nunca se vuelve a crear con otra llave).
                     null -> {
                         cola.cambiar(llave) { it.copy(estado = com.avoqado.pos.payment.data.PayLaterRow.Estado.REVISAR, orderId = d.orderId) }

@@ -85,28 +85,22 @@ class OrdersViewModelTest {
         }
     }
 
-    // MARK: - D39 v3 (Codex v3 #2): el atajo de Cobrar comparte el repositorio de Pedidos
+    // MARK: - D39 C1: la cuenta del atajo tiene su propia libreta
 
     @Test
-    fun `al reabrir Pedidos vuelve a pedir su cuenta si el repositorio trae otra`() = runTest {
-        val otra = MutableStateFlow<com.avoqado.pos.orders.data.model.OrderDetail?>(null)
-        every { repository.selectedOrder } returns otra
+    fun `con libreta propia la cuenta se carga en ella y no en la de Pedidos`() = runTest {
+        val propia = mockk<OrdersRepository.LectorDeCuenta>(relaxed = true)
+        every { repository.lectorPropio() } returns propia
+        every { propia.selectedOrder } returns MutableStateFlow(null)
         val viewModel = createViewModel()
-        viewModel.selectOrder("A")
-        otra.value = com.avoqado.pos.orders.data.model.OrderDetail(id = "B")
-        viewModel.reafirmarSeleccion()
-        coVerify(exactly = 2) { repository.loadOrderDetail("A", any(), any()) }
-    }
-
-    @Test
-    fun `al reabrir Pedidos con su misma cuenta no vuelve a pedir`() = runTest {
-        val misma = MutableStateFlow<com.avoqado.pos.orders.data.model.OrderDetail?>(null)
-        every { repository.selectedOrder } returns misma
-        val viewModel = createViewModel()
-        viewModel.selectOrder("A")
-        misma.value = com.avoqado.pos.orders.data.model.OrderDetail(id = "A")
-        viewModel.reafirmarSeleccion()
-        coVerify(exactly = 1) { repository.loadOrderDetail("A", any(), any()) }
+        viewModel.usarLibretaPropia()
+        viewModel.selectOrder("B")
+        coVerify(exactly = 1) { propia.loadOrderDetail("B", any(), any()) }
+        coVerify(exactly = 0) { repository.loadOrderDetail(any(), any(), any()) }
+        assertEquals(propia.selectedOrder, viewModel.selectedOrder)
+        viewModel.clearSelection()
+        io.mockk.verify(exactly = 1) { propia.clearSelectedOrder() }
+        io.mockk.verify(exactly = 0) { repository.clearSelectedOrder() }
     }
 
     // MARK: - Search

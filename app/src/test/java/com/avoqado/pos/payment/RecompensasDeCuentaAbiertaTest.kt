@@ -325,6 +325,28 @@ class RecompensasDeCuentaAbiertaTest {
         assertFalse(m.recompensasAbiertas.value)
     }
 
+    // D39 C1 (Codex v3-r2): el canje sin respuesta es de la CAJA, no de la pantalla: la cuenta del atajo (encima de Cobrar) y Pedidos
+    // ven el mismo «Reintentar el canje» y el mismo cobro bloqueado.
+    @Test fun `un canje sin respuesta en una pantalla se ve y se reintenta desde la otra`() = runTest {
+        val canjes = com.avoqado.pos.payment.presentation.CanjesDeLaCaja()
+        val ventana = CobroDeCuentaViewModel(repo, storage, red, roles, mockk(relaxed = true), locales, canjesDeLaCaja = canjes)
+        val pedidos = CobroDeCuentaViewModel(repo, storage, red, roles, mockk(relaxed = true), locales, canjesDeLaCaja = canjes)
+        coEvery { repo.getOrderDetail("v", "o") } returns Result.success(cuenta(version = 3))
+        coEvery { repo.getCustomerLoyalty("v", "ana", "o") } returns Result.success(saldo(200))
+        coEvery { repo.redeemLoyaltyPoints(any(), any(), any(), any(), any(), any(), any()) } returns Result.failure(java.io.IOException("sin red"))
+        ventana.ofertaParaCobrar("o")
+        ventana.leerLealtad("o")
+        ventana.canjear("o", 100, 10.0) {}
+        assertEquals("o", pedidos.canjeEnDuda.value)
+        assertTrue(pedidos.cobroBloqueadoPorCanje("o"))
+        pedidos.ofertaParaCobrar("o")
+        coEvery { repo.redeemLoyaltyPoints(any(), any(), any(), any(), any(), any(), any()) } returns Result.success(RedeemPointsData(100, 10.0, 100))
+        pedidos.reintentarCanje("o") {}
+        coVerify(exactly = 2) { repo.redeemLoyaltyPoints("v", "o", "ana", 100, 10.0, 3, any()) }
+        assertNull(ventana.canjeEnDuda.value)
+        assertFalse(ventana.cobroBloqueadoPorCanje("o"))
+    }
+
     @Test fun `el reintento de un canje que no entró lo aplica`() = runTest {
         coEvery { repo.getOrderDetail("v", "o") } returns Result.success(cuenta(version = 3))
         coEvery { repo.getCustomerLoyalty("v", "ana", "o") } returns Result.success(saldo(200))

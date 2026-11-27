@@ -157,8 +157,6 @@ fun OrdersScreen(
     // en applyInitialStatusFilter (que lee el filtro ACTUAL del ViewModel),
     // no en esta llave.
     LaunchedEffect(Unit) { applyInitialStatusFilter(viewModel, initialStatusFilter) }
-    // D39 v3 (Codex v3 #2): la ventana del atajo en Cobrar pudo dejar otra cuenta en el repositorio compartido.
-    LaunchedEffect(Unit) { viewModel.reafirmarSeleccion() }
     LifecycleResumeEffect(Unit) {
         viewModel.autoRefresh()
         onPauseOrDispose { }

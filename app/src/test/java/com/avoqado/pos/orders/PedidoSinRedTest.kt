@@ -165,6 +165,22 @@ class PedidoSinRedTest {
         assertNull(r.errorMessage.value)
     }
 
+    // D39 C1 (founder, «memoria propia»): la cuenta del atajo encima de Cobrar tiene su libreta; Pedidos no se entera (Codex v3-r2 #2).
+    @Test fun `una libreta propia no pisa la cuenta de Pedidos ni su aviso`() = runTest {
+        val r = repo { chain ->
+            val id = chain.request().url.encodedPath.substringAfterLast("/")
+            if (id == "B") throw UnknownHostException("sin red") else http(chain, 200, """{"success":true,"order":{"id":"$id"}}""")
+        }
+        r.loadOrderDetail("A")
+        val propia = r.lectorPropio()
+        propia.loadOrderDetail("B")
+        assertEquals("A", r.selectedOrder.value?.id)
+        assertNull(r.errorMessage.value)
+        assertEquals(TEXTO_PEDIDO_SIN_RED, propia.errorMessage.value)
+        propia.clearSelectedOrder()
+        assertEquals("A", r.selectedOrder.value?.id)
+    }
+
     // MARK: - D12 (Tarea 5): «Pedidos» alimenta la copia y la enseña sin red
 
     @Test fun `lecturaDe decide que tanto prueba una lectura`() {

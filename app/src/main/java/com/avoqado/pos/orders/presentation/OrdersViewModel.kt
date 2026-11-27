@@ -67,16 +67,29 @@ class OrdersViewModel @Inject constructor(
     // MARK: - Repository-backed State
 
     val orders = repository.orders
-    val selectedOrder = repository.selectedOrder
+
+    /**
+     * D39 C1 (founder, «memoria propia»): la libreta del detalle. Pedidos usa la del repositorio; la cuenta del atajo encima de Cobrar pide
+     * una propia con [usarLibretaPropia] antes de pintar, así no pisa a Pedidos (Codex v3-r2 #2). null = la de Pedidos.
+     */
+    private var libretaPropia: com.avoqado.pos.orders.data.OrdersRepository.LectorDeCuenta? = null
+    fun usarLibretaPropia() { if (libretaPropia == null) libretaPropia = repository.lectorPropio() }
+
+    private suspend fun cargarDetalle(orderId: String, silencioso: Boolean = false, reintento: Boolean = false) {
+        val propia = libretaPropia
+        if (propia != null) propia.loadOrderDetail(orderId, silencioso, reintento) else repository.loadOrderDetail(orderId, silencioso, reintento)
+    }
+
+    val selectedOrder: StateFlow<com.avoqado.pos.orders.data.model.OrderDetail?> get() = libretaPropia?.selectedOrder ?: repository.selectedOrder
     val isLoading = repository.isLoading
     val isLoadingMore = repository.isLoadingMore
-    val isLoadingDetail = repository.isLoadingDetail
-    val errorMessage = repository.errorMessage
+    val isLoadingDetail: StateFlow<Boolean> get() = libretaPropia?.isLoadingDetail ?: repository.isLoadingDetail
+    val errorMessage: StateFlow<String?> get() = libretaPropia?.errorMessage ?: repository.errorMessage
     val hasMore = repository.hasMore
 
     /** D12: hora de lo que se ve en la lista sin red (null = con red) y la cuenta de la copia que respalda el detalle. */
     val copiaVistaA = repository.copiaVistaA
-    val detalleDeLaCopia = repository.detalleDeLaCopia
+    val detalleDeLaCopia: StateFlow<com.avoqado.pos.orders.data.CuentaGuardada?> get() = libretaPropia?.detalleDeLaCopia ?: repository.detalleDeLaCopia
 
     /**
      * D12 · frescura (Codex r5 #2, y Menor 3 de la re-revisión): a qué hora se leyó del SERVIDOR lo que se ve en la lista; null = la copia
@@ -86,7 +99,7 @@ class OrdersViewModel @Inject constructor(
     val lecturaDelServidorEn = repository.lecturaDelServidorEn
 
     /** Final fix (F3): el pedido que está SIN RED (la copia sólo cobra mientras lo esté: `copiaParaCobrar`). */
-    val detalleSinRed = repository.detalleSinRed
+    val detalleSinRed: StateFlow<String?> get() = libretaPropia?.detalleSinRed ?: repository.detalleSinRed
 
     /** T12b: el aviso gris de la lista (la copia, la búsqueda sin red o el servidor que contestó mal); null = al día. */
     val avisoDeLaLista = repository.avisoDeLaLista
@@ -186,28 +199,19 @@ class OrdersViewModel @Inject constructor(
         // que filtra por id. Borrarlo además PERDÍA información: el cajero que abre otro pedido
         // y vuelve ya no encontraba el resultado de su reimpresión.
         viewModelScope.launch {
-            repository.loadOrderDetail(orderId)
+            cargarDetalle(orderId)
         }
-    }
-
-    /**
-     * D39 v3 (Codex v3 #2): el atajo «Usar puntos» abre otra cuenta encima de Cobrar con el mismo repositorio (`selectedOrder` es de un
-     * @Singleton). Al reabrir Pedidos, si su cuenta elegida ya no es la del repositorio, se vuelve a pedir.
-     */
-    fun reafirmarSeleccion() {
-        val id = _selectedOrderId.value ?: return
-        if (repository.selectedOrder.value?.id != id) selectOrder(id)
     }
 
     /** Actualiza el pedido a la vista sin desmontarlo: quitarlo borraba su aviso y cortaba sus peticiones. */
     fun refrescarDetalle(orderId: String) {
-        viewModelScope.launch { repository.loadOrderDetail(orderId, silencioso = true) }
+        viewModelScope.launch { cargarDetalle(orderId, silencioso = true) }
     }
 
     fun clearSelection() {
         _selectedOrderId.value = null
         _mensajeDeReimpresion.value = null
-        repository.clearSelectedOrder()
+        libretaPropia?.clearSelectedOrder() ?: repository.clearSelectedOrder()
     }
 
     // MARK: - Reimpresión de comanda (mostrador, Task 6)
@@ -247,7 +251,7 @@ class OrdersViewModel @Inject constructor(
      */
     fun reimprimirComanda(orderId: String) {
         if (_isReimprimiendoComanda.value) return
-        val order = repository.selectedOrder.value?.takeIf { it.id == orderId }
+        val order = selectedOrder.value?.takeIf { it.id == orderId }
         if (order == null) {
             _mensajeDeReimpresion.value = MensajeDeReimpresion(orderId, "No se encontró el pedido para reimprimir")
             return
@@ -347,7 +351,7 @@ class OrdersViewModel @Inject constructor(
      */
     suspend fun reabrirAlVolverLaRed() {
         val red = red ?: return
-        combine(red.isConnected, _selectedOrderId, repository.detalleSinRed) { conRed, id, sinRed ->
+        combine(red.isConnected, _selectedOrderId, detalleSinRed) { conRed, id, sinRed ->
             id.takeIf { conRed && it == sinRed }
         }.distinctUntilChanged().collectLatest { id ->
             if (id == null) return@collectLatest
@@ -356,7 +360,7 @@ class OrdersViewModel @Inject constructor(
                 delay(Necesidad.esperaTras(intentos++))
                 // Dentro de este bloque: una sola consulta a la vez, y otra selección, irse la red o cerrar «Pedidos» la
                 // cortan con su llamada; como es un reintento, lo que se veía se queda (Codex r2 #3, r3 #2 y #3).
-                repository.loadOrderDetail(id, reintento = true)
+                cargarDetalle(id, reintento = true)
             }
         }
     }
@@ -382,14 +386,20 @@ class OrdersViewModel @Inject constructor(
             .distinctUntilChanged()
             .collectLatest { (conectado, alcanzable, sinRespuesta) ->
                 when {
-                    !conectado -> repository.alPerderLaRed()
-                    !alcanzable -> if (sinRespuesta || red.nadieContesta()) repository.alPerderLaRed()
+                    !conectado -> alPerderLaRed()
+                    !alcanzable -> if (sinRespuesta || red.nadieContesta()) alPerderLaRed()
                     repository.listaEsperaLaRed -> {
                         gate.resetCooldown()
                         invalidateAndRefresh()
                     }
                 }
             }
+    }
+
+    /** Con libreta propia sólo se respalda SU detalle (la lista es de Pedidos). */
+    private suspend fun alPerderLaRed() {
+        val propia = libretaPropia
+        if (propia == null) repository.alPerderLaRed() else secureStorage.venueId?.let { propia.alPerderLaRed(it) }
     }
 
     @OptIn(FlowPreview::class)
