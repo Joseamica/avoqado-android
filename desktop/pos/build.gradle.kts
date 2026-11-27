@@ -285,7 +285,7 @@ tasks.matching { it.name == "kspKotlin" }.configureEach {
 tasks.processResources {
     from(appAndroid.resolve("src/main/res")) {
         include(
-            "drawable-nodpi/avoqado_logo_mark.png", "drawable/ic_whatsapp.xml",
+            "drawable-nodpi/avoqado_logo_mark.png", "drawable/ic_whatsapp.xml", "drawable/ic_google_g.xml",
             "drawable-nodpi/avoqado_logo_inline_black.png", "drawable-nodpi/avoqado_logo_inline_white.png",
         )
         into("android-res")

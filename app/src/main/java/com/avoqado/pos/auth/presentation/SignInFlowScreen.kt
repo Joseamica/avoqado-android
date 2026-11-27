@@ -27,7 +27,13 @@ import androidx.compose.material.icons.filled.Fingerprint
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material.icons.filled.WifiOff
+import androidx.compose.foundation.Image
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.TextButton
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.painterResource
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -78,15 +84,7 @@ fun SignInFlowScreen(
                 .padding(horizontal = AvoqadoTheme.spacing.xl)
                 .padding(top = AvoqadoTheme.spacing.md),
         ) {
-            BackButton(
-                onClick = {
-                    if (uiState.step == SignInStep.PASSWORD) {
-                        viewModel.goBackToEmail()
-                    } else {
-                        onBack()
-                    }
-                },
-            )
+            BackButton(onClick = { viewModel.atras(onBack) })
             Spacer(modifier = Modifier.weight(1f))
         }
 
@@ -115,7 +113,10 @@ fun SignInFlowScreen(
                         onEmailChange = viewModel::onEmailChange,
                         isEmailValid = uiState.isEmailValid,
                         isLoading = uiState.isLoading,
+                        esperandoNavegador = uiState.esperandoNavegador,
                         errorMessage = uiState.errorMessage,
+                        onGoogle = { activity?.let { viewModel.loginWithGoogle(it, onLoginSuccess) } },
+                        onCancelarGoogle = viewModel::cancelarGoogle,
                         canUseBiometric = uiState.canUseBiometric,
                         biometricEmail = uiState.biometricEmail,
                         onNext = {
@@ -176,7 +177,10 @@ private fun EmailStepContent(
     onEmailChange: (String) -> Unit,
     isEmailValid: Boolean,
     isLoading: Boolean,
+    esperandoNavegador: Boolean,
     errorMessage: String?,
+    onGoogle: () -> Unit,
+    onCancelarGoogle: () -> Unit,
     canUseBiometric: Boolean,
     biometricEmail: String?,
     onNext: () -> Unit,
@@ -237,9 +241,46 @@ private fun EmailStepContent(
         AuthButton(
             text = "Siguiente",
             onClick = onNext,
-            enabled = isEmailValid,
-            isLoading = isLoading,
+            enabled = isEmailValid && !isLoading,
+            isLoading = isLoading && !esperandoNavegador,
         )
+
+        // hz:6bfcd3a1:D1: «o» y el botón estándar de Google (blanco, con borde, la «G» a la izquierda).
+        Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))
+        Text(
+            text = "o",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.align(Alignment.CenterHorizontally),
+        )
+        Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))
+        OutlinedButton(
+            onClick = onGoogle,
+            enabled = !isLoading,
+            modifier = Modifier.fillMaxWidth().height(52.dp),
+            shape = RoundedCornerShape(AvoqadoTheme.cornerRadius.md),
+            colors = ButtonDefaults.outlinedButtonColors(containerColor = Color.White, contentColor = Color(0xFF1F1F1F)),
+        ) {
+            Image(
+                painter = painterResource(com.avoqado.pos.R.drawable.ic_google_g),
+                contentDescription = null,
+                modifier = Modifier.size(20.dp),
+            )
+            Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.md))
+            Text(text = "Continuar con Google", style = MaterialTheme.typography.titleMedium)
+        }
+        if (esperandoNavegador) {
+            Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
+            Text(
+                text = "Termina en tu navegador…",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.align(Alignment.CenterHorizontally),
+            )
+            TextButton(onClick = onCancelarGoogle, modifier = Modifier.align(Alignment.CenterHorizontally)) {
+                Text("Cancelar")
+            }
+        }
     }
 }
 

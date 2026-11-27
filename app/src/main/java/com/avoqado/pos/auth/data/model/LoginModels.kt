@@ -20,6 +20,8 @@ data class LoginResponse(
     val refreshToken: String? = null,
     val user: UserData? = null,
     val message: String? = null,
+    // La sucursal que eligió el SERVIDOR (pickOperationalVenueForLogin). Un servidor viejo no lo manda: vale la primera.
+    val selectedVenueId: String? = null,
 )
 
 @Serializable

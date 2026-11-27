@@ -1,0 +1,207 @@
+package com.avoqado.pos.auth.data
+
+import com.avoqado.pos.auth.data.model.GoogleConfigResponse
+import com.avoqado.pos.auth.data.model.GoogleStateRequest
+import com.avoqado.pos.auth.data.model.LoginResponse
+import com.avoqado.pos.auth.data.model.LoginResult
+import com.avoqado.pos.auth.data.model.PaseDeGoogle
+import com.avoqado.pos.auth.data.model.UserData
+import com.avoqado.pos.auth.data.model.VenueData
+import com.avoqado.pos.core.data.local.SecureStorage
+import com.avoqado.pos.core.data.network.ApiService
+import com.avoqado.pos.core.data.network.RefrescoExclusivo
+import com.avoqado.pos.core.di.NetworkModule
+import com.avoqado.pos.inventory.data.InventoryRepository
+import com.avoqado.pos.notifications.data.NotificationsRepository
+import com.avoqado.pos.pos.data.DiscountsRepository
+import com.avoqado.pos.pos.data.ProductsRepository
+import com.avoqado.pos.pos.data.PromotionsRepository
+import com.avoqado.pos.pos.data.SavedCartsRepository
+import com.avoqado.pos.tpvsettings.data.TpvSettingsRepository
+import com.avoqado.pos.transactions.data.TransactionRepository
+import io.mockk.coEvery
+import io.mockk.every
+import io.mockk.mockk
+import io.mockk.slot
+import io.mockk.verify
+import kotlinx.coroutines.test.runTest
+import okhttp3.ResponseBody.Companion.toResponseBody
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
+import org.junit.Test
+import retrofit2.HttpException
+import retrofit2.Response
+import java.io.IOException
+
+/** Entrar con Google en el POS: mismo guardado que el correo, sucursal que elige el SERVIDOR (hz:6bfcd3a1:D1). */
+class AuthRepositoryGoogleTest {
+
+    private val apiService = mockk<ApiService>()
+    private val secureStorage = mockk<SecureStorage>(relaxed = true) {
+        every { generacion } returns 7L
+        every { instalarSiSigue(7L, any()) } answers { secondArg<() -> Unit>().invoke(); 8L }
+    }
+    private val repository = AuthRepository(
+        apiService = apiService,
+        secureStorage = secureStorage,
+        productsRepository = mockk<ProductsRepository>(relaxed = true),
+        discountsRepository = mockk<DiscountsRepository>(relaxed = true),
+        promotionsRepository = mockk<PromotionsRepository>(relaxed = true),
+        tpvSettingsRepository = mockk<TpvSettingsRepository>(relaxed = true),
+        savedCartsRepository = mockk<SavedCartsRepository>(relaxed = true),
+        inventoryRepository = mockk<InventoryRepository>(relaxed = true),
+        transactionRepository = mockk<TransactionRepository>(relaxed = true),
+        notificationsRepository = mockk<NotificationsRepository>(relaxed = true),
+        refrescoExclusivo = RefrescoExclusivo(),
+    )
+
+    private fun venue(id: String) = VenueData(id = id, name = "Sucursal $id", slug = "s-$id", role = "ADMIN")
+    private fun respuesta(selected: String?) = LoginResponse(
+        success = true,
+        accessToken = "acc",
+        refreshToken = "ref",
+        user = UserData(id = "u1", email = "a@b.com", venues = listOf(venue("v1"), venue("v2"))),
+        selectedVenueId = selected,
+    )
+
+    private companion object {
+        const val TEXTO_LIMITE = "Demasiados intentos. Espera un minuto y vuelve a intentarlo."
+        const val LIMITE = """{"success":false,"code":"RATE_LIMIT_EXCEEDED","message":"$TEXTO_LIMITE"}"""
+    }
+
+    private fun http(code: Int, cuerpo: String) = HttpException(Response.error<Any>(code, cuerpo.toResponseBody(null)))
+
+    @Test
+    fun `vuelta - manda state y verificador sin nulls y guarda igual que el correo`() = runTest {
+        val pedido = slot<GoogleStateRequest>()
+        coEvery { apiService.loginWithGoogleState(capture(pedido)) } returns respuesta(null)
+
+        val r = repository.loginWithGoogle(PaseDeGoogle.Vuelta("s", "v"), 7L)
+
+        assertTrue(r is LoginResult.Success)
+        // Lo que de verdad viaja, con el `Json` de Retrofit: el SERVIDOR es estricto (ninguna otra llave, ningún null).
+        assertEquals(
+            """{"state":"s","codeVerifier":"v","rememberMe":true}""",
+            NetworkModule.provideJson().encodeToString(GoogleStateRequest.serializer(), pedido.captured),
+        )
+        verify { secureStorage.saveLogin("u1", "a@b.com", any(), any(), "v1", any(), any(), any(), "acc", "ref", any(), any(), any()) }
+    }
+
+    @Test
+    fun `con selectedVenueId de la segunda sucursal guarda la segunda en los dos caminos`() = runTest {
+        coEvery { apiService.loginWithGoogleState(any()) } returns respuesta("v2")
+        coEvery { apiService.loginWithGoogleCode(any()) } returns respuesta("v2")
+        coEvery { apiService.login(any()) } returns respuesta("v2")
+
+        repository.loginWithGoogle(PaseDeGoogle.Vuelta("s", "v"), 7L)
+        repository.loginWithGoogle(PaseDeGoogle.Codigo("c", "v", "http://127.0.0.1:1/cb"), 7L)
+        repository.loginWithEmail("a@b.com", "x")
+
+        verify(exactly = 3) { secureStorage.saveLogin("u1", "a@b.com", any(), any(), "v2", any(), any(), any(), "acc", "ref", any(), any(), any()) }
+    }
+
+    @Test
+    fun `sin selectedVenueId guarda la primera (SERVIDOR viejo)`() = runTest {
+        coEvery { apiService.loginWithGoogleState(any()) } returns respuesta(null)
+        repository.loginWithGoogle(PaseDeGoogle.Vuelta("s", "v"), 7L)
+        verify { secureStorage.saveLogin("u1", "a@b.com", any(), any(), "v1", any(), any(), any(), "acc", "ref", any(), any(), any()) }
+    }
+
+    @Test
+    fun `404 muestra el texto del servidor`() = runTest {
+        val texto = "No encontramos una cuenta de Avoqado con ese correo."
+        coEvery { apiService.loginWithGoogleState(any()) } throws http(404, """{"message":"$texto"}""")
+        assertEquals(texto, (repository.loginWithGoogle(PaseDeGoogle.Vuelta("s", "v"), 7L) as LoginResult.Error).message)
+    }
+
+    @Test
+    fun `cuerpo ilegible - Error del servidor con el codigo`() = runTest {
+        coEvery { apiService.loginWithGoogleState(any()) } throws http(500, "<html>")
+        assertEquals("Error del servidor (500)", (repository.loginWithGoogle(PaseDeGoogle.Vuelta("s", "v"), 7L) as LoginResult.Error).message)
+    }
+
+    @Test
+    fun `sin red - texto sin red`() = runTest {
+        coEvery { apiService.loginWithGoogleState(any()) } throws IOException("sin red")
+        assertEquals(
+            "Sin conexión: conéctate a internet para entrar con Google.",
+            (repository.loginWithGoogle(PaseDeGoogle.Vuelta("s", "v"), 7L) as LoginResult.Error).message,
+        )
+    }
+
+    @Test
+    fun `sello viejo - OTRA_PERSONA_ENTRO y no instala`() = runTest {
+        every { secureStorage.instalarSiSigue(3L, any()) } returns null
+        coEvery { apiService.loginWithGoogleState(any()) } returns respuesta(null)
+
+        val r = repository.loginWithGoogle(PaseDeGoogle.Vuelta("s", "v"), 3L)
+
+        assertEquals(AuthRepository.OTRA_PERSONA_ENTRO, (r as LoginResult.Error).message)
+        verify(exactly = 0) { secureStorage.saveLogin(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun `Fallo y Cancelado no llegan a la red y no truenan`() = runTest {
+        assertEquals("nada", (repository.loginWithGoogle(PaseDeGoogle.Fallo("nada", "x"), 7L) as LoginResult.Error).message)
+        assertTrue(repository.loginWithGoogle(PaseDeGoogle.Cancelado, 7L) is LoginResult.Error)
+    }
+
+    @Test
+    fun `config sin red - SinRed`() = runTest {
+        coEvery { apiService.configDeGoogle() } throws IOException()
+        assertEquals(ConfigDeGoogle.SinRed, repository.configDeGoogle())
+    }
+
+    @Test
+    fun `config 404 - NoDisponible`() = runTest {
+        coEvery { apiService.configDeGoogle() } throws http(404, "")
+        assertEquals(ConfigDeGoogle.NoDisponible(), repository.configDeGoogle())
+    }
+
+    @Test
+    fun `config 429 - NoDisponible con el aviso del servidor`() = runTest {
+        coEvery { apiService.configDeGoogle() } throws http(429, LIMITE)
+        assertEquals(ConfigDeGoogle.NoDisponible(TEXTO_LIMITE), repository.configDeGoogle())
+    }
+
+    @Test
+    fun `entrar 429 - muestra el aviso del servidor`() = runTest {
+        coEvery { apiService.loginWithGoogleState(any()) } throws http(429, LIMITE)
+        assertEquals(TEXTO_LIMITE, (repository.loginWithGoogle(PaseDeGoogle.Vuelta("s", "v"), 7L) as LoginResult.Error).message)
+    }
+
+    @Test
+    fun `config con android y windows en false - NoDisponible, y con cualquiera de los dos - Lista`() = runTest {
+        coEvery { apiService.configDeGoogle() } returns GoogleConfigResponse(success = true)
+        assertEquals(ConfigDeGoogle.NoDisponible(), repository.configDeGoogle())
+        // La config es de las dos plataformas: cada `EntrarConGoogle` revisa su parte (Codex r4 #7).
+        for (c in listOf(
+            GoogleConfigResponse(success = true, android = true, webClientId = "web", redirectUri = "https://api/vuelta"),
+            GoogleConfigResponse(success = true, android = false, windows = true, desktopClientId = "escritorio"),
+        )) {
+            coEvery { apiService.configDeGoogle() } returns c
+            assertEquals(ConfigDeGoogle.Lista(c), repository.configDeGoogle())
+        }
+    }
+
+    @Test
+    fun `la config nueva del SERVIDOR se lee entera`() {
+        val c = NetworkModule.provideJson().decodeFromString(
+            GoogleConfigResponse.serializer(),
+            """{"success":true,"android":true,"windows":false,"webClientId":"web","redirectUri":"https://api/vuelta","desktopClientId":null}""",
+        )
+        assertEquals(GoogleConfigResponse(true, android = true, webClientId = "web", redirectUri = "https://api/vuelta"), c)
+    }
+
+    @Test
+    fun `200 que no es JSON - config SinRed y entrada con texto sin red`() = runTest {
+        val raro = kotlinx.serialization.SerializationException("<html>portal</html>")
+        coEvery { apiService.configDeGoogle() } throws raro
+        assertEquals(ConfigDeGoogle.SinRed, repository.configDeGoogle())
+        coEvery { apiService.loginWithGoogleState(any()) } throws raro
+        assertEquals(
+            "Sin conexión: conéctate a internet para entrar con Google.",
+            (repository.loginWithGoogle(PaseDeGoogle.Vuelta("s", "v"), 7L) as LoginResult.Error).message,
+        )
+    }
+}

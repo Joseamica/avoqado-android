@@ -7,12 +7,13 @@
 # reemplazo (o anota lo que escritorio todavía no tiene) y SÓLO DESPUÉS corre `./gradlew -p desktop :pos:actualizarHuellas`.
 # Un renglón sin huella también truena. Prueba de las alarmas: desktop/herramientas/probar-huellas.sh.
 com/avoqado/pos/AvoqadoApp.kt                                   # sin reemplazo: Application de Android; su onCreate se replica en escritorio/Arranque.kt | huella: 056b4fa88ff201408e1c2b00b1c621e487377e9003729c7a777f2cda0cf594d9
-com/avoqado/pos/MainActivity.kt                                 # sin reemplazo: su setContent se replica en escritorio/AppEscritorio.kt | huella: 58bea02fbd39aaa815d6d6e484956aeffe6a4e6d62b4e027f1c66979b81eb3b1
+com/avoqado/pos/MainActivity.kt                                 # sin reemplazo: su setContent se replica en escritorio/AppEscritorio.kt | huella: 08877dcb4e7d44bb5494ef286bc46e1c9285ba7b0137b1b8fdb53272bbe1224e
 com/avoqado/pos/customerdisplay/CustomerDisplayActivity.kt      # sin reemplazo: Activity de la segunda pantalla | huella: 9048af0c6480c4e09530def9a51ddb11e90736a6504492898e330c488e8ce06b
 com/avoqado/pos/kiosk/system/KioskBootReceiver.kt               # sin reemplazo: arranque al encender la tablet | huella: f92c93d636048e972628ef4629f97bf3c1d8cc2c769ee095d8dd2f2232f715d8
 com/avoqado/pos/core/data/local/database/AvoqadoDatabaseMigrations.kt   # reemplazo: copia generada con los imports cambiados (build/generated/migraciones) | huella: d176ecb98235c96b6f9f018d13be8a343e185307a7f3bc01da187f9ce64ac6ce
 com/avoqado/pos/core/di/DatabaseModule.kt                       # reemplazo: Room con BundledSQLiteDriver en la carpeta de datos, con las migraciones de Android y respaldo previo | huella: f3fb34e693846fec631cac3a0ed64b6a4cf2d7794296e3902177515d26670b1a
 com/avoqado/pos/auth/data/BiometricAuthManager.kt               # reemplazo: sin biometría en escritorio | huella: e0ccd4d268b356bb4d0b4765510c62ebaa8f53252ec3fae247808c7679723cb2
+com/avoqado/pos/auth/data/EntrarConGoogle.kt             # reemplazo: navegador + 127.0.0.1 con PKCE (la Auth Tab de Chrome no existe en escritorio; PkceDeGoogle.kt sí se comparte) | huella: 7d74e1beed29ee091dabd7d54208115b13ac96062c84f01768f46000cf00b1f5
 com/avoqado/pos/auth/presentation/LandingScreen.kt              # reemplazo: fondo fijo en vez del video (VideoView) | huella: 26090b8c018e6549408d185ca7ae260508cc64d0abba072bbb5198bdb8acd230
 com/avoqado/pos/customerdisplay/CustomerDisplayPresentation.kt  # sin reemplazo: Presentation de Android (segunda pantalla); sólo la usa CustomerDisplayManager | huella: 8f212a0724fff66aa578d5887bc2e2746bebfc132fc642b4c8f6eedce9ca0a78
 com/avoqado/pos/customerdisplay/CustomerDisplayManager.kt       # reemplazo: la pantalla del cliente en un segundo monitor (ventana propia: escritorio/VentanaDelCliente.kt) | huella: f3fd9f880b04dbfafc4a367c510b649477101c05a399a32dbb948f231158e06d
@@ -29,7 +30,7 @@ com/avoqado/pos/timeclock/presentation/SelfieDeEntrada.kt      # reemplazo: Came
 #
 # No se excluye de nada: sólo se vigila. Lo que Android declara aquí (servicios, receptores de arranque, permisos) lo da el
 # sistema; en escritorio se replica a mano en escritorio/Arranque.kt o se declara «no disponible en Windows».
-@manifiesto app/src/main/AndroidManifest.xml | huella: 3f506370b556cd3e72c3a5f8d780710b339bedd9cd64cb1fe36b2c04de69cef3
+@manifiesto app/src/main/AndroidManifest.xml | huella: 3533695e7eab0b1cace65e652d1cf2cb243cc46ccb24da18df8774cc1d2e3b7d
 
 com/avoqado/pos/giftcards/presentation/CompartirLiga.kt # reemplazo: portapapeles de Windows | huella: 4777ca9b23e97480c02d8d9bf906dbbe776da54c2b57a4d9ec97d9344cda0e25
 

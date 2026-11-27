@@ -3,6 +3,13 @@
 ## [Unreleased]
 
 ### Added
+- **Entrar con Google en el POS (ANDROID y WINDOWS, tarjeta hz:6bfcd3a1:D1).** En la pantalla «Iniciar sesión», debajo de «Siguiente», hay una «o»
+  y el botón «Continuar con Google». En ANDROID se abre Google en una pestaña de incógnito de Chrome
+  (necesita Chrome actualizado); en WINDOWS, en una ventana aparte de Microsoft Edge que se cierra y se borra sola. La persona escribe su correo
+  y contraseña de Google y el POS entra solo; no queda nada en el aparato (ni la cuenta en Ajustes ni la sesión del navegador). Mientras espera en
+  WINDOWS dice «Termina en tu navegador…» y trae «Cancelar»; a los 3 minutos sin respuesta avisa. Sólo entran cuentas que ya existen: el POS nunca crea cuentas ni negocios, y los avisos dicen qué hacer
+  (sin cuenta, cuenta ligada a otra cuenta de Google, cuenta con contraseña sin Gmail, sin internet, aparato sin Chrome actualizado o sin Edge, o caja bloqueada). Necesita el SERVIDOR con la ruta nueva de Google del POS; con uno viejo avisa que no está disponible y se entra con correo y
+  contraseña. iOS: ficha en `docs/proyectos/ios-por-hacer.md`.
 - **Mesas · el «Quitar» de una rebaja fija del cobro de vales sale en gris con su razón (D15, tarjeta hz:e82938e1:D15).** En el
   diálogo «Descuentos» de una mesa, la rebaja del vale y la del producto suelto de esa venta se siguen viendo con su monto, pero
   «Quitar» sale apagado con «Fija: viene del cobro de vales», y tocar la fila dice por qué («Esta rebaja quedó fija al cobrar los

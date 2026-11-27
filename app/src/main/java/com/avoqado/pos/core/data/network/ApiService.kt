@@ -40,6 +40,16 @@ interface ApiService {
     @POST("mobile/auth/login")
     suspend fun login(@Body request: LoginRequest): LoginResponse
 
+    /** hz:6bfcd3a1:D1 — Entrar con Google en el POS. */
+    @retrofit2.http.GET("mobile/auth/google/config")
+    suspend fun configDeGoogle(): com.avoqado.pos.auth.data.model.GoogleConfigResponse
+
+    @POST("mobile/auth/google")
+    suspend fun loginWithGoogleState(@Body request: com.avoqado.pos.auth.data.model.GoogleStateRequest): LoginResponse
+
+    @POST("mobile/auth/google")
+    suspend fun loginWithGoogleCode(@Body request: com.avoqado.pos.auth.data.model.GoogleCodeRequest): LoginResponse
+
     @POST("mobile/auth/refresh")
     suspend fun refreshToken(@Body request: RefreshRequest): RefreshResponse
 

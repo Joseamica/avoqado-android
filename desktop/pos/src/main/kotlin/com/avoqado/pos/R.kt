@@ -5,6 +5,7 @@ object R {
     object drawable {
         const val avoqado_logo_mark = 1
         const val ic_whatsapp = 2
+        const val ic_google_g = 6   // la «G» de «Continuar con Google»
         const val avoqado_logo_inline_black = 4   // «Powered by» de la pantalla del cliente (tema claro)
         const val avoqado_logo_inline_white = 5   // y el de tema oscuro
     }

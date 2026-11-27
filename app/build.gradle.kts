@@ -194,6 +194,9 @@ dependencies {
     // Biometric
     implementation(libs.biometric)
 
+    // Entrar con Google en una pestaña de incógnito de Chrome (Auth Tab efímera; hz:6bfcd3a1:D1)
+    implementation(libs.browser)
+
     // Image Loading
     implementation(libs.coil.compose)
 

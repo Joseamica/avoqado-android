@@ -1,0 +1,292 @@
+package com.avoqado.pos.auth.data
+
+import androidx.fragment.app.FragmentActivity
+import com.avoqado.pos.auth.data.model.GoogleConfigResponse
+import com.avoqado.pos.auth.data.model.PaseDeGoogle
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
+import java.io.IOException
+import java.net.SocketTimeoutException
+import java.net.Socket
+import java.net.URI
+import java.util.Collections
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
+import kotlin.concurrent.thread
+import kotlin.test.Test
+import kotlin.test.assertContains
+import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
+import kotlin.test.assertTrue
+
+/** Entrar con Google en WINDOWS: navegador del sistema + vuelta a 127.0.0.1 con PKCE (hz:6bfcd3a1:D1). */
+class VueltaDelNavegadorTest {
+
+    private val config = GoogleConfigResponse(success = true, desktopClientId = "cliente.apps.googleusercontent.com", windows = true)
+    private val actividad = FragmentActivity(null)
+
+    // --- Piezas puras (retoPkce y urlDeGoogle se prueban en app/src/test: PkceDeGoogleTest) ---
+
+    @Test fun `vuelta buena ⇒ Codigo con el code decodificado`() {
+        assertEquals(
+            Vuelta.Codigo("4/0AbC-d_e"),
+            leerVuelta("GET /?state=s1&code=4%2F0AbC-d_e&scope=email%20openid HTTP/1.1", "s1"),
+        )
+    }
+
+    @Test fun `state ajeno ⇒ Ajena`() {
+        assertEquals(Vuelta.Ajena, leerVuelta("GET /?state=otro&code=4%2Fx HTTP/1.1", "s1"))
+        assertEquals(Vuelta.Ajena, leerVuelta("GET /?code=4%2Fx HTTP/1.1", "s1"))
+    }
+
+    @Test fun `access_denied ⇒ Cancelado`() {
+        assertEquals(Vuelta.Cancelado, leerVuelta("GET /?error=access_denied&state=s1 HTTP/1.1", "s1"))
+        assertEquals(Vuelta.Ajena, leerVuelta("GET /?error=access_denied&state=otro HTTP/1.1", "s1"))
+    }
+
+    @Test fun `favicon, sin parámetros o basura ⇒ Ajena`() {
+        for (linea in listOf(
+            "GET /favicon.ico HTTP/1.1",
+            "GET /favicon.ico?state=s1&code=x HTTP/1.1",
+            "GET / HTTP/1.1",
+            "POST /?state=s1&code=x HTTP/1.1",
+            "",
+            "basura",
+        )) assertEquals(Vuelta.Ajena, leerVuelta(linea, "s1"), linea)
+    }
+
+    // --- De punta a punta, con un socket real en 127.0.0.1 ---
+
+    /** Un «navegador» de prueba: en vez de ir a Google, corre [alAbrir] en su hilo con el puerto y el `state` de la URL. */
+    private inner class Navegador(private val alAbrir: (puerto: Int, state: String) -> Unit) {
+        @Volatile var url: URI? = null
+        @Volatile var puerto = 0
+        @Volatile private var hilo: Thread? = null
+        val entrar = EntrarConGoogle { uri, _ ->
+            url = uri
+            val q = parametrosDe(uri.rawQuery)
+            puerto = URI(q.getValue("redirect_uri")).port
+            hilo = thread(isDaemon = true) { alAbrir(puerto, q.getValue("state")) }
+            null
+        }
+
+        fun terminar() = hilo?.join(5_000)
+    }
+
+    /** Lo que mandaría el navegador: la línea de petición + encabezados; devuelve la respuesta completa. */
+    private fun pedir(puerto: Int, ruta: String): String = Socket("127.0.0.1", puerto).use { s ->
+        s.soTimeout = 5_000
+        s.getOutputStream().write("GET $ruta HTTP/1.1\r\nHost: 127.0.0.1:$puerto\r\nAccept: text/html\r\n\r\n".toByteArray())
+        s.getInputStream().readBytes().toString(Charsets.UTF_8)
+    }
+
+    @Test fun `dos vueltas buenas ⇒ sólo la primera cuenta y el socket queda cerrado`() = runBlocking<Unit> {
+        val respuestas = Collections.synchronizedList(mutableListOf<String>())
+        val navegador = Navegador { p, state ->
+            respuestas += pedir(p, "/?state=$state&code=4%2Fprimero")
+            respuestas += runCatching { pedir(p, "/?state=$state&code=4%2Fsegundo") }.getOrElse { "cerrado" }
+        }
+        val pase = withTimeout(10_000) { navegador.entrar.pedirPase(actividad, config) } as PaseDeGoogle.Codigo
+        navegador.terminar()
+
+        assertEquals("4/primero", pase.code)
+        assertEquals("http://127.0.0.1:${navegador.puerto}", pase.redirectUri)
+        assertEquals(64, pase.codeVerifier.length)
+        assertTrue(pase.codeVerifier.all { it.isLetterOrDigit() && it.code < 128 || it in "-._~" }, pase.codeVerifier)
+        val q = parametrosDe(navegador.url!!.rawQuery)
+        assertEquals(retoPkce(pase.codeVerifier), q["code_challenge"])
+        assertEquals(43, q.getValue("state").length)
+        assertContains(respuestas[0], "HTTP/1.1 200")
+        assertContains(respuestas[0], "Content-Type: text/html; charset=utf-8")
+        assertContains(respuestas[0], "Listo. Ya puedes volver al POS de Avoqado.")
+        assertFailsWith<IOException> { Socket("127.0.0.1", navegador.puerto).close() }
+    }
+
+    @Test fun `state ajeno ⇒ 404 y el intento sigue esperando`() = runBlocking<Unit> {
+        val respuestas = Collections.synchronizedList(mutableListOf<String>())
+        val navegador = Navegador { p, state ->
+            respuestas += pedir(p, "/favicon.ico")
+            respuestas += pedir(p, "/?state=otro&code=4%2Fajeno")
+            respuestas += pedir(p, "/?state=$state&code=4%2Fbueno")
+        }
+        val pase = withTimeout(10_000) { navegador.entrar.pedirPase(actividad, config) } as PaseDeGoogle.Codigo
+        navegador.terminar()
+
+        assertEquals("4/bueno", pase.code)
+        assertContains(respuestas[0], "HTTP/1.1 404")
+        assertContains(respuestas[1], "HTTP/1.1 404")
+        assertContains(respuestas[2], "Listo. Ya puedes volver al POS de Avoqado.")
+    }
+
+    @Test fun `access_denied de punta a punta ⇒ Cancelado`() = runBlocking<Unit> {
+        val navegador = Navegador { p, state -> pedir(p, "/?error=access_denied&state=$state") }
+        val pase = withTimeout(10_000) { navegador.entrar.pedirPase(actividad, config) }
+        navegador.terminar()
+        assertEquals(PaseDeGoogle.Cancelado, pase)
+    }
+
+    @Test fun `una conexión que no manda nada no frena a la buena`() = runBlocking<Unit> {
+        val muda = CountDownLatch(1)
+        val navegador = Navegador { p, state ->
+            val colgada = Socket("127.0.0.1", p)   // como el «preconnect» del navegador: abre y no manda nada
+            Thread.sleep(200)
+            pedir(p, "/?state=$state&code=4%2Frapido")
+            muda.await(5, TimeUnit.SECONDS)
+            colgada.close()
+        }
+        val inicio = System.nanoTime()
+        // Muy por debajo de los 5 s de espera por conexión: la muda no hace fila delante de la buena.
+        val pase = withTimeout(3_000) { navegador.entrar.pedirPase(actividad, config) } as PaseDeGoogle.Codigo
+        val ms = (System.nanoTime() - inicio) / 1_000_000
+        muda.countDown()
+        navegador.terminar()
+        assertEquals("4/rapido", pase.code)
+        assertTrue(ms < 3_000, "tardó $ms ms")
+    }
+
+    @Test fun `cancelar con una conexión colgada ⇒ Cancelado y todo cerrado`() = runBlocking<Unit> {
+        val conectada = CountDownLatch(1)
+        val leyo = AtomicInteger(-2)
+        val navegador = Navegador { p, _ ->
+            Socket("127.0.0.1", p).use { colgada ->
+                colgada.soTimeout = 5_000
+                conectada.countDown()
+                leyo.set(runCatching { colgada.getInputStream().read() }.getOrDefault(-1))   // -1 o error: la cerró el POS
+            }
+        }
+        thread(isDaemon = true) {
+            conectada.await(5, TimeUnit.SECONDS)
+            Thread.sleep(200)   // que el POS ya la haya aceptado
+            navegador.entrar.cancelar()
+        }
+        val inicio = System.nanoTime()
+        val pase = withTimeout(3_000) { navegador.entrar.pedirPase(actividad, config) }
+        val ms = (System.nanoTime() - inicio) / 1_000_000
+        navegador.terminar()
+        assertEquals(PaseDeGoogle.Cancelado, pase)
+        assertTrue(ms < 3_000, "tardó $ms ms")
+        assertEquals(-1, leyo.get())
+        assertFailsWith<IOException> { Socket("127.0.0.1", navegador.puerto).close() }
+    }
+
+    @Test fun `cortar la corrutina con una conexión colgada ⇒ se cancela sin convertirse en Fallo y todo cerrado`() = runBlocking<Unit> {
+        val conectada = CountDownLatch(1)
+        val navegador = Navegador { p, _ ->
+            Socket("127.0.0.1", p).use { colgada ->
+                colgada.soTimeout = 5_000
+                conectada.countDown()
+                runCatching { colgada.getInputStream().read() }
+            }
+        }
+        val resultado = AtomicReference<PaseDeGoogle?>()
+        val trabajo = launch(Dispatchers.Default) { resultado.set(navegador.entrar.pedirPase(actividad, config)) }
+        withContext(Dispatchers.IO) { conectada.await(5, TimeUnit.SECONDS) }
+        delay(200)   // que el POS ya la haya aceptado
+        withTimeout(3_000) { trabajo.cancelAndJoin() }
+        navegador.terminar()
+        assertEquals(null, resultado.get())
+        assertFailsWith<IOException> { Socket("127.0.0.1", navegador.puerto).close() }
+    }
+
+    @Test fun `sin navegador ⇒ Fallo con su texto y el socket cerrado`() = runBlocking<Unit> {
+        val puerto = AtomicInteger()
+        val entrar = EntrarConGoogle { uri, _ ->
+            puerto.set(URI(parametrosDe(uri.rawQuery).getValue("redirect_uri")).port)
+            throw UnsupportedOperationException("sin navegador")
+        }
+        val pase = entrar.pedirPase(actividad, config) as PaseDeGoogle.Fallo
+        assertEquals("No pudimos abrir Microsoft Edge. Entra con tu correo y contraseña.", pase.texto)
+        assertFailsWith<IOException> { Socket("127.0.0.1", puerto.get()).close() }
+    }
+
+    @Test fun `el servidor sin Google para WINDOWS ⇒ Fallo sin abrir nada`() = runBlocking<Unit> {
+        var abrio = false
+        val entrar = EntrarConGoogle { _, _ -> abrio = true; null }
+        for (sinGoogle in listOf(config.copy(windows = false), config.copy(desktopClientId = null), config.copy(desktopClientId = " "))) {
+            val pase = entrar.pedirPase(actividad, sinGoogle) as PaseDeGoogle.Fallo
+            assertEquals("Entrar con Google no está disponible por ahora. Entra con tu correo y contraseña.", pase.texto)
+        }
+        assertEquals(false, abrio)
+    }
+
+    // --- El plazo y las conexiones (Codex r2 #6) ---
+
+    /** Hilos del POS dentro de `atender` ahora mismo (las conexiones que se están leyendo). */
+    private fun hilosAtendiendo() = Thread.getAllStackTraces().values.count { pila ->
+        pila.any { it.methodName == "atender" && it.className.endsWith("Intento") }
+    }
+
+    @Test fun `el plazo cuenta desde antes de abrir el navegador`() = runBlocking<Unit> {
+        // El navegador tarda en abrir y nadie vuelve: el plazo NO empieza al terminar de abrirlo.
+        val entrar = EntrarConGoogle(plazoMs = 1_000) { _, _ -> Thread.sleep(800); null }
+        val inicio = System.nanoTime()
+        val pase = withTimeout(5_000) { entrar.pedirPase(actividad, config) } as PaseDeGoogle.Fallo
+        val ms = (System.nanoTime() - inicio) / 1_000_000
+        assertEquals("No recibimos respuesta de Google. Vuelve a intentarlo.", pase.texto)
+        assertTrue(ms < 1_500, "tardó $ms ms")
+    }
+
+    @Test fun `seis conexiones mudas ⇒ a lo más 4 atendidas a la vez, la buena entra en menos de 8 s y no queda nada vivo`() =
+        runBlocking<Unit> {
+            val atendidas = AtomicInteger(-1)
+            val mudas = Collections.synchronizedList(mutableListOf<Socket>())
+            val respuesta = AtomicReference<String>()
+            val navegador = Navegador { p, state ->
+                repeat(6) { mudas += Socket("127.0.0.1", p) }   // abren y no mandan nada
+                Thread.sleep(1_000)   // que el POS ya las haya aceptado
+                atendidas.set(hilosAtendiendo())
+                Socket("127.0.0.1", p).use { s ->
+                    s.soTimeout = 10_000   // la buena espera su turno: no se cierra
+                    s.getOutputStream().write("GET /?state=$state&code=4%2Fbueno HTTP/1.1\r\nHost: x\r\n\r\n".toByteArray())
+                    respuesta.set(s.getInputStream().readBytes().toString(Charsets.UTF_8))
+                }
+            }
+            val inicio = System.nanoTime()
+            val pase = withTimeout(12_000) { navegador.entrar.pedirPase(actividad, config) } as PaseDeGoogle.Codigo
+            val ms = (System.nanoTime() - inicio) / 1_000_000
+            navegador.terminar()
+            mudas.forEach { runCatching { it.close() } }
+            assertEquals("4/bueno", pase.code)
+            assertTrue(atendidas.get() in 1..4, "atendidas a la vez: ${atendidas.get()}")
+            assertTrue(ms < 8_000, "tardó $ms ms")
+            assertContains(respuesta.get().orEmpty(), "Listo. Ya puedes volver al POS de Avoqado.")
+            assertEquals(0, hilosAtendiendo(), "al terminar pedirPase no queda ninguna conexión atendiéndose")
+        }
+
+    @Test fun `una conexión que gotea un byte por segundo se cierra a los 5 s`() = runBlocking<Unit> {
+        val cerradaA = AtomicLong(-1)
+        val navegador = Navegador { p, state ->
+            Socket("127.0.0.1", p).use { lenta ->
+                lenta.soTimeout = 200
+                val inicio = System.nanoTime()
+                try {
+                    repeat(9) {   // ~9 s mandando, sin terminar nunca la línea
+                        lenta.getOutputStream().apply { write('a'.code); flush() }
+                        try {
+                            if (lenta.getInputStream().read() == -1) throw IOException("la cerró el POS")
+                        } catch (_: SocketTimeoutException) {
+                            // sigue abierta
+                        }
+                        Thread.sleep(800)
+                    }
+                } catch (_: IOException) {
+                    cerradaA.set((System.nanoTime() - inicio) / 1_000_000)
+                }
+            }
+            pedir(p, "/?state=$state&code=4%2Fbueno")
+        }
+        val pase = withTimeout(15_000) { navegador.entrar.pedirPase(actividad, config) } as PaseDeGoogle.Codigo
+        navegador.terminar()
+        assertEquals("4/bueno", pase.code)
+        assertTrue(cerradaA.get() in 4_000..7_000, "se cerró a los ${cerradaA.get()} ms")
+    }
+}
+

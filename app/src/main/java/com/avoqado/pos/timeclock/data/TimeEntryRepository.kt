@@ -28,7 +28,7 @@ class TimeEntryRepository @Inject constructor(
 ) {
     // Los cuerpos del checador contienen PIN y no deben registrarse.
     private val client = client.newBuilder()
-        .apply { interceptors().removeAll { it is okhttp3.logging.HttpLoggingInterceptor } }
+        .apply { interceptors().removeAll { com.avoqado.pos.core.di.esRegistroDeRed(it) } }
         .build()
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
     private val pinRegex = Regex("^\\d{4,10}$")
