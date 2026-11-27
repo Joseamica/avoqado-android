@@ -19,6 +19,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import javax.inject.Inject
 import com.avoqado.pos.core.data.network.ServerErrorText
 
@@ -32,6 +33,8 @@ data class SignInUiState(
     val isLoading: Boolean = false,
     /** WINDOWS: el navegador está abierto y se espera a Google (hz:6bfcd3a1:D1). */
     val esperandoNavegador: Boolean = false,
+    /** El pase ya va al SERVIDOR: cortarlo aquí no deshace la sesión que él emita; ni «Cancelar» ni Atrás lo cortan. */
+    val enviandoGoogle: Boolean = false,
     val errorMessage: String? = null,
     val canUseBiometric: Boolean = false,
     val biometricEmail: String? = null,
@@ -58,8 +61,6 @@ class SignInViewModel @Inject constructor(
     /** El intento de Google vivo (si hay): «Cancelar» y Atrás lo cortan. */
     private var intentoDeGoogle: Job? = null
 
-    /** El pase ya va al SERVIDOR: cortarlo aquí no deshace la sesión que él emita, así que ya no se cancela. */
-    private var paseEnviado = false
 
     private val _uiState = MutableStateFlow(estadoInicial())
     val uiState: StateFlow<SignInUiState> = _uiState.asStateFlow()
@@ -214,14 +215,20 @@ class SignInViewModel @Inject constructor(
     fun loginWithGoogle(activity: FragmentActivity, onSuccess: () -> Unit) {
         if (_uiState.value.isLoading) return
         val sello = secureStorage.generacion
-        paseEnviado = false
-        _uiState.update { it.copy(isLoading = true, esperandoNavegador = entrarConGoogle.abreNavegador, errorMessage = null) }
+        _uiState.update {
+            it.copy(
+                isLoading = true,
+                esperandoNavegador = entrarConGoogle.abreNavegador,
+                enviandoGoogle = false,
+                errorMessage = null,
+            )
+        }
 
         intentoDeGoogle = viewModelScope.launch {
             val config = when (val c = authRepository.configDeGoogle()) {
                 is ConfigDeGoogle.Lista -> c.config
                 ConfigDeGoogle.SinRed -> return@launch falloDeGoogle(AuthRepository.SIN_CONEXION_PARA_GOOGLE)
-                ConfigDeGoogle.NoDisponible -> return@launch falloDeGoogle(TEXTO_SERVIDOR_SIN_GOOGLE)
+                is ConfigDeGoogle.NoDisponible -> return@launch falloDeGoogle(c.texto ?: TEXTO_SERVIDOR_SIN_GOOGLE)
             }
             when (val pase = entrarConGoogle.pedirPase(activity, config)) {
                 PaseDeGoogle.Cancelado -> falloDeGoogle(null)
@@ -231,8 +238,7 @@ class SignInViewModel @Inject constructor(
                 }
                 else -> {
                     // Desde aquí el intento ya no se cancela y «Cancelar» desaparece (Codex r2 #4).
-                    paseEnviado = true
-                    _uiState.update { it.copy(esperandoNavegador = false) }
+                    _uiState.update { it.copy(esperandoNavegador = false, enviandoGoogle = true) }
                     when (val r = authRepository.loginWithGoogle(pase, sello)) {
                         is LoginResult.Success -> alEntrar(onSuccess)
                         is LoginResult.Error -> falloDeGoogle(ServerErrorText.humanize(r.message))
@@ -248,16 +254,30 @@ class SignInViewModel @Inject constructor(
      */
     private suspend fun sinInternet(): Boolean =
         !connectivityMonitor.isOnline() ||
-            (!entrarConGoogle.abreNavegador && authRepository.configDeGoogle() == ConfigDeGoogle.SinRed)
+            (!entrarConGoogle.abreNavegador && sondaAlServidor() == ConfigDeGoogle.SinRed)
+
+    /** A lo más [SONDA_MS]: un SERVIDOR que acepta y no contesta no detiene la salida a contraseña (Codex r3 #3). */
+    private suspend fun sondaAlServidor(): ConfigDeGoogle =
+        withTimeoutOrNull(SONDA_MS) { authRepository.configDeGoogle() } ?: ConfigDeGoogle.SinRed
 
     private fun falloDeGoogle(texto: String?) {
-        _uiState.update { it.copy(isLoading = false, esperandoNavegador = false, errorMessage = texto) }
+        _uiState.update { it.copy(isLoading = false, esperandoNavegador = false, enviandoGoogle = false, errorMessage = texto) }
+    }
+
+    /**
+     * El botón Atrás de la entrada. Con el pase ya enviado no hace nada: salir de la pantalla dejaría que el login, al
+     * terminar, metiera a la persona desde la portada (Codex r3 #1). Esperando el navegador, cancela como siempre.
+     */
+    fun atras(onBack: () -> Unit) {
+        if (_uiState.value.enviandoGoogle) return
+        cancelarGoogle()
+        if (_uiState.value.step == SignInStep.PASSWORD) goBackToEmail() else onBack()
     }
 
     /** «Cancelar» y Atrás: el intento de Google se descarta y no se instala nada. */
     fun cancelarGoogle() {
         // Atrás se pulsa también con contraseña o huella en camino: sólo se corta un intento de Google vivo.
-        val job = intentoDeGoogle?.takeIf { it.isActive && !paseEnviado } ?: return
+        val job = intentoDeGoogle?.takeIf { it.isActive && !_uiState.value.enviandoGoogle } ?: return
         entrarConGoogle.cancelar()
         job.cancel()
         intentoDeGoogle = null
@@ -265,6 +285,8 @@ class SignInViewModel @Inject constructor(
     }
 
     companion object {
+        private const val SONDA_MS = 5_000L
+
         private const val TEXTO_SERVIDOR_SIN_GOOGLE =
             "Entrar con Google no está disponible por ahora. Entra con tu correo y contraseña."
 

@@ -63,6 +63,11 @@ class AuthRepositoryGoogleTest {
         selectedVenueId = selected,
     )
 
+    private companion object {
+        const val TEXTO_LIMITE = "Demasiados intentos. Espera un minuto y vuelve a intentarlo."
+        const val LIMITE = """{"success":false,"code":"RATE_LIMIT_EXCEEDED","message":"$TEXTO_LIMITE"}"""
+    }
+
     private fun http(code: Int, cuerpo: String) = HttpException(Response.error<Any>(code, cuerpo.toResponseBody(null)))
 
     @Test
@@ -145,13 +150,25 @@ class AuthRepositoryGoogleTest {
     @Test
     fun `config 404 - NoDisponible`() = runTest {
         coEvery { apiService.configDeGoogle() } throws http(404, "")
-        assertEquals(ConfigDeGoogle.NoDisponible, repository.configDeGoogle())
+        assertEquals(ConfigDeGoogle.NoDisponible(), repository.configDeGoogle())
+    }
+
+    @Test
+    fun `config 429 - NoDisponible con el aviso del servidor`() = runTest {
+        coEvery { apiService.configDeGoogle() } throws http(429, LIMITE)
+        assertEquals(ConfigDeGoogle.NoDisponible(TEXTO_LIMITE), repository.configDeGoogle())
+    }
+
+    @Test
+    fun `entrar 429 - muestra el aviso del servidor`() = runTest {
+        coEvery { apiService.loginWithGoogleToken(any()) } throws http(429, LIMITE)
+        assertEquals(TEXTO_LIMITE, (repository.loginWithGoogle(PaseDeGoogle.Token("t"), 7L) as LoginResult.Error).message)
     }
 
     @Test
     fun `config con android y windows en false - NoDisponible, y con uno - Lista`() = runTest {
         coEvery { apiService.configDeGoogle() } returns GoogleConfigResponse(success = true)
-        assertEquals(ConfigDeGoogle.NoDisponible, repository.configDeGoogle())
+        assertEquals(ConfigDeGoogle.NoDisponible(), repository.configDeGoogle())
         val c = GoogleConfigResponse(success = true, android = true)
         coEvery { apiService.configDeGoogle() } returns c
         assertEquals(ConfigDeGoogle.Lista(c), repository.configDeGoogle())

@@ -17,6 +17,9 @@ import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -30,8 +33,11 @@ import org.junit.Test
 /** Entrar con Google en el POS: un solo intento vivo entre Google, contraseña y huella (hz:6bfcd3a1:D1). */
 class SignInViewModelGoogleTest {
 
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private val despachador = UnconfinedTestDispatcher()
+
     @get:Rule
-    val mainDispatcherRule = MainDispatcherRule()
+    val mainDispatcherRule = MainDispatcherRule(despachador)
 
     private val authRepository = mockk<AuthRepository>()
     private val biometricAuthManager = mockk<BiometricAuthManager>(relaxed = true)
@@ -177,7 +183,7 @@ class SignInViewModelGoogleTest {
 
     @Test
     fun `config no disponible dice que el servidor no tiene Google`() {
-        coEvery { authRepository.configDeGoogle() } returns ConfigDeGoogle.NoDisponible
+        coEvery { authRepository.configDeGoogle() } returns ConfigDeGoogle.NoDisponible()
         val vm = vm()
 
         vm.loginWithGoogle(activity) {}
@@ -303,4 +309,111 @@ class SignInViewModelGoogleTest {
         assertEquals("Vuelve a intentarlo.", vm.uiState.value.errorMessage)
         assertFalse(vm.uiState.value.isLoading)
     }
+
+    // --- Seguimiento r3 ---
+
+    @Test
+    fun `Atras con el pase ya enviado no corta ni sale, y el login entra`() {
+        configLista()
+        every { entrarConGoogle.abreNavegador } returns true
+        coEvery { entrarConGoogle.pedirPase(any(), any()) } returns PaseDeGoogle.Codigo("c", "v", "http://127.0.0.1:5000")
+        val respuesta = CompletableDeferred<LoginResult>()
+        coEvery { authRepository.loginWithGoogle(any(), any(), any()) } coAnswers { respuesta.await() }
+        val vm = vm()
+
+        var entro = false
+        var salio = false
+        vm.loginWithGoogle(activity) { entro = true }
+        assertTrue(vm.uiState.value.enviandoGoogle)
+        vm.atras { salio = true }
+        respuesta.complete(exito)
+
+        assertFalse("Atrás no sale de la pantalla mientras viaja el pase", salio)
+        verify(exactly = 0) { entrarConGoogle.cancelar() }
+        assertTrue(entro)
+    }
+
+    @Test
+    fun `Atras con el pase ya enviado y el servidor rechaza enseña el error en la pantalla`() {
+        configLista()
+        coEvery { entrarConGoogle.pedirPase(any(), any()) } returns PaseDeGoogle.Token("t")
+        val respuesta = CompletableDeferred<LoginResult>()
+        coEvery { authRepository.loginWithGoogle(any(), any(), any()) } coAnswers { respuesta.await() }
+        val vm = vm()
+
+        var salio = false
+        vm.loginWithGoogle(activity) {}
+        vm.atras { salio = true }
+        respuesta.complete(LoginResult.Error("Vuelve a intentarlo."))
+
+        assertFalse(salio)
+        assertEquals("Vuelve a intentarlo.", vm.uiState.value.errorMessage)
+        assertFalse(vm.uiState.value.isLoading)
+        assertFalse(vm.uiState.value.enviandoGoogle)
+    }
+
+    @Test
+    fun `Atras esperando el navegador cancela y sale como hoy`() {
+        configLista()
+        every { entrarConGoogle.abreNavegador } returns true
+        coEvery { entrarConGoogle.pedirPase(any(), any()) } coAnswers { CompletableDeferred<PaseDeGoogle>().await() }
+        val vm = vm()
+
+        var salio = false
+        vm.loginWithGoogle(activity) {}
+        vm.atras { salio = true }
+
+        verify(exactly = 1) { entrarConGoogle.cancelar() }
+        assertTrue(salio)
+        assertFalse(vm.uiState.value.isLoading)
+        coVerify(exactly = 0) { authRepository.loginWithGoogle(any(), any(), any()) }
+    }
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    @Test
+    fun `la sonda que nunca contesta se corta a los 5 s y dice sin conexion`() {
+        var llamadas = 0
+        coEvery { authRepository.configDeGoogle() } coAnswers {
+            if (++llamadas == 1) ConfigDeGoogle.Lista(config) else awaitCancellation()
+        }
+        every { connectivityMonitor.isOnline() } returns true
+        coEvery { entrarConGoogle.pedirPase(any(), any()) } returns PaseDeGoogle.Fallo("no disponible", "causa")
+        val vm = vm()
+
+        vm.loginWithGoogle(activity) {}
+        despachador.scheduler.advanceTimeBy(4_999)
+        despachador.scheduler.runCurrent()
+        assertTrue("antes de los 5 s sigue esperando la sonda", vm.uiState.value.isLoading)
+        despachador.scheduler.advanceTimeBy(2)
+        despachador.scheduler.runCurrent()
+
+        assertEquals(AuthRepository.SIN_CONEXION_PARA_GOOGLE, vm.uiState.value.errorMessage)
+        assertFalse(vm.uiState.value.isLoading)
+    }
+
+    @Test
+    fun `config 429 enseña el aviso del servidor`() {
+        val texto = "Demasiados intentos. Espera un minuto y vuelve a intentarlo."
+        coEvery { authRepository.configDeGoogle() } returns ConfigDeGoogle.NoDisponible(texto)
+        val vm = vm()
+
+        vm.loginWithGoogle(activity) {}
+
+        assertEquals(texto, vm.uiState.value.errorMessage)
+        assertFalse(vm.uiState.value.isLoading)
+    }
+
+    @Test
+    fun `entrar 429 enseña el aviso del servidor`() {
+        val texto = "Demasiados intentos. Espera un minuto y vuelve a intentarlo."
+        configLista()
+        coEvery { entrarConGoogle.pedirPase(any(), any()) } returns PaseDeGoogle.Token("t")
+        coEvery { authRepository.loginWithGoogle(any(), any(), any()) } returns LoginResult.Error(texto)
+        val vm = vm()
+
+        vm.loginWithGoogle(activity) {}
+
+        assertEquals(texto, vm.uiState.value.errorMessage)
+    }
 }
+

@@ -84,16 +84,7 @@ fun SignInFlowScreen(
                 .padding(horizontal = AvoqadoTheme.spacing.xl)
                 .padding(top = AvoqadoTheme.spacing.md),
         ) {
-            BackButton(
-                onClick = {
-                    viewModel.cancelarGoogle()
-                    if (uiState.step == SignInStep.PASSWORD) {
-                        viewModel.goBackToEmail()
-                    } else {
-                        onBack()
-                    }
-                },
-            )
+            BackButton(onClick = { viewModel.atras(onBack) })
             Spacer(modifier = Modifier.weight(1f))
         }
 

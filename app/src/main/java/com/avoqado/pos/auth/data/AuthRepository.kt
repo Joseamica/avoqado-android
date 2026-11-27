@@ -36,7 +36,8 @@ import javax.inject.Singleton
 sealed interface ConfigDeGoogle {
     data class Lista(val config: GoogleConfigResponse) : ConfigDeGoogle
     data object SinRed : ConfigDeGoogle
-    data object NoDisponible : ConfigDeGoogle
+    /** [texto]: lo que dijo el SERVIDOR, si hay que enseñarlo (un 429 dice cuándo reintentar). */
+    data class NoDisponible(val texto: String? = null) : ConfigDeGoogle
 }
 
 @Singleton
@@ -169,11 +170,12 @@ class AuthRepository @Inject constructor(
     /** ¿Este servidor y este aparato pueden entrar con Google? (hz:6bfcd3a1:D1) */
     suspend fun configDeGoogle(): ConfigDeGoogle = try {
         val c = apiService.configDeGoogle()
-        if (c.android || c.windows) ConfigDeGoogle.Lista(c) else ConfigDeGoogle.NoDisponible
+        if (c.android || c.windows) ConfigDeGoogle.Lista(c) else ConfigDeGoogle.NoDisponible()
     } catch (e: java.io.IOException) {
         ConfigDeGoogle.SinRed
     } catch (e: retrofit2.HttpException) {
-        ConfigDeGoogle.NoDisponible
+        // 429: el SERVIDOR dice cuándo reintentar y eso se enseña (Codex r3 #4); lo demás es «no disponible».
+        ConfigDeGoogle.NoDisponible(if (e.code() == 429) mensajeDelServidor(e) else null)
     } catch (e: kotlinx.coroutines.CancellationException) {
         throw e
     } catch (e: Exception) {
