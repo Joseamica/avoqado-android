@@ -327,6 +327,27 @@ private fun PhoneOrdersLayout(
     onDismiss: () -> Unit,
     onCuentaCancelada: () -> Unit,
 ) {
+    DetalleDeUnaCuenta(viewModel, onBack = { viewModel.clearSelection() }, onCuentaCancelada = onCuentaCancelada) {
+        OrderListView(
+            viewModel = viewModel,
+            isTablet = false,
+            onBack = onDismiss,
+            modifier = Modifier.fillMaxSize(),
+        )
+    }
+}
+
+/**
+ * El detalle de la cuenta elegida a pantalla completa (el del teléfono): cargando, falló o la cuenta con sus acciones. Sin cuenta elegida
+ * pinta [sinCuenta]. D39 v3: el atajo «Usar puntos» lo abre encima de Cobrar con su propio [OrdersViewModel].
+ */
+@Composable
+internal fun DetalleDeUnaCuenta(
+    viewModel: OrdersViewModel,
+    onBack: () -> Unit,
+    onCuentaCancelada: () -> Unit,
+    sinCuenta: @Composable () -> Unit,
+) {
     val selectedOrder by viewModel.selectedOrder.collectAsState()
     val selectedOrderId by viewModel.selectedOrderId.collectAsState()
     val isLoadingDetail by viewModel.isLoadingDetail.collectAsState()
@@ -351,7 +372,7 @@ private fun PhoneOrdersLayout(
                 onCuentaActualizada = { viewModel.invalidateAndRefresh(); viewModel.selectOrder(pedido.id) },
                 onSalioSinCobrar = { viewModel.invalidateAndRefresh(); viewModel.refrescarDetalle(pedido.id) },
                 onCuentaCancelada = onCuentaCancelada,
-                onBack = { viewModel.clearSelection() },
+                onBack = onBack,
                 modifier = Modifier.fillMaxSize(),
                 isReimprimiendoComanda = isReimprimiendoComanda,
                 mensajeDeReimpresion = mensajeDeReimpresion,
@@ -369,15 +390,8 @@ private fun PhoneOrdersLayout(
         }
         is EstadoDelDetalle.Fallo -> FalloDelDetalle(estado.mensaje,
             onReintentar = { selectedOrderId?.let(viewModel::selectOrder) },
-            onBack = viewModel::clearSelection)
-        else -> {
-            OrderListView(
-                viewModel = viewModel,
-                isTablet = false,
-                onBack = onDismiss,
-                modifier = Modifier.fillMaxSize(),
-            )
-        }
+            onBack = onBack)
+        else -> sinCuenta()
     }
 }
 

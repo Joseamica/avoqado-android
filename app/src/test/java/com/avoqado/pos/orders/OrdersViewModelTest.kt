@@ -85,6 +85,24 @@ class OrdersViewModelTest {
         }
     }
 
+    // MARK: - D39 C1: la cuenta del atajo tiene su propia libreta
+
+    @Test
+    fun `con libreta propia la cuenta se carga en ella y no en la de Pedidos`() = runTest {
+        val propia = mockk<OrdersRepository.LectorDeCuenta>(relaxed = true)
+        every { repository.lectorPropio() } returns propia
+        every { propia.selectedOrder } returns MutableStateFlow(null)
+        val viewModel = createViewModel()
+        viewModel.usarLibretaPropia()
+        viewModel.selectOrder("B")
+        coVerify(exactly = 1) { propia.loadOrderDetail("B", any(), any()) }
+        coVerify(exactly = 0) { repository.loadOrderDetail(any(), any(), any()) }
+        assertEquals(propia.selectedOrder, viewModel.selectedOrder)
+        viewModel.clearSelection()
+        io.mockk.verify(exactly = 1) { propia.clearSelectedOrder() }
+        io.mockk.verify(exactly = 0) { repository.clearSelectedOrder() }
+    }
+
     // MARK: - Search
 
     @Test

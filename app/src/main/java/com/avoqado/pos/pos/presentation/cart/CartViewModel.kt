@@ -485,7 +485,7 @@ sealed interface ResultadoPagarDespues {
 }
 
 /** La venta que se está mandando: lo que enseña «Guardando la cuenta…» con el carrito ya vacío. */
-data class EnvioPagarDespues(val cliente: String, val totalCents: Int)
+data class EnvioPagarDespues(val cliente: String, val totalCents: Int, val deUsarPuntos: Boolean = false)
 
 // «Pagar después» sin red (27-oct). Mismos textos en iOS.
 const val GUARDANDO_LA_CUENTA = "Guardando la cuenta…"
@@ -715,6 +715,10 @@ class CartViewModel @Inject constructor(
      * sin él se lee lo guardado, como antes.
      */
     private val tpvSettingsRepository: com.avoqado.pos.tpvsettings.data.TpvSettingsRepository? = null,
+    /** D39 (atajo «Usar puntos»): el saldo del cliente antes de crear la cuenta. Default para las pruebas que no lo usan. */
+    private val tableServiceRepository: com.avoqado.pos.tables.data.TableServiceRepository? = null,
+    /** D39 (atajo): la cuenta que se abre en Más › Pedidos con «Recompensas». Default para las pruebas que no lo usan. */
+    private val puertaDeRecompensas: PuertaDeRecompensas? = null,
 ) : ViewModel() {
 
     private val _cartState = MutableStateFlow(defaultCartState())
@@ -3740,6 +3744,190 @@ class CartViewModel @Inject constructor(
         viewModelScope.launch { _resultadoPagarDespues.value = createPayLaterOrder(customerId) }
     }
 
+    // MARK: - D39 · atajo «Usar puntos» → «Pagar después» + «Recompensas» en Pedidos (promesa v2, `d39/promesa-atajo.md`)
+
+    /** El envío en curso es del atajo: su ventana es la de «Usar puntos», no la de Atajos › «Pagar después». */
+    private var atajoEnCurso = false
+    /** El folio de la última cuenta creada por el camino con fila con el importe exacto (lo que el atajo abre). */
+    private var folioCreado: String? = null
+    /** Codex v3-r2 #8: el número visible de esa cuenta (`#ORD-…`), si el SERVIDOR lo mandó; para el aviso al cerrar sin cobrar. */
+    private var numeroCreado: String? = null
+    private val _lecturaDelAtajo = MutableStateFlow<LecturaDelAtajo?>(null)
+    val lecturaDelAtajo: StateFlow<LecturaDelAtajo?> = _lecturaDelAtajo.asStateFlow()
+    private val _resultadoUsarPuntos = MutableStateFlow<ResultadoPagarDespues?>(null)
+    /** El desenlace del atajo, aparte del de «Pagar después» (su ventana y sus textos son otros). */
+    val resultadoUsarPuntos: StateFlow<ResultadoPagarDespues?> = _resultadoUsarPuntos.asStateFlow()
+    fun consumirResultadoUsarPuntos() { _resultadoUsarPuntos.value = null }
+
+    private val _cuentaDelAtajo = MutableStateFlow<SolicitudDeRecompensas?>(null)
+    /** v3 «C» (founder, 26-nov): la cuenta que el atajo abre ENCIMA de Cobrar (como Square y Toast, sin salir de la venta). */
+    val cuentaDelAtajo: StateFlow<SolicitudDeRecompensas?> = _cuentaDelAtajo.asStateFlow()
+
+    /** La cuenta por enseñar, sólo si es de esta sesión y esta sucursal; si no, se olvida (como la puerta). */
+    fun cuentaDelAtajoDeEstaSesion(): SolicitudDeRecompensas? {
+        val s = _cuentaDelAtajo.value ?: return null
+        if (s.venueId == secureStorage.venueId && s.sello == secureStorage.selloYAccess().first) return s
+        cerrarCuentaDelAtajo()
+        return null
+    }
+
+    /**
+     * Codex v3 #3: la ventana pertenece a la visita de Cobrar que mandó la venta. Si Cobrar se desmontó (otra pestaña, girar la pantalla)
+     * mientras se creaba la cuenta, al volver no aparece: se dice dónde quedó.
+     */
+    private var visitaDeCobrar = 0
+    private var cobrarMontado = false
+    private var girando = false
+    fun cobrarSeMonto() {
+        if (!girando) visitaDeCobrar++
+        girando = false
+        cobrarMontado = true
+    }
+    fun cobrarSeDesmonto() {
+        cobrarMontado = false
+        girando = false
+        // Codex C1-r3 #4: salir de Cobrar con la cuenta abierta (otra pestaña; en WINDOWS, la ventana que cambia de ancho) deja dicho
+        // dónde quedó: el aviso sale al volver a Cobrar.
+        _cuentaDelAtajo.value?.let { s ->
+            _resultadoUsarPuntos.value = ResultadoPagarDespues.Aviso(
+                when {
+                    s.cobrada -> avisoCobradaSinConfirmar(s.cliente, s.numero)
+                    s.cobroIniciado -> avisoCobroPorRevisar(s.cliente, s.numero)
+                    else -> avisoCuentaEnPedidos(s.cliente, s.numero)
+                },
+            )
+        }
+        cerrarCuentaDelAtajo()
+    }
+    /** Codex v3-r2 #4: girar la pantalla recrea Cobrar sin salir de él: la visita y la ventana (con su cobro abierto) siguen. */
+    fun cobrarSeGira() { cobrarMontado = false; girando = true }
+
+    /** El cobro de la ventana terminó («Listo»): se cierra cuando la cuenta se confirma cerrada (Codex C1-r2 #4). */
+    fun cuentaDelAtajoCobrada(orderId: String) {
+        _cuentaDelAtajo.value?.takeIf { it.orderId == orderId }?.let { _cuentaDelAtajo.value = it.copy(cobrada = true) }
+    }
+
+    /** Se abrió un cobro en la ventana (en línea o desde la copia sin red): si no se confirma «Listo», el aviso manda a revisar (C1-r4/r5). */
+    fun cuentaDelAtajoConCobroIniciado(orderId: String) {
+        _cuentaDelAtajo.value?.takeIf { it.orderId == orderId && !it.cobroIniciado }?.let { _cuentaDelAtajo.value = it.copy(cobroIniciado = true) }
+    }
+
+    /** La ventana se cerró (X, cobrada, cancelada o al salir de Cobrar): se olvida y su «Recompensas» ya no se abre solo. */
+    fun cerrarCuentaDelAtajo() {
+        val s = _cuentaDelAtajo.value ?: return
+        _cuentaDelAtajo.value = null
+        puertaDeRecompensas?.atendida(s.orderId)
+    }
+
+    private fun enLineaParaElAtajo(): Boolean =
+        connectivityMonitor?.let { it.isConnected.value && it.isServerReachable.value } ?: true
+
+    /** La conexión que la ventana de «Usar puntos» observa: al volver, relee el saldo (Codex r2 #7). Sin monitor (pruebas), conectado. */
+    val conexionDelAtajo: StateFlow<Boolean> = connectivityMonitor?.let { m ->
+        kotlinx.coroutines.flow.combine(m.isConnected, m.isServerReachable) { a, b -> a && b }
+            .stateIn(viewModelScope, kotlinx.coroutines.flow.SharingStarted.WhileSubscribed(5_000), enLineaParaElAtajo())
+    } ?: MutableStateFlow(true)
+
+    private fun puedeCanjearPuntos(): Boolean = com.avoqado.pos.core.domain.RoleManager(secureStorage).let {
+        it.hasVenuePermission("loyalty:read") && it.hasVenuePermission("orders:update")
+    }
+
+
+    /** Al abrir «Usar puntos»: lee el saldo del cliente elegido, sin cuenta todavía. Sólo orienta (Codex r1 #3). */
+    /** Sólo la lectura más reciente escribe: una vieja que termina tarde no pisa a la nueva (Codex r3 R2). */
+    private var turnoDeLectura = 0
+
+    fun leerPuntosParaElAtajo() {
+        val turno = ++turnoDeLectura
+        _lecturaDelAtajo.value = null
+        val cliente = _selectedCustomer.value?.id?.takeIf { it.isNotBlank() } ?: return
+        val venue = secureStorage.venueId ?: return
+        val repo = tableServiceRepository ?: return
+        if (!enLineaParaElAtajo()) return
+        viewModelScope.launch {
+            val leido = repo.getCustomerLoyalty(venue, cliente, null)
+            // La lectura es de ESE cliente: si mientras tanto se eligió otro, no se usa (Codex r1 #4).
+            if (turno != turnoDeLectura || _selectedCustomer.value?.id != cliente) return@launch
+            _lecturaDelAtajo.value = leido.fold(
+                onSuccess = { LecturaDelAtajo(cliente, it, null) },
+                onFailure = {
+                    if (it is kotlinx.coroutines.CancellationException) throw it
+                    // Codex C1-r5 #2: sin candado de plan en el aparato (meter LOYALTY_PROGRAM al mapa de planes reconstruía la navegación
+                    // y vaciaba el carrito); lo decide el SERVIDOR con su 403, como «Recompensas» en Pedidos.
+                    // Codex C1-r6: un 403 es «sin acceso» sólo si trae el JSON de error del SERVIDOR (el de un proxy o un WAF es un
+                    // fallo de lectura), con la misma regla que el interceptor (`RespuestaProhibida`).
+                    val propio = (it as? retrofit2.HttpException)?.takeIf { h -> h.code() == 403 }?.let { h ->
+                        com.avoqado.pos.core.data.network.RespuestaProhibida.esDenegacionPropia(h.response()?.errorBody()?.string().orEmpty())
+                    } == true
+                    LecturaDelAtajo(cliente, null, com.avoqado.pos.core.data.network.FalloDeLectura.de(it), prohibida = propio)
+                },
+            )
+        }
+    }
+
+    /** Por qué «Usar puntos» no se puede ahora (null = se puede), con la venta, el cliente y la lectura de este momento. */
+    fun motivoSinUsarPuntos(): String? {
+        val venta = _cartState.value
+        val cliente = _selectedCustomer.value?.id
+        val sinFila = (venta.pendingStampRewardId != null && venta.premioAplica) || venta.couponCode != null || venta.pideAprobacionDeGerente
+        return com.avoqado.pos.pos.presentation.cart.motivoSinUsarPuntos(
+            conProductos = !venta.isEmpty,
+            clienteId = cliente,
+            puedeCanjear = puedeCanjearPuntos(),
+            puedeCrear = com.avoqado.pos.core.domain.RoleManager(secureStorage).hasVenuePermission("orders:create"),
+            llavePrevia = venta.llavePagarDespues != null,
+            sinFila = sinFila,
+            noSeDifiere = cliente?.takeIf { it.isNotBlank() }?.let { motivoParaNoDiferir(venta, it) },
+            lectura = _lecturaDelAtajo.value,
+            enLinea = enLineaParaElAtajo(),
+        )
+    }
+
+    /**
+     * El «Continuar» de «Usar puntos»: la venta va a «Pagar después» por el camino con fila (como Atajos) y, creada por el importe
+     * exacto, se pide abrir ESA cuenta en Pedidos con la sucursal y la sesión de ahora. No canjea nada: eso lo hace «Canjear».
+     * [clienteConfirmado]: el cliente que la cajera vio al tocar «Continuar»; si otra ventana (el motivo del descuento) se abrió en
+     * medio y el lector cambió el cliente, no se crea a nombre del nuevo (Codex r3 R3).
+     */
+    fun usarPuntos(clienteConfirmado: String? = null) {
+        if (_pagarDespuesEnCurso.value != null) return
+        val lectura = _lecturaDelAtajo.value
+        val cliente = _selectedCustomer.value
+        if ((clienteConfirmado != null && cliente?.id != clienteConfirmado) || (lectura != null && cliente?.id != lectura.customerId)) {
+            _resultadoUsarPuntos.value = ResultadoPagarDespues.Error(USAR_PUNTOS_CLIENTE_CAMBIO)
+            return
+        }
+        motivoSinUsarPuntos()?.let { _resultadoUsarPuntos.value = ResultadoPagarDespues.Error(it); return }
+        val customerId = cliente?.id ?: return
+        val venue = secureStorage.venueId ?: return
+        val sello = secureStorage.selloYAccess().first
+        val visita = visitaDeCobrar
+        viewModelScope.launch {
+            folioCreado = null
+            numeroCreado = null
+            atajoEnCurso = true
+            val r = try { createPayLaterOrder(customerId) } finally { atajoEnCurso = false }
+            val folio = folioCreado.takeIf { r == ResultadoPagarDespues.Creada }
+            folioCreado = null
+            val numero = numeroCreado?.takeIf { it.isNotBlank() && folio != null }?.let { "#$it" } ?: ""
+            numeroCreado = null
+            // Codex C1-r1 #4: girar la pantalla no es salir de Cobrar (desmontado un instante, la misma visita).
+            val sigueEnCobrar = (cobrarMontado || girando) && visita == visitaDeCobrar
+            if (folio != null && sigueEnCobrar) {
+                SolicitudDeRecompensas(folio, venue, sello, cliente.name, numero)
+                    .let { puertaDeRecompensas?.pedir(it); _cuentaDelAtajo.value = it }
+            }
+            if (folio != null && !sigueEnCobrar) {
+                _resultadoUsarPuntos.value = ResultadoPagarDespues.Aviso(avisoCuentaEnPedidos(cliente.name, numero))
+                return@launch
+            }
+            // Sin respuesta puede ser la red o el SERVIDOR (503): el aviso no afirma cuál (Codex r3 #7).
+            _resultadoUsarPuntos.value = if (r is ResultadoPagarDespues.Aviso && r.texto == pagarDespuesGuardadaSinRed(cliente.name)) {
+                ResultadoPagarDespues.Aviso(usarPuntosCuentaEnLaFila(cliente.name))
+            } else r
+        }
+    }
+
     private fun motivoParaNoDiferir(venta: CartState, customerId: String): String? = when {
         venta.isEmpty -> "No hay artículos en el carrito"
         // D5 (Codex r4 #2): pagar después creaba OTRA cuenta y vaciaba la venta de vales con abono.
@@ -3781,13 +3969,19 @@ class CartViewModel @Inject constructor(
         if (cobroLoImpide(avisar = false)) return ResultadoPagarDespues.Error(AVISO_COBRO_ABIERTO)
         bloqueoDeEntrega()?.let { return ResultadoPagarDespues.Error(it) }
         val cliente = _selectedCustomer.value?.takeIf { it.id == customerId } ?: SelectedCustomer(customerId, "Cliente")
-        _pagarDespuesEnCurso.value = EnvioPagarDespues(cliente.name, _cartState.value.totalCents)
+        _pagarDespuesEnCurso.value = EnvioPagarDespues(cliente.name, _cartState.value.totalCents, deUsarPuntos = atajoEnCurso)
         try {
             // Como el cobro (`hayConsultasDeCodigo`): lo leído antes del toque entra ANTES de capturar la venta.
             consultasDeCodigo.first { it == 0 }
             pagarDespuesTomoLaFoto = true
             val venta = _cartState.value
             motivoParaNoDiferir(venta, customerId)?.let { return ResultadoPagarDespues.Error(it) }
+            // D39 (atajo, Codex r2 #1): lo que se manda es lo que la cajera confirmó: el mismo cliente y por el camino con fila.
+            if (atajoEnCurso) cambioDuranteElAtajo(
+                clienteEsperado = customerId,
+                clienteAhora = _selectedCustomer.value?.id,
+                sinFilaAhora = (venta.pendingStampRewardId != null && venta.premioAplica) || venta.couponCode != null || venta.pideAprobacionDeGerente,
+            )?.let { return ResultadoPagarDespues.Error(it) }
             val venueId = secureStorage.venueId ?: return ResultadoPagarDespues.Error("No venue selected")
             val cola = payLaterQueue ?: return ResultadoPagarDespues.Error("No se pudo registrar la venta como pagar después")
 
@@ -3853,7 +4047,7 @@ class CartViewModel @Inject constructor(
                 venta = comoCarritoGuardado(venta.copy(carritoGuardadoId = idDeLaCopia, llavePagarDespues = llave), cliente.name,
                     cliente, venueId),
             )
-            _pagarDespuesEnCurso.value = EnvioPagarDespues(cliente.name, venta.totalCents)
+            _pagarDespuesEnCurso.value = EnvioPagarDespues(cliente.name, venta.totalCents, deUsarPuntos = atajoEnCurso)
             // Codex A-5: la copia guardada lleva la llave y la marca de cobro iniciado ANTES de mandar nada. Con premio (sin fila
             // que la ligue) la marca además es vinculante hasta conocer el desenlace (Codex r2 #5).
             val copia = venta.carritoGuardadoId
@@ -3918,7 +4112,9 @@ class CartViewModel @Inject constructor(
                         ResultadoPagarDespues.Error(d.motivoRevision + "\n\n" + PAGAR_DESPUES_NO_SE_GUARDO)
                     }
                 } else when (val total = d.totalCents) {
-                    s.venta.totalCents -> { cola.cerrarAceptada(llave); ResultadoPagarDespues.Creada }
+                    s.venta.totalCents -> {
+                        cola.cerrarAceptada(llave); folioCreado = d.orderId; numeroCreado = d.orden?.orderNumber; ResultadoPagarDespues.Creada
+                    }
                     // Existe, pero no se sabe por cuánto: queda por revisar (y nunca se vuelve a crear con otra llave).
                     null -> {
                         cola.cambiar(llave) { it.copy(estado = com.avoqado.pos.payment.data.PayLaterRow.Estado.REVISAR, orderId = d.orderId) }

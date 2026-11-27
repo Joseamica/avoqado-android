@@ -459,6 +459,27 @@ fun CheckoutScreen(
     var customerSelectionContext by remember { mutableStateOf(CustomerSelectionContext.GENERAL) }
     var payLaterError by remember { mutableStateOf<String?>(null) }
     var payLaterAviso by remember { mutableStateOf<String?>(null) }
+    // D39 (atajo «Usar puntos»): su ventana, su error y su desenlace.
+    var showUsarPuntos by rememberSaveable { mutableStateOf(false) }
+    var errorUsarPuntos by remember { mutableStateOf<String?>(null) }
+    // Sin candado de plan en el aparato: si el plan no trae la lealtad, la ventana lo dice con la respuesta del SERVIDOR (Codex C1-r5 #2).
+    val abrirUsarPuntos: (() -> Unit)? = {
+        errorUsarPuntos = null
+        showUsarPuntos = true
+    }
+    val resultadoUsarPuntos by cartViewModel.resultadoUsarPuntos.collectAsState()
+    // D39 v3 «C»: la cuenta que dejó el atajo, abierta encima de Cobrar. Mientras está, Cobrar no recibe códigos ni teclas (Codex v3 #7).
+    val cuentaDelAtajo by cartViewModel.cuentaDelAtajo.collectAsState()
+    LaunchedEffect(resultadoUsarPuntos) {
+        when (val r = resultadoUsarPuntos ?: return@LaunchedEffect) {
+            // Creada: la cuenta se abre encima de Cobrar (`cuentaDelAtajo`, v3 «C»); aquí sólo se cierra esta ventana.
+            com.avoqado.pos.pos.presentation.cart.ResultadoPagarDespues.Creada -> showUsarPuntos = false
+            // Sin red o por otro importe: la venta ya salió como «Pagar después»; se dice en ámbar.
+            is com.avoqado.pos.pos.presentation.cart.ResultadoPagarDespues.Aviso -> { showUsarPuntos = false; payLaterAviso = r.texto }
+            is com.avoqado.pos.pos.presentation.cart.ResultadoPagarDespues.Error -> errorUsarPuntos = r.texto
+        }
+        cartViewModel.consumirResultadoUsarPuntos()
+    }
     var showPayLaterSuccessToast by remember { mutableStateOf(false) }
     var reopenPayLaterToken by remember { mutableIntStateOf(0) }
     val checkoutScope = rememberCoroutineScope()
@@ -738,18 +759,18 @@ fun CheckoutScreen(
     AtajoDeTeclado(
         Key.F12,
         // El botón Cobrar sólo existe con artículos en el carrito (CartPanelView): sin ellos, F12 tampoco.
-        activo = !cartState.isEmpty && !showPaymentFlow && !showSearch && upsellMoment == null && !areaOperationsState.issuing,
+        activo = !cartState.isEmpty && !showPaymentFlow && !showSearch && upsellMoment == null && !areaOperationsState.issuing && cuentaDelAtajo == null,
     ) {
         runPrimaryAction(closePhoneCart = true)
     }
-    AtajoDeTeclado(Key.F3, activo = !showPaymentFlow && !showSearch) { if (!cartViewModel.detenerPorPagarDespues()) showSearch = true }
+    AtajoDeTeclado(Key.F3, activo = !showPaymentFlow && !showSearch && cuentaDelAtajo == null) { if (!cartViewModel.detenerPorPagarDespues()) showSearch = true }
     // Esc regresa, como en el cobro: cierra la búsqueda que abrió F3 (prueba en Windows real, 19-oct).
     AtajoDeTeclado(Key.Escape, activo = showSearch && !showPaymentFlow) { showSearch = false }
 
     if (isTablet) {
         // iPad-style: 50/50 split con entrada + carrito — o 50/25/25 cuando el
         // panel de promociones entra como TERCERA columna.
-        BoxWithConstraints(modifier = Modifier.fillMaxSize().sinTeclasDetrasDelCobro { showPaymentFlow }) {
+        BoxWithConstraints(modifier = Modifier.fillMaxSize().sinTeclasDetrasDelCobro { showPaymentFlow || cuentaDelAtajo != null }) {
             // 🔴 Manda el ancho REAL de esta superficie, no el booleano `isTablet`:
             // ese colapsa "tablet chica" y "tablet grande" en el mismo valor, y aquí
             // hay que decidir si cabe una tercera columna. Además `maxWidth` ya viene
@@ -938,6 +959,7 @@ fun CheckoutScreen(
                     CartPanelView(
                         cartState = cartState,
                         onTarjetaDeRegalo = abrirTarjetas,
+                        onUsarPuntos = abrirUsarPuntos,
                         onItemTap = { item -> selectedCartItem = item },
                         onOrderTypeChange = { cartViewModel.setOrderType(it) },
                         onCharge = {
@@ -1008,7 +1030,7 @@ fun CheckoutScreen(
         }
     } else {
         // iPhone-style: full-screen with bottom cart bar
-        BoxWithConstraints(modifier = Modifier.fillMaxSize().sinTeclasDetrasDelCobro { showPaymentFlow }) {
+        BoxWithConstraints(modifier = Modifier.fillMaxSize().sinTeclasDetrasDelCobro { showPaymentFlow || cuentaDelAtajo != null }) {
             // Un teléfono es siempre Compact (<600dp), o sea que el lateral SIEMPRE
             // cae a pestaña aquí. Se calcula con el ancho real igual, para no tener
             // dos reglas; y la pestaña se muestra con cualquier modo que no sea
@@ -1459,6 +1481,10 @@ fun CheckoutScreen(
                 showIPhoneCart = false
                 abrir()
             } },
+            onUsarPuntos = abrirUsarPuntos?.let { abrir -> {
+                showIPhoneCart = false
+                abrir()
+            } },
             onItemTap = { item -> selectedCartItem = item },
             onOrderTypeChange = { cartViewModel.setOrderType(it) },
             onCharge = {
@@ -1567,7 +1593,7 @@ fun CheckoutScreen(
         showBarcodeScanner = false
         checkoutScope.launch {
             val entra = {
-                codigoEntraALaVenta(cobroAbierto = showPaymentFlow || cartViewModel.cobroAbierto || aperturaDeTarjetas != null, emitiendoVale = areaOperationsState.issuing)
+                codigoEntraALaVenta(cobroAbierto = showPaymentFlow || cartViewModel.cobroAbierto || aperturaDeTarjetas != null || cartViewModel.cuentaDelAtajo.value != null, emitiendoVale = areaOperationsState.issuing)
             }
             // El cliente de ANTES de la consulta: si el cajero lo quitó o eligió otro mientras respondía, su toque gana
             // y la tarjeta escaneada no se vuelve a ligar (Codex, cliente en cobrar r3 #1).
@@ -1576,6 +1602,9 @@ fun CheckoutScreen(
             // r5 #1: esperar descartaba el toque y la porción se perdía al pasar al siguiente producto): si la cajera lo toca antes
             // de que la etiqueta de esa misma pieza termine de leerse, entran las dos, como en develop.
             val capturaAlLeer = capturaDePeso
+            // D39 v3 (Codex v3-r2 #7, C1-r1 #7): con la cuenta del atajo abierta encima, o mientras se guarda, ni se resuelve el código
+            // (un vale se apartaría abajo).
+            if (cartViewModel.cuentaDelAtajo.value != null || cartViewModel.pagarDespuesEnCurso.value?.deUsarPuntos == true) return@launch
             val result = cartViewModel.resolveScannedBarcode(barcode, lecturaUs)
             // La consulta pudo tardar (red): si mientras tanto se abrió el cobro, no se aplica (pendientes, Codex r1 #2).
             if (!entra() || com.avoqado.pos.giftcards.domain.LectorParaTarjetas.abierta.value) return@launch
@@ -2485,6 +2514,37 @@ fun CheckoutScreen(
         )
     }
 
+    // D39 v3 «C»: la cuenta que dejó el atajo se abre ENCIMA de Cobrar (sin saltar a Pedidos). Otra sesión o sucursal la olvida; salir de
+    // Cobrar también, y una cuenta que se termina de crear con Cobrar ya desmontado no se abre al volver (Codex v3 #3).
+    LaunchedEffect(cuentaDelAtajo) { if (cuentaDelAtajo != null) cartViewModel.cuentaDelAtajoDeEstaSesion() }
+    // Codex v3-r2 #4: girar la pantalla recrea la Activity, no es salir de Cobrar: la ventana (y su cobro abierto) se queda.
+    val actividad = LocalContext.current as? android.app.Activity
+    androidx.compose.runtime.DisposableEffect(Unit) {
+        cartViewModel.cobrarSeMonto()
+        onDispose { if (actividad?.isChangingConfigurations != true) cartViewModel.cobrarSeDesmonto() else cartViewModel.cobrarSeGira() }
+    }
+    cuentaDelAtajo?.let { s ->
+        CuentaDelAtajo(s.orderId, s.cliente, s.numero, s.cobrada, onCobrada = { cartViewModel.cuentaDelAtajoCobrada(s.orderId) },
+            cobroIniciado = s.cobroIniciado, onCobroIniciado = { cartViewModel.cuentaDelAtajoConCobroIniciado(s.orderId) }, onCerrar = { aviso ->
+            cartViewModel.cerrarCuentaDelAtajo()
+            if (aviso != null) payLaterAviso = aviso
+        })
+    }
+
+    if (showUsarPuntos) UsarPuntosModal(
+        cartViewModel = cartViewModel,
+        error = errorUsarPuntos,
+        // Como «Pagar después» (f998c8): un descuento sin motivo lo pide antes de mandar la cuenta (Codex r2 #8).
+        onContinuar = {
+            errorUsarPuntos = null
+            // Codex r3 R3: el cliente que la cajera vio al tocar «Continuar» viaja con el envío; si el lector lo cambia mientras elige
+            // el motivo, la cuenta no se crea a nombre del nuevo.
+            val confirmado = cartViewModel.selectedCustomer.value?.id
+            if (!faltaMotivo { cartViewModel.usarPuntos(confirmado) }) cartViewModel.usarPuntos(confirmado)
+        },
+        onDismiss = { showUsarPuntos = false },
+    )
+
     if (showPayLaterSuccessToast && avisoDelPremioDiferido == null) {
         AvoqadoSuccessToast(
             message = "¡Venta enviada a pagar después!",
@@ -2767,6 +2827,7 @@ private fun IPhoneCartSheet(
     onSaveCart: () -> Unit,
     onAddCustomAmount: () -> Unit,
     onTarjetaDeRegalo: (() -> Unit)?,
+    onUsarPuntos: (() -> Unit)?,
     onRemoveItem: (String) -> Unit,
     /** Descuento de la cuenta completa. 🔴 SIN default, misma lección que `onSplitPayment`. */
     onDiscountTap: () -> Unit,
@@ -2855,6 +2916,7 @@ private fun IPhoneCartSheet(
                 onSaveCart = onSaveCart,
                 onAddCustomAmount = onAddCustomAmount,
                 onTarjetaDeRegalo = onTarjetaDeRegalo,
+                onUsarPuntos = onUsarPuntos,
                 onRemoveItem = onRemoveItem,
                 onDiscountTap = onDiscountTap,
                 customerName = customerName,
