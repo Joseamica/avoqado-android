@@ -58,6 +58,9 @@ class SignInViewModel @Inject constructor(
     /** El intento de Google vivo (si hay): «Cancelar» y Atrás lo cortan. */
     private var intentoDeGoogle: Job? = null
 
+    /** El pase ya va al SERVIDOR: cortarlo aquí no deshace la sesión que él emita, así que ya no se cancela. */
+    private var paseEnviado = false
+
     private val _uiState = MutableStateFlow(estadoInicial())
     val uiState: StateFlow<SignInUiState> = _uiState.asStateFlow()
 
@@ -95,6 +98,8 @@ class SignInViewModel @Inject constructor(
     }
 
     fun goToPassword() {
+        // El «Siguiente» del teclado no mira el botón: con Google en curso no se cambia de pantalla (Codex r2 #5).
+        if (_uiState.value.isLoading) return
         _uiState.update { it.copy(step = SignInStep.PASSWORD, errorMessage = null) }
     }
 
@@ -209,6 +214,7 @@ class SignInViewModel @Inject constructor(
     fun loginWithGoogle(activity: FragmentActivity, onSuccess: () -> Unit) {
         if (_uiState.value.isLoading) return
         val sello = secureStorage.generacion
+        paseEnviado = false
         _uiState.update { it.copy(isLoading = true, esperandoNavegador = entrarConGoogle.abreNavegador, errorMessage = null) }
 
         intentoDeGoogle = viewModelScope.launch {
@@ -221,15 +227,28 @@ class SignInViewModel @Inject constructor(
                 PaseDeGoogle.Cancelado -> falloDeGoogle(null)
                 is PaseDeGoogle.Fallo -> {
                     Log.w("🔐", "Google: ${pase.causa}")
-                    falloDeGoogle(if (connectivityMonitor.isOnline()) pase.texto else AuthRepository.SIN_CONEXION_PARA_GOOGLE)
+                    falloDeGoogle(if (sinInternet()) AuthRepository.SIN_CONEXION_PARA_GOOGLE else pase.texto)
                 }
-                else -> when (val r = authRepository.loginWithGoogle(pase, sello)) {
-                    is LoginResult.Success -> alEntrar(onSuccess)
-                    is LoginResult.Error -> falloDeGoogle(ServerErrorText.humanize(r.message))
+                else -> {
+                    // Desde aquí el intento ya no se cancela y «Cancelar» desaparece (Codex r2 #4).
+                    paseEnviado = true
+                    _uiState.update { it.copy(esperandoNavegador = false) }
+                    when (val r = authRepository.loginWithGoogle(pase, sello)) {
+                        is LoginResult.Success -> alEntrar(onSuccess)
+                        is LoginResult.Error -> falloDeGoogle(ServerErrorText.humanize(r.message))
+                    }
                 }
             }
         }
     }
+
+    /**
+     * ¿El fallo de Google fue por falta de internet? Con Wi‑Fi pero sin internet el monitor todavía dice «en línea»
+     * (Codex r2 #7): ANDROID le pregunta al SERVIDOR. WINDOWS no: su texto de los 3 min ya dice la verdad.
+     */
+    private suspend fun sinInternet(): Boolean =
+        !connectivityMonitor.isOnline() ||
+            (!entrarConGoogle.abreNavegador && authRepository.configDeGoogle() == ConfigDeGoogle.SinRed)
 
     private fun falloDeGoogle(texto: String?) {
         _uiState.update { it.copy(isLoading = false, esperandoNavegador = false, errorMessage = texto) }
@@ -238,7 +257,7 @@ class SignInViewModel @Inject constructor(
     /** «Cancelar» y Atrás: el intento de Google se descarta y no se instala nada. */
     fun cancelarGoogle() {
         // Atrás se pulsa también con contraseña o huella en camino: sólo se corta un intento de Google vivo.
-        val job = intentoDeGoogle?.takeIf { it.isActive } ?: return
+        val job = intentoDeGoogle?.takeIf { it.isActive && !paseEnviado } ?: return
         entrarConGoogle.cancelar()
         job.cancel()
         intentoDeGoogle = null

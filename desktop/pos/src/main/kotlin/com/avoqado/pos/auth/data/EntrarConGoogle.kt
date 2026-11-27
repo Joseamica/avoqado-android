@@ -8,7 +8,10 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.awt.Desktop
@@ -29,6 +32,8 @@ internal const val TEXTO_SIN_RESPUESTA = "No recibimos respuesta de Google. Vuel
 private const val PAGINA_LISTA = "Listo. Ya puedes volver al POS de Avoqado."
 private const val ESPERA_DE_GOOGLE_MS = 180_000L
 private const val ESPERA_POR_CONEXION_MS = 5_000
+/** Conexiones que se leen a la vez; las demás esperan su turno sin ocupar un hilo (Codex r2 #6). */
+private const val CONEXIONES_A_LA_VEZ = 4
 
 /**
  * Reemplazo de escritorio (Credential Manager no existe en Windows), con la misma forma pública que el de Android
@@ -36,8 +41,11 @@ private const val ESPERA_POR_CONEXION_MS = 5_000
  * Devuelve el `code` con su verificador y su dirección; el SERVIDOR lo canjea (aquí no hay secreto).
  */
 @Singleton
-class EntrarConGoogle internal constructor(private val abrirNavegador: (URI) -> Unit) {
-    @Inject constructor() : this(::abrirConElSistema)
+class EntrarConGoogle internal constructor(
+    private val plazoMs: Long = ESPERA_DE_GOOGLE_MS,
+    private val abrirNavegador: (URI) -> Unit,
+) {
+    @Inject constructor() : this(ESPERA_DE_GOOGLE_MS, ::abrirConElSistema)
 
     val abreNavegador: Boolean = true
 
@@ -71,16 +79,22 @@ class EntrarConGoogle internal constructor(private val abrirNavegador: (URI) -> 
         enCurso = intento
         try {
             val redirectUri = "http://127.0.0.1:${intento.servidor.localPort}"
-            try {
-                abrirNavegador(URI(urlDeGoogle(clientId, redirectUri, state, retoPkce(verificador))))
-            } catch (e: Exception) {
-                return PaseDeGoogle.Fallo(TEXTO_SIN_NAVEGADOR, "${e.javaClass.simpleName}: ${e.message.orEmpty()}")
+            // El plazo cuenta desde ANTES de abrir el navegador: abrirlo también gasta de los 3 min (Codex r2 #6).
+            val pase = withTimeoutOrNull(plazoMs) {
+                try {
+                    abrirNavegador(URI(urlDeGoogle(clientId, redirectUri, state, retoPkce(verificador))))
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    val causa = "${e.javaClass.simpleName}: ${e.message.orEmpty()}"
+                    return@withTimeoutOrNull PaseDeGoogle.Fallo(TEXTO_SIN_NAVEGADOR, causa)
+                }
+                when (val vuelta = intento.esperar(state)) {
+                    is Vuelta.Codigo -> PaseDeGoogle.Codigo(vuelta.code, verificador, redirectUri)
+                    else -> PaseDeGoogle.Cancelado
+                }
             }
-            return when (val vuelta = withTimeoutOrNull(ESPERA_DE_GOOGLE_MS) { intento.esperar(state) }) {
-                null -> PaseDeGoogle.Fallo(TEXTO_SIN_RESPUESTA, "3 min sin vuelta del navegador")
-                is Vuelta.Codigo -> PaseDeGoogle.Codigo(vuelta.code, verificador, redirectUri)
-                else -> PaseDeGoogle.Cancelado
-            }
+            return pase ?: PaseDeGoogle.Fallo(TEXTO_SIN_RESPUESTA, "3 min sin vuelta del navegador")
         } finally {
             intento.cerrar()
             if (enCurso === intento) enCurso = null
@@ -131,13 +145,30 @@ private class Intento(val servidor: ServerSocket) {
         conexiones.remove(conexion)
     }
 
-    /** Cada conexión en su hilo: una que no manda nada (el «preconnect» del navegador) no hace fila delante de la buena. */
+    /**
+     * Hasta [CONEXIONES_A_LA_VEZ] conexiones se leen a la vez, cada una con [ESPERA_POR_CONEXION_MS] en TOTAL: una que no
+     * manda nada (el «preconnect» del navegador) o que gotea bytes no hace fila para siempre delante de la buena, y un
+     * proceso local con muchas abiertas no se come los hilos compartidos del POS. Todas viven dentro de este scope y se
+     * cancelan al salir por cualquier camino.
+     */
     suspend fun esperar(state: String): Vuelta = coroutineScope {
-        launch(Dispatchers.IO) {
+        val turnos = Semaphore(CONEXIONES_A_LA_VEZ)
+        val escucha = launch(Dispatchers.IO) {
             try {
                 while (true) {
                     val conexion = servidor.accept()
-                    if (registrar(conexion)) launch(Dispatchers.IO) { atender(conexion, state) }
+                    if (registrar(conexion)) {
+                        launch(Dispatchers.IO) {
+                            turnos.withPermit {
+                                val plazo = launch { delay(ESPERA_POR_CONEXION_MS.toLong()); runCatching { conexion.close() } }
+                                try {
+                                    atender(conexion, state)
+                                } finally {
+                                    plazo.cancel()
+                                }
+                            }
+                        }
+                    }
                 }
             } catch (e: IOException) {
                 desenlace.completeExceptionally(e)   // si la cerramos nosotros, ya hubo desenlace y esto no hace nada
@@ -147,6 +178,7 @@ private class Intento(val servidor: ServerSocket) {
             desenlace.await()
         } finally {
             cerrar()
+            escucha.cancel()
         }
     }
 
@@ -170,6 +202,8 @@ private class Intento(val servidor: ServerSocket) {
                 // el navegador se fue antes de la página: el code ya llegó y cuenta igual
             }
             if (vuelta != Vuelta.Ajena) desenlace.complete(vuelta)   // la primera gana; las demás no cambian nada
+        } catch (_: IOException) {
+            // cerrada antes de leerla (su plazo, el desenlace o «Cancelar»): no decide nada
         } finally {
             soltar(conexion)
             runCatching { conexion.close() }

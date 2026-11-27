@@ -201,7 +201,7 @@ class SignInViewModelGoogleTest {
     }
 
     @Test
-    fun `Fallo con red muestra su texto`() {
+    fun `Fallo con red y la sonda al servidor contesta muestra su texto`() {
         configLista()
         every { connectivityMonitor.isOnline() } returns true
         coEvery { entrarConGoogle.pedirPase(any(), any()) } returns PaseDeGoogle.Fallo("texto de Google", "causa")
@@ -211,6 +211,70 @@ class SignInViewModelGoogleTest {
 
         assertEquals("texto de Google", vm.uiState.value.errorMessage)
         assertFalse(vm.uiState.value.isLoading)
+        coVerify(exactly = 2) { authRepository.configDeGoogle() } // la config y la sonda
+    }
+
+    @Test
+    fun `Fallo con Wi-Fi sin internet (la sonda dice SinRed) dice sin conexion`() {
+        coEvery { authRepository.configDeGoogle() } returnsMany listOf(ConfigDeGoogle.Lista(config), ConfigDeGoogle.SinRed)
+        every { connectivityMonitor.isOnline() } returns true // el monitor todavía ve la interfaz conectada
+        coEvery { entrarConGoogle.pedirPase(any(), any()) } returns PaseDeGoogle.Fallo("no disponible", "causa")
+        val vm = vm()
+
+        vm.loginWithGoogle(activity) {}
+
+        assertEquals(AuthRepository.SIN_CONEXION_PARA_GOOGLE, vm.uiState.value.errorMessage)
+        assertFalse(vm.uiState.value.isLoading)
+    }
+
+    @Test
+    fun `WINDOWS no sondea tras el Fallo y conserva su texto`() {
+        coEvery { authRepository.configDeGoogle() } returnsMany listOf(ConfigDeGoogle.Lista(config), ConfigDeGoogle.SinRed)
+        every { connectivityMonitor.isOnline() } returns true
+        every { entrarConGoogle.abreNavegador } returns true
+        val texto = "No recibimos respuesta de Google. Vuelve a intentarlo."
+        coEvery { entrarConGoogle.pedirPase(any(), any()) } returns PaseDeGoogle.Fallo(texto, "plazo")
+        val vm = vm()
+
+        vm.loginWithGoogle(activity) {}
+
+        assertEquals(texto, vm.uiState.value.errorMessage)
+        coVerify(exactly = 1) { authRepository.configDeGoogle() }
+    }
+
+    @Test
+    fun `cancelarGoogle con el pase ya enviado no corta el login y entra`() {
+        configLista()
+        every { entrarConGoogle.abreNavegador } returns true
+        coEvery { entrarConGoogle.pedirPase(any(), any()) } returns PaseDeGoogle.Codigo("c", "v", "http://127.0.0.1:5000")
+        val respuesta = CompletableDeferred<LoginResult>()
+        coEvery { authRepository.loginWithGoogle(any(), any(), any()) } coAnswers { respuesta.await() }
+        val vm = vm()
+
+        var entro = false
+        vm.loginWithGoogle(activity) { entro = true }
+        // El POST va en camino: ya no se espera al navegador (la pantalla quita «Cancelar»).
+        assertTrue(vm.uiState.value.isLoading)
+        assertFalse(vm.uiState.value.esperandoNavegador)
+        vm.cancelarGoogle()
+        respuesta.complete(exito)
+
+        verify(exactly = 0) { entrarConGoogle.cancelar() }
+        assertTrue("el login termina y entra", entro)
+    }
+
+    @Test
+    fun `Siguiente con Google en curso no cambia de paso`() {
+        configLista()
+        coEvery { entrarConGoogle.pedirPase(any(), any()) } coAnswers { CompletableDeferred<PaseDeGoogle>().await() }
+        val vm = vm()
+        vm.onEmailChange("cajera@avoqado.io")
+
+        vm.loginWithGoogle(activity) {}
+        vm.goToPassword()
+
+        assertEquals(SignInStep.EMAIL, vm.uiState.value.step)
+        assertTrue(vm.uiState.value.isLoading)
     }
 
     @Test
