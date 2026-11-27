@@ -3854,8 +3854,12 @@ class CartViewModel @Inject constructor(
                     if (it is kotlinx.coroutines.CancellationException) throw it
                     // Codex C1-r5 #2: sin candado de plan en el aparato (meter LOYALTY_PROGRAM al mapa de planes reconstruía la navegación
                     // y vaciaba el carrito); lo decide el SERVIDOR con su 403, como «Recompensas» en Pedidos.
-                    LecturaDelAtajo(cliente, null, com.avoqado.pos.core.data.network.FalloDeLectura.de(it),
-                        prohibida = (it as? retrofit2.HttpException)?.code() == 403)
+                    // Codex C1-r6: un 403 es «sin acceso» sólo si trae el JSON de error del SERVIDOR (el de un proxy o un WAF es un
+                    // fallo de lectura), con la misma regla que el interceptor (`RespuestaProhibida`).
+                    val propio = (it as? retrofit2.HttpException)?.takeIf { h -> h.code() == 403 }?.let { h ->
+                        com.avoqado.pos.core.data.network.RespuestaProhibida.esDenegacionPropia(h.response()?.errorBody()?.string().orEmpty())
+                    } == true
+                    LecturaDelAtajo(cliente, null, com.avoqado.pos.core.data.network.FalloDeLectura.de(it), prohibida = propio)
                 },
             )
         }

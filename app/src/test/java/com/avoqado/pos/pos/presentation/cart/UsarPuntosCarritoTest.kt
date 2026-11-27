@@ -358,6 +358,29 @@ class UsarPuntosCarritoTest {
         assertEquals(ResultadoPagarDespues.Aviso(usarPuntosCuentaEnLaFila("Ana")), vm.resultadoUsarPuntos.value)
     }
 
+    // Codex C1-r6: un 403 es «sin acceso» sólo si es del SERVIDOR (su JSON de error); el de un proxy es un fallo de lectura.
+    private fun prohibido(cuerpo: String) = retrofit2.HttpException(
+        retrofit2.Response.error<Any>(403, okhttp3.ResponseBody.Companion.run { cuerpo.toResponseBody(null) }),
+    )
+
+    @Test fun `un 403 del SERVIDOR dice que el plan o los permisos no traen la lealtad`() = runTest {
+        coEvery { mesas.getCustomerLoyalty("venue-1", "cli-1", null) } returns Result.failure(prohibido("""{"error":"Feature not available"}"""))
+        val vm = vm()
+        ventaDeAna(vm)
+        vm.leerPuntosParaElAtajo()
+        advanceUntilIdle()
+        assertEquals(com.avoqado.pos.payment.presentation.RECOMPENSAS_SIN_ACCESO, vm.motivoSinUsarPuntos())
+    }
+
+    @Test fun `un 403 de un proxy no dice que falte el plan`() = runTest {
+        coEvery { mesas.getCustomerLoyalty("venue-1", "cli-1", null) } returns Result.failure(prohibido("<html>Forbidden</html>"))
+        val vm = vm()
+        ventaDeAna(vm)
+        vm.leerPuntosParaElAtajo()
+        advanceUntilIdle()
+        assertEquals("No se pudo leer el saldo de puntos del cliente. Vuelve a abrir la cuenta para intentarlo.", vm.motivoSinUsarPuntos())
+    }
+
     @Test fun `sin lectura no se crea nada`() = runTest {
         val vm = vm()
         ventaDeAna(vm)
