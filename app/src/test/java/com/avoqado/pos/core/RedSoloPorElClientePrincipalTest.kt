@@ -44,7 +44,8 @@ class RedSoloPorElClientePrincipalTest {
     @Test fun `un derivado solo puede quitar el interceptor de bitacora`() {
         val quitar = Regex("""(network)?[iI]nterceptors\(\)\s*\.\s*(removeAll|remove|removeIf|clear|retainAll)\b[^\n]*""")
         val malos = fuentes.flatMap { (f, texto) -> quitar.findAll(texto).map { ruta(f) to it.value }.toList() }
-            .filterNot { (_, linea) -> linea.contains("HttpLoggingInterceptor") && !linea.contains("clear") }
+            // `esRegistroDeRed(` es el predicado compartido del interceptor de bitácora (NetworkModule).
+            .filterNot { (_, linea) -> (linea.contains("HttpLoggingInterceptor") || linea.contains("esRegistroDeRed(")) && !linea.contains("clear") }
         assertTrue("Un cliente derivado quita interceptores que no son de bitácora (¿la puerta de la foto?): $malos", malos.isEmpty())
     }
 
