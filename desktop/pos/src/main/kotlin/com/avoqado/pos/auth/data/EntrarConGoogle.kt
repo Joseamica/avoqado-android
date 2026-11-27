@@ -6,6 +6,7 @@ import com.avoqado.pos.auth.data.model.PaseDeGoogle
 import com.avoqado.pos.core.data.lan.LineaAcotada
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
@@ -79,8 +80,10 @@ class EntrarConGoogle internal constructor(
         val state = nuevoState()
         // Sólo la interfaz local (nunca 0.0.0.0) y un puerto libre que elige el sistema. Cola de 50, no de 1: el navegador
         // abre varias conexiones a la vez y en Windows una cola llena rechaza la buena.
-        barrerRestos()
-        val perfil = Files.createTempDirectory(PREFIJO_PERFIL).toFile()
+        val perfil = withContext(Dispatchers.IO) {
+            barrerRestos()
+            Files.createTempDirectory(PREFIJO_PERFIL).toFile()
+        }
         var proceso: Process? = null
         val intento = try {
             Intento(ServerSocket(0, 50, InetAddress.getByName("127.0.0.1")))
@@ -94,7 +97,8 @@ class EntrarConGoogle internal constructor(
             // El plazo cuenta desde ANTES de abrir el navegador: abrirlo también gasta de los 3 min (Codex r2 #6).
             val pase = withTimeoutOrNull(plazoMs) {
                 try {
-                    proceso = abrirNavegador(URI(urlDeGoogle(clientId, redirectUri, state, retoPkce(verificador))), perfil)
+                    val url = URI(urlDeGoogle(clientId, redirectUri, state, retoPkce(verificador)))
+                    proceso = withContext(Dispatchers.IO) { abrirNavegador(url, perfil) }
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
@@ -108,9 +112,13 @@ class EntrarConGoogle internal constructor(
             }
             return pase ?: PaseDeGoogle.Fallo(TEXTO_SIN_RESPUESTA, "3 min sin vuelta del navegador")
         } finally {
-            intento.cerrar()
-            if (enCurso === intento) enCurso = null
-            limpiar(proceso, perfil)   // por cualquier camino: código, cancelar, plazo o error
+            try {
+                // Por cualquier camino (código, cancelar, plazo o error), también si ya los cancelaron, y fuera del hilo de la pantalla.
+                withContext(NonCancellable + Dispatchers.IO) { limpiar(proceso, perfil) }
+            } finally {
+                intento.cerrar()
+                if (enCurso === intento) enCurso = null
+            }
         }
     }
 }

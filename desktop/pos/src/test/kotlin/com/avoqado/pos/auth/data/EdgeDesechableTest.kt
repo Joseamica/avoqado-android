@@ -1,5 +1,12 @@
 package com.avoqado.pos.auth.data
 
+import androidx.fragment.app.FragmentActivity
+import com.avoqado.pos.auth.data.model.GoogleConfigResponse
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import java.io.File
 import java.io.InputStream
 import java.io.OutputStream
@@ -82,5 +89,29 @@ class EdgeDesechableTest {
         } finally {
             perfil.deleteRecursively()
         }
+    }
+
+    @Test fun `cancelar con Edge abierto ⇒ la limpieza corre igual, mata el proceso y fuera del hilo que llamó`() = runBlocking<Unit> {
+        val hiloLlamador = Thread.currentThread()
+        val hiloDeLimpieza = java.util.concurrent.atomic.AtomicReference<Thread>()
+        val perfilUsado = java.util.concurrent.atomic.AtomicReference<File>()
+        val falso = object : Process() {
+            @Volatile var muerto = false
+            override fun destroy() { muerto = true; hiloDeLimpieza.set(Thread.currentThread()) }
+            override fun destroyForcibly(): Process { destroy(); return this }
+            override fun getOutputStream(): OutputStream = OutputStream.nullOutputStream()
+            override fun getInputStream(): InputStream = InputStream.nullInputStream()
+            override fun getErrorStream(): InputStream = InputStream.nullInputStream()
+            override fun waitFor(): Int = 0
+            override fun exitValue(): Int = 0
+        }
+        val entrar = EntrarConGoogle(180_000) { _, perfil -> perfilUsado.set(perfil); falso }
+        val config = GoogleConfigResponse(success = true, windows = true, desktopClientId = "cliente.apps.googleusercontent.com")
+        val job = launch(Dispatchers.Default) { entrar.pedirPase(FragmentActivity(null), config) }
+        while (perfilUsado.get() == null) delay(20)
+        job.cancelAndJoin()
+        assertTrue(falso.muerto)
+        assertTrue(hiloDeLimpieza.get() !== hiloLlamador)
+        assertFalse(perfilUsado.get().exists())
     }
 }
