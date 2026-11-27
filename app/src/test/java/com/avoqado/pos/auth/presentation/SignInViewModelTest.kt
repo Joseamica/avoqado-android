@@ -37,6 +37,8 @@ class SignInViewModelTest {
     private val authRepository = mockk<AuthRepository>()
     private val biometricAuthManager = mockk<BiometricAuthManager>(relaxed = true)
     private val secureStorage = mockk<SecureStorage>(relaxed = true)
+    private val entrarConGoogle = mockk<com.avoqado.pos.auth.data.EntrarConGoogle>(relaxed = true)
+    private val connectivityMonitor = mockk<com.avoqado.pos.core.util.ConnectivityMonitor>(relaxed = true)
 
     @Before
     fun patronDeCorreo() {
@@ -60,7 +62,7 @@ class SignInViewModelTest {
     fun `tras entrar con contraseña, volver a la pantalla no queda cargando ni con la contraseña anterior`() {
         coEvery { authRepository.loginWithEmail(any(), any(), any()) } returns
             LoginResult.Success("u1", "cajera@avoqado.io", "Ana", null, emptyList())
-        val viewModel = SignInViewModel(authRepository, biometricAuthManager, secureStorage)
+        val viewModel = SignInViewModel(authRepository, biometricAuthManager, secureStorage, entrarConGoogle, connectivityMonitor)
 
         viewModel.onEmailChange("cajera@avoqado.io")
         viewModel.goToPassword()
@@ -83,7 +85,7 @@ class SignInViewModelTest {
         every { secureStorage.biometricVenuesList } returns emptyList()
         coEvery { biometricAuthManager.authenticate(any()) } returns true
         coEvery { authRepository.entrarConHuella("refresh-1", any(), any()) } returns true
-        val viewModel = SignInViewModel(authRepository, biometricAuthManager, secureStorage)
+        val viewModel = SignInViewModel(authRepository, biometricAuthManager, secureStorage, entrarConGoogle, connectivityMonitor)
 
         var entro = false
         viewModel.loginWithBiometric(mockk<FragmentActivity>(relaxed = true)) { entro = true }
@@ -101,7 +103,7 @@ class SignInViewModelTest {
         every { secureStorage.biometricVenuesList } returns emptyList()
         coEvery { biometricAuthManager.authenticate(any()) } returns true
         coEvery { authRepository.entrarConHuella("refresh-1", any(), any()) } returns false // ya entró otra persona
-        val viewModel = SignInViewModel(authRepository, biometricAuthManager, secureStorage)
+        val viewModel = SignInViewModel(authRepository, biometricAuthManager, secureStorage, entrarConGoogle, connectivityMonitor)
 
         var entro = false
         viewModel.loginWithBiometric(mockk<FragmentActivity>(relaxed = true)) { entro = true }
@@ -116,7 +118,7 @@ class SignInViewModelTest {
     @Test
     fun `olvide mi contraseña pide el enlace y avisa como iOS sin decir si la cuenta existe`() {
         coEvery { authRepository.pedirRestablecerContrasena("cajera@avoqado.io") } returns true
-        val viewModel = SignInViewModel(authRepository, biometricAuthManager, secureStorage)
+        val viewModel = SignInViewModel(authRepository, biometricAuthManager, secureStorage, entrarConGoogle, connectivityMonitor)
 
         viewModel.onEmailChange("cajera@avoqado.io")
         viewModel.goToPassword()
@@ -138,7 +140,7 @@ class SignInViewModelTest {
     @Test
     fun `olvide mi contraseña sin red no promete un correo`() {
         coEvery { authRepository.pedirRestablecerContrasena(any()) } returns false
-        val viewModel = SignInViewModel(authRepository, biometricAuthManager, secureStorage)
+        val viewModel = SignInViewModel(authRepository, biometricAuthManager, secureStorage, entrarConGoogle, connectivityMonitor)
 
         viewModel.onEmailChange("cajera@avoqado.io")
         viewModel.goToPassword()

@@ -5,6 +5,11 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.avoqado.pos.auth.data.AuthRepository
 import com.avoqado.pos.auth.data.BiometricAuthManager
+import com.avoqado.pos.auth.data.ConfigDeGoogle
+import com.avoqado.pos.auth.data.EntrarConGoogle
+import com.avoqado.pos.auth.data.model.PaseDeGoogle
+import com.avoqado.pos.core.util.ConnectivityMonitor
+import kotlinx.coroutines.Job
 import com.avoqado.pos.auth.data.model.LoginResult
 import com.avoqado.pos.core.data.local.SecureStorage
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -25,6 +30,8 @@ data class SignInUiState(
     val password: String = "",
     val isPasswordVisible: Boolean = false,
     val isLoading: Boolean = false,
+    /** WINDOWS: el navegador está abierto y se espera a Google (hz:6bfcd3a1:D1). */
+    val esperandoNavegador: Boolean = false,
     val errorMessage: String? = null,
     val canUseBiometric: Boolean = false,
     val biometricEmail: String? = null,
@@ -44,7 +51,12 @@ class SignInViewModel @Inject constructor(
     private val authRepository: AuthRepository,
     private val biometricAuthManager: BiometricAuthManager,
     private val secureStorage: SecureStorage,
+    private val entrarConGoogle: EntrarConGoogle,
+    private val connectivityMonitor: ConnectivityMonitor,
 ) : ViewModel() {
+
+    /** El intento de Google vivo (si hay): «Cancelar» y Atrás lo cortan. */
+    private var intentoDeGoogle: Job? = null
 
     private val _uiState = MutableStateFlow(estadoInicial())
     val uiState: StateFlow<SignInUiState> = _uiState.asStateFlow()
@@ -190,7 +202,51 @@ class SignInViewModel @Inject constructor(
         }
     }
 
+    /**
+     * «Continuar con Google» (hz:6bfcd3a1:D1). Comparte `isLoading` con contraseña y huella: un solo intento vivo.
+     * El sello se toma AL TOCAR (D4): si mientras Google espera entra o sale alguien, esta entrada no se instala.
+     */
+    fun loginWithGoogle(activity: FragmentActivity, onSuccess: () -> Unit) {
+        if (_uiState.value.isLoading) return
+        val sello = secureStorage.generacion
+        _uiState.update { it.copy(isLoading = true, esperandoNavegador = entrarConGoogle.abreNavegador, errorMessage = null) }
+
+        intentoDeGoogle = viewModelScope.launch {
+            val config = when (val c = authRepository.configDeGoogle()) {
+                is ConfigDeGoogle.Lista -> c.config
+                ConfigDeGoogle.SinRed -> return@launch falloDeGoogle(AuthRepository.SIN_CONEXION_PARA_GOOGLE)
+                ConfigDeGoogle.NoDisponible -> return@launch falloDeGoogle(TEXTO_SERVIDOR_SIN_GOOGLE)
+            }
+            when (val pase = entrarConGoogle.pedirPase(activity, config)) {
+                PaseDeGoogle.Cancelado -> falloDeGoogle(null)
+                is PaseDeGoogle.Fallo -> {
+                    Log.w("🔐", "Google: ${pase.causa}")
+                    falloDeGoogle(if (connectivityMonitor.isOnline()) pase.texto else AuthRepository.SIN_CONEXION_PARA_GOOGLE)
+                }
+                else -> when (val r = authRepository.loginWithGoogle(pase, sello)) {
+                    is LoginResult.Success -> alEntrar(onSuccess)
+                    is LoginResult.Error -> falloDeGoogle(ServerErrorText.humanize(r.message))
+                }
+            }
+        }
+    }
+
+    private fun falloDeGoogle(texto: String?) {
+        _uiState.update { it.copy(isLoading = false, esperandoNavegador = false, errorMessage = texto) }
+    }
+
+    /** «Cancelar» y Atrás: el intento de Google se descarta y no se instala nada. */
+    fun cancelarGoogle() {
+        entrarConGoogle.cancelar()
+        intentoDeGoogle?.cancel()
+        intentoDeGoogle = null
+        falloDeGoogle(null)
+    }
+
     companion object {
+        private const val TEXTO_SERVIDOR_SIN_GOOGLE =
+            "Entrar con Google no está disponible por ahora. Entra con tu correo y contraseña."
+
         const val SIN_RED_PARA_EL_ENLACE = "Sin conexión: conéctate a internet para recibir el enlace."
     }
 }
