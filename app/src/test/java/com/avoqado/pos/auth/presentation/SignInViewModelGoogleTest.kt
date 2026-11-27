@@ -21,7 +21,10 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Before
 import org.junit.Rule
+import java.lang.reflect.Field
+import java.util.regex.Pattern
 import org.junit.Test
 
 /** Entrar con Google en el POS: un solo intento vivo entre Google, contraseña y huella (hz:6bfcd3a1:D1). */
@@ -38,6 +41,24 @@ class SignInViewModelGoogleTest {
     private val activity = mockk<FragmentActivity>(relaxed = true)
     private val config = GoogleConfigResponse(success = true, android = true, androidAudience = "aud", nonce = "n")
     private val exito = LoginResult.Success("u1", "cajera@avoqado.io", "Ana", null, emptyList())
+
+    @Before
+    fun patronDeCorreo() {
+        // El android.jar de las pruebas JVM trae `Patterns.EMAIL_ADDRESS` en null (su `static {}` está vacío) y es
+        // `static final`: se le pone el patrón real de AOSP para que `isEmailValid` funcione como en el aparato.
+        // `sun.misc.Unsafe` va por reflexión porque el classpath de compilación es el de Android, que no lo trae.
+        val campo = android.util.Patterns::class.java.getField("EMAIL_ADDRESS")
+        if (campo.get(null) != null) return
+        val patron = Pattern.compile(
+            "[a-zA-Z0-9+._%\\-]{1,256}@[a-zA-Z0-9][a-zA-Z0-9\\-]{0,64}(\\.[a-zA-Z0-9][a-zA-Z0-9\\-]{0,25})+",
+        )
+        val unsafeClass = Class.forName("sun.misc.Unsafe")
+        val unsafe = unsafeClass.getDeclaredField("theUnsafe").apply { isAccessible = true }.get(null)
+        val base = unsafeClass.getMethod("staticFieldBase", Field::class.java).invoke(unsafe, campo)
+        val offset = unsafeClass.getMethod("staticFieldOffset", Field::class.java).invoke(unsafe, campo) as Long
+        unsafeClass.getMethod("putObject", Any::class.java, Long::class.javaPrimitiveType, Any::class.java)
+            .invoke(unsafe, base, offset, patron)
+    }
 
     private fun vm() = SignInViewModel(authRepository, biometricAuthManager, secureStorage, entrarConGoogle, connectivityMonitor)
 
@@ -75,20 +96,43 @@ class SignInViewModelGoogleTest {
     }
 
     @Test
-    fun `cancelarGoogle durante pedirPase no llama al repositorio y no deja error`() {
+    fun `cancelarGoogle durante pedirPase no llama al repositorio ni entra y no deja error`() {
         configLista()
-        coEvery { entrarConGoogle.pedirPase(any(), any()) } coAnswers { CompletableDeferred<PaseDeGoogle>().await() }
+        val espera = CompletableDeferred<PaseDeGoogle>()
+        coEvery { entrarConGoogle.pedirPase(any(), any()) } coAnswers { espera.await() }
+        coEvery { authRepository.loginWithGoogle(any(), any(), any()) } returns exito
         val vm = vm()
 
-        vm.loginWithGoogle(activity) {}
+        var entro = false
+        vm.loginWithGoogle(activity) { entro = true }
         vm.cancelarGoogle()
+        espera.complete(PaseDeGoogle.Token("t")) // el pase llega tarde
 
         verify(exactly = 1) { entrarConGoogle.cancelar() }
         coVerify(exactly = 0) { authRepository.loginWithGoogle(any(), any(), any()) }
+        assertFalse(entro)
         val estado = vm.uiState.value
         assertNull(estado.errorMessage)
         assertFalse(estado.isLoading)
         assertFalse(estado.esperandoNavegador)
+    }
+
+    @Test
+    fun `cancelarGoogle con la contraseña en camino no la corta ni apaga isLoading`() {
+        val respuesta = CompletableDeferred<LoginResult>()
+        coEvery { authRepository.loginWithEmail(any(), any(), any()) } coAnswers { respuesta.await() }
+        val vm = vm()
+        vm.onEmailChange("cajera@avoqado.io")
+        vm.onPasswordChange("contraseña-1")
+
+        var entro = false
+        vm.loginWithPassword { entro = true }
+        vm.cancelarGoogle()
+
+        assertTrue(vm.uiState.value.isLoading)
+        verify(exactly = 0) { entrarConGoogle.cancelar() }
+        respuesta.complete(exito)
+        assertTrue("la contraseña sigue su curso", entro)
     }
 
     @Test

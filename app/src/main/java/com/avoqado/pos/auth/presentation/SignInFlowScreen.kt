@@ -250,8 +250,8 @@ private fun EmailStepContent(
         AuthButton(
             text = "Siguiente",
             onClick = onNext,
-            enabled = isEmailValid,
-            isLoading = isLoading,
+            enabled = isEmailValid && !isLoading,
+            isLoading = isLoading && !esperandoNavegador,
         )
 
         // hz:6bfcd3a1:D1: «o» y el botón estándar de Google (blanco, con borde, la «G» a la izquierda).

@@ -237,8 +237,10 @@ class SignInViewModel @Inject constructor(
 
     /** «Cancelar» y Atrás: el intento de Google se descarta y no se instala nada. */
     fun cancelarGoogle() {
+        // Atrás se pulsa también con contraseña o huella en camino: sólo se corta un intento de Google vivo.
+        val job = intentoDeGoogle?.takeIf { it.isActive } ?: return
         entrarConGoogle.cancelar()
-        intentoDeGoogle?.cancel()
+        job.cancel()
         intentoDeGoogle = null
         falloDeGoogle(null)
     }
