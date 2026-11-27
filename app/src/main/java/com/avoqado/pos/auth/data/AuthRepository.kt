@@ -2,7 +2,12 @@ package com.avoqado.pos.auth.data
 
 import android.util.Log
 import com.avoqado.pos.auth.data.model.AuthError
+import com.avoqado.pos.auth.data.model.GoogleCodeRequest
+import com.avoqado.pos.auth.data.model.GoogleConfigResponse
+import com.avoqado.pos.auth.data.model.GoogleTokenRequest
 import com.avoqado.pos.auth.data.model.LoginRequest
+import com.avoqado.pos.auth.data.model.LoginResponse
+import com.avoqado.pos.auth.data.model.PaseDeGoogle
 import com.avoqado.pos.auth.data.model.LoginResult
 import com.avoqado.pos.auth.data.model.RefreshRequest
 import com.avoqado.pos.auth.data.model.SwitchUserRequest
@@ -27,6 +32,12 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import javax.inject.Inject
 import javax.inject.Singleton
+
+sealed interface ConfigDeGoogle {
+    data class Lista(val config: GoogleConfigResponse) : ConfigDeGoogle
+    data object SinRed : ConfigDeGoogle
+    data object NoDisponible : ConfigDeGoogle
+}
 
 @Singleton
 class AuthRepository @Inject constructor(
@@ -88,49 +99,7 @@ class AuthRepository @Inject constructor(
             )
 
             if (response.success && response.accessToken != null && response.user != null) {
-                val user = response.user
-                val venues = user.venues
-                val primaryVenue = venues.firstOrNull()
-
-                if (primaryVenue == null) {
-                    Log.e("🔐", "Login failed: no venues")
-                    return LoginResult.Error("No tienes acceso a ningún establecimiento.")
-                }
-
-                // Save session data (y la lista de venues del MISMO login, en el mismo paso: D4)
-                val instalada = secureStorage.instalarSiSigue(sello) {
-                    secureStorage.saveLogin(
-                        userId = user.id,
-                        email = user.email,
-                        firstName = user.firstName,
-                        lastName = user.lastName,
-                        venueId = primaryVenue.id,
-                        venueName = primaryVenue.name,
-                        venueSlug = primaryVenue.slug,
-                        role = primaryVenue.role,
-                        accessToken = response.accessToken,
-                        refreshToken = response.refreshToken ?: "",
-                        venueTimezone = primaryVenue.timezone,
-                        venuePermissions = primaryVenue.permissions,
-                        permisosVigentes = primaryVenue.permisosVigentes,
-                    )
-                    secureStorage.venuesList = venues.map { it.toStoredVenue() }
-                    venderComoQuienEntra(user.id, user.firstName, user.lastName, user.email)
-                }
-                if (instalada == null) {
-                    Log.w("🔐", "Login tardío: ya entró otra persona en este aparato, no se instala")
-                    return LoginResult.Error(OTRA_PERSONA_ENTRO)
-                }
-
-                Log.d("🔐", "✅ Login successful - user: ${user.id}, venue: ${primaryVenue.name}")
-
-                LoginResult.Success(
-                    userId = user.id,
-                    email = user.email,
-                    firstName = user.firstName,
-                    lastName = user.lastName,
-                    venues = venues,
-                )
+                instalarLogin(response, sello)
             } else {
                 val message = response.message ?: "Error al iniciar sesión"
                 Log.e("🔐", "❌ Login failed: $message")
@@ -148,6 +117,81 @@ class AuthRepository @Inject constructor(
             Log.e("🔐", "❌ Login exception: ${e.message}")
             LoginResult.Error(textoDeFalloAlEntrar(e))
         }
+    }
+
+    /** El guardado compartido del correo y de Google: la sucursal la elige el SERVIDOR (`selectedVenueId`), si no, la primera. */
+    private fun instalarLogin(response: LoginResponse, sello: Long): LoginResult {
+        val user = response.user!!
+        val venues = user.venues
+        val primaryVenue = venues.firstOrNull { it.id == response.selectedVenueId } ?: venues.firstOrNull()
+
+        if (primaryVenue == null) {
+            Log.e("🔐", "Login failed: no venues")
+            return LoginResult.Error("No tienes acceso a ningún establecimiento.")
+        }
+
+        // Save session data (y la lista de venues del MISMO login, en el mismo paso: D4)
+        val instalada = secureStorage.instalarSiSigue(sello) {
+            secureStorage.saveLogin(
+                userId = user.id,
+                email = user.email,
+                firstName = user.firstName,
+                lastName = user.lastName,
+                venueId = primaryVenue.id,
+                venueName = primaryVenue.name,
+                venueSlug = primaryVenue.slug,
+                role = primaryVenue.role,
+                accessToken = response.accessToken!!,
+                refreshToken = response.refreshToken ?: "",
+                venueTimezone = primaryVenue.timezone,
+                venuePermissions = primaryVenue.permissions,
+                permisosVigentes = primaryVenue.permisosVigentes,
+            )
+            secureStorage.venuesList = venues.map { it.toStoredVenue() }
+            venderComoQuienEntra(user.id, user.firstName, user.lastName, user.email)
+        }
+        if (instalada == null) {
+            Log.w("🔐", "Login tardío: ya entró otra persona en este aparato, no se instala")
+            return LoginResult.Error(OTRA_PERSONA_ENTRO)
+        }
+
+        Log.d("🔐", "✅ Login successful - user: ${user.id}, venue: ${primaryVenue.name}")
+
+        return LoginResult.Success(
+            userId = user.id,
+            email = user.email,
+            firstName = user.firstName,
+            lastName = user.lastName,
+            venues = venues,
+        )
+    }
+
+    /** ¿Este servidor y este aparato pueden entrar con Google? (hz:6bfcd3a1:D1) */
+    suspend fun configDeGoogle(): ConfigDeGoogle = try {
+        val c = apiService.configDeGoogle()
+        if (c.android || c.windows) ConfigDeGoogle.Lista(c) else ConfigDeGoogle.NoDisponible
+    } catch (e: java.io.IOException) {
+        ConfigDeGoogle.SinRed
+    } catch (e: retrofit2.HttpException) {
+        ConfigDeGoogle.NoDisponible
+    }
+
+    /** Entrar con el pase de Google. El [sello] se toma ANTES de pedirlo (D4), como en `loginWithEmail`. */
+    suspend fun loginWithGoogle(pase: PaseDeGoogle, sello: Long, rememberMe: Boolean = true): LoginResult = try {
+        val response = when (pase) {
+            is PaseDeGoogle.Token -> apiService.loginWithGoogleToken(GoogleTokenRequest(pase.idToken, rememberMe))
+            is PaseDeGoogle.Codigo -> apiService.loginWithGoogleCode(
+                GoogleCodeRequest(pase.code, pase.codeVerifier, pase.redirectUri, rememberMe),
+            )
+            is PaseDeGoogle.Fallo -> return LoginResult.Error(pase.texto)
+            PaseDeGoogle.Cancelado -> return LoginResult.Error(NO_SE_PUDO_ENTRAR)
+        }
+        if (response.success && response.accessToken != null && response.user != null) instalarLogin(response, sello)
+        else LoginResult.Error(response.message ?: NO_SE_PUDO_ENTRAR)
+    } catch (e: retrofit2.HttpException) {
+        LoginResult.Error(mensajeDelServidor(e) ?: "Error del servidor (${e.code()})")
+    } catch (e: java.io.IOException) {
+        LoginResult.Error(SIN_CONEXION_PARA_GOOGLE)
     }
 
     /**
@@ -427,6 +471,7 @@ class AuthRepository @Inject constructor(
          */
         const val SIN_CONEXION_PARA_ENTRAR =
             "Sin conexión: para entrar con correo y contraseña se necesita internet. Inténtalo cuando vuelva la conexión."
+        const val SIN_CONEXION_PARA_GOOGLE = "Sin conexión: conéctate a internet para entrar con Google."
         const val NO_SE_PUDO_ENTRAR = "No se pudo iniciar sesión. Inténtalo de nuevo."
 
         /** Un fallo de red (sin respuesta del servidor) es «sin conexión»; otra excepción, un fallo genérico. PURA. */
