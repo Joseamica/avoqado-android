@@ -3783,7 +3783,18 @@ class CartViewModel @Inject constructor(
         girando = false
         cobrarMontado = true
     }
-    fun cobrarSeDesmonto() { cobrarMontado = false; girando = false; cerrarCuentaDelAtajo() }
+    fun cobrarSeDesmonto() {
+        cobrarMontado = false
+        girando = false
+        // Codex C1-r3 #4: salir de Cobrar con la cuenta abierta (otra pestaña; en WINDOWS, la ventana que cambia de ancho) deja dicho
+        // dónde quedó: el aviso sale al volver a Cobrar.
+        _cuentaDelAtajo.value?.let { s ->
+            _resultadoUsarPuntos.value = ResultadoPagarDespues.Aviso(
+                if (s.cobrada) avisoCobradaSinConfirmar(s.cliente, s.numero) else avisoCuentaEnPedidos(s.cliente, s.numero),
+            )
+        }
+        cerrarCuentaDelAtajo()
+    }
     /** Codex v3-r2 #4: girar la pantalla recrea Cobrar sin salir de él: la visita y la ventana (con su cobro abierto) siguen. */
     fun cobrarSeGira() { cobrarMontado = false; girando = true }
 

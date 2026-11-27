@@ -216,6 +216,38 @@ class UsarPuntosCarritoTest {
         assertEquals(true, vm.cuentaDelAtajo.value?.cobrada)
     }
 
+    // Codex C1-r3 #4: salir de Cobrar (otra pestaña o, en WINDOWS, la ventana que cambia de ancha a angosta) con la cuenta abierta deja
+    // dicho dónde quedó: al volver a Cobrar sale el aviso.
+    @Test fun `salir de Cobrar con la cuenta abierta deja el aviso de dónde quedó`() = runTest {
+        val vm = vm()
+        vm.cobrarSeMonto()
+        ventaDeAna(vm)
+        vm.leerPuntosParaElAtajo()
+        advanceUntilIdle()
+        responde(201, """{"success":true,"order":{"id":"ord-1","total":100.0}}""")
+        vm.usarPuntos()
+        advanceUntilIdle()
+        vm.consumirResultadoUsarPuntos()
+        vm.cobrarSeDesmonto()
+        assertEquals(ResultadoPagarDespues.Aviso(avisoCuentaEnPedidos("Ana", "")), vm.resultadoUsarPuntos.value)
+        assertNull(vm.cuentaDelAtajo.value)
+    }
+
+    @Test fun `salir de Cobrar con la cuenta ya cobrada sin confirmar lo dice así`() = runTest {
+        val vm = vm()
+        vm.cobrarSeMonto()
+        ventaDeAna(vm)
+        vm.leerPuntosParaElAtajo()
+        advanceUntilIdle()
+        responde(201, """{"success":true,"order":{"id":"ord-1","total":100.0}}""")
+        vm.usarPuntos()
+        advanceUntilIdle()
+        vm.consumirResultadoUsarPuntos()
+        vm.cuentaDelAtajoCobrada("ord-1")
+        vm.cobrarSeDesmonto()
+        assertEquals(ResultadoPagarDespues.Aviso(avisoCobradaSinConfirmar("Ana", "")), vm.resultadoUsarPuntos.value)
+    }
+
     // v3 «C»: con otra sesión (cambio de usuario por PIN) o en otra sucursal, la ventana no se enseña.
     @Test fun `con otra sesion la ventana no se enseña`() = runTest {
         val vm = vm()

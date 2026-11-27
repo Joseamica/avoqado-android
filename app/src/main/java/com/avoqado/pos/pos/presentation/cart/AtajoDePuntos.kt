@@ -150,9 +150,12 @@ fun avisoCuentaEnPedidos(cliente: String, folio: String) =
 fun avisoCobradaSinConfirmar(cliente: String, folio: String) =
     "Se cobró la cuenta de $cliente${if (folio.isBlank()) "" else " ($folio)"}, pero no se pudo confirmar que quedó en \$0.00: revísala en Pedidos."
 
-/** Codex C1-r2 #5: cobrada en efectivo sin red desde la copia: el pago quedó en el aparato y se sube solo. */
+/**
+ * Codex C1-r2/r3 #5: cobrada en efectivo desde la copia sin red. El pago pudo subir ya, seguir en la cola o quedar por revisar (el recibo
+ * lo dijo): el aviso no promete ninguno, manda a revisar.
+ */
 fun avisoCobradaSinRed(cliente: String, folio: String) =
-    "Se cobró la cuenta de $cliente${if (folio.isBlank()) "" else " ($folio)"} en efectivo sin conexión: quedó guardada en el aparato y se sube sola."
+    "Se cobró en efectivo sin conexión la cuenta de $cliente${if (folio.isBlank()) "" else " ($folio)"}: revisa en Pedidos que quedó pagada."
 
 /** La cuenta que pidió el atajo ya está pagada o cancelada cuando Pedidos la abre (Codex r3 #5). */
 fun avisoCuentaYaCerrada(folio: String) = "La cuenta $folio ya no está abierta (pagada o cancelada): ya no admite puntos."
