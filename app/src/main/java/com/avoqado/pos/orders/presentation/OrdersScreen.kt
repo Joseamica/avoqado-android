@@ -50,6 +50,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.lifecycle.Lifecycle
@@ -151,6 +152,8 @@ fun OrdersScreen(
         val folio = cuentaPorAbrir ?: return@LaunchedEffect
         if (seleccionada == folio) laTomo = true else if (laTomo) onSoltarCuentaPorAbrir(folio)
     }
+    // Codex r4 #5: salir de Pedidos por la barra (o cerrarlo) antes de que cargue la cuenta también la suelta.
+    DisposableEffect(cuentaPorAbrir) { onDispose { cuentaPorAbrir?.let(onSoltarCuentaPorAbrir) } }
     // Overlay del Más (spec de refresco §4.8): LaunchedEffect cubre el "al
     // mostrarse" (el ON_RESUME de la Activity NO dispara al abrir un overlay)
     // y LifecycleResumeEffect el regreso desde background. La duplicación la
