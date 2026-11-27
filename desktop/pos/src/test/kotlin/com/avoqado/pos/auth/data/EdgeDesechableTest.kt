@@ -114,4 +114,32 @@ class EdgeDesechableTest {
         assertTrue(hiloDeLimpieza.get() !== hiloLlamador)
         assertFalse(perfilUsado.get().exists())
     }
+
+    @Test fun `cancelar mientras el opener arranca Edge ⇒ el proceso igual se mata y la carpeta se borra`() = runBlocking<Unit> {
+        val perfilUsado = java.util.concurrent.atomic.AtomicReference<File>()
+        val arrancando = java.util.concurrent.CountDownLatch(1)
+        val soltar = java.util.concurrent.CountDownLatch(1)
+        val falso = object : Process() {
+            @Volatile var muerto = false
+            override fun destroy() { muerto = true }
+            override fun destroyForcibly(): Process { muerto = true; return this }
+            override fun getOutputStream(): OutputStream = OutputStream.nullOutputStream()
+            override fun getInputStream(): InputStream = InputStream.nullInputStream()
+            override fun getErrorStream(): InputStream = InputStream.nullInputStream()
+            override fun waitFor(): Int = 0
+            override fun exitValue(): Int = 0
+        }
+        // El opener sigue «arrancando» (bloqueado) cuando llega la cancelación, y recién después devuelve el proceso.
+        val entrar = EntrarConGoogle(180_000) { _, perfil ->
+            perfilUsado.set(perfil); arrancando.countDown(); soltar.await(5, java.util.concurrent.TimeUnit.SECONDS); falso
+        }
+        val config = GoogleConfigResponse(success = true, windows = true, desktopClientId = "cliente.apps.googleusercontent.com")
+        val job = launch(Dispatchers.Default) { entrar.pedirPase(FragmentActivity(null), config) }
+        assertTrue(arrancando.await(5, java.util.concurrent.TimeUnit.SECONDS))
+        job.cancel()
+        soltar.countDown()
+        job.join()
+        assertTrue(falso.muerto)
+        assertFalse(perfilUsado.get().exists())
+    }
 }

@@ -78,34 +78,32 @@ class EntrarConGoogle internal constructor(
     private suspend fun pedirPorElNavegador(clientId: String): PaseDeGoogle {
         val verificador = nuevoVerificador()
         val state = nuevoState()
-        // Sólo la interfaz local (nunca 0.0.0.0) y un puerto libre que elige el sistema. Cola de 50, no de 1: el navegador
-        // abre varias conexiones a la vez y en Windows una cola llena rechaza la buena.
-        val perfil = withContext(Dispatchers.IO) {
-            barrerRestos()
-            Files.createTempDirectory(PREFIJO_PERFIL).toFile()
-        }
+        // Lo que hay que cerrar se anota DENTRO de cada withContext: si cancelan justo al volver, el finally igual lo ve.
+        var perfil: File? = null
         var proceso: Process? = null
-        val intento = try {
-            Intento(ServerSocket(0, 50, InetAddress.getByName("127.0.0.1")))
-        } catch (e: Exception) {
-            borrarPerfil(perfil)
-            throw e
-        }
-        enCurso = intento
+        var intento: Intento? = null
         try {
-            val redirectUri = "http://127.0.0.1:${intento.servidor.localPort}"
+            withContext(Dispatchers.IO) {
+                barrerRestos()
+                perfil = Files.createTempDirectory(PREFIJO_PERFIL).toFile()
+            }
+            val perfilDelIntento = perfil!!
+            val enCursoAhora = Intento(ServerSocket(0, 50, InetAddress.getByName("127.0.0.1")))
+            intento = enCursoAhora
+            enCurso = enCursoAhora
+            val redirectUri = "http://127.0.0.1:${enCursoAhora.servidor.localPort}"
             // El plazo cuenta desde ANTES de abrir el navegador: abrirlo también gasta de los 3 min (Codex r2 #6).
             val pase = withTimeoutOrNull(plazoMs) {
                 try {
                     val url = URI(urlDeGoogle(clientId, redirectUri, state, retoPkce(verificador)))
-                    proceso = withContext(Dispatchers.IO) { abrirNavegador(url, perfil) }
+                    withContext(Dispatchers.IO) { proceso = abrirNavegador(url, perfilDelIntento) }
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
                     val causa = "${e.javaClass.simpleName}: ${e.message.orEmpty()}"
                     return@withTimeoutOrNull PaseDeGoogle.Fallo(TEXTO_SIN_EDGE, causa)
                 }
-                when (val vuelta = intento.esperar(state)) {
+                when (val vuelta = enCursoAhora.esperar(state)) {
                     is Vuelta.Codigo -> PaseDeGoogle.Codigo(vuelta.code, verificador, redirectUri)
                     else -> PaseDeGoogle.Cancelado
                 }
@@ -116,7 +114,7 @@ class EntrarConGoogle internal constructor(
                 // Por cualquier camino (código, cancelar, plazo o error), también si ya los cancelaron, y fuera del hilo de la pantalla.
                 withContext(NonCancellable + Dispatchers.IO) { limpiar(proceso, perfil) }
             } finally {
-                intento.cerrar()
+                intento?.cerrar()
                 if (enCurso === intento) enCurso = null
             }
         }
@@ -144,12 +142,12 @@ private fun abrirEnEdge(uri: URI, perfil: File): Process {
 }
 
 /** Mata Edge (y lo que lanzó) y borra su carpeta. Nunca lanza. */
-internal fun limpiar(proceso: Process?, perfil: File, borrar: (File) -> Boolean = { it.deleteRecursively() }, esperaMs: Long = 500) {
+internal fun limpiar(proceso: Process?, perfil: File?, borrar: (File) -> Boolean = { it.deleteRecursively() }, esperaMs: Long = 500) {
     if (proceso != null) {
         runCatching { proceso.toHandle().descendants().forEach { it.destroyForcibly() } }
         runCatching { proceso.destroyForcibly() }
     }
-    borrarPerfil(perfil, borrar, esperaMs)
+    if (perfil != null) borrarPerfil(perfil, borrar, esperaMs)
 }
 
 /** Hasta 3 intentos con [esperaMs] entre ellos (Windows suelta los archivos un instante después de morir el proceso). */
