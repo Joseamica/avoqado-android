@@ -3774,7 +3774,11 @@ class CartViewModel @Inject constructor(
     val ofreceUsarPuntos: Boolean get() = planManager.hasFeature("LOYALTY_PROGRAM")
 
     /** Al abrir «Usar puntos»: lee el saldo del cliente elegido, sin cuenta todavía. Sólo orienta (Codex r1 #3). */
+    /** Sólo la lectura más reciente escribe: una vieja que termina tarde no pisa a la nueva (Codex r3 R2). */
+    private var turnoDeLectura = 0
+
     fun leerPuntosParaElAtajo() {
+        val turno = ++turnoDeLectura
         _lecturaDelAtajo.value = null
         val cliente = _selectedCustomer.value?.id?.takeIf { it.isNotBlank() } ?: return
         val venue = secureStorage.venueId ?: return
@@ -3783,7 +3787,7 @@ class CartViewModel @Inject constructor(
         viewModelScope.launch {
             val leido = repo.getCustomerLoyalty(venue, cliente, null)
             // La lectura es de ESE cliente: si mientras tanto se eligió otro, no se usa (Codex r1 #4).
-            if (_selectedCustomer.value?.id != cliente) return@launch
+            if (turno != turnoDeLectura || _selectedCustomer.value?.id != cliente) return@launch
             _lecturaDelAtajo.value = leido.fold(
                 onSuccess = { LecturaDelAtajo(cliente, it, null) },
                 onFailure = {
@@ -3815,12 +3819,14 @@ class CartViewModel @Inject constructor(
     /**
      * El «Continuar» de «Usar puntos»: la venta va a «Pagar después» por el camino con fila (como Atajos) y, creada por el importe
      * exacto, se pide abrir ESA cuenta en Pedidos con la sucursal y la sesión de ahora. No canjea nada: eso lo hace «Canjear».
+     * [clienteConfirmado]: el cliente que la cajera vio al tocar «Continuar»; si otra ventana (el motivo del descuento) se abrió en
+     * medio y el lector cambió el cliente, no se crea a nombre del nuevo (Codex r3 R3).
      */
-    fun usarPuntos() {
+    fun usarPuntos(clienteConfirmado: String? = null) {
         if (_pagarDespuesEnCurso.value != null) return
         val lectura = _lecturaDelAtajo.value
         val cliente = _selectedCustomer.value
-        if (lectura != null && cliente?.id != lectura.customerId) {
+        if ((clienteConfirmado != null && cliente?.id != clienteConfirmado) || (lectura != null && cliente?.id != lectura.customerId)) {
             _resultadoUsarPuntos.value = ResultadoPagarDespues.Error(USAR_PUNTOS_CLIENTE_CAMBIO)
             return
         }
@@ -3835,8 +3841,9 @@ class CartViewModel @Inject constructor(
             val folio = folioCreado.takeIf { r == ResultadoPagarDespues.Creada }
             folioCreado = null
             if (folio != null) puertaDeRecompensas?.pedir(SolicitudDeRecompensas(folio, venue, sello))
+            // Sin respuesta puede ser la red o el SERVIDOR (503): el aviso no afirma cuál (Codex r3 #7).
             _resultadoUsarPuntos.value = if (r is ResultadoPagarDespues.Aviso && r.texto == pagarDespuesGuardadaSinRed(cliente.name)) {
-                ResultadoPagarDespues.Aviso(r.texto + " " + USAR_PUNTOS_SIN_RED_GUARDADA)
+                ResultadoPagarDespues.Aviso(usarPuntosCuentaEnLaFila(cliente.name))
             } else r
         }
     }

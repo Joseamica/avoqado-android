@@ -152,20 +152,6 @@ class UsarPuntosCarritoTest {
         assertNull(puerta.solicitud.value)
     }
 
-    @Test fun `sin red al mandar queda en la fila y dice que se canjea al volver la red`() = runTest {
-        val vm = vm()
-        ventaDeAna(vm)
-        vm.leerPuntosParaElAtajo()
-        advanceUntilIdle()
-        coEvery { ordenes.enviarPagarDespues(any(), any()) } throws java.io.IOException("sin red")
-        vm.usarPuntos()
-        advanceUntilIdle()
-        val r = vm.resultadoUsarPuntos.value as ResultadoPagarDespues.Aviso
-        assertTrue(r.texto, r.texto.startsWith(pagarDespuesGuardadaSinRed("Ana")))
-        assertTrue(r.texto, r.texto.endsWith(USAR_PUNTOS_SIN_RED_GUARDADA))
-        assertNull(puerta.solicitud.value)
-    }
-
     // SOBRA de Codex r1: creada por otro importe se dice como hoy, sin la coletilla de la red, y no se abre.
     @Test fun `creada por otro importe se dice como hoy y no se abre`() = runTest {
         val vm = vm()
@@ -177,6 +163,53 @@ class UsarPuntosCarritoTest {
         advanceUntilIdle()
         assertEquals(ResultadoPagarDespues.Aviso(pagarDespuesOtroImporte("Ana", 9000, 10000)), vm.resultadoUsarPuntos.value)
         assertNull(puerta.solicitud.value)
+    }
+
+    // Codex r3 R3: el cliente se captura al tocar «Continuar»; si el motivo del descuento abrió otra ventana y en ese rato el lector
+    // cambió el cliente, no se crea la cuenta a nombre del nuevo.
+    @Test fun `el cliente confirmado al tocar manda aunque luego cambie el seleccionado`() = runTest {
+        val vm = vm()
+        ventaDeAna(vm)
+        vm.leerPuntosParaElAtajo()
+        advanceUntilIdle()
+        val confirmado = vm.selectedCustomer.value?.id
+        vm.setSelectedCustomer("cli-2", "Beto")
+        coEvery { mesas.getCustomerLoyalty("venue-1", "cli-2", null) } returns Result.success(saldo(500))
+        vm.leerPuntosParaElAtajo()
+        advanceUntilIdle()
+        responde(201, """{"success":true,"order":{"id":"ord-1","total":100.0}}""")
+        vm.usarPuntos(clienteConfirmado = confirmado)
+        advanceUntilIdle()
+        assertEquals(ResultadoPagarDespues.Error(USAR_PUNTOS_CLIENTE_CAMBIO), vm.resultadoUsarPuntos.value)
+        coVerify(exactly = 0) { ordenes.enviarPagarDespues(any(), any()) }
+    }
+
+    // Codex r3 R2: una lectura vieja que termina después de la nueva no la pisa.
+    @Test fun `una lectura vieja no pisa la nueva`() = runTest {
+        val vm = vm()
+        ventaDeAna(vm)
+        val vieja = CompletableDeferred<Result<CustomerLoyalty>>()
+        coEvery { mesas.getCustomerLoyalty("venue-1", "cli-1", null) } coAnswers { vieja.await() } andThen Result.success(saldo(200))
+        vm.leerPuntosParaElAtajo()
+        runCurrent()
+        vm.leerPuntosParaElAtajo()
+        advanceUntilIdle()
+        assertEquals(200, vm.lecturaDelAtajo.value?.lealtad?.balance)
+        vieja.complete(Result.failure(java.io.IOException("sin red")))
+        advanceUntilIdle()
+        assertEquals(200, vm.lecturaDelAtajo.value?.lealtad?.balance)
+    }
+
+    // Codex r3 #7: sin respuesta (sin red o 503) la cuenta queda en la fila; el aviso no afirma que fue la red.
+    @Test fun `sin respuesta el aviso es neutro`() = runTest {
+        val vm = vm()
+        ventaDeAna(vm)
+        vm.leerPuntosParaElAtajo()
+        advanceUntilIdle()
+        coEvery { ordenes.enviarPagarDespues(any(), any()) } throws java.io.IOException("sin red")
+        vm.usarPuntos()
+        advanceUntilIdle()
+        assertEquals(ResultadoPagarDespues.Aviso(usarPuntosCuentaEnLaFila("Ana")), vm.resultadoUsarPuntos.value)
     }
 
     @Test fun `sin lectura no se crea nada`() = runTest {

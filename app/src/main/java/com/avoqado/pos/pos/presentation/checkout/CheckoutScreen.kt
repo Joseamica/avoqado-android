@@ -2514,7 +2514,10 @@ fun CheckoutScreen(
         // Como «Pagar después» (f998c8): un descuento sin motivo lo pide antes de mandar la cuenta (Codex r2 #8).
         onContinuar = {
             errorUsarPuntos = null
-            if (!faltaMotivo { cartViewModel.usarPuntos() }) cartViewModel.usarPuntos()
+            // Codex r3 R3: el cliente que la cajera vio al tocar «Continuar» viaja con el envío; si el lector lo cambia mientras elige
+            // el motivo, la cuenta no se crea a nombre del nuevo.
+            val confirmado = cartViewModel.selectedCustomer.value?.id
+            if (!faltaMotivo { cartViewModel.usarPuntos(confirmado) }) cartViewModel.usarPuntos(confirmado)
         },
         onDismiss = { showUsarPuntos = false },
     )

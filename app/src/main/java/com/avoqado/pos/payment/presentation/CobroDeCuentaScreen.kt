@@ -1025,8 +1025,13 @@ fun AccionesDeCuentaAbierta(
         }, viewModel = viewModel, saldoSinRed = saldo)
     }
     if (!pinta.acciones) {
-        // D39 (atajo, Codex r2 #5): con un cobro abierto (o la cuenta sin acciones) la apertura pedida ya no aplica: se da por atendida.
-        if (viewModel.aperturaPedida(order.id)) LaunchedEffect(order.id) { viewModel.aperturaAtendida(order.id) }
+        // D39 (atajo, Codex r2/r3 #5): la cuenta ya no está abierta (pagada o cancelada): se dice con su folio y se da por atendida.
+        var avisoDelAtajo by rememberSaveable(order.id) { mutableStateOf<String?>(null) }
+        if (viewModel.aperturaPedida(order.id)) LaunchedEffect(order.id) {
+            avisoDelAtajo = com.avoqado.pos.pos.presentation.cart.avisoCuentaYaCerrada("#" + order.orderNumber)
+            viewModel.aperturaAtendida(order.id)
+        }
+        avisoDelAtajo?.let { Text(it) }
         return
     }
     val solicitudes by viewModel.solicitudes.collectAsState()

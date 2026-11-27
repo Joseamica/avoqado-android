@@ -225,10 +225,13 @@ fun MoreMenuScreen(
         showCashMachine = false
     }
 
+    // D39 (Codex r3 R1): el contador sigue arriba cuando «Más» se vuelve a montar; un toque de ANTES no descarta la cuenta que el atajo
+    // pidió DESPUÉS. Sólo un toque nuevo (otro número) la descarta.
+    val toqueAlMontar = remember { moreTabReselectionTick }
     LaunchedEffect(moreTabReselectionTick) {
         if (moreTabReselectionTick > 0) {
             closeAllOverlays()
-            viewModel.descartarCuentaConPuntos()
+            if (moreTabReselectionTick != toqueAlMontar) viewModel.descartarCuentaConPuntos()
         }
     }
 
@@ -989,6 +992,7 @@ fun MoreMenuScreen(
                 onDismiss = { showOrders = false; ordersCuentaPorAbrir = null; viewModel.descartarCuentaConPuntos() },
                 initialStatusFilter = ordersInitialStatusFilter,
                 cuentaPorAbrir = ordersCuentaPorAbrir,
+                onSoltarCuentaPorAbrir = viewModel::soltarCuentaConPuntos,
             )
         }
     }

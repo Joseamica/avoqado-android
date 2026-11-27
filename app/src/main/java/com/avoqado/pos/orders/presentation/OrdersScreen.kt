@@ -140,8 +140,17 @@ fun OrdersScreen(
     initialStatusFilter: String? = null,
     /** D39 (atajo «Usar puntos»): el folio que se abre al entrar (su «Recompensas» se abre solo, `PuertaDeRecompensas`). */
     cuentaPorAbrir: String? = null,
+    /** D39 (Codex r3 #5): la cajera dejó la cuenta que pidió el atajo; su «Recompensas» ya no se abre sola. */
+    onSoltarCuentaPorAbrir: (String) -> Unit = {},
 ) {
     LaunchedEffect(cuentaPorAbrir) { cuentaPorAbrir?.let { viewModel.selectOrder(it) } }
+    // Una vez seleccionada, si la selección cambia (Atrás, otra cuenta, el detalle no cargó y salió) la apertura pedida se suelta.
+    val seleccionada by viewModel.selectedOrderId.collectAsState()
+    var laTomo by remember(cuentaPorAbrir) { mutableStateOf(false) }
+    LaunchedEffect(seleccionada, cuentaPorAbrir) {
+        val folio = cuentaPorAbrir ?: return@LaunchedEffect
+        if (seleccionada == folio) laTomo = true else if (laTomo) onSoltarCuentaPorAbrir(folio)
+    }
     // Overlay del Más (spec de refresco §4.8): LaunchedEffect cubre el "al
     // mostrarse" (el ON_RESUME de la Activity NO dispara al abrir un overlay)
     // y LifecycleResumeEffect el regreso desde background. La duplicación la

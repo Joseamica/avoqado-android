@@ -29,8 +29,9 @@ const val USAR_PUNTOS_SIN_FILA =
     "Con cupón, premio de sellos o un descuento que pide aprobación, usa «Pagar después» y canjea los puntos en Más › Pedidos."
 const val USAR_PUNTOS_LEYENDO = "Leyendo los puntos del cliente…"
 const val USAR_PUNTOS_CLIENTE_CAMBIO = "El cliente cambió: vuelve a tocar «Usar puntos»."
-/** Sin red o con el SERVIDOR sin contestar (503), la cuenta queda en la fila de «Pagar después» (Codex r2 #7): neutro para los dos. */
-const val USAR_PUNTOS_SIN_RED_GUARDADA = "Cuando la cuenta suba, canjea los puntos en Más › Pedidos."
+/** Sin red o con el SERVIDOR sin contestar (503), la cuenta queda en la fila de «Pagar después»: neutro para los dos (Codex r2/r3 #7). */
+fun usarPuntosCuentaEnLaFila(cliente: String) =
+    "La cuenta de $cliente quedó guardada en el aparato y se sube sola. Cuando suba, canjea los puntos en Más › Pedidos."
 
 /** Lo que dice la ventana antes de *Continuar* (Codex r1 #3 y #7): la venta queda como cuenta por cobrar y los puntos se gastan al canjear. */
 fun explicacionDelAtajo(cliente: String) =
@@ -135,6 +136,9 @@ sealed interface AperturaDeRecompensas {
 /** Textos de espera de «Recompensas»: mientras salgan, la cuenta todavía no decide. Sin red también se espera a que vuelva. */
 private val ESPERAS = setOf(USAR_PUNTOS_LEYENDO, "Actualizando la cuenta…", RECOMPENSAS_LEYENDO_LA_CUENTA, RECOMPENSAS_SIN_RED,
     "La cuenta todavía no llega del servidor, así que no se sabe si tiene cliente. Intenta en un momento.")
+
+/** La cuenta que pidió el atajo ya está pagada o cancelada cuando Pedidos la abre (Codex r3 #5). */
+fun avisoCuentaYaCerrada(folio: String) = "La cuenta $folio ya no está abierta (pagada o cancelada): ya no admite puntos."
 
 /** Qué hace Pedidos con la cuenta que pidió el atajo (Codex r1 #6). */
 fun aperturaDeRecompensas(ofrece: Boolean, consultando: Boolean, motivo: String?, folio: String): AperturaDeRecompensas = when {

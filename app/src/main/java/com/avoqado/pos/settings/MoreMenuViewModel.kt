@@ -74,6 +74,8 @@ class MoreMenuViewModel @Inject constructor(
     fun cuentaConPuntosEnPedidos(orderId: String) { puertaDeRecompensas?.enPedidos(orderId) }
     /** Pedidos se cerró, o Más cerró sus pantallas por otra razón: lo pendiente se olvida (Codex r2 #5). */
     fun descartarCuentaConPuntos() { puertaDeRecompensas?.descartar() }
+    /** La cajera dejó ESA cuenta en Pedidos (Atrás, otra cuenta, el detalle no cargó): abrirla después a mano ya no lanza «Recompensas». */
+    fun soltarCuentaConPuntos(orderId: String) { puertaDeRecompensas?.atendida(orderId) }
 
     // MARK: - Pedidos en línea (A3)
 
