@@ -21,7 +21,6 @@ import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.Socket
 import java.net.URI
-import java.security.SecureRandom
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -36,7 +35,7 @@ private const val ESPERA_POR_CONEXION_MS = 5_000
 private const val CONEXIONES_A_LA_VEZ = 4
 
 /**
- * Reemplazo de escritorio (Credential Manager no existe en Windows), con la misma forma pública que el de Android
+ * Reemplazo de escritorio (la Auth Tab de Chrome no existe en Windows), con la misma forma pública que el de Android
  * (hz:6bfcd3a1:D1): abre el navegador del sistema con PKCE y recibe la vuelta de Google en 127.0.0.1 (puerto libre).
  * Devuelve el `code` con su verificador y su dirección; el SERVIDOR lo canjea (aquí no hay secreto).
  */
@@ -71,8 +70,8 @@ class EntrarConGoogle internal constructor(
     }
 
     private suspend fun pedirPorElNavegador(clientId: String): PaseDeGoogle {
-        val verificador = aleatorio(64)
-        val state = aleatorio(32)
+        val verificador = nuevoVerificador()
+        val state = nuevoState()
         // Sólo la interfaz local (nunca 0.0.0.0) y un puerto libre que elige el sistema. Cola de 50, no de 1: el navegador
         // abre varias conexiones a la vez y en Windows una cola llena rechaza la buena.
         val intento = Intento(ServerSocket(0, 50, InetAddress.getByName("127.0.0.1")))
@@ -111,11 +110,6 @@ private fun abrirConElSistema(uri: URI) {
     }
     Desktop.getDesktop().browse(uri)
 }
-
-private const val ALFABETO_PKCE = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~"
-private val azar = SecureRandom()
-
-private fun aleatorio(largo: Int): String = String(CharArray(largo) { ALFABETO_PKCE[azar.nextInt(ALFABETO_PKCE.length)] })
 
 /** Un intento: el socket de 127.0.0.1, las conexiones aceptadas y su primer desenlace (Codigo o Cancelado). */
 private class Intento(val servidor: ServerSocket) {

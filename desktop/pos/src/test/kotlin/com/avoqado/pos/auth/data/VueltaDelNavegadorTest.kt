@@ -33,26 +33,7 @@ class VueltaDelNavegadorTest {
     private val config = GoogleConfigResponse(success = true, desktopClientId = "cliente.apps.googleusercontent.com", windows = true)
     private val actividad = FragmentActivity(null)
 
-    // --- Piezas puras ---
-
-    @Test fun `retoPkce con el vector del RFC 7636`() {
-        assertEquals("E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM", retoPkce("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"))
-    }
-
-    @Test fun `urlDeGoogle lleva S256, select_account y la dirección codificada`() {
-        val url = urlDeGoogle("cliente.apps.googleusercontent.com", "http://127.0.0.1:5123", "estado-1", "reto_2")
-        assertTrue(url.startsWith("https://accounts.google.com/o/oauth2/v2/auth?"), url)
-        for (parte in listOf(
-            "client_id=cliente.apps.googleusercontent.com",
-            "redirect_uri=http%3A%2F%2F127.0.0.1%3A5123",
-            "response_type=code",
-            "scope=openid%20email%20profile",
-            "code_challenge=reto_2",
-            "code_challenge_method=S256",
-            "state=estado-1",
-            "prompt=select_account",
-        )) assertContains(url, parte)
-    }
+    // --- Piezas puras (retoPkce y urlDeGoogle se prueban en app/src/test: PkceDeGoogleTest) ---
 
     @Test fun `vuelta buena ⇒ Codigo con el code decodificado`() {
         assertEquals(
@@ -121,7 +102,7 @@ class VueltaDelNavegadorTest {
         assertTrue(pase.codeVerifier.all { it.isLetterOrDigit() && it.code < 128 || it in "-._~" }, pase.codeVerifier)
         val q = parametrosDe(navegador.url!!.rawQuery)
         assertEquals(retoPkce(pase.codeVerifier), q["code_challenge"])
-        assertEquals(32, q.getValue("state").length)
+        assertEquals(43, q.getValue("state").length)
         assertContains(respuestas[0], "HTTP/1.1 200")
         assertContains(respuestas[0], "Content-Type: text/html; charset=utf-8")
         assertContains(respuestas[0], "Listo. Ya puedes volver al POS de Avoqado.")

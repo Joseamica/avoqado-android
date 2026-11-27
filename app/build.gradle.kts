@@ -194,10 +194,8 @@ dependencies {
     // Biometric
     implementation(libs.biometric)
 
-    // Entrar con Google (hz:6bfcd3a1:D1); traen sus reglas de R8 (consumer rules)
-    implementation(libs.credentials)
-    implementation(libs.credentials.play.services.auth)
-    implementation(libs.googleid)
+    // Entrar con Google en una pestaña de incógnito de Chrome (Auth Tab efímera; hz:6bfcd3a1:D1)
+    implementation(libs.browser)
 
     // Image Loading
     implementation(libs.coil.compose)

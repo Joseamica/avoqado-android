@@ -10,6 +10,10 @@
     -->
     <queries>
         <package android:name="woyou.aidlservice.jiuiv5" />
+        <!-- Entrar con Google (hz:6bfcd3a1:D1): ver qué navegador da Auth Tab e incógnito. Sin esto Chrome es invisible. -->
+        <intent>
+            <action android:name="android.support.customtabs.action.CustomTabsService" />
+        </intent>
     </queries>
 
     <!--

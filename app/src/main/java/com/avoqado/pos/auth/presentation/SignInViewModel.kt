@@ -231,7 +231,9 @@ class SignInViewModel @Inject constructor(
                 is ConfigDeGoogle.NoDisponible -> return@launch falloDeGoogle(c.texto ?: TEXTO_SERVIDOR_SIN_GOOGLE)
             }
             when (val pase = entrarConGoogle.pedirPase(activity, config)) {
-                PaseDeGoogle.Cancelado -> falloDeGoogle(null)
+                // Cerrar la pestaña también es lo que se hace cuando Google no carga: la misma sonda dice si fue la red
+                // (Codex r4 #5); si no, callado.
+                PaseDeGoogle.Cancelado -> falloDeGoogle(if (sinInternet()) AuthRepository.SIN_CONEXION_PARA_GOOGLE else null)
                 is PaseDeGoogle.Fallo -> {
                     Log.w("🔐", "Google: ${pase.causa}")
                     falloDeGoogle(if (sinInternet()) AuthRepository.SIN_CONEXION_PARA_GOOGLE else pase.texto)

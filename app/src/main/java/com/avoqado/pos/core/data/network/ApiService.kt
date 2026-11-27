@@ -45,7 +45,7 @@ interface ApiService {
     suspend fun configDeGoogle(): com.avoqado.pos.auth.data.model.GoogleConfigResponse
 
     @POST("mobile/auth/google")
-    suspend fun loginWithGoogleToken(@Body request: com.avoqado.pos.auth.data.model.GoogleTokenRequest): LoginResponse
+    suspend fun loginWithGoogleState(@Body request: com.avoqado.pos.auth.data.model.GoogleStateRequest): LoginResponse
 
     @POST("mobile/auth/google")
     suspend fun loginWithGoogleCode(@Body request: com.avoqado.pos.auth.data.model.GoogleCodeRequest): LoginResponse

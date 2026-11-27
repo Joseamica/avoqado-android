@@ -13,8 +13,7 @@ securityCrypto = "1.1.0-alpha06"
 coil = "2.7.0"
 datastorePreferences = "1.1.1"
 biometric = "1.2.0-alpha05"
-credentials = "1.6.0"
-googleid = "1.2.0"
+browser = "1.10.0"
 coreKtx = "1.15.0"
 lifecycleRuntime = "2.8.7"
 activityCompose = "1.9.3"
@@ -67,10 +66,8 @@ datastore-preferences = { group = "androidx.datastore", name = "datastore-prefer
 # Biometric
 biometric = { group = "androidx.biometric", name = "biometric", version.ref = "biometric" }
 
-# Entrar con Google (Credential Manager)
-credentials = { group = "androidx.credentials", name = "credentials", version.ref = "credentials" }
-credentials-play-services-auth = { group = "androidx.credentials", name = "credentials-play-services-auth", version.ref = "credentials" }
-googleid = { group = "com.google.android.libraries.identity.googleid", name = "googleid", version.ref = "googleid" }
+# Entrar con Google (Auth Tab efímera de Chrome)
+browser = { group = "androidx.browser", name = "browser", version.ref = "browser" }
 
 # Image Loading
 coil-compose = { group = "io.coil-kt", name = "coil-compose", version.ref = "coil" }

@@ -4,7 +4,7 @@ import android.util.Log
 import com.avoqado.pos.auth.data.model.AuthError
 import com.avoqado.pos.auth.data.model.GoogleCodeRequest
 import com.avoqado.pos.auth.data.model.GoogleConfigResponse
-import com.avoqado.pos.auth.data.model.GoogleTokenRequest
+import com.avoqado.pos.auth.data.model.GoogleStateRequest
 import com.avoqado.pos.auth.data.model.LoginRequest
 import com.avoqado.pos.auth.data.model.LoginResponse
 import com.avoqado.pos.auth.data.model.PaseDeGoogle
@@ -186,7 +186,7 @@ class AuthRepository @Inject constructor(
     /** Entrar con el pase de Google. El [sello] se toma ANTES de pedirlo (D4), como en `loginWithEmail`. */
     suspend fun loginWithGoogle(pase: PaseDeGoogle, sello: Long, rememberMe: Boolean = true): LoginResult = try {
         val response = when (pase) {
-            is PaseDeGoogle.Token -> apiService.loginWithGoogleToken(GoogleTokenRequest(pase.idToken, rememberMe))
+            is PaseDeGoogle.Vuelta -> apiService.loginWithGoogleState(GoogleStateRequest(pase.state, pase.codeVerifier, rememberMe))
             is PaseDeGoogle.Codigo -> apiService.loginWithGoogleCode(
                 GoogleCodeRequest(pase.code, pase.codeVerifier, pase.redirectUri, rememberMe),
             )

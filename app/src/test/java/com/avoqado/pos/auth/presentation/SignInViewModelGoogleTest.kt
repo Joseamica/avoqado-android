@@ -1,11 +1,14 @@
 package com.avoqado.pos.auth.presentation
 
+import android.net.Uri
+import androidx.browser.auth.AuthTabIntent
 import androidx.fragment.app.FragmentActivity
 import com.avoqado.pos.MainDispatcherRule
 import com.avoqado.pos.auth.data.AuthRepository
 import com.avoqado.pos.auth.data.BiometricAuthManager
 import com.avoqado.pos.auth.data.ConfigDeGoogle
 import com.avoqado.pos.auth.data.EntrarConGoogle
+import com.avoqado.pos.auth.data.paseDeLaAuthTab
 import com.avoqado.pos.auth.data.model.GoogleConfigResponse
 import com.avoqado.pos.auth.data.model.LoginResult
 import com.avoqado.pos.auth.data.model.PaseDeGoogle
@@ -45,7 +48,7 @@ class SignInViewModelGoogleTest {
     private val entrarConGoogle = mockk<EntrarConGoogle>(relaxed = true)
     private val connectivityMonitor = mockk<ConnectivityMonitor>(relaxed = true)
     private val activity = mockk<FragmentActivity>(relaxed = true)
-    private val config = GoogleConfigResponse(success = true, android = true, androidAudience = "aud", nonce = "n")
+    private val config = GoogleConfigResponse(success = true, android = true, webClientId = "web", redirectUri = "https://api/vuelta")
     private val exito = LoginResult.Success("u1", "cajera@avoqado.io", "Ana", null, emptyList())
 
     @Before
@@ -112,7 +115,7 @@ class SignInViewModelGoogleTest {
         var entro = false
         vm.loginWithGoogle(activity) { entro = true }
         vm.cancelarGoogle()
-        espera.complete(PaseDeGoogle.Token("t")) // el pase llega tarde
+        espera.complete(PaseDeGoogle.Vuelta("s", "v")) // el pase llega tarde
 
         verify(exactly = 1) { entrarConGoogle.cancelar() }
         coVerify(exactly = 0) { authRepository.loginWithGoogle(any(), any(), any()) }
@@ -152,20 +155,53 @@ class SignInViewModelGoogleTest {
 
         vm.loginWithGoogle(activity) {}
         every { secureStorage.generacion } returns 6L
-        espera.complete(PaseDeGoogle.Token("t"))
+        espera.complete(PaseDeGoogle.Vuelta("s", "v"))
 
-        coVerify { authRepository.loginWithGoogle(PaseDeGoogle.Token("t"), 5L, any()) }
+        coVerify { authRepository.loginWithGoogle(PaseDeGoogle.Vuelta("s", "v"), 5L, any()) }
     }
 
     @Test
-    fun `Cancelado deja la pantalla sin error`() {
+    fun `Cancelado con la sonda Lista deja la pantalla sin error`() {
         configLista()
+        every { connectivityMonitor.isOnline() } returns true
         coEvery { entrarConGoogle.pedirPase(any(), any()) } returns PaseDeGoogle.Cancelado
         val vm = vm()
 
         vm.loginWithGoogle(activity) {}
 
         assertNull(vm.uiState.value.errorMessage)
+        assertFalse(vm.uiState.value.isLoading)
+        coVerify(exactly = 0) { authRepository.loginWithGoogle(any(), any(), any()) }
+        coVerify(exactly = 2) { authRepository.configDeGoogle() } // la config y la sonda
+    }
+
+    @Test
+    fun `Cancelado con la sonda SinRed dice sin conexion (cerró la pestaña porque Google no cargó)`() {
+        coEvery { authRepository.configDeGoogle() } returnsMany listOf(ConfigDeGoogle.Lista(config), ConfigDeGoogle.SinRed)
+        every { connectivityMonitor.isOnline() } returns true // Wi‑Fi sin internet: el monitor todavía dice en línea
+        coEvery { entrarConGoogle.pedirPase(any(), any()) } returns PaseDeGoogle.Cancelado
+        val vm = vm()
+
+        vm.loginWithGoogle(activity) {}
+
+        assertEquals(AuthRepository.SIN_CONEXION_PARA_GOOGLE, vm.uiState.value.errorMessage)
+        assertFalse(vm.uiState.value.isLoading)
+    }
+
+    @Test
+    fun `vuelta con error=server_error enseña el texto de reintentar`() {
+        configLista()
+        every { connectivityMonitor.isOnline() } returns true
+        val uri = mockk<Uri> {
+            every { getQueryParameter("state") } returns "s"
+            every { getQueryParameter("error") } returns "server_error"
+        }
+        coEvery { entrarConGoogle.pedirPase(any(), any()) } returns paseDeLaAuthTab(AuthTabIntent.RESULT_OK, uri, "s", "v")
+        val vm = vm()
+
+        vm.loginWithGoogle(activity) {}
+
+        assertEquals("No pudimos confirmar tu cuenta de Google. Vuelve a intentarlo.", vm.uiState.value.errorMessage)
         assertFalse(vm.uiState.value.isLoading)
         coVerify(exactly = 0) { authRepository.loginWithGoogle(any(), any(), any()) }
     }
@@ -286,7 +322,7 @@ class SignInViewModelGoogleTest {
     @Test
     fun `exito llama onSuccess y deja el estado inicial`() {
         configLista()
-        coEvery { entrarConGoogle.pedirPase(any(), any()) } returns PaseDeGoogle.Token("t")
+        coEvery { entrarConGoogle.pedirPase(any(), any()) } returns PaseDeGoogle.Vuelta("s", "v")
         coEvery { authRepository.loginWithGoogle(any(), any(), any()) } returns exito
         val vm = vm()
 
@@ -300,7 +336,7 @@ class SignInViewModelGoogleTest {
     @Test
     fun `un error del servidor al entrar se muestra`() {
         configLista()
-        coEvery { entrarConGoogle.pedirPase(any(), any()) } returns PaseDeGoogle.Token("t")
+        coEvery { entrarConGoogle.pedirPase(any(), any()) } returns PaseDeGoogle.Vuelta("s", "v")
         coEvery { authRepository.loginWithGoogle(any(), any(), any()) } returns LoginResult.Error("Vuelve a intentarlo.")
         val vm = vm()
 
@@ -336,7 +372,7 @@ class SignInViewModelGoogleTest {
     @Test
     fun `Atras con el pase ya enviado y el servidor rechaza enseña el error en la pantalla`() {
         configLista()
-        coEvery { entrarConGoogle.pedirPase(any(), any()) } returns PaseDeGoogle.Token("t")
+        coEvery { entrarConGoogle.pedirPase(any(), any()) } returns PaseDeGoogle.Vuelta("s", "v")
         val respuesta = CompletableDeferred<LoginResult>()
         coEvery { authRepository.loginWithGoogle(any(), any(), any()) } coAnswers { respuesta.await() }
         val vm = vm()
@@ -407,7 +443,7 @@ class SignInViewModelGoogleTest {
     fun `entrar 429 enseña el aviso del servidor`() {
         val texto = "Demasiados intentos. Espera un minuto y vuelve a intentarlo."
         configLista()
-        coEvery { entrarConGoogle.pedirPase(any(), any()) } returns PaseDeGoogle.Token("t")
+        coEvery { entrarConGoogle.pedirPase(any(), any()) } returns PaseDeGoogle.Vuelta("s", "v")
         coEvery { authRepository.loginWithGoogle(any(), any(), any()) } returns LoginResult.Error(texto)
         val vm = vm()
 

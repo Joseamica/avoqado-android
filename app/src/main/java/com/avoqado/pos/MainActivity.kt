@@ -56,6 +56,9 @@ class MainActivity : FragmentActivity() {
     /** Lector de pistola (USB/Bluetooth): ante Android es un teclado. Ver [com.avoqado.pos.pos.data.LectorHid]. */
     @Inject lateinit var lectorHid: com.avoqado.pos.pos.data.LectorHidBus
 
+    /** Entrar con Google: su lanzador de la Auth Tab se registra aquí, una vez por creación (hz:6bfcd3a1:D1). */
+    @Inject lateinit var entrarConGoogle: com.avoqado.pos.auth.data.EntrarConGoogle
+
     override fun onStart() {
         super.onStart()
         innerPrinter.bind()
@@ -155,6 +158,9 @@ class MainActivity : FragmentActivity() {
     @OptIn(ExperimentalMaterial3WindowSizeClassApi::class)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Antes de STARTED y con la misma llave siempre: si Android recrea la pantalla con la pestaña de Google
+        // abierta, el resultado llega a esta MainActivity nueva y el intento en curso lo recibe.
+        entrarConGoogle.registrar(this)
         // Si el mostrador está invertido, la caja va en la otra pantalla. Se
         // llama ANTES de pintar, pero NO se hace finish(): el sistema mueve la
         // tarea y recrea la Activity, y si por lo que sea no se mueve, la caja

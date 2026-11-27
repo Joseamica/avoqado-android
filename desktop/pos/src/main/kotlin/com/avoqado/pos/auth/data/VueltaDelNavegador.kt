@@ -1,28 +1,9 @@
 package com.avoqado.pos.auth.data
 
 import java.net.URLDecoder
-import java.net.URLEncoder
-import java.security.MessageDigest
-import java.util.Base64
 
-// Entrar con Google en WINDOWS (hz:6bfcd3a1:D1): la URL que abre el navegador y la vuelta que Google manda a
-// 127.0.0.1. Sin red ni sockets aquí: sólo cadenas, para probarlas solas.
-
-/** PKCE (RFC 7636, S256): base64url(SHA-256(verificador)), sin relleno. */
-fun retoPkce(verificador: String): String = Base64.getUrlEncoder().withoutPadding()
-    .encodeToString(MessageDigest.getInstance("SHA-256").digest(verificador.toByteArray(Charsets.US_ASCII)))
-
-fun urlDeGoogle(clientId: String, redirectUri: String, state: String, reto: String): String =
-    "https://accounts.google.com/o/oauth2/v2/auth?" + listOf(
-        "client_id" to clientId,
-        "redirect_uri" to redirectUri,
-        "response_type" to "code",
-        "scope" to "openid email profile",
-        "code_challenge" to reto,
-        "code_challenge_method" to "S256",
-        "state" to state,
-        "prompt" to "select_account",
-    ).joinToString("&") { (clave, valor) -> "$clave=${URLEncoder.encode(valor, Charsets.UTF_8).replace("+", "%20")}" }
+// Entrar con Google en WINDOWS (hz:6bfcd3a1:D1): la vuelta que Google manda a 127.0.0.1 (la URL y el PKCE viven en
+// app/…/auth/data/PkceDeGoogle.kt, compartidos con ANDROID). Sin red ni sockets aquí: sólo cadenas, para probarlas solas.
 
 sealed interface Vuelta {
     data class Codigo(val code: String) : Vuelta
