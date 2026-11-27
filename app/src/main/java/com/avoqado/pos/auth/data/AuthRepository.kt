@@ -174,6 +174,11 @@ class AuthRepository @Inject constructor(
         ConfigDeGoogle.SinRed
     } catch (e: retrofit2.HttpException) {
         ConfigDeGoogle.NoDisponible
+    } catch (e: kotlinx.coroutines.CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        // Un 200 que no es JSON (portal cautivo) es «sin internet de verdad».
+        ConfigDeGoogle.SinRed
     }
 
     /** Entrar con el pase de Google. El [sello] se toma ANTES de pedirlo (D4), como en `loginWithEmail`. */
@@ -191,6 +196,10 @@ class AuthRepository @Inject constructor(
     } catch (e: retrofit2.HttpException) {
         LoginResult.Error(mensajeDelServidor(e) ?: "Error del servidor (${e.code()})")
     } catch (e: java.io.IOException) {
+        LoginResult.Error(SIN_CONEXION_PARA_GOOGLE)
+    } catch (e: kotlinx.coroutines.CancellationException) {
+        throw e
+    } catch (e: Exception) {
         LoginResult.Error(SIN_CONEXION_PARA_GOOGLE)
     }
 

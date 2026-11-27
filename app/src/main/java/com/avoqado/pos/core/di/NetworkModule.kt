@@ -117,7 +117,7 @@ object NetworkModule {
 internal fun registroDeRed(
     depuracion: Boolean,
     logger: HttpLoggingInterceptor.Logger = HttpLoggingInterceptor.Logger.DEFAULT,
-): okhttp3.Interceptor {
+): RegistroDeRed {
     fun nuevo(nivel: HttpLoggingInterceptor.Level) = HttpLoggingInterceptor { linea -> logger.log(taparSecretosDelCuerpo(linea)) }.apply {
         redactHeader("Authorization")
         redactHeader(ForbiddenInterceptor.PERMISSION_OVERRIDE_HEADER)
@@ -127,7 +127,7 @@ internal fun registroDeRed(
     val conCuerpo = nuevo(HttpLoggingInterceptor.Level.BODY)
     val soloEncabezados = nuevo(HttpLoggingInterceptor.Level.HEADERS)
     val apagado = nuevo(HttpLoggingInterceptor.Level.NONE)
-    return okhttp3.Interceptor { chain ->
+    return RegistroDeRed { chain ->
         when (nivelDeRegistro(chain.request().url.encodedPath, depuracion)) {
             HttpLoggingInterceptor.Level.BODY -> conCuerpo.intercept(chain)
             HttpLoggingInterceptor.Level.HEADERS -> soloEncabezados.intercept(chain)
@@ -135,6 +135,14 @@ internal fun registroDeRed(
         }
     }
 }
+
+/** El registro compartido, con nombre propio para que los clientes con PIN en el cuerpo puedan quitarlo POR TIPO. */
+internal class RegistroDeRed(private val alPasar: (okhttp3.Interceptor.Chain) -> okhttp3.Response) : okhttp3.Interceptor {
+    override fun intercept(chain: okhttp3.Interceptor.Chain): okhttp3.Response = alPasar(chain)
+}
+
+/** Lo que los clientes que llevan un PIN en el cuerpo quitan del cliente compartido. */
+internal fun esRegistroDeRed(i: okhttp3.Interceptor): Boolean = i is HttpLoggingInterceptor || i is RegistroDeRed
 
 /**
  * Las rutas de entrar (`/mobile/auth/`) llevan contraseña, el pase de Google o los tokens en el cuerpo, de ida o de vuelta:

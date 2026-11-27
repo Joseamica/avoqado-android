@@ -46,8 +46,8 @@ class GiftCardsRepository @Inject constructor(private val client: OkHttpClient, 
     }
 
     private fun baseSinLogs() = client.newBuilder().apply {
-        interceptors().removeAll { it is HttpLoggingInterceptor }
-        networkInterceptors().removeAll { it is HttpLoggingInterceptor }
+        interceptors().removeAll { com.avoqado.pos.core.di.esRegistroDeRed(it) }
+        networkInterceptors().removeAll { com.avoqado.pos.core.di.esRegistroDeRed(it) }
     }
     private val clienteDeCaja by lazy {
         baseSinLogs().connectTimeout(5, TimeUnit.SECONDS).readTimeout(10, TimeUnit.SECONDS).callTimeout(15, TimeUnit.SECONDS).build()

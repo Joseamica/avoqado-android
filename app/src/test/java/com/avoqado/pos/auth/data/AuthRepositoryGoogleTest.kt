@@ -156,4 +156,16 @@ class AuthRepositoryGoogleTest {
         coEvery { apiService.configDeGoogle() } returns c
         assertEquals(ConfigDeGoogle.Lista(c), repository.configDeGoogle())
     }
+
+    @Test
+    fun `200 que no es JSON - config SinRed y entrada con texto sin red`() = runTest {
+        val raro = kotlinx.serialization.SerializationException("<html>portal</html>")
+        coEvery { apiService.configDeGoogle() } throws raro
+        assertEquals(ConfigDeGoogle.SinRed, repository.configDeGoogle())
+        coEvery { apiService.loginWithGoogleToken(any()) } throws raro
+        assertEquals(
+            "Sin conexión: conéctate a internet para entrar con Google.",
+            (repository.loginWithGoogle(PaseDeGoogle.Token("t"), 7L) as LoginResult.Error).message,
+        )
+    }
 }

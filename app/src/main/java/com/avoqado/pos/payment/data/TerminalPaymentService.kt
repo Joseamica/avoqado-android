@@ -211,7 +211,7 @@ class TerminalPaymentService @Inject constructor(
      */
     private val clienteDeLaDeclaracionConPin by lazy {
         clienteDeLaDeclaracion.newBuilder()
-            .apply { interceptors().removeAll { it is okhttp3.logging.HttpLoggingInterceptor } }
+            .apply { interceptors().removeAll { com.avoqado.pos.core.di.esRegistroDeRed(it) } }
             .build()
     }
 
