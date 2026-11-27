@@ -1601,6 +1601,8 @@ fun CheckoutScreen(
             // r5 #1: esperar descartaba el toque y la porción se perdía al pasar al siguiente producto): si la cajera lo toca antes
             // de que la etiqueta de esa misma pieza termine de leerse, entran las dos, como en develop.
             val capturaAlLeer = capturaDePeso
+            // D39 v3 (Codex v3-r2 #7): con la cuenta del atajo abierta encima, ni se resuelve el código (un vale se apartaría abajo).
+            if (cartViewModel.cuentaDelAtajo.value != null) return@launch
             val result = cartViewModel.resolveScannedBarcode(barcode, lecturaUs)
             // La consulta pudo tardar (red): si mientras tanto se abrió el cobro, no se aplica (pendientes, Codex r1 #2).
             if (!entra() || com.avoqado.pos.giftcards.domain.LectorParaTarjetas.abierta.value) return@launch
@@ -2513,9 +2515,11 @@ fun CheckoutScreen(
     // D39 v3 «C»: la cuenta que dejó el atajo se abre ENCIMA de Cobrar (sin saltar a Pedidos). Otra sesión o sucursal la olvida; salir de
     // Cobrar también, y una cuenta que se termina de crear con Cobrar ya desmontado no se abre al volver (Codex v3 #3).
     LaunchedEffect(cuentaDelAtajo) { if (cuentaDelAtajo != null) cartViewModel.cuentaDelAtajoDeEstaSesion() }
+    // Codex v3-r2 #4: girar la pantalla recrea la Activity, no es salir de Cobrar: la ventana (y su cobro abierto) se queda.
+    val actividad = LocalContext.current as? android.app.Activity
     androidx.compose.runtime.DisposableEffect(Unit) {
         cartViewModel.cobrarSeMonto()
-        onDispose { cartViewModel.cobrarSeDesmonto() }
+        onDispose { if (actividad?.isChangingConfigurations != true) cartViewModel.cobrarSeDesmonto() else cartViewModel.cobrarSeGira() }
     }
     cuentaDelAtajo?.let { s ->
         CuentaDelAtajo(s.orderId, s.cliente, onCerrar = { aviso ->

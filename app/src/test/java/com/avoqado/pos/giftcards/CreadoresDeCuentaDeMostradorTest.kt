@@ -30,6 +30,8 @@ class CreadoresDeCuentaDeMostradorTest {
             "com/avoqado/pos/payment/presentation/PaymentFlowViewModel.kt:materializeAreaTicketCheckout:materialize" to "T10",
             // «Pagar después» de develop (27-oct): sin premio la venta sale del carrito ANTES de mandarse; con premio se queda y se marca.
             "com/avoqado/pos/pos/presentation/cart/CartViewModel.kt:pagarDespues:createPayLaterOrder" to "C3",
+            // D39 (atajo «Usar puntos»): el mismo «Pagar después» con fila, por otra puerta.
+            "com/avoqado/pos/pos/presentation/cart/CartViewModel.kt:usarPuntos:createPayLaterOrder" to "C3",
             "com/avoqado/pos/pos/presentation/cart/CartViewModel.kt:diferirConFila:mandar" to "C3_FUERA",
             "com/avoqado/pos/pos/presentation/cart/CartViewModel.kt:diferirConPremio:mandar" to "C3",
             "com/avoqado/pos/payment/data/PayLaterQueue.kt:procesar:mandar" to "C4",

@@ -3775,8 +3775,15 @@ class CartViewModel @Inject constructor(
      */
     private var visitaDeCobrar = 0
     private var cobrarMontado = false
-    fun cobrarSeMonto() { visitaDeCobrar++; cobrarMontado = true }
-    fun cobrarSeDesmonto() { cobrarMontado = false; cerrarCuentaDelAtajo() }
+    private var girando = false
+    fun cobrarSeMonto() {
+        if (!girando) visitaDeCobrar++
+        girando = false
+        cobrarMontado = true
+    }
+    fun cobrarSeDesmonto() { cobrarMontado = false; girando = false; cerrarCuentaDelAtajo() }
+    /** Codex v3-r2 #4: girar la pantalla recrea Cobrar sin salir de él: la visita y la ventana (con su cobro abierto) siguen. */
+    fun cobrarSeGira() { cobrarMontado = false; girando = true }
 
     /** La ventana se cerró (X, cobrada, cancelada o al salir de Cobrar): se olvida y su «Recompensas» ya no se abre solo. */
     fun cerrarCuentaDelAtajo() {

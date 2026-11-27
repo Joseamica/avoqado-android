@@ -175,6 +175,27 @@ class UsarPuntosCarritoTest {
         assertEquals(ResultadoPagarDespues.Aviso(avisoCuentaEnPedidos("Ana", "")), vm.resultadoUsarPuntos.value)
     }
 
+    // Codex v3-r2 #4: girar la pantalla no es salir de Cobrar: la ventana sigue y una cuenta que termina de crearse en el giro sí se abre.
+    @Test fun `girar la pantalla no cierra la ventana ni pierde la que se esta creando`() = runTest {
+        val vm = vm()
+        vm.cobrarSeMonto()
+        ventaDeAna(vm)
+        vm.leerPuntosParaElAtajo()
+        advanceUntilIdle()
+        val respuesta = CompletableDeferred<OrderRepository.RespuestaCruda>()
+        coEvery { ordenes.enviarPagarDespues(any(), any()) } coAnswers { respuesta.await() }
+        vm.usarPuntos()
+        runCurrent()
+        vm.cobrarSeGira()
+        vm.cobrarSeMonto()
+        respuesta.complete(OrderRepository.RespuestaCruda(201, "application/json", null, """{"success":true,"order":{"id":"ord-1","total":100.0}}"""))
+        advanceUntilIdle()
+        assertEquals("ord-1", vm.cuentaDelAtajo.value?.orderId)
+        vm.cobrarSeGira()
+        vm.cobrarSeMonto()
+        assertEquals("ord-1", vm.cuentaDelAtajo.value?.orderId)
+    }
+
     // v3 «C»: con otra sesión (cambio de usuario por PIN) o en otra sucursal, la ventana no se enseña.
     @Test fun `con otra sesion la ventana no se enseña`() = runTest {
         val vm = vm()
