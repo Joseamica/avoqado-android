@@ -248,6 +248,26 @@ class UsarPuntosCarritoTest {
         assertEquals(ResultadoPagarDespues.Aviso(avisoCobradaSinConfirmar("Ana", "")), vm.resultadoUsarPuntos.value)
     }
 
+    // Codex C1-r4 #5: «hubo un cobro en efectivo sin red» también vive en el carrito: salir de Cobrar (o girar y cerrar) no dice
+    // «quedó por cobrar».
+    @Test fun `salir de Cobrar tras un cobro sin red manda a revisar, no dice que quedó por cobrar`() = runTest {
+        val vm = vm()
+        vm.cobrarSeMonto()
+        ventaDeAna(vm)
+        vm.leerPuntosParaElAtajo()
+        advanceUntilIdle()
+        responde(201, """{"success":true,"order":{"id":"ord-1","total":100.0}}""")
+        vm.usarPuntos()
+        advanceUntilIdle()
+        vm.consumirResultadoUsarPuntos()
+        vm.cuentaDelAtajoConCobroSinRed("ord-1")
+        vm.cobrarSeGira()
+        vm.cobrarSeMonto()
+        assertEquals(true, vm.cuentaDelAtajo.value?.cobroSinRed)
+        vm.cobrarSeDesmonto()
+        assertEquals(ResultadoPagarDespues.Aviso(avisoCobradaSinRed("Ana", "")), vm.resultadoUsarPuntos.value)
+    }
+
     // v3 «C»: con otra sesión (cambio de usuario por PIN) o en otra sucursal, la ventana no se enseña.
     @Test fun `con otra sesion la ventana no se enseña`() = runTest {
         val vm = vm()

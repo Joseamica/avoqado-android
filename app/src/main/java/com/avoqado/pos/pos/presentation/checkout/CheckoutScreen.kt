@@ -2523,7 +2523,8 @@ fun CheckoutScreen(
         onDispose { if (actividad?.isChangingConfigurations != true) cartViewModel.cobrarSeDesmonto() else cartViewModel.cobrarSeGira() }
     }
     cuentaDelAtajo?.let { s ->
-        CuentaDelAtajo(s.orderId, s.cliente, s.numero, s.cobrada, onCobrada = { cartViewModel.cuentaDelAtajoCobrada(s.orderId) }, onCerrar = { aviso ->
+        CuentaDelAtajo(s.orderId, s.cliente, s.numero, s.cobrada, onCobrada = { cartViewModel.cuentaDelAtajoCobrada(s.orderId) },
+            cobroSinRed = s.cobroSinRed, onCobroSinRed = { cartViewModel.cuentaDelAtajoConCobroSinRed(s.orderId) }, onCerrar = { aviso ->
             cartViewModel.cerrarCuentaDelAtajo()
             if (aviso != null) payLaterAviso = aviso
         })

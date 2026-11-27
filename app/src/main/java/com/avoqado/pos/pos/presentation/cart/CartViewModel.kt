@@ -3790,7 +3790,11 @@ class CartViewModel @Inject constructor(
         // dónde quedó: el aviso sale al volver a Cobrar.
         _cuentaDelAtajo.value?.let { s ->
             _resultadoUsarPuntos.value = ResultadoPagarDespues.Aviso(
-                if (s.cobrada) avisoCobradaSinConfirmar(s.cliente, s.numero) else avisoCuentaEnPedidos(s.cliente, s.numero),
+                when {
+                    s.cobrada -> avisoCobradaSinConfirmar(s.cliente, s.numero)
+                    s.cobroSinRed -> avisoCobradaSinRed(s.cliente, s.numero)
+                    else -> avisoCuentaEnPedidos(s.cliente, s.numero)
+                },
             )
         }
         cerrarCuentaDelAtajo()
@@ -3801,6 +3805,11 @@ class CartViewModel @Inject constructor(
     /** El cobro de la ventana terminó («Listo»): se cierra cuando la cuenta se confirma cerrada (Codex C1-r2 #4). */
     fun cuentaDelAtajoCobrada(orderId: String) {
         _cuentaDelAtajo.value?.takeIf { it.orderId == orderId }?.let { _cuentaDelAtajo.value = it.copy(cobrada = true) }
+    }
+
+    /** Se salió de un cobro en efectivo desde la copia sin red (cobró o no): al cerrar, el aviso manda a revisar (Codex C1-r4 #5). */
+    fun cuentaDelAtajoConCobroSinRed(orderId: String) {
+        _cuentaDelAtajo.value?.takeIf { it.orderId == orderId }?.let { _cuentaDelAtajo.value = it.copy(cobroSinRed = true) }
     }
 
     /** La ventana se cerró (X, cobrada, cancelada o al salir de Cobrar): se olvida y su «Recompensas» ya no se abre solo. */

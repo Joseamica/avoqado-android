@@ -93,6 +93,8 @@ data class SolicitudDeRecompensas(
     val orderId: String, val venueId: String, val sello: Long, val cliente: String = "", val numero: String = "",
     /** Codex C1-r2 #4: el cobro de la ventana ya terminó («Listo»); vive aquí, no en la pantalla, para sobrevivir a girarla. */
     val cobrada: Boolean = false,
+    /** Codex C1-r4 #5: se abrió (y se cerró) un cobro en efectivo desde la copia sin red; no se sabe si se cobró. Igual que [cobrada]. */
+    val cobroSinRed: Boolean = false,
 )
 
 /**
