@@ -139,6 +139,13 @@ fun cierraLaVentana(vioAbierta: Boolean, cerrada: Boolean): Boolean = vioAbierta
 fun avisoCuentaEnPedidos(cliente: String, folio: String) =
     "La cuenta de $cliente${if (folio.isBlank()) "" else " ($folio)"} quedó por cobrar: está en Pedidos y en Cuentas por cobrar del panel web."
 
+/**
+ * Codex C1-r1 #5: el cobro terminó («Listo») pero la relectura no confirmó que la cuenta quedó en $0.00 (la terminal aprobó y la consulta
+ * del saldo falló, o se cortó la relectura): no se dice «quedó por cobrar».
+ */
+fun avisoCobradaSinConfirmar(cliente: String, folio: String) =
+    "Se cobró la cuenta de $cliente${if (folio.isBlank()) "" else " ($folio)"}, pero no se pudo confirmar que quedó en \$0.00: revísala en Pedidos."
+
 /** La cuenta que pidió el atajo ya está pagada o cancelada cuando Pedidos la abre (Codex r3 #5). */
 fun avisoCuentaYaCerrada(folio: String) = "La cuenta $folio ya no está abierta (pagada o cancelada): ya no admite puntos."
 

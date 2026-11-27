@@ -187,9 +187,10 @@ class UsarPuntosCarritoTest {
         vm.usarPuntos()
         runCurrent()
         vm.cobrarSeGira()
-        vm.cobrarSeMonto()
+        // Codex C1-r1 #4: la cuenta se termina de crear EN el giro (desmontado, todavía sin remontar): la ventana sí se abre.
         respuesta.complete(OrderRepository.RespuestaCruda(201, "application/json", null, """{"success":true,"order":{"id":"ord-1","total":100.0}}"""))
         advanceUntilIdle()
+        vm.cobrarSeMonto()
         assertEquals("ord-1", vm.cuentaDelAtajo.value?.orderId)
         vm.cobrarSeGira()
         vm.cobrarSeMonto()

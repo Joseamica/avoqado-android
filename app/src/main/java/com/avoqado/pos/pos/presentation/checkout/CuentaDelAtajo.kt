@@ -25,6 +25,7 @@ import com.avoqado.pos.orders.presentation.OrdersViewModel
 import com.avoqado.pos.payment.domain.PaymentOverlayState
 import com.avoqado.pos.payment.presentation.CierreDeCuenta
 import com.avoqado.pos.payment.presentation.LocalAlSalirDelCobroDeCuenta
+import com.avoqado.pos.pos.presentation.cart.avisoCobradaSinConfirmar
 import com.avoqado.pos.pos.presentation.cart.avisoCuentaEnPedidos
 import com.avoqado.pos.pos.presentation.cart.cierraLaVentana
 import com.avoqado.pos.pos.presentation.cart.cuentaCerrada
@@ -68,13 +69,21 @@ fun CuentaDelAtajo(
     val cuenta = pedido?.takeIf { it.id == orderId }
     val cerrada = cuenta?.let { cuentaCerrada(it.status, it.orderPaymentStatus == PaymentStatus.PAID) }
     var vioAbierta by remember(orderId) { mutableStateOf(false) }
-    LaunchedEffect(cerrada, cobrando) {
+    // Codex C1-r1 #5: el cobro dijo «pagada» al tocar «Listo»; se cierra cuando la relectura confirma que quedó cerrada (si queda saldo,
+    // la ventana sigue con lo que falta).
+    var cobroTerminado by remember(orderId) { mutableStateOf(false) }
+    LaunchedEffect(cerrada, cobrando, cobroTerminado) {
         if (cerrada == false) vioAbierta = true
-        if (cerrada == true && !cobrando && cierraLaVentana(vioAbierta, cerrada)) onCerrar(null)
+        if (cerrada == true && !cobrando && cierraLaVentana(vioAbierta || cobroTerminado, cerrada)) onCerrar(null)
     }
     // Atrás: con un cobro abierto no hace nada; si la cuenta sigue abierta, se dice dónde quedó; si ya estaba cerrada, sólo se cierra.
     val salir = {
-        if (!cobrando) onCerrar(if (cerrada == true) null else avisoCuentaEnPedidos(cliente, cuenta?.orderNumber?.takeIf { it.isNotBlank() }?.let { "#$it" } ?: numero))
+        val folio = cuenta?.orderNumber?.takeIf { it.isNotBlank() }?.let { "#$it" } ?: numero
+        if (!cobrando) onCerrar(when {
+            cerrada == true -> null
+            cobroTerminado -> avisoCobradaSinConfirmar(cliente, folio)
+            else -> avisoCuentaEnPedidos(cliente, folio)
+        })
     }
     Dialog(
         onDismissRequest = salir,
@@ -84,7 +93,8 @@ fun CuentaDelAtajo(
         Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface) {
             // Codex v3-r2 #5: se cierra con lo que dice el cobro al terminar («Listo»), sin esperar a releer la cuenta.
             CompositionLocalProvider(LocalAlSalirDelCobroDeCuenta provides { id, cierre ->
-                if (id == orderId && cierre != CierreDeCuenta.ABIERTA) onCerrar(null)
+                if (id == orderId && cierre == CierreDeCuenta.CANCELADA) onCerrar(null)
+                if (id == orderId && cierre == CierreDeCuenta.PAGADA) cobroTerminado = true
             }) {
                 DetalleDeUnaCuenta(viewModel, onBack = salir, onCuentaCancelada = { onCerrar(null) }) {}
             }

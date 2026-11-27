@@ -337,14 +337,36 @@ class RecompensasDeCuentaAbiertaTest {
         ventana.ofertaParaCobrar("o")
         ventana.leerLealtad("o")
         ventana.canjear("o", 100, 10.0) {}
+        pedidos.ofertaParaCobrar("o") // Pedidos abre la cuenta
         assertEquals("o", pedidos.canjeEnDuda.value)
         assertTrue(pedidos.cobroBloqueadoPorCanje("o"))
-        pedidos.ofertaParaCobrar("o")
         coEvery { repo.redeemLoyaltyPoints(any(), any(), any(), any(), any(), any(), any()) } returns Result.success(RedeemPointsData(100, 10.0, 100))
         pedidos.reintentarCanje("o") {}
         coVerify(exactly = 2) { repo.redeemLoyaltyPoints("v", "o", "ana", 100, 10.0, 3, any()) }
         assertNull(ventana.canjeEnDuda.value)
         assertFalse(ventana.cobroBloqueadoPorCanje("o"))
+    }
+
+    // Codex C1-r1: el canje pendiente es POR CUENTA. Uno sin respuesta en la cuenta A no frena el canje ni el cobro de la cuenta B.
+    @Test fun `un canje sin respuesta en una cuenta no frena el de otra`() = runTest {
+        val canjes = com.avoqado.pos.payment.presentation.CanjesDeLaCaja()
+        val deA = CobroDeCuentaViewModel(repo, storage, red, roles, mockk(relaxed = true), locales, canjesDeLaCaja = canjes)
+        val deB = CobroDeCuentaViewModel(repo, storage, red, roles, mockk(relaxed = true), locales, canjesDeLaCaja = canjes)
+        coEvery { repo.getOrderDetail("v", "o") } returns Result.success(cuenta(version = 3))
+        coEvery { repo.getOrderDetail("v", "p") } returns Result.success(cuenta(version = 5).copy(id = "p"))
+        coEvery { repo.getCustomerLoyalty("v", "ana", any()) } returns Result.success(saldo(200))
+        coEvery { repo.redeemLoyaltyPoints("v", "o", any(), any(), any(), any(), any()) } returns Result.failure(java.io.IOException("sin red"))
+        coEvery { repo.redeemLoyaltyPoints("v", "p", any(), any(), any(), any(), any()) } returns Result.success(RedeemPointsData(100, 10.0, 100))
+        deA.ofertaParaCobrar("o"); deA.leerLealtad("o"); deA.canjear("o", 100, 10.0) {}
+        assertEquals("o", deA.canjeEnDuda.value)
+        deB.ofertaParaCobrar("p"); deB.leerLealtad("p")
+        assertFalse(deB.cobroBloqueadoPorCanje("p"))
+        assertFalse(deB.canjeEnVuelo.value)
+        assertNull(deB.canjeEnDuda.value)
+        deB.canjear("p", 100, 10.0) {}
+        coVerify(exactly = 1) { repo.redeemLoyaltyPoints("v", "p", "ana", 100, 10.0, 5, any()) }
+        assertEquals("o", deA.canjeEnDuda.value)
+        assertTrue(deA.cobroBloqueadoPorCanje("o"))
     }
 
     @Test fun `el reintento de un canje que no entró lo aplica`() = runTest {

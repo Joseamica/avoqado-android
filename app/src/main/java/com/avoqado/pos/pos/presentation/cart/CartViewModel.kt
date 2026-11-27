@@ -3881,7 +3881,8 @@ class CartViewModel @Inject constructor(
             folioCreado = null
             val numero = numeroCreado?.takeIf { it.isNotBlank() && folio != null }?.let { "#$it" } ?: ""
             numeroCreado = null
-            val sigueEnCobrar = cobrarMontado && visita == visitaDeCobrar
+            // Codex C1-r1 #4: girar la pantalla no es salir de Cobrar (desmontado un instante, la misma visita).
+            val sigueEnCobrar = (cobrarMontado || girando) && visita == visitaDeCobrar
             if (folio != null && sigueEnCobrar) {
                 SolicitudDeRecompensas(folio, venue, sello, cliente.name, numero)
                     .let { puertaDeRecompensas?.pedir(it); _cuentaDelAtajo.value = it }

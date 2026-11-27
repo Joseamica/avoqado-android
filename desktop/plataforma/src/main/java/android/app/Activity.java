@@ -10,4 +10,6 @@ public class Activity extends ContextWrapper {
     private final Window window = new Window(this);
     public Activity(Context base) { super(base); }
     public Window getWindow() { return window; }
+    /** En WINDOWS no se gira la pantalla ni se recrea la ventana: nunca está cambiando de configuración. */
+    public boolean isChangingConfigurations() { return false; }
 }

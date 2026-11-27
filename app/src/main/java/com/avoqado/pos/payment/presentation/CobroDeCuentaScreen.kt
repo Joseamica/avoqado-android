@@ -68,9 +68,22 @@ internal data class CanjeSinRespuesta(
  */
 @javax.inject.Singleton
 class CanjesDeLaCaja @Inject constructor() {
-    internal val enVuelo = MutableStateFlow(false)
-    internal var sinRespuesta: CanjeSinRespuesta? = null
-    internal val enDuda = MutableStateFlow<String?>(null)
+    /** El canje de UNA cuenta (Codex C1-r1: uno sin respuesta en la cuenta A no frena el de la cuenta B). */
+    internal class DeLaCuenta {
+        var enVuelo = false
+            private set
+        var sinRespuesta: CanjeSinRespuesta? = null
+        var enDuda: String? = null
+            private set
+        // Avisos directos, sin corrutinas: los ViewModels que miran esta cuenta se ponen al día en el mismo hilo que escribe.
+        private val oyentes = java.util.concurrent.CopyOnWriteArrayList<() -> Unit>()
+        fun ponerEnVuelo(v: Boolean) { enVuelo = v; oyentes.forEach { it() } }
+        fun ponerEnDuda(v: String?) { enDuda = v; oyentes.forEach { it() } }
+        fun escuchar(o: () -> Unit) { oyentes += o }
+        fun dejarDeEscuchar(o: () -> Unit) { oyentes -= o }
+    }
+    private val porCuenta = java.util.concurrent.ConcurrentHashMap<String, DeLaCuenta>()
+    internal fun de(orderId: String): DeLaCuenta = porCuenta.getOrPut(orderId) { DeLaCuenta() }
 }
 
 @HiltViewModel
@@ -98,6 +111,31 @@ class CobroDeCuentaViewModel @Inject constructor(
     canjesDeLaCaja: CanjesDeLaCaja? = null,
 ) : ViewModel() {
     private val canjes = canjesDeLaCaja ?: CanjesDeLaCaja()
+    /**
+     * La cuenta de este ViewModel (uno por cuenta: `hiltViewModel(key = "cuenta-$orderId")`). Sus [canjeEnVuelo] y [canjeEnDuda] son el
+     * espejo del canje de ESA cuenta en [CanjesDeLaCaja]; se liga con la primera cuenta que toca.
+     */
+    private var cuentaLigada: String? = null
+    private var oyente: (() -> Unit)? = null
+    private val vueloDeLaCuenta = MutableStateFlow(false)
+    private val dudaDeLaCuenta = MutableStateFlow<String?>(null)
+    private fun canjeDe(orderId: String): CanjesDeLaCaja.DeLaCuenta {
+        val de = canjes.de(orderId)
+        if (cuentaLigada != orderId) {
+            soltarElCanje()
+            cuentaLigada = orderId
+            val o = { vueloDeLaCuenta.value = de.enVuelo; dudaDeLaCuenta.value = de.enDuda }
+            oyente = o
+            de.escuchar(o)
+            o()
+        }
+        return de
+    }
+    private fun soltarElCanje() {
+        val c = cuentaLigada ?: return
+        oyente?.let { canjes.de(c).dejarDeEscuchar(it) }
+        oyente = null
+    }
     /** D39 (atajo): ¿el atajo pidió abrir ESTA cuenta, con esta sesión y esta sucursal? */
     fun aperturaPedida(orderId: String): Boolean =
         puertaDeRecompensas?.porAbrir(storage.venueId, storage.selloYAccess().first, orderId) == true
@@ -159,6 +197,8 @@ class CobroDeCuentaViewModel @Inject constructor(
         private set
 
     suspend fun ofertaParaCobrar(orderId: String, laTraeUnCarrito: Boolean = false): com.avoqado.pos.giftcards.domain.OfertaDeLaCuenta {
+        // D39 C1: al abrir la cuenta, su «Reintentar el canje» y su cobro bloqueado (aunque el canje se haya hecho en otra pantalla).
+        canjeDe(orderId)
         // D13: ANTES de leer la cuenta: lo subido después pudo no contarse. Si no se puede leer, vacía (frena de más, nunca de menos).
         val fotoVenue = storage.venueId
         val fotoDelDinero = try {
@@ -382,6 +422,7 @@ class CobroDeCuentaViewModel @Inject constructor(
 
     override fun onCleared() {
         soltarCobroSinRed()
+        soltarElCanje()
     }
 
     suspend fun cancelar(reason: String): Boolean {
@@ -435,8 +476,7 @@ class CobroDeCuentaViewModel @Inject constructor(
     private val avisoDeLasRecompensas = MutableStateFlow<String?>(null)
     /** Lo que pasó con el último canje (aplicado o por qué no). Aparte de [mensaje]: la relectura de la cuenta lo borraría. */
     val avisoDeRecompensas: StateFlow<String?> = avisoDeLasRecompensas.asStateFlow()
-    private val canjeando get() = canjes.enVuelo
-    val canjeEnVuelo: StateFlow<Boolean> = canjes.enVuelo.asStateFlow()
+    val canjeEnVuelo: StateFlow<Boolean> = vueloDeLaCuenta.asStateFlow()
 
     /** Lee el saldo de la clienta de la cuenta que se ve, contra ESA cuenta (`?orderId=`: el máximo es de ella). */
     suspend fun leerLealtad(orderId: String) {
@@ -486,12 +526,8 @@ class CobroDeCuentaViewModel @Inject constructor(
      * D39 (Codex r3 #2): el canje que se quedó sin respuesta, tal cual se mandó (con la versión de entonces). null = ninguno. D39 r10: con
      * su llave ([operationId], una por intento): repetirlo manda la MISMA, y el SERVIDOR contesta el desenlace del primero.
      */
-    private var sinRespuesta: CanjeSinRespuesta?
-        get() = canjes.sinRespuesta
-        set(v) { canjes.sinRespuesta = v }
-    private val enDuda get() = canjes.enDuda
     /** La cuenta con un canje sin respuesta: su botón es «Reintentar el canje», que manda EXACTAMENTE lo mismo. null = ninguna. */
-    val canjeEnDuda: StateFlow<String?> = canjes.enDuda.asStateFlow()
+    val canjeEnDuda: StateFlow<String?> = dudaDeLaCuenta.asStateFlow()
 
     /**
      * D39 (Codex r2 #2, r3 #1, r4 #1, pasada completa de la familia «cobro durante el canje»): ninguna entrada de cobro de esta cuenta
@@ -499,7 +535,7 @@ class CobroDeCuentaViewModel @Inject constructor(
      * falta: si entró, el saldo es otro; si no, un «Reintentar» después de cobrar bajaría una cuenta ya cobrada). Las entradas: los dos
      * «Cobrar $X», «No se cobró: cobrar aquí» y el efectivo desde la copia sin red. Se revisa otra vez después de cada espera.
      */
-    fun cobroBloqueadoPorCanje(orderId: String): Boolean = canjeando.value || sinRespuesta?.orderId == orderId
+    fun cobroBloqueadoPorCanje(orderId: String): Boolean = canjeDe(orderId).let { it.enVuelo || it.sinRespuesta != null }
 
     /**
      * D39 r10 (Codex r9 #1): ¿esta caja canjeó (o intentó canjear) puntos en la cuenta? Entonces su cobro va «sólo con conexión»: si la red se
@@ -531,7 +567,8 @@ class CobroDeCuentaViewModel @Inject constructor(
      * termina, así ningún cobro se abre sobre la foto que se está releyendo (Codex r3 #1).
      */
     fun canjear(orderId: String, points: Int, montoMostrado: Double, laTraeUnCarrito: Boolean = false, alTerminar: () -> Unit) {
-        if (canjeando.value || sinRespuesta != null) return
+        val canje = canjeDe(orderId)
+        if (canje.enVuelo || canje.sinRespuesta != null) return
         if (!red.isConnected.value || !red.isServerReachable.value) {
             avisoDeLasRecompensas.value = com.avoqado.pos.tables.data.RECOMPENSAS_SIN_RED
             return
@@ -554,8 +591,9 @@ class CobroDeCuentaViewModel @Inject constructor(
      * diálogo, no a cerrar la app (al volver, sin red la marca no deja cobrar desde aquí y con red el efectivo no se guarda en el aparato).
      */
     fun reintentarCanje(orderId: String, laTraeUnCarrito: Boolean = false, alTerminar: () -> Unit) {
-        val intento = sinRespuesta?.takeIf { it.orderId == orderId } ?: return
-        if (canjeando.value) return
+        val canje = canjeDe(orderId)
+        val intento = canje.sinRespuesta ?: return
+        if (canje.enVuelo) return
         if (!red.isConnected.value || !red.isServerReachable.value) {
             avisoDeLasRecompensas.value = com.avoqado.pos.tables.data.RECOMPENSAS_SIN_RED
             return
@@ -566,7 +604,7 @@ class CobroDeCuentaViewModel @Inject constructor(
             // Codex r5 #2: con la oferta RELEÍDA aquí, no la guardada (un disco que falló un instante dejaba un «sin subir» viejo).
             val oferta = if (puedeCanjearPuntos && !laTraeUnCarrito) ofertaParaCobrar(orderId, laTraeUnCarrito) else ofertaActual.value
             // Un segundo toque mientras se releía: ése ya lo manda el primero.
-            if (canjeando.value || sinRespuesta != intento) return@launch
+            if (canje.enVuelo || canje.sinRespuesta != intento) return@launch
             if (oferta != com.avoqado.pos.giftcards.domain.OfertaDeLaCuenta.OFRECER || laTraeUnCarrito || !puedeCanjearPuntos) {
                 avisoDeLasRecompensas.value = when {
                     !puedeCanjearPuntos -> RECOMPENSAS_SIN_PERMISO
@@ -582,8 +620,9 @@ class CobroDeCuentaViewModel @Inject constructor(
 
     private fun mandarCanje(intento: CanjeSinRespuesta, laTraeUnCarrito: Boolean, alTerminar: () -> Unit) {
         val venue = venueDeLaCuenta ?: return
-        val esReintento = sinRespuesta == intento
-        canjeando.value = true
+        val canje = canjeDe(intento.orderId)
+        val esReintento = canje.sinRespuesta == intento
+        canje.ponerEnVuelo(true)
         dialogoDeRecompensas.value = false
         avisoDeCanje.value = null
         viewModelScope.launch {
@@ -597,7 +636,7 @@ class CobroDeCuentaViewModel @Inject constructor(
                 }
                 repo.redeemLoyaltyPoints(venue, intento.orderId, intento.customerId, intento.points, intento.monto, intento.version, intento.operationId).fold(
                     onSuccess = { aplicado ->
-                        sinRespuesta = null
+                        canje.sinRespuesta = null
                         avisoDeLasRecompensas.value = "Recompensa aplicada — ${aplicado.pointsRedeemed} puntos por " +
                             com.avoqado.pos.core.util.formatMoney(aplicado.discountAmount)
                     },
@@ -608,38 +647,38 @@ class CobroDeCuentaViewModel @Inject constructor(
                             // de llegar a la llave) no dice nada del primer envío, que pudo entrar: queda en duda, con el cobro bloqueado, hasta
                             // que el reintento (la misma llave) traiga el desenlace.
                             e is com.avoqado.pos.tables.data.CanjeRechazado && !e.definitivo -> {
-                                sinRespuesta = intento
+                                canje.sinRespuesta = intento
                                 avisoDeLasRecompensas.value = RECOMPENSAS_EN_DUDA
                             }
                             // Un rechazo definitivo del SERVIDOR: el canje no se hizo con ESTE intento. Sin llave (un aparato sin identidad
                             // UUID), el 409 de un reintento puede ser el canje anterior que sí entró: se dice. Con llave el recibo ya lo descarta.
                             e is com.avoqado.pos.tables.data.CanjeRechazado && esReintento && !e.conLlave -> {
-                                sinRespuesta = null
+                                canje.sinRespuesta = null
                                 // La cuenta ya no es la de entonces: o el canje anterior sí entró (subió la versión), u otra cosa la cambió.
                                 avisoDeLasRecompensas.value = if (e.ofertaCambio) RECOMPENSAS_REINTENTO_YA_CAMBIO else
                                     com.avoqado.pos.core.data.network.ServerErrorText.humanize(e, "No se pudo canjear los puntos")
                             }
                             e is com.avoqado.pos.tables.data.CanjeRechazado && e.ofertaCambio -> {
-                                sinRespuesta = null
+                                canje.sinRespuesta = null
                                 avisoDeCanje.value = "La cuenta cambió: revisa los puntos."
                                 dialogoDeRecompensas.value = true
                             }
                             e is com.avoqado.pos.tables.data.CanjeRechazado -> {
-                                sinRespuesta = null
+                                canje.sinRespuesta = null
                                 avisoDeLasRecompensas.value = com.avoqado.pos.core.data.network.ServerErrorText.humanize(e, "No se pudo canjear los puntos")
                             }
                             // Sin respuesta (red, tiempo agotado, 5xx): no se sabe si entró. Lo único que se ofrece es repetirlo idéntico.
                             else -> {
-                                sinRespuesta = intento
+                                canje.sinRespuesta = intento
                                 avisoDeLasRecompensas.value = RECOMPENSAS_EN_DUDA
                             }
                         }
                     },
                 )
-                enDuda.value = sinRespuesta?.orderId
+                canje.ponerEnDuda(canje.sinRespuesta?.orderId)
                 releerConSaldo(intento.orderId, laTraeUnCarrito)
             } finally {
-                canjeando.value = false
+                canje.ponerEnVuelo(false)
             }
             alTerminar()
         }

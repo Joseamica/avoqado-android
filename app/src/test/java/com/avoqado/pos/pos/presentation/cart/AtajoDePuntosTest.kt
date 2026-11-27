@@ -157,6 +157,11 @@ class AtajoDePuntosTest {
         assertEquals("La cuenta de Ana quedó por cobrar: está en Pedidos y en Cuentas por cobrar del panel web.", avisoCuentaEnPedidos("Ana", ""))
     }
 
+    // Codex C1-r1 #5: se cobró pero no se confirmó que quedó en $0: no se dice «quedó por cobrar».
+    @Test fun `cobrada sin confirmar el saldo lo dice así`() =
+        assertEquals("Se cobró la cuenta de Ana (#ORD-14), pero no se pudo confirmar que quedó en \$0.00: revísala en Pedidos.",
+            avisoCobradaSinConfirmar("Ana", "#ORD-14"))
+
     @Test fun `sin red espera a que vuelva`() =
         assertEquals(AperturaDeRecompensas.Esperar, aperturaDeRecompensas(true, false, motivo = RECOMPENSAS_SIN_RED, folio = "ORD-14"))
 }

@@ -1601,8 +1601,9 @@ fun CheckoutScreen(
             // r5 #1: esperar descartaba el toque y la porción se perdía al pasar al siguiente producto): si la cajera lo toca antes
             // de que la etiqueta de esa misma pieza termine de leerse, entran las dos, como en develop.
             val capturaAlLeer = capturaDePeso
-            // D39 v3 (Codex v3-r2 #7): con la cuenta del atajo abierta encima, ni se resuelve el código (un vale se apartaría abajo).
-            if (cartViewModel.cuentaDelAtajo.value != null) return@launch
+            // D39 v3 (Codex v3-r2 #7, C1-r1 #7): con la cuenta del atajo abierta encima, o mientras se guarda, ni se resuelve el código
+            // (un vale se apartaría abajo).
+            if (cartViewModel.cuentaDelAtajo.value != null || cartViewModel.pagarDespuesEnCurso.value?.deUsarPuntos == true) return@launch
             val result = cartViewModel.resolveScannedBarcode(barcode, lecturaUs)
             // La consulta pudo tardar (red): si mientras tanto se abrió el cobro, no se aplica (pendientes, Codex r1 #2).
             if (!entra() || com.avoqado.pos.giftcards.domain.LectorParaTarjetas.abierta.value) return@launch
