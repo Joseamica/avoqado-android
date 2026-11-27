@@ -70,11 +70,12 @@ class VueltaDelNavegadorTest {
         @Volatile var url: URI? = null
         @Volatile var puerto = 0
         @Volatile private var hilo: Thread? = null
-        val entrar = EntrarConGoogle { uri ->
+        val entrar = EntrarConGoogle { uri, _ ->
             url = uri
             val q = parametrosDe(uri.rawQuery)
             puerto = URI(q.getValue("redirect_uri")).port
             hilo = thread(isDaemon = true) { alAbrir(puerto, q.getValue("state")) }
+            null
         }
 
         fun terminar() = hilo?.join(5_000)
@@ -197,18 +198,18 @@ class VueltaDelNavegadorTest {
 
     @Test fun `sin navegador ⇒ Fallo con su texto y el socket cerrado`() = runBlocking<Unit> {
         val puerto = AtomicInteger()
-        val entrar = EntrarConGoogle { uri ->
+        val entrar = EntrarConGoogle { uri, _ ->
             puerto.set(URI(parametrosDe(uri.rawQuery).getValue("redirect_uri")).port)
             throw UnsupportedOperationException("sin navegador")
         }
         val pase = entrar.pedirPase(actividad, config) as PaseDeGoogle.Fallo
-        assertEquals("No pudimos abrir tu navegador. Entra con tu correo y contraseña.", pase.texto)
+        assertEquals("No pudimos abrir Microsoft Edge. Entra con tu correo y contraseña.", pase.texto)
         assertFailsWith<IOException> { Socket("127.0.0.1", puerto.get()).close() }
     }
 
     @Test fun `el servidor sin Google para WINDOWS ⇒ Fallo sin abrir nada`() = runBlocking<Unit> {
         var abrio = false
-        val entrar = EntrarConGoogle { abrio = true }
+        val entrar = EntrarConGoogle { _, _ -> abrio = true; null }
         for (sinGoogle in listOf(config.copy(windows = false), config.copy(desktopClientId = null), config.copy(desktopClientId = " "))) {
             val pase = entrar.pedirPase(actividad, sinGoogle) as PaseDeGoogle.Fallo
             assertEquals("Entrar con Google no está disponible por ahora. Entra con tu correo y contraseña.", pase.texto)
@@ -225,7 +226,7 @@ class VueltaDelNavegadorTest {
 
     @Test fun `el plazo cuenta desde antes de abrir el navegador`() = runBlocking<Unit> {
         // El navegador tarda en abrir y nadie vuelve: el plazo NO empieza al terminar de abrirlo.
-        val entrar = EntrarConGoogle(plazoMs = 1_000) { Thread.sleep(800) }
+        val entrar = EntrarConGoogle(plazoMs = 1_000) { _, _ -> Thread.sleep(800); null }
         val inicio = System.nanoTime()
         val pase = withTimeout(5_000) { entrar.pedirPase(actividad, config) } as PaseDeGoogle.Fallo
         val ms = (System.nanoTime() - inicio) / 1_000_000

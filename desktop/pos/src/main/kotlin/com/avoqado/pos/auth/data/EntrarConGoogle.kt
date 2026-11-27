@@ -14,19 +14,21 @@ import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
-import java.awt.Desktop
 import java.io.BufferedInputStream
+import java.io.File
+import java.io.FileNotFoundException
 import java.io.IOException
 import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.Socket
 import java.net.URI
+import java.nio.file.Files
 import javax.inject.Inject
 import javax.inject.Singleton
 
 internal const val TEXTO_APARATO = "Entrar con Google no está disponible en este aparato. Entra con tu correo y contraseña."
 internal const val TEXTO_SERVIDOR_SIN_GOOGLE = "Entrar con Google no está disponible por ahora. Entra con tu correo y contraseña."
-internal const val TEXTO_SIN_NAVEGADOR = "No pudimos abrir tu navegador. Entra con tu correo y contraseña."
+internal const val TEXTO_SIN_EDGE = "No pudimos abrir Microsoft Edge. Entra con tu correo y contraseña."
 internal const val TEXTO_SIN_RESPUESTA = "No recibimos respuesta de Google. Vuelve a intentarlo."
 private const val PAGINA_LISTA = "Listo. Ya puedes volver al POS de Avoqado."
 private const val ESPERA_DE_GOOGLE_MS = 180_000L
@@ -34,17 +36,20 @@ private const val ESPERA_POR_CONEXION_MS = 5_000
 /** Conexiones que se leen a la vez; las demás esperan su turno sin ocupar un hilo (Codex r2 #6). */
 private const val CONEXIONES_A_LA_VEZ = 4
 
+private const val PREFIJO_PERFIL = "avoqado-google-"
+
 /**
  * Reemplazo de escritorio (la Auth Tab de Chrome no existe en Windows), con la misma forma pública que el de Android
- * (hz:6bfcd3a1:D1): abre el navegador del sistema con PKCE y recibe la vuelta de Google en 127.0.0.1 (puerto libre).
+ * (hz:6bfcd3a1:D1): abre Microsoft Edge con un perfil desechable (nada de la sesión de Google queda en la PC) con PKCE y recibe la vuelta de Google en 127.0.0.1 (puerto libre).
  * Devuelve el `code` con su verificador y su dirección; el SERVIDOR lo canjea (aquí no hay secreto).
  */
 @Singleton
 class EntrarConGoogle internal constructor(
     private val plazoMs: Long = ESPERA_DE_GOOGLE_MS,
-    private val abrirNavegador: (URI) -> Unit,
+    /** Abre Edge con la carpeta de perfil del intento y devuelve su proceso para cerrarlo al terminar (null en pruebas). */
+    private val abrirNavegador: (URI, File) -> Process?,
 ) {
-    @Inject constructor() : this(ESPERA_DE_GOOGLE_MS, ::abrirConElSistema)
+    @Inject constructor() : this(ESPERA_DE_GOOGLE_MS, ::abrirEnEdge)
 
     val abreNavegador: Boolean = true
 
@@ -74,19 +79,27 @@ class EntrarConGoogle internal constructor(
         val state = nuevoState()
         // Sólo la interfaz local (nunca 0.0.0.0) y un puerto libre que elige el sistema. Cola de 50, no de 1: el navegador
         // abre varias conexiones a la vez y en Windows una cola llena rechaza la buena.
-        val intento = Intento(ServerSocket(0, 50, InetAddress.getByName("127.0.0.1")))
+        barrerRestos()
+        val perfil = Files.createTempDirectory(PREFIJO_PERFIL).toFile()
+        var proceso: Process? = null
+        val intento = try {
+            Intento(ServerSocket(0, 50, InetAddress.getByName("127.0.0.1")))
+        } catch (e: Exception) {
+            borrarPerfil(perfil)
+            throw e
+        }
         enCurso = intento
         try {
             val redirectUri = "http://127.0.0.1:${intento.servidor.localPort}"
             // El plazo cuenta desde ANTES de abrir el navegador: abrirlo también gasta de los 3 min (Codex r2 #6).
             val pase = withTimeoutOrNull(plazoMs) {
                 try {
-                    abrirNavegador(URI(urlDeGoogle(clientId, redirectUri, state, retoPkce(verificador))))
+                    proceso = abrirNavegador(URI(urlDeGoogle(clientId, redirectUri, state, retoPkce(verificador))), perfil)
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
                     val causa = "${e.javaClass.simpleName}: ${e.message.orEmpty()}"
-                    return@withTimeoutOrNull PaseDeGoogle.Fallo(TEXTO_SIN_NAVEGADOR, causa)
+                    return@withTimeoutOrNull PaseDeGoogle.Fallo(TEXTO_SIN_EDGE, causa)
                 }
                 when (val vuelta = intento.esperar(state)) {
                     is Vuelta.Codigo -> PaseDeGoogle.Codigo(vuelta.code, verificador, redirectUri)
@@ -97,6 +110,7 @@ class EntrarConGoogle internal constructor(
         } finally {
             intento.cerrar()
             if (enCurso === intento) enCurso = null
+            limpiar(proceso, perfil)   // por cualquier camino: código, cancelar, plazo o error
         }
     }
 }
@@ -104,11 +118,46 @@ class EntrarConGoogle internal constructor(
 internal fun traducirFallo(e: Throwable): PaseDeGoogle =
     PaseDeGoogle.Fallo(TEXTO_APARATO, "${e.javaClass.simpleName}: ${e.message.orEmpty()}")
 
-private fun abrirConElSistema(uri: URI) {
-    if (!Desktop.isDesktopSupported() || !Desktop.getDesktop().isSupported(Desktop.Action.BROWSE)) {
-        throw UnsupportedOperationException("java.awt.Desktop sin BROWSE")
+/** Edge en las rutas de siempre: Archivos de programa (x86), Archivos de programa y AppData local. */
+internal fun buscarEdge(env: (String) -> String?, existe: (File) -> Boolean): File? =
+    listOf("ProgramFiles(x86)", "ProgramFiles", "LOCALAPPDATA")
+        .mapNotNull { env(it) }
+        .map { File(it, "Microsoft\\Edge\\Application\\msedge.exe") }
+        .firstOrNull(existe)
+
+/** Sin `cmd` y sin `--inprivate`: con otro `--user-data-dir` Edge arranca un proceso propio que el POS controla. */
+internal fun ordenDeEdge(edge: File, perfil: File, url: String): List<String> =
+    listOf(edge.path, "--user-data-dir=${perfil.path}", "--no-first-run", "--no-default-browser-check", url)
+
+private fun abrirEnEdge(uri: URI, perfil: File): Process {
+    val edge = buscarEdge({ System.getenv(it) }) { it.isFile } ?: throw FileNotFoundException("msedge.exe")
+    return ProcessBuilder(ordenDeEdge(edge, perfil, uri.toString()))
+        .redirectErrorStream(true).redirectOutput(ProcessBuilder.Redirect.DISCARD).start()
+}
+
+/** Mata Edge (y lo que lanzó) y borra su carpeta. Nunca lanza. */
+internal fun limpiar(proceso: Process?, perfil: File, borrar: (File) -> Boolean = { it.deleteRecursively() }, esperaMs: Long = 500) {
+    if (proceso != null) {
+        runCatching { proceso.toHandle().descendants().forEach { it.destroyForcibly() } }
+        runCatching { proceso.destroyForcibly() }
     }
-    Desktop.getDesktop().browse(uri)
+    borrarPerfil(perfil, borrar, esperaMs)
+}
+
+/** Hasta 3 intentos con [esperaMs] entre ellos (Windows suelta los archivos un instante después de morir el proceso). */
+internal fun borrarPerfil(perfil: File, borrar: (File) -> Boolean = { it.deleteRecursively() }, esperaMs: Long = 500): Boolean {
+    repeat(3) { n ->
+        if (runCatching { borrar(perfil) }.getOrDefault(false) || !perfil.exists()) return true
+        if (n < 2) runCatching { Thread.sleep(esperaMs) }
+    }
+    System.err.println("No se pudo borrar ${perfil.path}; se borra en el siguiente intento")
+    return false
+}
+
+/** Lo que un intento anterior no pudo borrar: el prefijo lo identifica. */
+private fun barrerRestos() {
+    val tmp = File(System.getProperty("java.io.tmpdir"))
+    tmp.listFiles { f -> f.isDirectory && f.name.startsWith(PREFIJO_PERFIL) }?.forEach { runCatching { it.deleteRecursively() } }
 }
 
 /** Un intento: el socket de 127.0.0.1, las conexiones aceptadas y su primer desenlace (Codigo o Cancelado). */
