@@ -173,6 +173,8 @@ fun MoreMenuScreen(
     // null = "Pedidos" normal, sin tocar filtro. Con valor: Cierre del día
     // → "Cuentas abiertas" abre la lista YA filtrada a abiertas.
     var ordersInitialStatusFilter by remember { mutableStateOf<String?>(null) }
+    /** D39 (atajo «Usar puntos»): el folio que Pedidos selecciona al abrirse. */
+    var ordersCuentaPorAbrir by remember { mutableStateOf<String?>(null) }
     var showCashDrawer by remember { mutableStateOf(false) }
     var showEndOfDay by remember { mutableStateOf(false) }
     var showEstimates by remember { mutableStateOf(false) }
@@ -206,6 +208,7 @@ fun MoreMenuScreen(
         showOrders = false
         showOnlineOrders = false
         ordersInitialStatusFilter = null
+        ordersCuentaPorAbrir = null
         showCashDrawer = false
         showEndOfDay = false
         showEstimates = false
@@ -236,6 +239,15 @@ fun MoreMenuScreen(
     val tarjetasPorAbrir by viewModel.tarjetasPorAbrir.collectAsState()
     val hayPedidosEnLineaAbiertos by viewModel.hayPedidosEnLineaAbiertos.collectAsState()
     val hayRepartoPorCobrarGuardado by viewModel.hayRepartoPorCobrarGuardado.collectAsState()
+    // D39 (atajo): Cobrar pidió abrir una cuenta de «Pagar después» con «Recompensas». Pedidos la selecciona; la cuenta la da por
+    // atendida al abrir el diálogo o al decir su razón (Codex r1 #6).
+    val cuentaConPuntos = viewModel.cuentaConPuntos?.collectAsState()?.value
+    LaunchedEffect(cuentaConPuntos) {
+        val folio = cuentaConPuntos?.let { viewModel.cuentaConPuntosVigente() } ?: return@LaunchedEffect
+        closeAllOverlays()
+        ordersCuentaPorAbrir = folio
+        showOrders = true
+    }
     LaunchedEffect(bandejaSolicitada) {
         if (bandejaSolicitada) {
             if (com.avoqado.pos.onlineorders.presentation.debeAbrirBandeja(true, viewModel.entradaPedidosEnLinea)) {
@@ -971,8 +983,9 @@ fun MoreMenuScreen(
             val isTablet = maxWidth >= 600.dp
             OrdersScreen(
                 isTablet = isTablet,
-                onDismiss = { showOrders = false },
+                onDismiss = { showOrders = false; ordersCuentaPorAbrir = null },
                 initialStatusFilter = ordersInitialStatusFilter,
+                cuentaPorAbrir = ordersCuentaPorAbrir,
             )
         }
     }

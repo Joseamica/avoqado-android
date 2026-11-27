@@ -63,7 +63,13 @@ class MoreMenuViewModel @Inject constructor(
     private val cashDrawerRepository: com.avoqado.pos.cashdrawer.data.CashDrawerRepository? = null,
     /** R5#2: los cobros de la máquina sin subir o en duda frenan el cambio de sucursal. Default para las pruebas que lo construyen a mano. */
     private val cobrosEnMaquinaDao: com.avoqado.pos.maquina.CobroEnMaquinaDao? = null,
+    /** D39 (atajo «Usar puntos»): la cuenta por abrir en Pedidos. Default para las pruebas que lo construyen a mano. */
+    private val puertaDeRecompensas: com.avoqado.pos.pos.presentation.cart.PuertaDeRecompensas? = null,
 ) : ViewModel() {
+    val cuentaConPuntos = puertaDeRecompensas?.solicitud
+    /** El folio por abrir, si la solicitud sigue siendo de esta sesión y esta sucursal (si no, se descarta). */
+    fun cuentaConPuntosVigente(): String? =
+        puertaDeRecompensas?.vigente(secureStorage.venueId, secureStorage.selloYAccess().first)?.orderId
 
     // MARK: - Pedidos en línea (A3)
 

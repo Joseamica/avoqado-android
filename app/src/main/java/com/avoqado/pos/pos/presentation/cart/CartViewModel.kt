@@ -485,7 +485,7 @@ sealed interface ResultadoPagarDespues {
 }
 
 /** La venta que se está mandando: lo que enseña «Guardando la cuenta…» con el carrito ya vacío. */
-data class EnvioPagarDespues(val cliente: String, val totalCents: Int)
+data class EnvioPagarDespues(val cliente: String, val totalCents: Int, val deUsarPuntos: Boolean = false)
 
 // «Pagar después» sin red (27-oct). Mismos textos en iOS.
 const val GUARDANDO_LA_CUENTA = "Guardando la cuenta…"
@@ -715,6 +715,10 @@ class CartViewModel @Inject constructor(
      * sin él se lee lo guardado, como antes.
      */
     private val tpvSettingsRepository: com.avoqado.pos.tpvsettings.data.TpvSettingsRepository? = null,
+    /** D39 (atajo «Usar puntos»): el saldo del cliente antes de crear la cuenta. Default para las pruebas que no lo usan. */
+    private val tableServiceRepository: com.avoqado.pos.tables.data.TableServiceRepository? = null,
+    /** D39 (atajo): la cuenta que se abre en Más › Pedidos con «Recompensas». Default para las pruebas que no lo usan. */
+    private val puertaDeRecompensas: PuertaDeRecompensas? = null,
 ) : ViewModel() {
 
     private val _cartState = MutableStateFlow(defaultCartState())
@@ -3740,6 +3744,96 @@ class CartViewModel @Inject constructor(
         viewModelScope.launch { _resultadoPagarDespues.value = createPayLaterOrder(customerId) }
     }
 
+    // MARK: - D39 · atajo «Usar puntos» → «Pagar después» + «Recompensas» en Pedidos (promesa v2, `d39/promesa-atajo.md`)
+
+    /** El envío en curso es del atajo: su ventana es la de «Usar puntos», no la de Atajos › «Pagar después». */
+    private var atajoEnCurso = false
+    /** El folio de la última cuenta creada por el camino con fila con el importe exacto (lo que el atajo abre). */
+    private var folioCreado: String? = null
+    private val _lecturaDelAtajo = MutableStateFlow<LecturaDelAtajo?>(null)
+    val lecturaDelAtajo: StateFlow<LecturaDelAtajo?> = _lecturaDelAtajo.asStateFlow()
+    private val _resultadoUsarPuntos = MutableStateFlow<ResultadoPagarDespues?>(null)
+    /** El desenlace del atajo, aparte del de «Pagar después» (su ventana y sus textos son otros). */
+    val resultadoUsarPuntos: StateFlow<ResultadoPagarDespues?> = _resultadoUsarPuntos.asStateFlow()
+    fun consumirResultadoUsarPuntos() { _resultadoUsarPuntos.value = null }
+
+    private fun enLineaParaElAtajo(): Boolean =
+        connectivityMonitor?.let { it.isConnected.value && it.isServerReachable.value } ?: true
+
+    private fun puedeCanjearPuntos(): Boolean = com.avoqado.pos.core.domain.RoleManager(secureStorage).let {
+        it.hasVenuePermission("loyalty:read") && it.hasVenuePermission("orders:update")
+    }
+
+    /** «Usar puntos» sólo se ofrece con el programa de lealtad en el plan (el canje de la fase 1 lo pide igual). */
+    val ofreceUsarPuntos: Boolean get() = planManager.hasFeature("LOYALTY_PROGRAM")
+
+    /** Al abrir «Usar puntos»: lee el saldo del cliente elegido, sin cuenta todavía. Sólo orienta (Codex r1 #3). */
+    fun leerPuntosParaElAtajo() {
+        _lecturaDelAtajo.value = null
+        val cliente = _selectedCustomer.value?.id?.takeIf { it.isNotBlank() } ?: return
+        val venue = secureStorage.venueId ?: return
+        val repo = tableServiceRepository ?: return
+        if (!enLineaParaElAtajo()) return
+        viewModelScope.launch {
+            val leido = repo.getCustomerLoyalty(venue, cliente, null)
+            // La lectura es de ESE cliente: si mientras tanto se eligió otro, no se usa (Codex r1 #4).
+            if (_selectedCustomer.value?.id != cliente) return@launch
+            _lecturaDelAtajo.value = leido.fold(
+                onSuccess = { LecturaDelAtajo(cliente, it, null) },
+                onFailure = {
+                    if (it is kotlinx.coroutines.CancellationException) throw it
+                    LecturaDelAtajo(cliente, null, com.avoqado.pos.core.data.network.FalloDeLectura.de(it))
+                },
+            )
+        }
+    }
+
+    /** Por qué «Usar puntos» no se puede ahora (null = se puede), con la venta, el cliente y la lectura de este momento. */
+    fun motivoSinUsarPuntos(): String? {
+        val venta = _cartState.value
+        val cliente = _selectedCustomer.value?.id
+        val sinFila = (venta.pendingStampRewardId != null && venta.premioAplica) || venta.couponCode != null || venta.pideAprobacionDeGerente
+        return com.avoqado.pos.pos.presentation.cart.motivoSinUsarPuntos(
+            conProductos = !venta.isEmpty,
+            clienteId = cliente,
+            puedeCanjear = puedeCanjearPuntos(),
+            llavePrevia = venta.llavePagarDespues != null,
+            sinFila = sinFila,
+            noSeDifiere = cliente?.takeIf { it.isNotBlank() }?.let { motivoParaNoDiferir(venta, it) },
+            lectura = _lecturaDelAtajo.value,
+            enLinea = enLineaParaElAtajo(),
+        )
+    }
+
+    /**
+     * El «Continuar» de «Usar puntos»: la venta va a «Pagar después» por el camino con fila (como Atajos) y, creada por el importe
+     * exacto, se pide abrir ESA cuenta en Pedidos con la sucursal y la sesión de ahora. No canjea nada: eso lo hace «Canjear».
+     */
+    fun usarPuntos() {
+        if (_pagarDespuesEnCurso.value != null) return
+        val lectura = _lecturaDelAtajo.value
+        val cliente = _selectedCustomer.value
+        if (lectura != null && cliente?.id != lectura.customerId) {
+            _resultadoUsarPuntos.value = ResultadoPagarDespues.Error(USAR_PUNTOS_CLIENTE_CAMBIO)
+            return
+        }
+        motivoSinUsarPuntos()?.let { _resultadoUsarPuntos.value = ResultadoPagarDespues.Error(it); return }
+        val customerId = cliente?.id ?: return
+        val venue = secureStorage.venueId ?: return
+        val sello = secureStorage.selloYAccess().first
+        viewModelScope.launch {
+            folioCreado = null
+            atajoEnCurso = true
+            val r = try { createPayLaterOrder(customerId) } finally { atajoEnCurso = false }
+            val folio = folioCreado.takeIf { r == ResultadoPagarDespues.Creada }
+            folioCreado = null
+            if (folio != null) puertaDeRecompensas?.pedir(SolicitudDeRecompensas(folio, venue, sello))
+            _resultadoUsarPuntos.value = if (r is ResultadoPagarDespues.Aviso && r.texto == pagarDespuesGuardadaSinRed(cliente.name)) {
+                ResultadoPagarDespues.Aviso(r.texto + " " + USAR_PUNTOS_SIN_RED_GUARDADA)
+            } else r
+        }
+    }
+
     private fun motivoParaNoDiferir(venta: CartState, customerId: String): String? = when {
         venta.isEmpty -> "No hay artículos en el carrito"
         // D5 (Codex r4 #2): pagar después creaba OTRA cuenta y vaciaba la venta de vales con abono.
@@ -3781,7 +3875,7 @@ class CartViewModel @Inject constructor(
         if (cobroLoImpide(avisar = false)) return ResultadoPagarDespues.Error(AVISO_COBRO_ABIERTO)
         bloqueoDeEntrega()?.let { return ResultadoPagarDespues.Error(it) }
         val cliente = _selectedCustomer.value?.takeIf { it.id == customerId } ?: SelectedCustomer(customerId, "Cliente")
-        _pagarDespuesEnCurso.value = EnvioPagarDespues(cliente.name, _cartState.value.totalCents)
+        _pagarDespuesEnCurso.value = EnvioPagarDespues(cliente.name, _cartState.value.totalCents, deUsarPuntos = atajoEnCurso)
         try {
             // Como el cobro (`hayConsultasDeCodigo`): lo leído antes del toque entra ANTES de capturar la venta.
             consultasDeCodigo.first { it == 0 }
@@ -3853,7 +3947,7 @@ class CartViewModel @Inject constructor(
                 venta = comoCarritoGuardado(venta.copy(carritoGuardadoId = idDeLaCopia, llavePagarDespues = llave), cliente.name,
                     cliente, venueId),
             )
-            _pagarDespuesEnCurso.value = EnvioPagarDespues(cliente.name, venta.totalCents)
+            _pagarDespuesEnCurso.value = EnvioPagarDespues(cliente.name, venta.totalCents, deUsarPuntos = atajoEnCurso)
             // Codex A-5: la copia guardada lleva la llave y la marca de cobro iniciado ANTES de mandar nada. Con premio (sin fila
             // que la ligue) la marca además es vinculante hasta conocer el desenlace (Codex r2 #5).
             val copia = venta.carritoGuardadoId
@@ -3918,7 +4012,7 @@ class CartViewModel @Inject constructor(
                         ResultadoPagarDespues.Error(d.motivoRevision + "\n\n" + PAGAR_DESPUES_NO_SE_GUARDO)
                     }
                 } else when (val total = d.totalCents) {
-                    s.venta.totalCents -> { cola.cerrarAceptada(llave); ResultadoPagarDespues.Creada }
+                    s.venta.totalCents -> { cola.cerrarAceptada(llave); folioCreado = d.orderId; ResultadoPagarDespues.Creada }
                     // Existe, pero no se sabe por cuánto: queda por revisar (y nunca se vuelve a crear con otra llave).
                     null -> {
                         cola.cambiar(llave) { it.copy(estado = com.avoqado.pos.payment.data.PayLaterRow.Estado.REVISAR, orderId = d.orderId) }

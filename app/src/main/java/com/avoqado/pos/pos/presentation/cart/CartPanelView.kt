@@ -28,6 +28,7 @@ import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.AttachMoney
 import androidx.compose.material.icons.automirrored.filled.CallSplit
 import androidx.compose.material.icons.filled.CardGiftcard
+import androidx.compose.material.icons.filled.Loyalty
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
@@ -91,6 +92,8 @@ fun CartPanelView(
     onSaveCart: () -> Unit = {},
     onAddCustomAmount: () -> Unit = {},
     onTarjetaDeRegalo: (() -> Unit)? = null,
+    /** D39 (atajo): «Usar puntos» en el menú ⋯; null = no se ofrece (sin lealtad en el plan). */
+    onUsarPuntos: (() -> Unit)? = null,
     onRemoveItem: (String) -> Unit = {},
     /**
      * Abre los descuentos de la CUENTA COMPLETA desde el carrito — el
@@ -494,6 +497,10 @@ fun CartPanelView(
                     showCartOptions = false
                 },
                 onTarjetaDeRegalo = onTarjetaDeRegalo?.let { abrir -> {
+                    showCartOptions = false
+                    abrir()
+                } },
+                onUsarPuntos = onUsarPuntos?.let { abrir -> {
                     showCartOptions = false
                     abrir()
                 } },
@@ -1169,6 +1176,7 @@ private fun CartOptionsSheet(
     onClearCart: () -> Unit,
     onAddCustomAmount: () -> Unit,
     onTarjetaDeRegalo: (() -> Unit)?,
+    onUsarPuntos: (() -> Unit)? = null,
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
@@ -1196,9 +1204,17 @@ private fun CartOptionsSheet(
                 HorizontalDivider(modifier = Modifier.padding(start = 56.dp))
             }
 
-            // D31: aquí había «Canjear recompensa» y sólo cerraba el menú. Los puntos se canjean en Mesas › «Recompensas», sobre una
-            // orden que ya existe en el SERVIDOR; la venta de Mostrador se crea hasta cobrar y el SERVIDOR no acepta puntos al
-            // crearla. La opción vuelve sólo con ese canje (MenuDelCarritoEnLaEscenaTest).
+            // D31 quitó «Canjear recompensa» (sólo cerraba el menú). D39 (atajo, founder 26-nov): «Usar puntos» manda la venta a
+            // «Pagar después» y abre esa cuenta en Pedidos con «Recompensas»; el canje es el de la fase 1 (MenuDelCarritoEnLaEscenaTest).
+            if (onUsarPuntos != null) {
+                CartOptionButton(
+                    icon = Icons.Filled.Loyalty,
+                    title = com.avoqado.pos.pos.presentation.cart.USAR_PUNTOS,
+                    enabled = hasItems,
+                    onClick = onUsarPuntos,
+                )
+                HorizontalDivider(modifier = Modifier.padding(start = 56.dp))
+            }
 
             CartOptionButton(
                 icon = Icons.Filled.AttachMoney,

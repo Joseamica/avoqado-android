@@ -70,7 +70,13 @@ class CobroDeCuentaViewModel @Inject constructor(
     private val payLaterQueue: com.avoqado.pos.payment.data.PayLaterQueue? = null,
     /** D12 (final fix ronda 2, R2-1): la lista durable de cobros con tarjeta de esta caja (una tarjeta en duda o cobrada da gris). */
     private val terminalPaymentService: com.avoqado.pos.payment.data.TerminalPaymentService? = null,
+    /** D39 (atajo «Usar puntos»): la cuenta que Cobrar pidió abrir con «Recompensas». Default para las pruebas. */
+    private val puertaDeRecompensas: com.avoqado.pos.pos.presentation.cart.PuertaDeRecompensas? = null,
 ) : ViewModel() {
+    /** D39 (atajo): ¿el atajo pidió abrir ESTA cuenta, con esta sesión y esta sucursal? */
+    fun aperturaPedida(orderId: String): Boolean =
+        puertaDeRecompensas?.vigente(storage.venueId, storage.selloYAccess().first)?.orderId == orderId
+    fun aperturaAtendida(orderId: String) { puertaDeRecompensas?.atendida(orderId) }
     private val foto = MutableStateFlow<OrderDetail?>(null)
     val detalle = foto.asStateFlow()
     val conectado get() = red.isConnected
@@ -1060,7 +1066,17 @@ fun AccionesDeCuentaAbierta(
     } else if (ofreceReintentarDetalle(order, enLinea)) TextButton(onClick = onReintentar) { Text(TextosDeTarjetas.REINTENTAR) }
     // D39 fase 1: el canje de Mesas en una cuenta abierta de Mostrador con cliente (las de «Pagar después»). Sin red, gris con su texto.
     // D39 r11 (Codex r10 #2): con un canje en duda, su «Reintentar el canje» sigue a la vista aunque la relectura traiga la cuenta en $0.
-    if (ofreceRecompensas(order, detalle, conCopia, elegible, cents) || canjeEnDuda == order.id) RecompensasDeLaCuenta(order.id, enLinea, viewModel, onActualizar)
+    val ofrece = ofreceRecompensas(order, detalle, conCopia, elegible, cents) || canjeEnDuda == order.id
+    if (ofrece) RecompensasDeLaCuenta(order.id, enLinea, viewModel, onActualizar)
+    // D39 (atajo): la cuenta que pidió el atajo ya no admite puntos (pagada, cancelada, sin saldo): se dice con su folio (Codex r1 #6).
+    LaunchedEffect(order.id, ofrece, detalle?.version, consultasEnCurso) {
+        if (ofrece || !viewModel.aperturaPedida(order.id) || detalle?.id != order.id) return@LaunchedEffect
+        val r = com.avoqado.pos.pos.presentation.cart.aperturaDeRecompensas(false, consultasEnCurso > 0, null, "#" + order.orderNumber)
+        if (r is com.avoqado.pos.pos.presentation.cart.AperturaDeRecompensas.Avisar) {
+            aviso = r.texto
+            viewModel.aperturaAtendida(order.id)
+        }
+    }
     if (!order.esCuentaDeTarjetas) RegresarSaldoDeCuenta(order.id, order.cobrosConSaldo ?: 0,
         order.orderPaymentStatus == com.avoqado.pos.orders.data.model.PaymentStatus.PAID || order.status in listOf("CANCELLED", "DELETED"),
         onCancelada = { onCancelada(); onActualizar() })
@@ -1111,6 +1127,19 @@ private fun RecompensasDeLaCuenta(orderId: String, enLinea: Boolean, viewModel: 
     val enCarrito = cuentaDelCarrito() == orderId
     val enDuda by viewModel.canjeEnDuda.collectAsState()
     val motivo = motivoSinRecompensasDeCuenta(cuenta, leida, enLinea, consultas > 0, oferta, viewModel.puedeCanjearPuntos, prohibida, enCarrito)
+    // D39 (atajo «Usar puntos»): la cuenta que pidió el atajo abre su diálogo sola al quedar lista; con una razón final, la razón ya se
+    // ve aquí abajo (con el folio arriba) y la solicitud se da por atendida (Codex r1 #6). Nunca canjea: eso es «Canjear».
+    LaunchedEffect(orderId, motivo, consultas, cuenta?.version) {
+        if (!viewModel.aperturaPedida(orderId)) return@LaunchedEffect
+        when (com.avoqado.pos.pos.presentation.cart.aperturaDeRecompensas(true, consultas > 0, motivo, orderId)) {
+            com.avoqado.pos.pos.presentation.cart.AperturaDeRecompensas.Abrir -> {
+                viewModel.aperturaAtendida(orderId)
+                viewModel.abrirRecompensas(orderId, enCarrito)
+            }
+            is com.avoqado.pos.pos.presentation.cart.AperturaDeRecompensas.Avisar -> viewModel.aperturaAtendida(orderId)
+            com.avoqado.pos.pos.presentation.cart.AperturaDeRecompensas.Esperar -> Unit
+        }
+    }
     if (enDuda == orderId) {
         // Codex r3 #2: con un canje sin respuesta no se ofrece uno nuevo; sólo repetir ESE, idéntico (no se canjea dos veces).
         TextButton(enabled = !enVuelo && enLinea, onClick = { viewModel.reintentarCanje(orderId, enCarrito, onActualizar) }) {

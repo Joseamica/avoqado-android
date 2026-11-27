@@ -218,7 +218,8 @@ fun ShortcutsGridView(
         }
     }
 
-    if (showPayLaterModal || payLaterEnCurso != null) {
+    // D39 (atajo): el envío de «Usar puntos» tiene su propia ventana.
+    if (showPayLaterModal || (payLaterEnCurso != null && payLaterEnCurso?.deUsarPuntos != true)) {
         PayLaterFullScreenModal(
             cartState = cartState,
             selectedCustomerName = payLaterEnCurso?.cliente ?: selectedPayLaterCustomerName,

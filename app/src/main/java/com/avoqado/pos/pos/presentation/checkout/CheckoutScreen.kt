@@ -459,6 +459,24 @@ fun CheckoutScreen(
     var customerSelectionContext by remember { mutableStateOf(CustomerSelectionContext.GENERAL) }
     var payLaterError by remember { mutableStateOf<String?>(null) }
     var payLaterAviso by remember { mutableStateOf<String?>(null) }
+    // D39 (atajo «Usar puntos»): su ventana, su error y su desenlace.
+    var showUsarPuntos by rememberSaveable { mutableStateOf(false) }
+    var errorUsarPuntos by remember { mutableStateOf<String?>(null) }
+    val abrirUsarPuntos: (() -> Unit)? = if (cartViewModel.ofreceUsarPuntos) ({
+        errorUsarPuntos = null
+        showUsarPuntos = true
+    }) else null
+    val resultadoUsarPuntos by cartViewModel.resultadoUsarPuntos.collectAsState()
+    LaunchedEffect(resultadoUsarPuntos) {
+        when (val r = resultadoUsarPuntos ?: return@LaunchedEffect) {
+            // Creada: la caja abre la cuenta en Más › Pedidos (PuertaDeRecompensas); aquí sólo se cierra la ventana.
+            com.avoqado.pos.pos.presentation.cart.ResultadoPagarDespues.Creada -> showUsarPuntos = false
+            // Sin red o por otro importe: la venta ya salió como «Pagar después»; se dice en ámbar.
+            is com.avoqado.pos.pos.presentation.cart.ResultadoPagarDespues.Aviso -> { showUsarPuntos = false; payLaterAviso = r.texto }
+            is com.avoqado.pos.pos.presentation.cart.ResultadoPagarDespues.Error -> errorUsarPuntos = r.texto
+        }
+        cartViewModel.consumirResultadoUsarPuntos()
+    }
     var showPayLaterSuccessToast by remember { mutableStateOf(false) }
     var reopenPayLaterToken by remember { mutableIntStateOf(0) }
     val checkoutScope = rememberCoroutineScope()
@@ -938,6 +956,7 @@ fun CheckoutScreen(
                     CartPanelView(
                         cartState = cartState,
                         onTarjetaDeRegalo = abrirTarjetas,
+                        onUsarPuntos = abrirUsarPuntos,
                         onItemTap = { item -> selectedCartItem = item },
                         onOrderTypeChange = { cartViewModel.setOrderType(it) },
                         onCharge = {
@@ -1456,6 +1475,10 @@ fun CheckoutScreen(
         IPhoneCartSheet(
             cartState = cartState,
             onTarjetaDeRegalo = abrirTarjetas?.let { abrir -> {
+                showIPhoneCart = false
+                abrir()
+            } },
+            onUsarPuntos = abrirUsarPuntos?.let { abrir -> {
                 showIPhoneCart = false
                 abrir()
             } },
@@ -2485,6 +2508,8 @@ fun CheckoutScreen(
         )
     }
 
+    if (showUsarPuntos) UsarPuntosModal(cartViewModel, errorUsarPuntos) { showUsarPuntos = false }
+
     if (showPayLaterSuccessToast && avisoDelPremioDiferido == null) {
         AvoqadoSuccessToast(
             message = "¡Venta enviada a pagar después!",
@@ -2767,6 +2792,7 @@ private fun IPhoneCartSheet(
     onSaveCart: () -> Unit,
     onAddCustomAmount: () -> Unit,
     onTarjetaDeRegalo: (() -> Unit)?,
+    onUsarPuntos: (() -> Unit)?,
     onRemoveItem: (String) -> Unit,
     /** Descuento de la cuenta completa. 🔴 SIN default, misma lección que `onSplitPayment`. */
     onDiscountTap: () -> Unit,
@@ -2855,6 +2881,7 @@ private fun IPhoneCartSheet(
                 onSaveCart = onSaveCart,
                 onAddCustomAmount = onAddCustomAmount,
                 onTarjetaDeRegalo = onTarjetaDeRegalo,
+                onUsarPuntos = onUsarPuntos,
                 onRemoveItem = onRemoveItem,
                 onDiscountTap = onDiscountTap,
                 customerName = customerName,

@@ -138,7 +138,10 @@ fun OrdersScreen(
     // filtro puesto de una visita anterior, se resetea (ver
     // applyInitialStatusFilter más abajo).
     initialStatusFilter: String? = null,
+    /** D39 (atajo «Usar puntos»): el folio que se abre al entrar (su «Recompensas» se abre solo, `PuertaDeRecompensas`). */
+    cuentaPorAbrir: String? = null,
 ) {
+    LaunchedEffect(cuentaPorAbrir) { cuentaPorAbrir?.let { viewModel.selectOrder(it) } }
     // Overlay del Más (spec de refresco §4.8): LaunchedEffect cubre el "al
     // mostrarse" (el ON_RESUME de la Activity NO dispara al abrir un overlay)
     // y LifecycleResumeEffect el regreso desde background. La duplicación la
