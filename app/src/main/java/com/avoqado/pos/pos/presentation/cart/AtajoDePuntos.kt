@@ -22,12 +22,15 @@ import javax.inject.Singleton
 const val USAR_PUNTOS = "Usar puntos"
 const val USAR_PUNTOS_SIN_PRODUCTOS = "Agrega productos para usar los puntos."
 const val USAR_PUNTOS_SIN_CLIENTE = "Agrega el cliente para usar sus puntos."
-const val USAR_PUNTOS_YA_SE_INTENTO = "Esta venta ya se intentó dejar para después: búscala en Más › Pedidos."
+const val USAR_PUNTOS_YA_SE_INTENTO =
+    "Esta venta ya se mandó una vez a «Pagar después»: termínala desde Atajos › «Pagar después» y canjea los puntos en Más › Pedidos."
+const val USAR_PUNTOS_SIN_PERMISO_DE_CUENTA = "No tienes permiso para dejar cuentas por cobrar. Pídeselo a tu gerente."
 const val USAR_PUNTOS_SIN_FILA =
     "Con cupón, premio de sellos o un descuento que pide aprobación, usa «Pagar después» y canjea los puntos en Más › Pedidos."
 const val USAR_PUNTOS_LEYENDO = "Leyendo los puntos del cliente…"
 const val USAR_PUNTOS_CLIENTE_CAMBIO = "El cliente cambió: vuelve a tocar «Usar puntos»."
-const val USAR_PUNTOS_SIN_RED_GUARDADA = "Canjea los puntos en Más › Pedidos cuando vuelva la red."
+/** Sin red o con el SERVIDOR sin contestar (503), la cuenta queda en la fila de «Pagar después» (Codex r2 #7): neutro para los dos. */
+const val USAR_PUNTOS_SIN_RED_GUARDADA = "Cuando la cuenta suba, canjea los puntos en Más › Pedidos."
 
 /** Lo que dice la ventana antes de *Continuar* (Codex r1 #3 y #7): la venta queda como cuenta por cobrar y los puntos se gastan al canjear. */
 fun explicacionDelAtajo(cliente: String) =
@@ -45,6 +48,7 @@ fun motivoSinUsarPuntos(
     conProductos: Boolean,
     clienteId: String?,
     puedeCanjear: Boolean,
+    puedeCrear: Boolean,
     llavePrevia: Boolean,
     sinFila: Boolean,
     noSeDifiere: String?,
@@ -54,16 +58,40 @@ fun motivoSinUsarPuntos(
     !conProductos -> USAR_PUNTOS_SIN_PRODUCTOS
     clienteId.isNullOrBlank() -> USAR_PUNTOS_SIN_CLIENTE
     !puedeCanjear -> RECOMPENSAS_SIN_PERMISO
+    !puedeCrear -> USAR_PUNTOS_SIN_PERMISO_DE_CUENTA
     llavePrevia -> USAR_PUNTOS_YA_SE_INTENTO
     sinFila -> USAR_PUNTOS_SIN_FILA
     noSeDifiere != null -> noSeDifiere
     !enLinea -> RECOMPENSAS_SIN_RED
     lectura == null || lectura.customerId != clienteId -> USAR_PUNTOS_LEYENDO
-    else -> motivoSinRecompensas(tieneCliente = true, lealtad = lectura.lealtad, fallo = lectura.fallo, enLinea = true)
+    else -> motivoDelSaldo(lectura)
 }
 
-/** La cuenta de «Pagar después» que el atajo pidió abrir, con la sucursal y el sello de la sesión que la mandó (Codex r1 #5). */
-data class SolicitudDeRecompensas(val orderId: String, val venueId: String, val sello: Long)
+/**
+ * Sin cuenta, el saldo sólo frena lo CLARO: programa apagado, menos del mínimo, sin puntos o puntos que valen $0. Lo que depende de la
+ * cuenta (el tope de lo que queda por descontar, el redondeo) lo decide la cuenta al abrirla (Codex r1/r2 #3).
+ */
+private fun motivoDelSaldo(lectura: LecturaDelAtajo): String? {
+    val l = lectura.lealtad ?: return motivoSinRecompensas(tieneCliente = true, lealtad = null, fallo = lectura.fallo, enLinea = true)
+    val claro = !l.active || l.balance < l.minPointsRedeem || l.balance <= 0 || l.balanceValue <= 0
+    return if (claro) motivoSinRecompensas(tieneCliente = true, lealtad = l.copy(canRedeem = false), fallo = null, enLinea = true) else null
+}
+
+/**
+ * Codex r2 #1: entre «Continuar» y el envío (la espera de un código leído) la venta puede cambiar: otro cliente por el lector, o un premio
+ * de sellos que empieza a aplicar. Lo que se manda se vuelve a revisar contra lo que la cajera confirmó (null = sigue igual).
+ */
+fun cambioDuranteElAtajo(clienteEsperado: String, clienteAhora: String?, sinFilaAhora: Boolean): String? = when {
+    clienteAhora != clienteEsperado -> USAR_PUNTOS_CLIENTE_CAMBIO
+    sinFilaAhora -> USAR_PUNTOS_SIN_FILA
+    else -> null
+}
+
+/**
+ * La cuenta de «Pagar después» que el atajo pidió abrir, con la sucursal y el sello de la sesión que la mandó (Codex r1 #5). [enPedidos]:
+ * Más ya abrió Pedidos con ella; desde ahí no vuelve a mover la pestaña (Codex r2 #5).
+ */
+data class SolicitudDeRecompensas(val orderId: String, val venueId: String, val sello: Long, val enPedidos: Boolean = false)
 
 /**
  * Lleva la cuenta por abrir de Cobrar a Más › Pedidos (como `VigilanteDePedidosEnLinea.bandejaSolicitada`). Una sola a la vez. Se descarta si
@@ -76,15 +104,26 @@ class PuertaDeRecompensas @Inject constructor() {
 
     fun pedir(s: SolicitudDeRecompensas) { _solicitud.value = s }
 
-    /** La solicitud si sigue siendo de esta sesión y esta sucursal; si no, se descarta (nunca revive). */
-    fun vigente(venueId: String?, sello: Long): SolicitudDeRecompensas? {
+    /** Para NAVEGAR: la solicitud si sigue siendo de esta sesión y esta sucursal y Pedidos todavía no se abrió con ella; otra sesión la descarta. */
+    fun vigente(venueId: String?, sello: Long): SolicitudDeRecompensas? = deEstaSesion(venueId, sello)?.takeIf { !it.enPedidos }
+
+    /** Más ya abrió Pedidos con esta cuenta: no vuelve a navegar. */
+    fun enPedidos(orderId: String) { _solicitud.value?.takeIf { it.orderId == orderId }?.let { _solicitud.compareAndSet(it, it.copy(enPedidos = true)) } }
+
+    /** Para ABRIR el diálogo: ¿esta cuenta sigue pedida por esta sesión y sucursal? */
+    fun porAbrir(venueId: String?, sello: Long, orderId: String): Boolean = deEstaSesion(venueId, sello)?.orderId == orderId
+
+    fun atendida(orderId: String) { _solicitud.value?.takeIf { it.orderId == orderId }?.let { _solicitud.compareAndSet(it, null) } }
+
+    /** Pedidos se cerró (o Más cerró sus pantallas): lo pendiente se olvida (Codex r2 #5). */
+    fun descartar() { _solicitud.value = null }
+
+    private fun deEstaSesion(venueId: String?, sello: Long): SolicitudDeRecompensas? {
         val s = _solicitud.value ?: return null
         if (s.venueId == venueId && s.sello == sello) return s
         _solicitud.compareAndSet(s, null)
         return null
     }
-
-    fun atendida(orderId: String) { _solicitud.value?.takeIf { it.orderId == orderId }?.let { _solicitud.compareAndSet(it, null) } }
 }
 
 sealed interface AperturaDeRecompensas {

@@ -39,15 +39,25 @@ import com.avoqado.pos.pos.presentation.cart.explicacionDelAtajo
  * en Pedidos con «Recompensas». Sin «Cambiar cliente» (Codex r1 #4): el cliente es el de la venta.
  */
 @Composable
-fun UsarPuntosModal(cartViewModel: CartViewModel, error: String?, onDismiss: () -> Unit) {
+fun UsarPuntosModal(
+    cartViewModel: CartViewModel,
+    error: String?,
+    /** El «Continuar»: Cobrar lo pasa por el motivo obligatorio del descuento antes de mandar (Codex r2 #8), como «Pagar después». */
+    onContinuar: () -> Unit,
+    onDismiss: () -> Unit,
+) {
     val cartState by cartViewModel.cartState.collectAsState()
     val cliente by cartViewModel.selectedCustomer.collectAsState()
     val lectura by cartViewModel.lecturaDelAtajo.collectAsState()
     val enCurso by cartViewModel.pagarDespuesEnCurso.collectAsState()
-    LaunchedEffect(cliente?.id) { cartViewModel.leerPuntosParaElAtajo() }
-    // Se recalcula con lo de arriba (venta, cliente y lectura): la razón de este momento.
-    val motivo = remember(cartState, cliente, lectura) { cartViewModel.motivoSinUsarPuntos() }
+    val enLinea by cartViewModel.conexionDelAtajo.collectAsState()
+    // Al abrir, al cambiar de cliente y al volver la red se relee el saldo (Codex r2 #7).
+    LaunchedEffect(cliente?.id, enLinea) { cartViewModel.leerPuntosParaElAtajo() }
+    // Se recalcula con lo de arriba (venta, cliente, lectura y red): la razón de este momento.
+    val motivo = remember(cartState, cliente, lectura, enLinea) { cartViewModel.motivoSinUsarPuntos() }
     val mandando = enCurso?.deUsarPuntos == true
+    // Mientras se manda, la venta ya salió del carrito: se enseña la que va en camino, no el carrito vacío (Codex r2 #7).
+    val nombre = if (mandando) enCurso?.cliente else cliente?.name
     AvoqadoFullScreenModal(
         title = USAR_PUNTOS,
         // Mientras se manda, no se cierra (como «Pagar después», R2-4).
@@ -57,7 +67,7 @@ fun UsarPuntosModal(cartViewModel: CartViewModel, error: String?, onDismiss: () 
             motivo == null -> "Continuar"
             else -> null
         },
-        onPrimaryAction = if (motivo == null || mandando) ({ cartViewModel.usarPuntos() }) else null,
+        onPrimaryAction = if (motivo == null || mandando) onContinuar else null,
         primaryActionEnabled = !mandando,
     ) {
         Column(
@@ -76,7 +86,7 @@ fun UsarPuntosModal(cartViewModel: CartViewModel, error: String?, onDismiss: () 
                     .padding(AvoqadoTheme.spacing.lg),
                 horizontalArrangement = Arrangement.SpaceBetween,
             ) {
-                Text(text = cliente?.name ?: "Sin cliente", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Text(text = nombre ?: "Sin cliente", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                 Text(
                     text = enCurso?.let { com.avoqado.pos.core.util.formatMoneyFromCents(it.totalCents) } ?: cartState.totalDisplay,
                     style = MaterialTheme.typography.titleMedium,
@@ -84,7 +94,7 @@ fun UsarPuntosModal(cartViewModel: CartViewModel, error: String?, onDismiss: () 
                 )
             }
             Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))
-            lectura?.lealtad?.takeIf { lectura?.customerId == cliente?.id }?.let {
+            lectura?.lealtad?.takeIf { !mandando && lectura?.customerId == cliente?.id }?.let {
                 Text(
                     text = "${it.balance} puntos disponibles, valen ${com.avoqado.pos.core.util.formatMoneyFromCents(Math.round(it.balanceValue * 100).toInt())}",
                     style = MaterialTheme.typography.bodyLarge,
@@ -93,7 +103,7 @@ fun UsarPuntosModal(cartViewModel: CartViewModel, error: String?, onDismiss: () 
             }
             // Sin red, sin cliente o sin puntos es un estado normal: el mismo color de las notas, nunca rojo.
             Text(
-                text = error ?: motivo ?: explicacionDelAtajo(cliente?.name ?: "el cliente"),
+                text = error ?: (if (mandando) null else motivo) ?: explicacionDelAtajo(nombre ?: "el cliente"),
                 style = MaterialTheme.typography.bodyMedium,
                 color = if (error != null) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center,

@@ -75,7 +75,7 @@ class CobroDeCuentaViewModel @Inject constructor(
 ) : ViewModel() {
     /** D39 (atajo): ¿el atajo pidió abrir ESTA cuenta, con esta sesión y esta sucursal? */
     fun aperturaPedida(orderId: String): Boolean =
-        puertaDeRecompensas?.vigente(storage.venueId, storage.selloYAccess().first)?.orderId == orderId
+        puertaDeRecompensas?.porAbrir(storage.venueId, storage.selloYAccess().first, orderId) == true
     fun aperturaAtendida(orderId: String) { puertaDeRecompensas?.atendida(orderId) }
     private val foto = MutableStateFlow<OrderDetail?>(null)
     val detalle = foto.asStateFlow()
@@ -1024,7 +1024,11 @@ fun AccionesDeCuentaAbierta(
             scope.launch { if (viewModel.alVolverDelCobroSinRed(order.id)) onActualizar() }
         }, viewModel = viewModel, saldoSinRed = saldo)
     }
-    if (!pinta.acciones) return
+    if (!pinta.acciones) {
+        // D39 (atajo, Codex r2 #5): con un cobro abierto (o la cuenta sin acciones) la apertura pedida ya no aplica: se da por atendida.
+        if (viewModel.aperturaPedida(order.id)) LaunchedEffect(order.id) { viewModel.aperturaAtendida(order.id) }
+        return
+    }
     val solicitudes by viewModel.solicitudes.collectAsState()
     val oferta by viewModel.oferta.collectAsState()
     val detalle by viewModel.detalle.collectAsState()

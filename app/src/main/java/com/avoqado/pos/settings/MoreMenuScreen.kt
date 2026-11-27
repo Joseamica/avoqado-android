@@ -228,6 +228,7 @@ fun MoreMenuScreen(
     LaunchedEffect(moreTabReselectionTick) {
         if (moreTabReselectionTick > 0) {
             closeAllOverlays()
+            viewModel.descartarCuentaConPuntos()
         }
     }
 
@@ -247,11 +248,13 @@ fun MoreMenuScreen(
         closeAllOverlays()
         ordersCuentaPorAbrir = folio
         showOrders = true
+        viewModel.cuentaConPuntosEnPedidos(folio)
     }
     LaunchedEffect(bandejaSolicitada) {
         if (bandejaSolicitada) {
             if (com.avoqado.pos.onlineorders.presentation.debeAbrirBandeja(true, viewModel.entradaPedidosEnLinea)) {
                 closeAllOverlays()
+                viewModel.descartarCuentaConPuntos()
                 showOnlineOrders = true
             }
             viewModel.bandejaAtendida()
@@ -983,7 +986,7 @@ fun MoreMenuScreen(
             val isTablet = maxWidth >= 600.dp
             OrdersScreen(
                 isTablet = isTablet,
-                onDismiss = { showOrders = false; ordersCuentaPorAbrir = null },
+                onDismiss = { showOrders = false; ordersCuentaPorAbrir = null; viewModel.descartarCuentaConPuntos() },
                 initialStatusFilter = ordersInitialStatusFilter,
                 cuentaPorAbrir = ordersCuentaPorAbrir,
             )

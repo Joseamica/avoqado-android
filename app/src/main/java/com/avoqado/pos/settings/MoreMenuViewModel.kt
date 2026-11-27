@@ -70,6 +70,10 @@ class MoreMenuViewModel @Inject constructor(
     /** El folio por abrir, si la solicitud sigue siendo de esta sesión y esta sucursal (si no, se descarta). */
     fun cuentaConPuntosVigente(): String? =
         puertaDeRecompensas?.vigente(secureStorage.venueId, secureStorage.selloYAccess().first)?.orderId
+    /** Pedidos ya se abrió con ese folio: la solicitud no vuelve a mover la pestaña (Codex r2 #5). */
+    fun cuentaConPuntosEnPedidos(orderId: String) { puertaDeRecompensas?.enPedidos(orderId) }
+    /** Pedidos se cerró, o Más cerró sus pantallas por otra razón: lo pendiente se olvida (Codex r2 #5). */
+    fun descartarCuentaConPuntos() { puertaDeRecompensas?.descartar() }
 
     // MARK: - Pedidos en línea (A3)
 

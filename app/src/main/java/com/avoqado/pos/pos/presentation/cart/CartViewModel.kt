@@ -3760,6 +3760,12 @@ class CartViewModel @Inject constructor(
     private fun enLineaParaElAtajo(): Boolean =
         connectivityMonitor?.let { it.isConnected.value && it.isServerReachable.value } ?: true
 
+    /** La conexión que la ventana de «Usar puntos» observa: al volver, relee el saldo (Codex r2 #7). Sin monitor (pruebas), conectado. */
+    val conexionDelAtajo: StateFlow<Boolean> = connectivityMonitor?.let { m ->
+        kotlinx.coroutines.flow.combine(m.isConnected, m.isServerReachable) { a, b -> a && b }
+            .stateIn(viewModelScope, kotlinx.coroutines.flow.SharingStarted.WhileSubscribed(5_000), enLineaParaElAtajo())
+    } ?: MutableStateFlow(true)
+
     private fun puedeCanjearPuntos(): Boolean = com.avoqado.pos.core.domain.RoleManager(secureStorage).let {
         it.hasVenuePermission("loyalty:read") && it.hasVenuePermission("orders:update")
     }
@@ -3797,6 +3803,7 @@ class CartViewModel @Inject constructor(
             conProductos = !venta.isEmpty,
             clienteId = cliente,
             puedeCanjear = puedeCanjearPuntos(),
+            puedeCrear = com.avoqado.pos.core.domain.RoleManager(secureStorage).hasVenuePermission("orders:create"),
             llavePrevia = venta.llavePagarDespues != null,
             sinFila = sinFila,
             noSeDifiere = cliente?.takeIf { it.isNotBlank() }?.let { motivoParaNoDiferir(venta, it) },
@@ -3882,6 +3889,12 @@ class CartViewModel @Inject constructor(
             pagarDespuesTomoLaFoto = true
             val venta = _cartState.value
             motivoParaNoDiferir(venta, customerId)?.let { return ResultadoPagarDespues.Error(it) }
+            // D39 (atajo, Codex r2 #1): lo que se manda es lo que la cajera confirmó: el mismo cliente y por el camino con fila.
+            if (atajoEnCurso) cambioDuranteElAtajo(
+                clienteEsperado = customerId,
+                clienteAhora = _selectedCustomer.value?.id,
+                sinFilaAhora = (venta.pendingStampRewardId != null && venta.premioAplica) || venta.couponCode != null || venta.pideAprobacionDeGerente,
+            )?.let { return ResultadoPagarDespues.Error(it) }
             val venueId = secureStorage.venueId ?: return ResultadoPagarDespues.Error("No venue selected")
             val cola = payLaterQueue ?: return ResultadoPagarDespues.Error("No se pudo registrar la venta como pagar después")
 

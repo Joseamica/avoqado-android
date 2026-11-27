@@ -2508,7 +2508,16 @@ fun CheckoutScreen(
         )
     }
 
-    if (showUsarPuntos) UsarPuntosModal(cartViewModel, errorUsarPuntos) { showUsarPuntos = false }
+    if (showUsarPuntos) UsarPuntosModal(
+        cartViewModel = cartViewModel,
+        error = errorUsarPuntos,
+        // Como «Pagar después» (f998c8): un descuento sin motivo lo pide antes de mandar la cuenta (Codex r2 #8).
+        onContinuar = {
+            errorUsarPuntos = null
+            if (!faltaMotivo { cartViewModel.usarPuntos() }) cartViewModel.usarPuntos()
+        },
+        onDismiss = { showUsarPuntos = false },
+    )
 
     if (showPayLaterSuccessToast && avisoDelPremioDiferido == null) {
         AvoqadoSuccessToast(

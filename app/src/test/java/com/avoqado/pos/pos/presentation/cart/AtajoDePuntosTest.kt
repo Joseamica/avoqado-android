@@ -19,12 +19,13 @@ class AtajoDePuntosTest {
         conProductos: Boolean = true,
         cliente: String? = "ana",
         puedeCanjear: Boolean = true,
+        puedeCrear: Boolean = true,
         llavePrevia: Boolean = false,
         sinFila: Boolean = false,
         noSeDifiere: String? = null,
         lectura: LecturaDelAtajo? = LecturaDelAtajo("ana", saldo(200), null),
         enLinea: Boolean = true,
-    ) = motivoSinUsarPuntos(conProductos, cliente, puedeCanjear, llavePrevia, sinFila, noSeDifiere, lectura, enLinea)
+    ) = motivoSinUsarPuntos(conProductos, cliente, puedeCanjear, puedeCrear, llavePrevia, sinFila, noSeDifiere, lectura, enLinea)
 
     @Test fun `con cliente, productos, red y puntos que alcanzan se puede`() = assertNull(motivo())
 
@@ -33,6 +34,30 @@ class AtajoDePuntosTest {
     @Test fun `sin cliente`() = assertEquals(USAR_PUNTOS_SIN_CLIENTE, motivo(cliente = null))
 
     @Test fun `sin permiso de canjear`() = assertEquals(RECOMPENSAS_SIN_PERMISO, motivo(puedeCanjear = false))
+
+    // Codex r2 #4: el atajo CREA la cuenta: sin `orders:create` el SERVIDOR la rechazaría.
+    @Test fun `sin permiso de crear la cuenta`() = assertEquals(USAR_PUNTOS_SIN_PERMISO_DE_CUENTA, motivo(puedeCrear = false))
+
+    // Codex r1/r2 #3: la lectura sin cuenta sólo frena lo claro; lo que depende de la cuenta lo decide la cuenta.
+    @Test fun `un canRedeem falso sin cuenta no frena si el saldo alcanza el minimo y vale algo`() {
+        val lealtad = CustomerLoyalty(customerId = "ana", customerName = "Ana", active = true, balance = 50, redemptionRate = 0.0201,
+            balanceValue = 1.005, minPointsRedeem = 50, maxRedeemablePoints = 49, maxRedeemableValue = 0.98, canRedeem = false)
+        assertNull(motivo(lectura = LecturaDelAtajo("ana", lealtad, null)))
+    }
+
+    @Test fun `los puntos que valen 0 si frenan`() {
+        val lealtad = CustomerLoyalty(customerId = "ana", customerName = "Ana", active = true, balance = 40, redemptionRate = 0.0001,
+            balanceValue = 0.0, minPointsRedeem = 10, maxRedeemablePoints = 0, maxRedeemableValue = 0.0, canRedeem = false)
+        assertEquals("Los 40 puntos de Ana valen \$0.00: no alcanzan para descontar nada.", motivo(lectura = LecturaDelAtajo("ana", lealtad, null)))
+    }
+
+    // Codex r2 #1: entre «Continuar» y el envío la venta puede cambiar (lector de tarjeta de cliente, premio que empieza a aplicar).
+    @Test fun `cambio durante la espera`() {
+        assertNull(cambioDuranteElAtajo(clienteEsperado = "ana", clienteAhora = "ana", sinFilaAhora = false))
+        assertEquals(USAR_PUNTOS_CLIENTE_CAMBIO, cambioDuranteElAtajo("ana", "beto", false))
+        assertEquals(USAR_PUNTOS_CLIENTE_CAMBIO, cambioDuranteElAtajo("ana", null, false))
+        assertEquals(USAR_PUNTOS_SIN_FILA, cambioDuranteElAtajo("ana", "ana", sinFilaAhora = true))
+    }
 
     // Codex r1 #2: una llave previa puede devolver el folio de otra versión de la venta.
     @Test fun `una venta que ya se intento dejar para despues`() = assertEquals(USAR_PUNTOS_YA_SE_INTENTO, motivo(llavePrevia = true))
@@ -78,6 +103,27 @@ class AtajoDePuntosTest {
         puerta.pedir(SolicitudDeRecompensas("o2", "v1", 7))
         assertNull(puerta.vigente("v2", 7))
         assertNull(puerta.vigente("v1", 7))
+    }
+
+    // Codex r2 #5: una vez que Más abrió Pedidos, la solicitud ya no vuelve a mover la pestaña ni a reabrir Pedidos; sólo queda
+    // «por abrir» para esa cuenta hasta que se abra su diálogo o se cierre Pedidos.
+    @Test fun `ya en Pedidos no vuelve a navegar y queda por abrir hasta descartarla`() {
+        val puerta = PuertaDeRecompensas()
+        puerta.pedir(SolicitudDeRecompensas("o1", "v1", 7))
+        puerta.enPedidos("o1")
+        assertNull(puerta.vigente("v1", 7))
+        assertEquals(true, puerta.porAbrir("v1", 7, "o1"))
+        assertEquals(false, puerta.porAbrir("v1", 7, "o2"))
+        puerta.descartar()
+        assertEquals(false, puerta.porAbrir("v1", 7, "o1"))
+    }
+
+    @Test fun `por abrir con otra sesion se descarta`() {
+        val puerta = PuertaDeRecompensas()
+        puerta.pedir(SolicitudDeRecompensas("o1", "v1", 7))
+        puerta.enPedidos("o1")
+        assertEquals(false, puerta.porAbrir("v1", 8, "o1"))
+        assertEquals(false, puerta.porAbrir("v1", 7, "o1"))
     }
 
     @Test fun `atender otra cuenta no la consume`() {
