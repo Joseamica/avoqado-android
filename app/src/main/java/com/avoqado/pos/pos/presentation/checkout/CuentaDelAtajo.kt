@@ -26,6 +26,7 @@ import com.avoqado.pos.payment.domain.PaymentOverlayState
 import com.avoqado.pos.payment.presentation.CierreDeCuenta
 import com.avoqado.pos.payment.presentation.LocalAlSalirDelCobroDeCuenta
 import com.avoqado.pos.pos.presentation.cart.avisoCobradaSinConfirmar
+import com.avoqado.pos.pos.presentation.cart.avisoCobradaSinRed
 import com.avoqado.pos.pos.presentation.cart.avisoCuentaEnPedidos
 import com.avoqado.pos.pos.presentation.cart.cierraLaVentana
 import com.avoqado.pos.pos.presentation.cart.cuentaCerrada
@@ -46,6 +47,9 @@ fun CuentaDelAtajo(
     cliente: String,
     /** El número visible (`#ORD-…`) que mandó el SERVIDOR al crearla; "" = no llegó (se usa el de la cuenta leída). */
     numero: String,
+    /** El cobro de esta ventana ya terminó («Listo»); vive en el carrito para sobrevivir a girar la pantalla (Codex C1-r2 #4). */
+    cobrada: Boolean,
+    onCobrada: () -> Unit,
     onCerrar: (aviso: String?) -> Unit,
     viewModel: OrdersViewModel = hiltViewModel(key = "atajo-$orderId"),
 ) {
@@ -71,14 +75,15 @@ fun CuentaDelAtajo(
     var vioAbierta by remember(orderId) { mutableStateOf(false) }
     // Codex C1-r1 #5: el cobro dijo «pagada» al tocar «Listo»; se cierra cuando la relectura confirma que quedó cerrada (si queda saldo,
     // la ventana sigue con lo que falta).
-    var cobroTerminado by remember(orderId) { mutableStateOf(false) }
+    val cobroTerminado = cobrada
     LaunchedEffect(cerrada, cobrando, cobroTerminado) {
         if (cerrada == false) vioAbierta = true
         if (cerrada == true && !cobrando && cierraLaVentana(vioAbierta || cobroTerminado, cerrada)) onCerrar(null)
     }
+    fun folioVisible() = cuenta?.orderNumber?.takeIf { it.isNotBlank() }?.let { "#$it" } ?: numero
     // Atrás: con un cobro abierto no hace nada; si la cuenta sigue abierta, se dice dónde quedó; si ya estaba cerrada, sólo se cierra.
     val salir = {
-        val folio = cuenta?.orderNumber?.takeIf { it.isNotBlank() }?.let { "#$it" } ?: numero
+        val folio = folioVisible()
         if (!cobrando) onCerrar(when {
             cerrada == true -> null
             cobroTerminado -> avisoCobradaSinConfirmar(cliente, folio)
@@ -92,9 +97,11 @@ fun CuentaDelAtajo(
         ImmersiveWindow()
         Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface) {
             // Codex v3-r2 #5: se cierra con lo que dice el cobro al terminar («Listo»), sin esperar a releer la cuenta.
-            CompositionLocalProvider(LocalAlSalirDelCobroDeCuenta provides { id, cierre ->
+            CompositionLocalProvider(LocalAlSalirDelCobroDeCuenta provides { id, cierre, sinRed ->
                 if (id == orderId && cierre == CierreDeCuenta.CANCELADA) onCerrar(null)
-                if (id == orderId && cierre == CierreDeCuenta.PAGADA) cobroTerminado = true
+                // Codex C1-r2 #5: cobrada desde la copia sin red: no hay SERVIDOR que confirme; se cierra y se dice que se sube sola.
+                if (id == orderId && cierre == CierreDeCuenta.PAGADA && sinRed) onCerrar(avisoCobradaSinRed(cliente, folioVisible()))
+                if (id == orderId && cierre == CierreDeCuenta.PAGADA && !sinRed) onCobrada()
             }) {
                 DetalleDeUnaCuenta(viewModel, onBack = salir, onCuentaCancelada = { onCerrar(null) }) {}
             }

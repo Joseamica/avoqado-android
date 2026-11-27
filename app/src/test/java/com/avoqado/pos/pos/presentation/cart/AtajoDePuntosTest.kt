@@ -162,6 +162,11 @@ class AtajoDePuntosTest {
         assertEquals("Se cobró la cuenta de Ana (#ORD-14), pero no se pudo confirmar que quedó en \$0.00: revísala en Pedidos.",
             avisoCobradaSinConfirmar("Ana", "#ORD-14"))
 
+    // Codex C1-r2 #5: cobrada en efectivo sin red desde la copia: se dice que quedó guardada y se sube sola.
+    @Test fun `cobrada sin red lo dice así`() =
+        assertEquals("Se cobró la cuenta de Ana (#ORD-14) en efectivo sin conexión: quedó guardada en el aparato y se sube sola.",
+            avisoCobradaSinRed("Ana", "#ORD-14"))
+
     @Test fun `sin red espera a que vuelva`() =
         assertEquals(AperturaDeRecompensas.Esperar, aperturaDeRecompensas(true, false, motivo = RECOMPENSAS_SIN_RED, folio = "ORD-14"))
 }

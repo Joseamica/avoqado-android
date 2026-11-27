@@ -1011,7 +1011,7 @@ internal val LocalCerrarCuentaDeSaldo = compositionLocalOf<(String) -> Unit> { {
  * D39 C1 (Codex v3-r2 #5): cómo terminó el cobro de una cuenta (pagada, cancelada o la cajera salió sin cobrar), al cerrarse su pantalla
  * (después de «Listo»). La cuenta del atajo encima de Cobrar se cierra con esto, sin esperar a releer la cuenta. Fuera de ella, nada.
  */
-val LocalAlSalirDelCobroDeCuenta = staticCompositionLocalOf<(orderId: String, cierre: CierreDeCuenta) -> Unit> { { _, _ -> } }
+val LocalAlSalirDelCobroDeCuenta = staticCompositionLocalOf<(orderId: String, cierre: CierreDeCuenta, sinRed: Boolean) -> Unit> { { _, _, _ -> } }
 
 val LocalResultadoDeTarjetas = staticCompositionLocalOf<(String) -> Unit> {
     { error("Falta el anfitrión del resultado de tarjetas") }
@@ -1085,7 +1085,7 @@ fun AccionesDeCuentaAbierta(
             if (cierre == CierreDeCuenta.ABIERTA) onSalioSinCobrar else onActualizar, onCancelada, onResultadoDeTarjetas)
         // T12b (M-n2): la oferta también (recarga la cuenta): si la recarga trae la misma cuenta, el efecto de abajo no corre.
         scope.launch { if (enLinea) viewModel.ofertaParaCobrar(order.id, cuentaDelCarrito() == order.id) }
-        alSalirDelCobro(order.id, cierre)
+        alSalirDelCobro(order.id, cierre, false)
     }, viewModel = viewModel)
     // Al volver, sin «La venta quedó en Cuentas abiertas» (un cobro guardado no es salir sin cobrar). Si la revalidación dijo que no,
     // la cuenta se queda con ese gris; si no, se vuelve a decidir y se refresca (un cobro encolado se ve «sin sincronizar»).
@@ -1093,7 +1093,7 @@ fun AccionesDeCuentaAbierta(
         CobroDeCuentaScreen(order.id, onSalir = { cierre ->
             cobroSinRed = null
             scope.launch { if (viewModel.alVolverDelCobroSinRed(order.id)) onActualizar() }
-            alSalirDelCobro(order.id, cierre)
+            alSalirDelCobro(order.id, cierre, true)
         }, viewModel = viewModel, saldoSinRed = saldo)
     }
     if (!pinta.acciones) {

@@ -197,6 +197,25 @@ class UsarPuntosCarritoTest {
         assertEquals("ord-1", vm.cuentaDelAtajo.value?.orderId)
     }
 
+    // Codex C1-r2 #4: «ya se cobró» vive en el carrito (sobrevive a girar la pantalla), no en la pantalla.
+    @Test fun `marcar la cuenta como cobrada sobrevive en el carrito`() = runTest {
+        val vm = vm()
+        vm.cobrarSeMonto()
+        ventaDeAna(vm)
+        vm.leerPuntosParaElAtajo()
+        advanceUntilIdle()
+        responde(201, """{"success":true,"order":{"id":"ord-1","total":100.0}}""")
+        vm.usarPuntos()
+        advanceUntilIdle()
+        assertEquals(false, vm.cuentaDelAtajo.value?.cobrada)
+        vm.cuentaDelAtajoCobrada("otra")
+        assertEquals(false, vm.cuentaDelAtajo.value?.cobrada)
+        vm.cuentaDelAtajoCobrada("ord-1")
+        vm.cobrarSeGira()
+        vm.cobrarSeMonto()
+        assertEquals(true, vm.cuentaDelAtajo.value?.cobrada)
+    }
+
     // v3 «C»: con otra sesión (cambio de usuario por PIN) o en otra sucursal, la ventana no se enseña.
     @Test fun `con otra sesion la ventana no se enseña`() = runTest {
         val vm = vm()

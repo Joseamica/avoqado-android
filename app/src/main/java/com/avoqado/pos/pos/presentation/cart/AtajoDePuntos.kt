@@ -89,7 +89,11 @@ fun cambioDuranteElAtajo(clienteEsperado: String, clienteAhora: String?, sinFila
 }
 
 /** La cuenta de «Pagar después» que el atajo pidió abrir, con la sucursal y el sello de la sesión que la mandó (Codex r1 #5) y su cliente. */
-data class SolicitudDeRecompensas(val orderId: String, val venueId: String, val sello: Long, val cliente: String = "", val numero: String = "")
+data class SolicitudDeRecompensas(
+    val orderId: String, val venueId: String, val sello: Long, val cliente: String = "", val numero: String = "",
+    /** Codex C1-r2 #4: el cobro de la ventana ya terminó («Listo»); vive aquí, no en la pantalla, para sobrevivir a girarla. */
+    val cobrada: Boolean = false,
+)
 
 /**
  * Le dice a «Recompensas» de la cuenta que abrió el atajo que se abra sola (v3 «C»: la cuenta está encima de Cobrar). Una sola a la vez. Se
@@ -145,6 +149,10 @@ fun avisoCuentaEnPedidos(cliente: String, folio: String) =
  */
 fun avisoCobradaSinConfirmar(cliente: String, folio: String) =
     "Se cobró la cuenta de $cliente${if (folio.isBlank()) "" else " ($folio)"}, pero no se pudo confirmar que quedó en \$0.00: revísala en Pedidos."
+
+/** Codex C1-r2 #5: cobrada en efectivo sin red desde la copia: el pago quedó en el aparato y se sube solo. */
+fun avisoCobradaSinRed(cliente: String, folio: String) =
+    "Se cobró la cuenta de $cliente${if (folio.isBlank()) "" else " ($folio)"} en efectivo sin conexión: quedó guardada en el aparato y se sube sola."
 
 /** La cuenta que pidió el atajo ya está pagada o cancelada cuando Pedidos la abre (Codex r3 #5). */
 fun avisoCuentaYaCerrada(folio: String) = "La cuenta $folio ya no está abierta (pagada o cancelada): ya no admite puntos."

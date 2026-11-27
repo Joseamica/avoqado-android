@@ -3787,6 +3787,11 @@ class CartViewModel @Inject constructor(
     /** Codex v3-r2 #4: girar la pantalla recrea Cobrar sin salir de él: la visita y la ventana (con su cobro abierto) siguen. */
     fun cobrarSeGira() { cobrarMontado = false; girando = true }
 
+    /** El cobro de la ventana terminó («Listo»): se cierra cuando la cuenta se confirma cerrada (Codex C1-r2 #4). */
+    fun cuentaDelAtajoCobrada(orderId: String) {
+        _cuentaDelAtajo.value?.takeIf { it.orderId == orderId }?.let { _cuentaDelAtajo.value = it.copy(cobrada = true) }
+    }
+
     /** La ventana se cerró (X, cobrada, cancelada o al salir de Cobrar): se olvida y su «Recompensas» ya no se abre solo. */
     fun cerrarCuentaDelAtajo() {
         val s = _cuentaDelAtajo.value ?: return
