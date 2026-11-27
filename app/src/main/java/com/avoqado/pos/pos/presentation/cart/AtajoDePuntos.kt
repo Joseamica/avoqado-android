@@ -39,7 +39,7 @@ fun explicacionDelAtajo(cliente: String) =
         "«Canjear»; si no alcanzan, la cuenta se cobra normal o se cancela."
 
 /** El saldo del cliente leído para el atajo, sin cuenta todavía (`getCustomerLoyalty(..., orderId = null)`): sólo orienta. */
-data class LecturaDelAtajo(val customerId: String, val lealtad: CustomerLoyalty?, val fallo: FalloDeLectura?)
+data class LecturaDelAtajo(val customerId: String, val lealtad: CustomerLoyalty?, val fallo: FalloDeLectura?, val prohibida: Boolean = false)
 
 /**
  * Por qué «Usar puntos» no se puede (null = se puede). La lectura previa sólo orienta: la cuenta real decide al abrirla (Codex r1 #3). Una
@@ -73,6 +73,7 @@ fun motivoSinUsarPuntos(
  * cuenta (el tope de lo que queda por descontar, el redondeo) lo decide la cuenta al abrirla (Codex r1/r2 #3).
  */
 private fun motivoDelSaldo(lectura: LecturaDelAtajo): String? {
+    if (lectura.lealtad == null && lectura.prohibida) return com.avoqado.pos.payment.presentation.RECOMPENSAS_SIN_ACCESO
     val l = lectura.lealtad ?: return motivoSinRecompensas(tieneCliente = true, lealtad = null, fallo = lectura.fallo, enLinea = true)
     val claro = !l.active || l.balance < l.minPointsRedeem || l.balance <= 0 || l.balanceValue <= 0
     return if (claro) motivoSinRecompensas(tieneCliente = true, lealtad = l.copy(canRedeem = false), fallo = null, enLinea = true) else null
@@ -93,8 +94,11 @@ data class SolicitudDeRecompensas(
     val orderId: String, val venueId: String, val sello: Long, val cliente: String = "", val numero: String = "",
     /** Codex C1-r2 #4: el cobro de la ventana ya terminó («Listo»); vive aquí, no en la pantalla, para sobrevivir a girarla. */
     val cobrada: Boolean = false,
-    /** Codex C1-r4 #5: se abrió (y se cerró) un cobro en efectivo desde la copia sin red; no se sabe si se cobró. Igual que [cobrada]. */
-    val cobroSinRed: Boolean = false,
+    /**
+     * Codex C1-r4/r5 #5: se abrió un cobro en la ventana (en línea o en efectivo desde la copia sin red). Si la ventana se va antes de
+     * «Listo» (girar, salir de Cobrar, WINDOWS que cambia de ancho), no se sabe si se cobró. Vive aquí, igual que [cobrada].
+     */
+    val cobroIniciado: Boolean = false,
 )
 
 /**
@@ -153,11 +157,12 @@ fun avisoCobradaSinConfirmar(cliente: String, folio: String) =
     "Se cobró la cuenta de $cliente${if (folio.isBlank()) "" else " ($folio)"}, pero no se pudo confirmar que quedó en \$0.00: revísala en Pedidos."
 
 /**
- * Codex C1-r2/r3 #5: la cajera abrió el cobro en efectivo desde la copia sin red y salió (cobró o no: ese cobro siempre vuelve «abierta»).
- * El pago pudo subir ya, seguir en la cola, quedar por revisar o no haberse hecho: el aviso no promete ninguno, manda a revisar.
+ * Codex C1-r2…r5 #5: se abrió un cobro en la ventana y la ventana se fue sin «Listo» confirmado (el cobro desde la copia sin red siempre
+ * vuelve «abierta»; girar o salir de Cobrar la desmontan). El pago pudo entrar, seguir en la cola, quedar por revisar o no haberse hecho:
+ * el aviso no promete ninguno, manda a revisar.
  */
-fun avisoCobradaSinRed(cliente: String, folio: String) =
-    "La cuenta de $cliente${if (folio.isBlank()) "" else " ($folio)"} quedó en Pedidos: revisa ahí si el efectivo sin conexión quedó guardado."
+fun avisoCobroPorRevisar(cliente: String, folio: String) =
+    "La cuenta de $cliente${if (folio.isBlank()) "" else " ($folio)"} quedó en Pedidos: revisa ahí si el cobro quedó registrado."
 
 /** La cuenta que pidió el atajo ya está pagada o cancelada cuando Pedidos la abre (Codex r3 #5). */
 fun avisoCuentaYaCerrada(folio: String) = "La cuenta $folio ya no está abierta (pagada o cancelada): ya no admite puntos."

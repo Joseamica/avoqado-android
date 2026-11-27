@@ -26,7 +26,7 @@ import com.avoqado.pos.payment.domain.PaymentOverlayState
 import com.avoqado.pos.payment.presentation.CierreDeCuenta
 import com.avoqado.pos.payment.presentation.LocalAlSalirDelCobroDeCuenta
 import com.avoqado.pos.pos.presentation.cart.avisoCobradaSinConfirmar
-import com.avoqado.pos.pos.presentation.cart.avisoCobradaSinRed
+import com.avoqado.pos.pos.presentation.cart.avisoCobroPorRevisar
 import com.avoqado.pos.pos.presentation.cart.avisoCuentaEnPedidos
 import com.avoqado.pos.pos.presentation.cart.cierraLaVentana
 import com.avoqado.pos.pos.presentation.cart.cuentaCerrada
@@ -50,9 +50,9 @@ fun CuentaDelAtajo(
     /** El cobro de esta ventana ya terminó («Listo»); vive en el carrito para sobrevivir a girar la pantalla (Codex C1-r2 #4). */
     cobrada: Boolean,
     onCobrada: () -> Unit,
-    /** Se abrió un cobro en efectivo desde la copia sin red; vive en el carrito como [cobrada] (Codex C1-r4 #5). */
-    cobroSinRed: Boolean,
-    onCobroSinRed: () -> Unit,
+    /** Se abrió un cobro en esta ventana; vive en el carrito como [cobrada] (Codex C1-r4/r5 #5). */
+    cobroIniciado: Boolean,
+    onCobroIniciado: () -> Unit,
     onCerrar: (aviso: String?) -> Unit,
     viewModel: OrdersViewModel = hiltViewModel(key = "atajo-$orderId"),
 ) {
@@ -79,6 +79,9 @@ fun CuentaDelAtajo(
     // Codex C1-r1 #5: el cobro dijo «pagada» al tocar «Listo»; se cierra cuando la relectura confirma que quedó cerrada (si queda saldo,
     // la ventana sigue con lo que falta).
     val cobroTerminado = cobrada
+    // Codex C1-r5 #1: el cobro se marca al ABRIRSE (en línea o desde la copia), no al cerrar: si la ventana se va a medio cobro, el aviso
+    // manda a revisar en vez de decir «quedó por cobrar».
+    LaunchedEffect(cobrando) { if (cobrando) onCobroIniciado() }
     LaunchedEffect(cerrada, cobrando, cobroTerminado) {
         if (cerrada == false) vioAbierta = true
         if (cerrada == true && !cobrando && cierraLaVentana(vioAbierta || cobroTerminado, cerrada)) onCerrar(null)
@@ -90,7 +93,7 @@ fun CuentaDelAtajo(
         if (!cobrando) onCerrar(when {
             cerrada == true -> null
             cobroTerminado -> avisoCobradaSinConfirmar(cliente, folio)
-            cobroSinRed -> avisoCobradaSinRed(cliente, folio)
+            cobroIniciado -> avisoCobroPorRevisar(cliente, folio)
             else -> avisoCuentaEnPedidos(cliente, folio)
         })
     }
@@ -103,9 +106,6 @@ fun CuentaDelAtajo(
             // Codex v3-r2 #5: se cierra con lo que dice el cobro al terminar («Listo»), sin esperar a releer la cuenta.
             CompositionLocalProvider(LocalAlSalirDelCobroDeCuenta provides { id, cierre, sinRed ->
                 if (id == orderId && cierre == CierreDeCuenta.CANCELADA) onCerrar(null)
-                // El cobro desde la copia sin red siempre vuelve ABIERTA (la cuenta vuelve a decidir, como en Pedidos): no se sabe si se
-                // cobró; al cerrar la ventana el aviso manda a revisar (Codex C1-r2/r3 #5).
-                if (id == orderId && sinRed) onCobroSinRed()
                 if (id == orderId && cierre == CierreDeCuenta.PAGADA && !sinRed) onCobrada()
             }) {
                 DetalleDeUnaCuenta(viewModel, onBack = salir, onCuentaCancelada = { onCerrar(null) }) {}

@@ -163,9 +163,15 @@ class AtajoDePuntosTest {
             avisoCobradaSinConfirmar("Ana", "#ORD-14"))
 
     // Codex C1-r2/r3 #5: cobrada en efectivo desde la copia sin red: pudo subir, seguir en cola o quedar por revisar; el aviso no promete.
-    @Test fun `cobrada sin red lo dice sin prometer`() =
-        assertEquals("La cuenta de Ana (#ORD-14) quedó en Pedidos: revisa ahí si el efectivo sin conexión quedó guardado.",
-            avisoCobradaSinRed("Ana", "#ORD-14"))
+    @Test fun `con un cobro abierto sin Listo el aviso manda a revisar`() =
+        assertEquals("La cuenta de Ana (#ORD-14) quedó en Pedidos: revisa ahí si el cobro quedó registrado.",
+            avisoCobroPorRevisar("Ana", "#ORD-14"))
+
+    // Codex C1-r5 #2: sin candado de plan en el aparato; un 403 del SERVIDOR dice lo mismo que «Recompensas» en Pedidos.
+    @Test fun `sin acceso a la lealtad lo dice el SERVIDOR`() = assertEquals(
+        com.avoqado.pos.payment.presentation.RECOMPENSAS_SIN_ACCESO,
+        motivo(lectura = LecturaDelAtajo("ana", null, FalloDeLectura.SERVIDOR, prohibida = true)),
+    )
 
     @Test fun `sin red espera a que vuelva`() =
         assertEquals(AperturaDeRecompensas.Esperar, aperturaDeRecompensas(true, false, motivo = RECOMPENSAS_SIN_RED, folio = "ORD-14"))

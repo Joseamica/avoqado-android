@@ -3792,7 +3792,7 @@ class CartViewModel @Inject constructor(
             _resultadoUsarPuntos.value = ResultadoPagarDespues.Aviso(
                 when {
                     s.cobrada -> avisoCobradaSinConfirmar(s.cliente, s.numero)
-                    s.cobroSinRed -> avisoCobradaSinRed(s.cliente, s.numero)
+                    s.cobroIniciado -> avisoCobroPorRevisar(s.cliente, s.numero)
                     else -> avisoCuentaEnPedidos(s.cliente, s.numero)
                 },
             )
@@ -3807,9 +3807,9 @@ class CartViewModel @Inject constructor(
         _cuentaDelAtajo.value?.takeIf { it.orderId == orderId }?.let { _cuentaDelAtajo.value = it.copy(cobrada = true) }
     }
 
-    /** Se salió de un cobro en efectivo desde la copia sin red (cobró o no): al cerrar, el aviso manda a revisar (Codex C1-r4 #5). */
-    fun cuentaDelAtajoConCobroSinRed(orderId: String) {
-        _cuentaDelAtajo.value?.takeIf { it.orderId == orderId }?.let { _cuentaDelAtajo.value = it.copy(cobroSinRed = true) }
+    /** Se abrió un cobro en la ventana (en línea o desde la copia sin red): si no se confirma «Listo», el aviso manda a revisar (C1-r4/r5). */
+    fun cuentaDelAtajoConCobroIniciado(orderId: String) {
+        _cuentaDelAtajo.value?.takeIf { it.orderId == orderId && !it.cobroIniciado }?.let { _cuentaDelAtajo.value = it.copy(cobroIniciado = true) }
     }
 
     /** La ventana se cerró (X, cobrada, cancelada o al salir de Cobrar): se olvida y su «Recompensas» ya no se abre solo. */
@@ -3832,8 +3832,6 @@ class CartViewModel @Inject constructor(
         it.hasVenuePermission("loyalty:read") && it.hasVenuePermission("orders:update")
     }
 
-    /** «Usar puntos» sólo se ofrece con el programa de lealtad en el plan (el canje de la fase 1 lo pide igual). */
-    val ofreceUsarPuntos: Boolean get() = planManager.hasFeature("LOYALTY_PROGRAM")
 
     /** Al abrir «Usar puntos»: lee el saldo del cliente elegido, sin cuenta todavía. Sólo orienta (Codex r1 #3). */
     /** Sólo la lectura más reciente escribe: una vieja que termina tarde no pisa a la nueva (Codex r3 R2). */
@@ -3854,7 +3852,10 @@ class CartViewModel @Inject constructor(
                 onSuccess = { LecturaDelAtajo(cliente, it, null) },
                 onFailure = {
                     if (it is kotlinx.coroutines.CancellationException) throw it
-                    LecturaDelAtajo(cliente, null, com.avoqado.pos.core.data.network.FalloDeLectura.de(it))
+                    // Codex C1-r5 #2: sin candado de plan en el aparato (meter LOYALTY_PROGRAM al mapa de planes reconstruía la navegación
+                    // y vaciaba el carrito); lo decide el SERVIDOR con su 403, como «Recompensas» en Pedidos.
+                    LecturaDelAtajo(cliente, null, com.avoqado.pos.core.data.network.FalloDeLectura.de(it),
+                        prohibida = (it as? retrofit2.HttpException)?.code() == 403)
                 },
             )
         }

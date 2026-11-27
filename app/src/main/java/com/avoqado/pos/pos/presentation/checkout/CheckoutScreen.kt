@@ -462,10 +462,11 @@ fun CheckoutScreen(
     // D39 (atajo «Usar puntos»): su ventana, su error y su desenlace.
     var showUsarPuntos by rememberSaveable { mutableStateOf(false) }
     var errorUsarPuntos by remember { mutableStateOf<String?>(null) }
-    val abrirUsarPuntos: (() -> Unit)? = if (cartViewModel.ofreceUsarPuntos) ({
+    // Sin candado de plan en el aparato: si el plan no trae la lealtad, la ventana lo dice con la respuesta del SERVIDOR (Codex C1-r5 #2).
+    val abrirUsarPuntos: (() -> Unit)? = {
         errorUsarPuntos = null
         showUsarPuntos = true
-    }) else null
+    }
     val resultadoUsarPuntos by cartViewModel.resultadoUsarPuntos.collectAsState()
     // D39 v3 «C»: la cuenta que dejó el atajo, abierta encima de Cobrar. Mientras está, Cobrar no recibe códigos ni teclas (Codex v3 #7).
     val cuentaDelAtajo by cartViewModel.cuentaDelAtajo.collectAsState()
@@ -2524,7 +2525,7 @@ fun CheckoutScreen(
     }
     cuentaDelAtajo?.let { s ->
         CuentaDelAtajo(s.orderId, s.cliente, s.numero, s.cobrada, onCobrada = { cartViewModel.cuentaDelAtajoCobrada(s.orderId) },
-            cobroSinRed = s.cobroSinRed, onCobroSinRed = { cartViewModel.cuentaDelAtajoConCobroSinRed(s.orderId) }, onCerrar = { aviso ->
+            cobroIniciado = s.cobroIniciado, onCobroIniciado = { cartViewModel.cuentaDelAtajoConCobroIniciado(s.orderId) }, onCerrar = { aviso ->
             cartViewModel.cerrarCuentaDelAtajo()
             if (aviso != null) payLaterAviso = aviso
         })
