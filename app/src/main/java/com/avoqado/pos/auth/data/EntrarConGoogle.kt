@@ -11,6 +11,8 @@ import androidx.browser.auth.AuthTabIntent
 import androidx.browser.customtabs.CustomTabsClient
 import androidx.browser.customtabs.CustomTabsService
 import androidx.fragment.app.FragmentActivity
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import com.avoqado.pos.auth.data.model.GoogleConfigResponse
 import com.avoqado.pos.auth.data.model.PaseDeGoogle
 import kotlinx.coroutines.CancellationException
@@ -57,10 +59,16 @@ class EntrarConGoogle @Inject constructor() {
      * recibe. Si el proceso murió, no hay intento en memoria y el resultado se descarta.
      */
     fun registrar(activity: ComponentActivity) {
-        lanzador = activity.activityResultRegistry.register(LLAVE, activity, AuthTabIntent.AuthenticateUserResultContract()) {
+        val propio = activity.activityResultRegistry.register(LLAVE, activity, AuthTabIntent.AuthenticateUserResultContract()) {
             val intento = enCurso ?: return@register
             intento.pase.complete(paseDeLaAuthTab(it.resultCode, it.resultUri, intento.state, intento.verificador))
         }
+        lanzador = propio
+        // El lanzador retiene a ESTA pantalla: al destruirse se suelta (si sigue siendo el suyo). El intento en curso no se
+        // toca: la pantalla nueva registra con la misma llave y recibe el resultado pendiente.
+        activity.lifecycle.addObserver(LifecycleEventObserver { _, evento ->
+            if (evento == Lifecycle.Event.ON_DESTROY && lanzador === propio) lanzador = null
+        })
     }
 
     suspend fun pedirPase(activity: FragmentActivity, config: GoogleConfigResponse): PaseDeGoogle {
@@ -133,8 +141,9 @@ internal fun paseDeLaAuthTab(resultado: Int, uri: Uri?, stateEsperado: String, v
  * `access_denied` es que la persona dijo que no ([PaseDeGoogle.Cancelado]); cualquier otro `error` es reintentar.
  */
 internal fun leerVueltaDeAuthTab(uri: Uri?, stateEsperado: String, verificador: String): PaseDeGoogle {
-    if (uri == null || uri.getQueryParameter("state") != stateEsperado) {
-        return PaseDeGoogle.Fallo(TEXTO_REINTENTA, "vuelta con state ajeno o sin state")
+    // Una uri opaca (`avoqado-pos:x`) truena en getQueryParameter, y esto corre en el callback del registro.
+    if (uri == null || !uri.isHierarchical || uri.getQueryParameter("state") != stateEsperado) {
+        return PaseDeGoogle.Fallo(TEXTO_REINTENTA, "vuelta opaca, con state ajeno o sin state")
     }
     return when (val error = uri.getQueryParameter("error")) {
         null -> PaseDeGoogle.Vuelta(stateEsperado, verificador)

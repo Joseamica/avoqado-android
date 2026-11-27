@@ -23,7 +23,10 @@ class EntrarConGoogleTest {
     /** `avoqado-pos://google?…` con estos parámetros (el `Uri` del android.jar de las pruebas es un cascarón). */
     private fun vuelta(vararg pares: Pair<String, String>): Uri {
         val parametros = pares.toMap()
-        return mockk { every { getQueryParameter(any()) } answers { parametros[firstArg<String>()] } }
+        return mockk {
+            every { isHierarchical } returns true
+            every { getQueryParameter(any()) } answers { parametros[firstArg<String>()] }
+        }
     }
 
     // --- La vuelta del SERVIDOR ---
@@ -55,6 +58,17 @@ class EntrarConGoogleTest {
             val r = leerVueltaDeAuthTab(uri, "s1", "v") as PaseDeGoogle.Fallo
             assertEquals(textoReintenta, r.texto)
         }
+    }
+
+    @Test
+    fun `una vuelta opaca (avoqado-pos sin barras) es Fallo con el texto de reintentar y no truena`() {
+        // En el aparato `getQueryParameter` de una uri opaca lanza UnsupportedOperationException, dentro del callback.
+        val opaca = mockk<Uri> {
+            every { isHierarchical } returns false
+            every { getQueryParameter(any()) } throws UnsupportedOperationException("This isn't a hierarchical URI.")
+        }
+        assertEquals(textoReintenta, (leerVueltaDeAuthTab(opaca, "s1", "v") as PaseDeGoogle.Fallo).texto)
+        assertEquals(textoReintenta, (paseDeLaAuthTab(AuthTabIntent.RESULT_OK, opaca, "s1", "v") as PaseDeGoogle.Fallo).texto)
     }
 
     @Test

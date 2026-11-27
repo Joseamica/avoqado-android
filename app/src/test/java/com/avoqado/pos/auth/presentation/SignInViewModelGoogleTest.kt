@@ -193,6 +193,7 @@ class SignInViewModelGoogleTest {
         configLista()
         every { connectivityMonitor.isOnline() } returns true
         val uri = mockk<Uri> {
+            every { isHierarchical } returns true
             every { getQueryParameter("state") } returns "s"
             every { getQueryParameter("error") } returns "server_error"
         }
