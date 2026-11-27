@@ -62,6 +62,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import com.avoqado.pos.printing.data.EstadoDeComanda
 import com.avoqado.pos.loyalty.data.comoPremioPorAplicar
+import com.avoqado.pos.loyalty.domain.TextosDelSello
 import com.avoqado.pos.areatickets.presentation.AreaTicketOperationsViewModel
 import com.avoqado.pos.core.util.formatMoney
 
@@ -439,6 +440,7 @@ fun CheckoutScreen(
     var createProductInitialGtin by remember { mutableStateOf("") }
     var unknownBarcode by remember { mutableStateOf<String?>(null) }
     var barcodeError by remember { mutableStateOf<String?>(null) }
+    var tarjetaSinLeer by remember { mutableStateOf<com.avoqado.pos.loyalty.data.TarjetaSinLeer?>(null) }
     var codigoDoble by remember { mutableStateOf<String?>(null) }
     var areaTicketAddedCount by remember { mutableStateOf<Int?>(null) }
     // La tarjeta digital que el cajero acaba de escanear, si escaneó una.
@@ -1634,6 +1636,8 @@ fun CheckoutScreen(
                     }
                     scannedCustomerCard = result.card
                 }
+                is ScannedBarcodeResult.TarjetaDeClienteSinLeer ->
+                    tarjetaSinLeer = result.motivo
                 is ScannedBarcodeResult.Unknown ->
                     unknownBarcode = result.code
                 is ScannedBarcodeResult.CodigoDoble ->
@@ -1749,14 +1753,22 @@ fun CheckoutScreen(
         val premio = tarjeta.rewardsToClaim.firstOrNull()?.takeIf { cartViewModel.puedeCambiarPremio() }
         val premioBloqueado = tarjeta.rewardsToClaim.isNotEmpty() && premio == null
         val avance = "${tarjeta.stampsEarned} de ${tarjeta.stampsRequired} sellos"
+        // D50: «esta compra le suma otro» sólo si el servidor dice que sí (ya selló hoy o los sellos están apagados: no se promete;
+        // sin comprobar: sólo el avance). Y nunca en una venta que ya se cobra por partes (Codex D50 r2): esa venta ya tiene su
+        // cliente y su sello es de quien la abrió, no necesariamente de quien se escanea ahora.
+        val estaCompra = if (!cartViewModel.puedeCambiarPremio()) {
+            ""
+        } else {
+            TextosDelSello.estaCompra(tarjeta.stampThisSale)?.let { " · $it" } ?: ""
+        }
         val detalle = if (premio != null) {
             // El premio se dice PRIMERO: es lo único que el cajero tiene que accionar,
             // y si va después del avance se lo salta.
-            "🎁 Tiene un premio por cobrar: ${premio.rewardLabel}\n\n$avance · esta compra le suma otro"
+            "🎁 Tiene un premio por cobrar: ${premio.rewardLabel}\n\n$avance$estaCompra"
         } else if (premioBloqueado) {
             "Esta venta ya se está cobrando por partes: su premio no se puede cambiar.\n\n$avance"
         } else {
-            "$avance · esta compra le suma otro"
+            "$avance$estaCompra"
         }
 
         AvoqadoDialog(
@@ -1806,6 +1818,20 @@ fun CheckoutScreen(
                     },
                     fullWidth = true,
                 )
+            },
+        ) {}
+    }
+
+    // D53: la tarjeta digital que no se pudo leer (sin red, de otro negocio o un rechazo) dice por qué y manda a elegir al
+    // cliente desde el carrito (sin red busca entre los guardados). Nunca «Crear nuevo». Sin botón que abra la lista: el aviso
+    // puede llegar con otra venta u otra hoja delante y la lista quedaría ligada a esa (Codex D53 r1 #2 y #3).
+    tarjetaSinLeer?.let { motivo ->
+        AvoqadoDialog(
+            title = motivo.titulo,
+            description = motivo.aviso,
+            onDismiss = { tarjetaSinLeer = null },
+            actionButton = {
+                PrimaryButton(text = "Entendido", onClick = { tarjetaSinLeer = null }, fullWidth = true)
             },
         ) {}
     }

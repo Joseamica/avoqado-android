@@ -3,7 +3,10 @@ package com.avoqado.pos.loyalty.data
 import android.util.Log
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.data.network.ApiService
+import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.Serializable
+import retrofit2.HttpException
+import java.io.IOException
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -41,14 +44,27 @@ data class ScannedReward(
     val rewardValue: Double? = null,
 )
 
+/**
+ * D50 (hz:b37dd7ea:D50): si una venta de AHORA le suma sello, según el servidor (la misma regla que usa al sellar: plan,
+ * interruptor de sellos y tope del día). `reason`: `DAILY_LIMIT_REACHED` · `STAMPS_DISABLED`. Es un pronóstico, no una reserva.
+ */
+@Serializable
+data class StampThisSale(
+    val willStamp: Boolean = true,
+    val reason: String? = null,
+)
+
 @Serializable
 data class WalletScanResponse(
-    val found: Boolean = false,
+    /** 🔴 Sin valor por omisión (Codex D53 r1 #5): una respuesta sin el veredicto es «No se pudo leer», no «no encontrada». */
+    val found: Boolean,
     val customer: ScannedCustomer? = null,
     val stampsEarned: Int = 0,
     val stampsRequired: Int = 0,
     val rewardLabel: String? = null,
     val rewardsToClaim: List<ScannedReward> = emptyList(),
+    /** D50, aditivo: un servidor viejo no lo manda y el aviso dice lo de siempre. */
+    val stampThisSale: StampThisSale? = null,
 )
 
 /**
@@ -67,24 +83,60 @@ fun pareceTarjetaDeCliente(code: String): Boolean {
     return limpio.length == 48 && limpio.all { it in '0'..'9' || it in 'a'..'f' || it in 'A'..'F' }
 }
 
+/**
+ * D56 (hz:b37dd7ea:D56): la tarjeta digital, sola o pegada al FINAL de otro texto. En WINDOWS la pistola teclea dentro del campo
+ * con foco (el buscador con F3, el campo manual de «Escanear»), y si ya había algo escrito los 48 caracteres se le pegan: salía
+ * «Crear producto» con el QR como nombre. El lector de teclas no lo separa a propósito (retener teclas en un campo le comía
+ * dígitos a la persona: docs/audit/2026-11-17-cantidad-tecleada/). @return la tarjeta (los últimos 48), o null.
+ */
+fun tarjetaDeClienteEn(texto: String): String? = texto.trim().takeLast(48).takeIf(::pareceTarjetaDeCliente)
+
+/**
+ * D53 (hz:b37dd7ea:D53): por qué no se leyó la tarjeta digital. Decide el aviso de la caja; 🔴 ninguno ofrece crear producto
+ * (antes caía en «Producto no encontrado · Crear nuevo» y se podía dar de alta un producto con el código de una tarjeta).
+ */
+enum class TarjetaSinLeer(val titulo: String, val aviso: String) {
+    /** Nadie contestó (o contestó un 502-504: el servidor no está). La tarjeta sólo se lee con el SERVIDOR. */
+    SIN_RED("Sin conexión", "La tarjeta del cliente se lee cuando vuelva la red. Mientras, puedes elegir al cliente a mano desde el carrito."),
+
+    /** `found:false`: de otro negocio, revocada o basura. El SERVIDOR no distingue entre ellas a propósito. */
+    NO_ENCONTRADA("Tarjeta no encontrada", "Esa tarjeta no es de un cliente de este negocio. Puedes elegir al cliente a mano desde el carrito."),
+
+    /** El SERVIDOR contestó con un rechazo (permiso, sesión, 500, la renovación que tropezó) o algo que no se pudo leer. */
+    FALLO("No se pudo leer la tarjeta", "Vuelve a escanearla o elige al cliente a mano desde el carrito."),
+}
+
+sealed interface LecturaDeTarjeta {
+    data class Leida(val tarjeta: WalletScanResponse) : LecturaDeTarjeta
+    data class SinLeer(val motivo: TarjetaSinLeer) : LecturaDeTarjeta
+}
+
 @Singleton
 class WalletScanRepository @Inject constructor(
     private val apiService: ApiService,
     private val secureStorage: SecureStorage,
 ) {
     /**
-     * Devuelve null cuando no se pudo resolver, por lo que sea: sin sesión, sin red,
-     * código de otro negocio o inventado. La caja no se detiene por esto — el cajero
-     * sigue cobrando y, si acaso, el cliente pierde su sello, no su compra.
+     * La caja no se detiene por una tarjeta sin leer — el cajero sigue cobrando y, si acaso, el cliente pierde su sello, no
+     * su compra. Pero el aviso dice por qué (D53): «sin conexión» lo decide la falla de ESTA petición, no la bandera global.
      */
-    suspend fun escanear(qrToken: String): WalletScanResponse? {
+    suspend fun escanear(qrToken: String): LecturaDeTarjeta {
         // `venueId` es una propiedad, no un getter (ver SecureStorage.kt:64).
         val venueId = secureStorage.venueId
-        if (venueId.isNullOrBlank()) return null
+        if (venueId.isNullOrBlank()) return LecturaDeTarjeta.SinLeer(TarjetaSinLeer.FALLO)
 
-        return runCatching { apiService.scanWalletPass(venueId, WalletScanRequest(qrToken)) }
-            .onFailure { Log.w("WalletScan", "No se pudo resolver la tarjeta escaneada: ${it.message}") }
-            .getOrNull()
-            ?.takeIf { it.found }
+        val respuesta = try {
+            apiService.scanWalletPass(venueId, WalletScanRequest(qrToken))
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w("WalletScan", "No se pudo resolver la tarjeta escaneada: ${e.message}")
+            // La renovación que el SERVIDOR sí contestó (5xx/429: `servidor:<código>`) no es falta de red (Codex D53 r1 #5).
+            val sinRed = (e is IOException && !(e is com.avoqado.pos.core.data.network.SesionSinRenovar && e.motivo.startsWith("servidor"))) ||
+                (e is HttpException && e.code() in 502..504)
+            return LecturaDeTarjeta.SinLeer(if (sinRed) TarjetaSinLeer.SIN_RED else TarjetaSinLeer.FALLO)
+        }
+        if (!respuesta.found) return LecturaDeTarjeta.SinLeer(TarjetaSinLeer.NO_ENCONTRADA)
+        return LecturaDeTarjeta.Leida(respuesta)
     }
 }

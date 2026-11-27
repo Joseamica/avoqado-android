@@ -83,7 +83,11 @@ class CobroDeCuentaSinRedTest {
     private val storage = mockk<SecureStorage>(relaxed = true).also { every { it.venueId } answers { venue } }
 
     private var laAbrioAqui = true
-    private val marcas = mockk<CuentasAbiertasAqui> { coEvery { laAbrioAqui(any(), any()) } answers { laAbrioAqui } }
+    private val marcas = mockk<CuentasAbiertasAqui> {
+        coEvery { laAbrioAqui(any(), any()) } answers { laAbrioAqui }
+        // D39 (Codex r5 #1): sin canje mandado desde aquí, la copia sin red decide como siempre.
+        coEvery { tieneCanje(any(), any()) } returns false
+    }
     private val locales = mockk<CobrosLocalesDeLaCuenta> { coEvery { hayPendiente(any(), any()) } returns false }
     private val efectivo = mockk<CashPaymentRepository> { coEvery { huboEfectivoSubido(any()) } returns false }
     private var premium = false

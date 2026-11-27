@@ -25,6 +25,8 @@ import com.avoqado.pos.pos.data.model.SavedCart
 import com.avoqado.pos.referrals.domain.usecase.CaptureReferralUseCase
 import com.avoqado.pos.referrals.domain.usecase.ValidateReferralUseCase
 import com.avoqado.pos.pos.data.model.parecidoACodigo
+import com.avoqado.pos.loyalty.data.LecturaDeTarjeta
+import com.avoqado.pos.loyalty.data.TarjetaSinLeer
 import io.mockk.coEvery
 import org.junit.Assert.assertFalse
 import kotlinx.coroutines.test.runCurrent
@@ -97,6 +99,7 @@ class CartViewModelTarjetaEscaneadaTest {
         every { secureStorage.userEmail } returns "jose@example.com"
         every { secureStorage.selectedStaffIdForCurrentVenue } returns "staff-99"
         every { secureStorage.selectedStaffNameForCurrentVenue } returns "Jose Tester"
+        coEvery { wallet.escanear(any()) } returns LecturaDeTarjeta.SinLeer(TarjetaSinLeer.NO_ENCONTRADA)
         coEvery { staffRepository.getActiveStaff() } returns Result.success(
             listOf(StaffMember(id = "staff-99", firstName = "Jose", lastName = "Tester")),
         )
@@ -153,10 +156,53 @@ class CartViewModelTarjetaEscaneadaTest {
     }
     @Test fun `sin red un pase de 48 hex no se vuelve el producto que se le parece`() = runTest {
         // Codex r2: la misma lectura identifica al cliente con red; sin red no puede volverse mercancía.
+        // D53: y tampoco «Producto no encontrado · Crear nuevo»: dice que la tarjeta se lee cuando vuelva la red.
         val pase="a1".repeat(24)
         every { productsRepository.products } returns MutableStateFlow(listOf(Product(id="p",name="Blusa",priceValue=150.0,sku=pase.uppercase())))
-        coEvery { wallet.escanear(pase) } returns null
-        assertEquals(ScannedBarcodeResult.Unknown(pase),createViewModel().resolveScannedBarcode(pase))
+        coEvery { wallet.escanear(pase) } returns LecturaDeTarjeta.SinLeer(TarjetaSinLeer.SIN_RED)
+        assertEquals(ScannedBarcodeResult.TarjetaDeClienteSinLeer(TarjetaSinLeer.SIN_RED),createViewModel().resolveScannedBarcode(pase))
+    }
+    @Test fun `P1 D53 una tarjeta que no se pudo leer nunca termina en producto desconocido`() = runTest {
+        val pase="a1".repeat(24)
+        for (motivo in TarjetaSinLeer.entries) {
+            coEvery { wallet.escanear(pase) } returns LecturaDeTarjeta.SinLeer(motivo)
+            assertEquals(ScannedBarcodeResult.TarjetaDeClienteSinLeer(motivo),createViewModel().resolveScannedBarcode(pase))
+        }
+    }
+    @Test fun `D53 la tarjeta leida liga al cliente como hoy y un codigo de producto desconocido sigue desconocido`() = runTest {
+        val pase="a1".repeat(24)
+        val tarjeta=com.avoqado.pos.loyalty.data.WalletScanResponse(found=true,customer=com.avoqado.pos.loyalty.data.ScannedCustomer(id="c1",firstName="Ana"))
+        coEvery { wallet.escanear(pase) } returns LecturaDeTarjeta.Leida(tarjeta)
+        val vm=createViewModel()
+        assertEquals(ScannedBarcodeResult.CustomerCardFound(tarjeta),vm.resolveScannedBarcode(pase))
+        assertEquals(ScannedBarcodeResult.Unknown("SKU-NUEVO-1"),vm.resolveScannedBarcode("SKU-NUEVO-1"))
+    }
+    @Test fun `P1 D56 la tarjeta pegada a lo que ya habia en el campo nunca ofrece crear ni se liga`() = runTest {
+        // WINDOWS, campo manual de «Escanear» con «camisa»: la pistola le pega la tarjeta y Enter manda todo junto. Sin viaje al
+        // SERVIDOR (no se liga a nadie): «No se pudo leer la tarjeta · Vuelve a escanearla».
+        val pase="a1".repeat(24)
+        assertEquals(ScannedBarcodeResult.TarjetaDeClienteSinLeer(TarjetaSinLeer.FALLO),createViewModel().resolveScannedBarcode("camisa$pase"))
+        coVerify(exactly=0) { wallet.escanear(any()) }
+    }
+    @Test fun `D56 un producto cuyo codigo termina como la tarjeta gana si existe`() = runTest {
+        val sku="SKU-"+"a1".repeat(24)
+        every { productsRepository.products } returns MutableStateFlow(listOf(Product(id="p",name="Blusa",priceValue=150.0,sku=sku)))
+        assertEquals("p",(createViewModel().resolveScannedBarcode(sku) as ScannedBarcodeResult.ProductFound).product.id)
+        coVerify(exactly=0) { wallet.escanear(any()) }
+    }
+    @Test fun `D56 un SKU que termina como la tarjeta se encuentra aunque la pistola cambie las mayusculas`() = runTest {
+        // Codex D56 r2 #2: el catálogo dice «SKU-A1A1…» y la pistola manda «sku-a1a1…»: gana el producto, no la tarjeta.
+        val sku="SKU-"+"A1".repeat(24)
+        every { productsRepository.products } returns MutableStateFlow(listOf(Product(id="p",name="Blusa",priceValue=150.0,sku=sku)))
+        assertEquals("p",(createViewModel().resolveScannedBarcode(sku.lowercase()) as ScannedBarcodeResult.ProductFound).product.id)
+        coVerify(exactly=0) { wallet.escanear(any()) }
+    }
+    @Test fun `D56 la lectura en ingles de D14 gana a la tarjeta del final`() = runTest {
+        // Codex D56 r2 #3: el teclado en español cambia «SKU-» por «SKU'» y deja los 48 del final.
+        val product=Product(id="p",name="Blusa",priceValue=150.0,sku="SKU-"+"a1".repeat(24))
+        every { productsRepository.products } returns MutableStateFlow(listOf(product))
+        assertEquals(ScannedBarcodeResult.ProductFound(product),createViewModel().resolveScannedBarcode("SKU'"+"a1".repeat(24),lecturaUs="SKU-"+"a1".repeat(24)))
+        coVerify(exactly=0) { wallet.escanear(any()) }
     }
     @Test fun `con forma de tarjeta nunca hay parecido, tampoco en Mesas ni donde no se consulta la tarjeta`() {
         // Codex r3: Mesas llama directo a parecidoACodigo. La guardia vive ahí para que ningún camino se la salte.

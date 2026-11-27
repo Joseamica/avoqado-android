@@ -174,12 +174,24 @@ fun SearchOverlayView(
                             style = MaterialTheme.typography.bodyLarge,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
-                        if (onCreateProduct != null) {
+                        // D56: la pistola de WINDOWS teclea en el buscador; la tarjeta de un cliente no es un producto. Sin
+                        // mandar a otra pantalla: este buscador también es el de Mesas (D53 r4 #2).
+                        val esTarjeta = com.avoqado.pos.loyalty.data.tarjetaDeClienteEn(query) != null
+                        if (esTarjeta) {
+                            Text(
+                                text = "Eso es la tarjeta digital de un cliente, no un producto.",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        if (onCreateProduct != null && !esTarjeta) {
                             Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
                             PrimaryButton(
                                 text = "Crear producto",
-                                onClick = {
-                                    val searchName = query.trim()
+                                onClick = crear@{
+                                    val searchName = viewModel.searchQuery.value.trim()
+                                    // D56 (Codex r3 #1): el clic en el mismo instante en que termina la pistola, antes del redibujo.
+                                    if (com.avoqado.pos.loyalty.data.tarjetaDeClienteEn(searchName) != null) return@crear
                                     viewModel.updateSearchQuery("")
                                     onCreateProduct(searchName)
                                 },

@@ -6756,6 +6756,59 @@ class PaymentFlowViewModelTest {
         assertTrue((viewModel.state.value as PaymentFlowState.Success).isQueued)
     }
 
+    /**
+     * D39 r10 (Codex r9 #1, límite «Sí, como Toast»): una cuenta en la que esta caja canjeó (o intentó canjear) puntos se cobra sólo con
+     * conexión desde esta caja. El cobro abierto con red que pierde la red a media petición NO guarda el efectivo en el aparato: su
+     * importe pudo ser el de antes del canje.
+     */
+    @Test
+    fun `D39 r10 una cuenta con canje de esta caja no guarda el efectivo en el aparato si se cae la red`() = runTest {
+        conLaCajaDeLaCopia()
+        alCobrarEnEfectivo(Result.failure(java.io.IOException("sin red")))
+        viewModel.startPaymentFlow(carritoDeLaCopia(), resumeOrderId = "o1", soloConConexion = true)
+        viewModel.confirmCashPreset(tenderedCents = 10000)
+        advanceUntilIdle()
+
+        coVerify(exactly = 0) {
+            cashPaymentRepository.queueCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(),
+                any(), any(), any(), any(), any(), any())
+        }
+        assertFalse("no dice «cobrado»", viewModel.state.value is PaymentFlowState.Success)
+    }
+
+    /**
+     * D39 fase 1, aparato (D3, 26-nov): el SERVIDOR tardó 11 s, la app se rindió a los 10 y el pago SÍ había entrado. La pantalla decía
+     * «No se pudo registrar el pago: timeout». Sin respuesta no se sabe: lo dice así, y «Reintentar» manda la misma llave.
+     */
+    @Test
+    fun `D39 aparato - cuenta con canje sin respuesta del efectivo dice que no se sabe, no que no se registro`() = runTest {
+        conLaCajaDeLaCopia()
+        alCobrarEnEfectivo(Result.failure(java.net.SocketTimeoutException("timeout")))
+        viewModel.startPaymentFlow(carritoDeLaCopia(), resumeOrderId = "o1", soloConConexion = true)
+        viewModel.confirmCashPreset(tenderedCents = 10000)
+        advanceUntilIdle()
+
+        val error = viewModel.state.value as PaymentFlowState.Error
+        assertEquals(
+            "No se sabe si el pago entró. Toca «Reintentar» con conexión: si ya había entrado, no se cobra otra vez.",
+            error.message,
+        )
+    }
+
+    @Test
+    fun `D39 r10 sin canje la misma cuenta sí guarda el efectivo en el aparato (control)`() = runTest {
+        conLaCajaDeLaCopia()
+        alCobrarEnEfectivo(Result.failure(java.io.IOException("sin red")))
+        viewModel.startPaymentFlow(carritoDeLaCopia(), resumeOrderId = "o1")
+        viewModel.confirmCashPreset(tenderedCents = 10000)
+        advanceUntilIdle()
+
+        coVerify(exactly = 1) {
+            cashPaymentRepository.queueCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(),
+                any(), any(), any(), any(), any(), any())
+        }
+    }
+
     @Test
     fun `D12 el primer envio que si llega con la cuenta crecida deja lo pendiente del servidor`() = runTest {
         // Tras confirmar, la caja abierta ya es otra: el envío conserva la que se leyó al confirmar.

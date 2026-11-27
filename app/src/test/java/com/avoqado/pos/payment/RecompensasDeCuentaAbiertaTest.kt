@@ -1,0 +1,643 @@
+package com.avoqado.pos.payment
+
+import com.avoqado.pos.MainDispatcherRule
+import com.avoqado.pos.core.data.local.SecureStorage
+import com.avoqado.pos.core.util.ConnectivityMonitor
+import com.avoqado.pos.giftcards.data.CobrosLocalesDeLaCuenta
+import com.avoqado.pos.payment.presentation.CobroDeCuentaViewModel
+import com.avoqado.pos.orders.data.model.comoDetalle
+import com.avoqado.pos.payment.presentation.motivoSinRecompensasDeCuenta
+import com.avoqado.pos.giftcards.domain.OfertaDeLaCuenta
+import com.avoqado.pos.tables.data.CanjeRechazado
+import com.avoqado.pos.tables.data.CustomerLoyalty
+import com.avoqado.pos.tables.data.LOYALTY_OFFER_CHANGED
+import com.avoqado.pos.tables.data.OrderDetail
+import com.avoqado.pos.tables.data.PreBillBalance
+import com.avoqado.pos.tables.data.RECOMPENSAS_SIN_RED
+import com.avoqado.pos.tables.data.RedeemPointsData
+import com.avoqado.pos.tables.data.TableServiceRepository
+import io.mockk.coEvery
+import io.mockk.coVerify
+import io.mockk.every
+import io.mockk.mockk
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.test.runTest
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Rule
+import org.junit.Test
+
+/** D39 fase 1: «Recompensas» en una cuenta abierta de Mostrador (las de «Pagar después»), con el canje de Mesas. */
+@OptIn(ExperimentalCoroutinesApi::class)
+class RecompensasDeCuentaAbiertaTest {
+    @get:Rule val main = MainDispatcherRule()
+
+    private val conectado = MutableStateFlow(true)
+    private val servidor = MutableStateFlow(true)
+    private val red = mockk<ConnectivityMonitor> {
+        every { isConnected } returns conectado
+        every { isServerReachable } returns servidor
+    }
+    private val storage = mockk<SecureStorage>(relaxed = true) { every { venueId } returns "v" }
+    private val repo = mockk<TableServiceRepository>()
+    private val locales = mockk<CobrosLocalesDeLaCuenta> {
+        coEvery { hayPendiente(any(), any()) } returns false
+        coEvery { dineroConocido(any(), any()) } returns com.avoqado.pos.payment.domain.DineroConocido.NADA
+    }
+    private var permisos = true
+    private val roles = mockk<com.avoqado.pos.core.domain.RoleManager>(relaxed = true) {
+        every { hasVenuePermission(any<String>()) } answers { permisos }
+    }
+    private val m = CobroDeCuentaViewModel(repo, storage, red, roles, mockk(relaxed = true), locales)
+
+    private fun cuenta(version: Int, subtotal: Double = 100.0, cliente: String? = "ana", descuento: Double = 0.0, payLater: Boolean? = true) = OrderDetail(
+        "o", esDeMesa = false, cobrosConSaldo = 0, status = "CONFIRMED", paymentStatus = "PENDING", subtotal = subtotal,
+        total = subtotal - descuento, customerId = cliente, discountAmount = descuento, version = version, payLater = payLater,
+        preBillBalance = PreBillBalance(((subtotal - descuento) * 100).toInt(), 0, ((subtotal - descuento) * 100).toInt(), 0),
+    )
+
+    private fun saldo(puntos: Int) = CustomerLoyalty(
+        customerId = "ana", customerName = "Ana", active = true, balance = puntos, redemptionRate = 0.10, balanceValue = puntos * 0.10,
+        minPointsRedeem = 10, maxRedeemablePoints = puntos, maxRedeemableValue = puntos * 0.10, canRedeem = true,
+    )
+
+    @Test fun `lee el saldo de la clienta de la cuenta y lo etiqueta con esa cuenta`() = runTest {
+        coEvery { repo.getOrderDetail("v", "o") } returns Result.success(cuenta(version = 3))
+        coEvery { repo.getCustomerLoyalty("v", "ana", "o") } returns Result.success(saldo(200))
+        m.ofertaParaCobrar("o")
+        m.leerLealtad("o")
+        val leida = m.lealtadDeLaCuenta()
+        assertEquals(200, leida?.lealtad?.balance)
+        assertEquals(3, leida?.version)
+    }
+
+    @Test fun `la lectura de una version vieja de la cuenta no se ofrece`() = runTest {
+        coEvery { repo.getOrderDetail("v", "o") } returns Result.success(cuenta(version = 3))
+        coEvery { repo.getCustomerLoyalty("v", "ana", "o") } returns Result.success(saldo(200))
+        m.ofertaParaCobrar("o")
+        m.leerLealtad("o")
+        coEvery { repo.getOrderDetail("v", "o") } returns Result.success(cuenta(version = 4))
+        m.ofertaParaCobrar("o")
+        assertNull(m.lealtadDeLaCuenta())
+    }
+
+    @Test fun `una cuenta sin cliente no lee saldo`() = runTest {
+        coEvery { repo.getOrderDetail("v", "o") } returns Result.success(cuenta(version = 3, cliente = null))
+        m.ofertaParaCobrar("o")
+        m.leerLealtad("o")
+        coVerify(exactly = 0) { repo.getCustomerLoyalty(any(), any(), any()) }
+        assertNull(m.lealtadDeLaCuenta())
+    }
+
+    @Test fun `canjear manda lo que enseña el dialogo, avisa lo aplicado por el SERVIDOR y relee la cuenta y el saldo`() = runTest {
+        // La consulta inicial, la de abrir «Recompensas» y la de después del canje (ya con el descuento).
+        coEvery { repo.getOrderDetail("v", "o") } returnsMany listOf(
+            Result.success(cuenta(version = 3)), Result.success(cuenta(version = 3)), Result.success(cuenta(version = 4, descuento = 10.0)),
+        )
+        coEvery { repo.getCustomerLoyalty("v", "ana", "o") } returnsMany listOf(
+            Result.success(saldo(200)), Result.success(saldo(200)), Result.success(saldo(100)),
+        )
+        coEvery { repo.redeemLoyaltyPoints("v", "o", "ana", 100, 10.0, 3, any()) } returns Result.success(RedeemPointsData(100, 10.0, 100))
+        m.ofertaParaCobrar("o")
+        m.leerLealtad("o")
+        var actualizado = false
+        m.abrirRecompensas("o")
+        m.canjear("o", 100, 10.0) { actualizado = true }
+        assertEquals("Recompensa aplicada — 100 puntos por \$10.00", m.avisoDeRecompensas.value)
+        assertFalse(m.recompensasAbiertas.value)
+        assertEquals(4, m.detalle.value?.version)
+        assertEquals(100, m.lealtadDeLaCuenta()?.lealtad?.balance)
+        assertTrue(actualizado)
+        assertFalse(m.canjeEnVuelo.value)
+    }
+
+    @Test fun `un 409 de la oferta no quema nada, reabre el dialogo con la oferta nueva y dice que la cuenta cambio`() = runTest {
+        coEvery { repo.getOrderDetail("v", "o") } returns Result.success(cuenta(version = 3))
+        coEvery { repo.getCustomerLoyalty("v", "ana", "o") } returns Result.success(saldo(200))
+        coEvery { repo.redeemLoyaltyPoints(any(), any(), any(), any(), any(), any(), any()) } returns
+            Result.failure(CanjeRechazado(LOYALTY_OFFER_CHANGED, "La cuenta cambió"))
+        m.ofertaParaCobrar("o")
+        m.leerLealtad("o")
+        m.abrirRecompensas("o")
+        m.canjear("o", 100, 10.0) {}
+        assertEquals("La cuenta cambió: revisa los puntos.", m.avisoDelCanje.value)
+        assertTrue(m.recompensasAbiertas.value)
+        assertEquals(200, m.lealtadDeLaCuenta()?.lealtad?.balance)
+    }
+
+    @Test fun `otro rechazo se dice con el texto del SERVIDOR y cierra el dialogo`() = runTest {
+        coEvery { repo.getOrderDetail("v", "o") } returns Result.success(cuenta(version = 3))
+        coEvery { repo.getCustomerLoyalty("v", "ana", "o") } returns Result.success(saldo(200))
+        coEvery { repo.redeemLoyaltyPoints(any(), any(), any(), any(), any(), any(), any()) } returns
+            Result.failure(CanjeRechazado("X", "El programa de lealtad no está activo en esta sucursal"))
+        m.ofertaParaCobrar("o")
+        m.leerLealtad("o")
+        m.abrirRecompensas("o")
+        m.canjear("o", 100, 10.0) {}
+        assertEquals("El programa de lealtad no está activo en esta sucursal", m.avisoDeRecompensas.value)
+        assertFalse(m.recompensasAbiertas.value)
+    }
+
+    @Test fun `sin red no se manda nada`() = runTest {
+        coEvery { repo.getOrderDetail("v", "o") } returns Result.success(cuenta(version = 3))
+        coEvery { repo.getCustomerLoyalty("v", "ana", "o") } returns Result.success(saldo(200))
+        m.ofertaParaCobrar("o")
+        m.leerLealtad("o")
+        servidor.value = false
+        m.canjear("o", 100, 10.0) {}
+        coVerify(exactly = 0) { repo.redeemLoyaltyPoints(any(), any(), any(), any(), any(), any(), any()) }
+        assertEquals(RECOMPENSAS_SIN_RED, m.avisoDeRecompensas.value)
+    }
+
+    @Test fun `un segundo toque mientras viaja el primero no canjea otra vez`() = runTest {
+        coEvery { repo.getOrderDetail("v", "o") } returns Result.success(cuenta(version = 3))
+        coEvery { repo.getCustomerLoyalty("v", "ana", "o") } returns Result.success(saldo(200))
+        val respuesta = CompletableDeferred<Result<RedeemPointsData>>()
+        coEvery { repo.redeemLoyaltyPoints(any(), any(), any(), any(), any(), any(), any()) } coAnswers { respuesta.await() }
+        m.ofertaParaCobrar("o")
+        m.leerLealtad("o")
+        m.canjear("o", 100, 10.0) {}
+        assertTrue(m.canjeEnVuelo.value)
+        m.canjear("o", 100, 10.0) {}
+        respuesta.complete(Result.success(RedeemPointsData(100, 10.0, 100)))
+        coVerify(exactly = 1) { repo.redeemLoyaltyPoints(any(), any(), any(), any(), any(), any(), any()) }
+    }
+
+    @Test fun `el motivo del boton gris dice la causa verdadera`() {
+        val c = cuenta(version = 3)
+        val leida = com.avoqado.pos.tables.data.LealtadLeida("o", "ana", 3, saldo(200))
+        // Sin red manda primero.
+        assertEquals(RECOMPENSAS_SIN_RED, motivoSinRecompensasDeCuenta(c, leida, enLinea = false, consultando = false, oferta = OfertaDeLaCuenta.OFRECER))
+        // Con un cobro local sin subir, el saldo del SERVIDOR todavía no lo cuenta.
+        assertEquals(
+            com.avoqado.pos.payment.presentation.RECOMPENSAS_CON_COBRO_SIN_SUBIR,
+            motivoSinRecompensasDeCuenta(c, leida, enLinea = true, consultando = false, oferta = OfertaDeLaCuenta.COBRO_SIN_SINCRONIZAR),
+        )
+        // Todo bien: se puede.
+        assertNull(motivoSinRecompensasDeCuenta(c, leida, enLinea = true, consultando = false, oferta = OfertaDeLaCuenta.OFRECER))
+        // Sin cliente.
+        assertEquals(
+            com.avoqado.pos.payment.presentation.RECOMPENSAS_SIN_CLIENTE,
+            motivoSinRecompensasDeCuenta(cuenta(version = 3, cliente = null), null, enLinea = true, consultando = false, oferta = OfertaDeLaCuenta.OFRECER),
+        )
+    }
+
+    @Test fun `una cuenta sin marca de «Pagar despues» (importada, de plataforma o servidor viejo) no lee saldo ni se ofrece`() = runTest {
+        coEvery { repo.getOrderDetail("v", "o") } returns Result.success(cuenta(version = 3, payLater = null))
+        m.ofertaParaCobrar("o")
+        m.leerLealtad("o")
+        coVerify(exactly = 0) { repo.getCustomerLoyalty(any(), any(), any()) }
+        val order = com.avoqado.pos.orders.data.model.OrderDetail("o", esDeMesa = false, customerName = "Ana")
+        assertFalse(com.avoqado.pos.payment.presentation.ofreceRecompensas(order, m.detalle.value, conCopia = false, elegible = true, cents = 10000))
+        coEvery { repo.getOrderDetail("v", "o") } returns Result.success(cuenta(version = 3))
+        m.ofertaParaCobrar("o")
+        assertTrue(com.avoqado.pos.payment.presentation.ofreceRecompensas(order, m.detalle.value, conCopia = false, elegible = true, cents = 10000))
+        // Ni de mesa, ni de tarjetas de regalo, ni sin saldo.
+        assertFalse(com.avoqado.pos.payment.presentation.ofreceRecompensas(order, m.detalle.value, conCopia = false, elegible = true, cents = 0))
+        assertFalse(com.avoqado.pos.payment.presentation.ofreceRecompensas(order, m.detalle.value?.copy(esDeMesa = true), conCopia = false, elegible = true, cents = 10000))
+        assertFalse(com.avoqado.pos.payment.presentation.ofreceRecompensas(order, m.detalle.value?.copy(esCuentaDeTarjetas = true), conCopia = false, elegible = true, cents = 10000))
+    }
+
+    @Test fun `sin permiso no se canjea y el motivo lo dice`() = runTest {
+        coEvery { repo.getOrderDetail("v", "o") } returns Result.success(cuenta(version = 3))
+        coEvery { repo.getCustomerLoyalty("v", "ana", "o") } returns Result.success(saldo(200))
+        m.ofertaParaCobrar("o")
+        m.leerLealtad("o")
+        permisos = false
+        m.canjear("o", 100, 10.0) {}
+        coVerify(exactly = 0) { repo.redeemLoyaltyPoints(any(), any(), any(), any(), any(), any(), any()) }
+        assertEquals(
+            com.avoqado.pos.payment.presentation.RECOMPENSAS_SIN_PERMISO,
+            motivoSinRecompensasDeCuenta(m.detalle.value, m.lealtadLeida.value, enLinea = true, consultando = false, oferta = OfertaDeLaCuenta.OFRECER, puedeCanjear = false),
+        )
+    }
+
+    @Test fun `un 403 al leer el saldo se explica como plan o permisos, no como red`() = runTest {
+        coEvery { repo.getOrderDetail("v", "o") } returns Result.success(cuenta(version = 3))
+        val prohibido = retrofit2.HttpException(retrofit2.Response.error<Any>(403, okhttp3.ResponseBody.create(null, "{}")))
+        coEvery { repo.getCustomerLoyalty("v", "ana", "o") } returns Result.failure(prohibido)
+        m.ofertaParaCobrar("o")
+        m.leerLealtad("o")
+        assertTrue(m.lealtadProhibida.value)
+        assertEquals(
+            com.avoqado.pos.payment.presentation.RECOMPENSAS_SIN_ACCESO,
+            motivoSinRecompensasDeCuenta(m.detalle.value, m.lealtadLeida.value, enLinea = true, consultando = false, oferta = OfertaDeLaCuenta.OFRECER, prohibida = true),
+        )
+    }
+
+    @Test fun `r10 - los puntos pueden cubrir toda la cuenta - Pedidos la cierra con «Cerrar cuenta (0)», como Mesas`() {
+        // Mínimo 100 con una cuenta de $10.00: antes, gris («quedaría en $0.00»); ahora se ofrece.
+        val c = cuenta(version = 3, subtotal = 10.0)
+        val leida = com.avoqado.pos.tables.data.LealtadLeida("o", "ana", 3, saldo(500).copy(minPointsRedeem = 100, maxRedeemablePoints = 100, maxRedeemableValue = 10.0))
+        assertNull(motivoSinRecompensasDeCuenta(c, leida, enLinea = true, consultando = false, oferta = OfertaDeLaCuenta.OFRECER))
+    }
+
+    @Test fun `r10 - canjear todo lo que cabe en la cuenta sale (el tope es el del SERVIDOR)`() = runTest {
+        coEvery { repo.getOrderDetail("v", "o") } returns Result.success(cuenta(version = 3, subtotal = 10.0))
+        coEvery { repo.getCustomerLoyalty("v", "ana", "o") } returns Result.success(saldo(500).copy(maxRedeemablePoints = 100, maxRedeemableValue = 10.0))
+        coEvery { repo.redeemLoyaltyPoints(any(), any(), any(), any(), any(), any(), any()) } returns Result.success(RedeemPointsData(100, 10.0, 400))
+        m.ofertaParaCobrar("o")
+        m.leerLealtad("o")
+        m.canjear("o", 100, 10.0) {}
+        coVerify(exactly = 1) { repo.redeemLoyaltyPoints("v", "o", "ana", 100, 10.0, 3, any()) }
+    }
+
+    @Test fun `r10 - el canje viaja con una llave nueva y el reintento manda la MISMA llave`() = runTest {
+        coEvery { repo.getOrderDetail("v", "o") } returns Result.success(cuenta(version = 3))
+        coEvery { repo.getCustomerLoyalty("v", "ana", "o") } returns Result.success(saldo(200))
+        val llaves = mutableListOf<String?>()
+        coEvery { repo.redeemLoyaltyPoints(any(), any(), any(), any(), any(), any(), captureNullable(llaves)) } returns
+            Result.failure(java.io.IOException("sin red"))
+        m.ofertaParaCobrar("o")
+        m.leerLealtad("o")
+        m.canjear("o", 100, 10.0) {}
+        m.reintentarCanje("o") {}
+        assertEquals(2, llaves.size)
+        assertTrue(llaves[0] != null && java.util.UUID.fromString(llaves[0]) != null)
+        assertEquals(llaves[0], llaves[1])
+    }
+
+    @Test fun `r10 - r9 #1 - un 4xx sin recibo (el reenvío que rebota en la puerta) no es definitivo - queda en duda y el reintento recibe el canje que sí entró`() = runTest {
+        coEvery { repo.getOrderDetail("v", "o") } returnsMany listOf(Result.success(cuenta(version = 3)), Result.success(cuenta(version = 3)),
+            Result.success(cuenta(version = 4, descuento = 10.0)))
+        coEvery { repo.getCustomerLoyalty("v", "ana", "o") } returns Result.success(saldo(200))
+        coEvery { repo.redeemLoyaltyPoints(any(), any(), any(), any(), any(), any(), any()) } returns
+            Result.failure(CanjeRechazado(null, "No tienes permiso", definitivo = false))
+        m.ofertaParaCobrar("o")
+        m.leerLealtad("o")
+        m.canjear("o", 100, 10.0) {}
+        assertEquals("o", m.canjeEnDuda.value)
+        assertTrue(m.cobroBloqueadoPorCanje("o"))
+        assertEquals(com.avoqado.pos.payment.presentation.RECOMPENSAS_EN_DUDA, m.avisoDeRecompensas.value)
+        // Con la misma llave, el SERVIDOR espera al primer envío y contesta su recibo: sí entró.
+        coEvery { repo.redeemLoyaltyPoints(any(), any(), any(), any(), any(), any(), any()) } returns Result.success(RedeemPointsData(100, 10.0, 100))
+        m.reintentarCanje("o") {}
+        assertNull(m.canjeEnDuda.value)
+        assertFalse(m.cobroBloqueadoPorCanje("o"))
+        assertEquals("Recompensa aplicada — 100 puntos por \$10.00", m.avisoDeRecompensas.value)
+    }
+
+    @Test fun `el canje manda la version de la cuenta que se ve`() = runTest {
+        coEvery { repo.getOrderDetail("v", "o") } returns Result.success(cuenta(version = 7))
+        coEvery { repo.getCustomerLoyalty("v", "ana", "o") } returns Result.success(saldo(200))
+        coEvery { repo.redeemLoyaltyPoints(any(), any(), any(), any(), any(), any(), any()) } returns Result.success(RedeemPointsData(100, 10.0, 100))
+        m.ofertaParaCobrar("o")
+        m.leerLealtad("o")
+        m.canjear("o", 100, 10.0) {}
+        coVerify(exactly = 1) { repo.redeemLoyaltyPoints("v", "o", "ana", 100, 10.0, 7, any()) }
+    }
+
+    @Test fun `la cuenta en el carrito no se canjea desde Pedidos`() {
+        val c = cuenta(version = 3)
+        val leida = com.avoqado.pos.tables.data.LealtadLeida("o", "ana", 3, saldo(200))
+        assertEquals(
+            com.avoqado.pos.payment.presentation.RECOMPENSAS_EN_EL_CARRITO,
+            motivoSinRecompensasDeCuenta(c, leida, enLinea = true, consultando = false, oferta = OfertaDeLaCuenta.NADA, laTraeUnCarrito = true),
+        )
+    }
+
+    @Test fun `sin respuesta del canje no se ofrece uno nuevo, sólo repetirlo idéntico con la versión de entonces`() = runTest {
+        // Lectura inicial (v3) y la relectura tras perder la respuesta (v4: el SERVIDOR sí lo aplicó).
+        coEvery { repo.getOrderDetail("v", "o") } returnsMany listOf(Result.success(cuenta(version = 3)), Result.success(cuenta(version = 4, descuento = 10.0)))
+        coEvery { repo.getCustomerLoyalty("v", "ana", "o") } returns Result.success(saldo(200))
+        coEvery { repo.redeemLoyaltyPoints(any(), any(), any(), any(), any(), any(), any()) } returns Result.failure(java.net.SocketTimeoutException("timeout"))
+        m.ofertaParaCobrar("o")
+        m.leerLealtad("o")
+        m.canjear("o", 100, 10.0) {}
+        assertEquals(com.avoqado.pos.payment.presentation.RECOMPENSAS_EN_DUDA, m.avisoDeRecompensas.value)
+        assertEquals("o", m.canjeEnDuda.value)
+        // Un canje nuevo (con la versión nueva) no sale mientras el anterior no tenga desenlace.
+        m.canjear("o", 100, 10.0) {}
+        coVerify(exactly = 1) { repo.redeemLoyaltyPoints(any(), any(), any(), any(), any(), any(), any()) }
+        // Reintentar manda EXACTAMENTE lo mismo (versión 3): el SERVIDOR, que ya subió la versión, contesta 409 y no quema otra vez.
+        coEvery { repo.redeemLoyaltyPoints(any(), any(), any(), any(), any(), any(), any()) } returns
+            Result.failure(CanjeRechazado(LOYALTY_OFFER_CHANGED, "La cuenta cambió"))
+        m.reintentarCanje("o") {}
+        coVerify(exactly = 2) { repo.redeemLoyaltyPoints("v", "o", "ana", 100, 10.0, 3, any()) }
+        assertEquals(com.avoqado.pos.payment.presentation.RECOMPENSAS_REINTENTO_YA_CAMBIO, m.avisoDeRecompensas.value)
+        assertNull(m.canjeEnDuda.value)
+        assertFalse(m.recompensasAbiertas.value)
+    }
+
+    @Test fun `el reintento de un canje que no entró lo aplica`() = runTest {
+        coEvery { repo.getOrderDetail("v", "o") } returns Result.success(cuenta(version = 3))
+        coEvery { repo.getCustomerLoyalty("v", "ana", "o") } returns Result.success(saldo(200))
+        coEvery { repo.redeemLoyaltyPoints(any(), any(), any(), any(), any(), any(), any()) } returns Result.failure(java.io.IOException("sin red"))
+        m.ofertaParaCobrar("o")
+        m.leerLealtad("o")
+        m.canjear("o", 100, 10.0) {}
+        coEvery { repo.redeemLoyaltyPoints(any(), any(), any(), any(), any(), any(), any()) } returns Result.success(RedeemPointsData(100, 10.0, 100))
+        m.reintentarCanje("o") {}
+        assertEquals("Recompensa aplicada — 100 puntos por \$10.00", m.avisoDeRecompensas.value)
+        assertNull(m.canjeEnDuda.value)
+    }
+
+    @Test fun `mientras viaja el canje y su relectura, canjeEnVuelo sigue prendido`() = runTest {
+        coEvery { repo.getCustomerLoyalty("v", "ana", "o") } returns Result.success(saldo(200))
+        coEvery { repo.redeemLoyaltyPoints(any(), any(), any(), any(), any(), any(), any()) } returns Result.success(RedeemPointsData(100, 10.0, 100))
+        val relectura = CompletableDeferred<Result<OrderDetail>>()
+        coEvery { repo.getOrderDetail("v", "o") } returns Result.success(cuenta(version = 3))
+        m.ofertaParaCobrar("o")
+        m.leerLealtad("o")
+        coEvery { repo.getOrderDetail("v", "o") } coAnswers { relectura.await() }
+        m.canjear("o", 100, 10.0) {}
+        // El POST ya volvió, pero la relectura no: «Cobrar» todavía espera (Codex r3 #1).
+        assertTrue(m.canjeEnVuelo.value)
+        relectura.complete(Result.success(cuenta(version = 4, descuento = 10.0)))
+        assertFalse(m.canjeEnVuelo.value)
+    }
+
+    @Test fun `con un canje sin respuesta ningún cobro de la cuenta se abre y la copia sin red sale gris`() = runTest {
+        coEvery { repo.getOrderDetail("v", "o") } returns Result.success(cuenta(version = 3))
+        coEvery { repo.getCustomerLoyalty("v", "ana", "o") } returns Result.success(saldo(200))
+        coEvery { repo.redeemLoyaltyPoints(any(), any(), any(), any(), any(), any(), any()) } returns Result.failure(java.io.IOException("sin red"))
+        m.ofertaParaCobrar("o")
+        m.leerLealtad("o")
+        assertFalse(m.cobroBloqueadoPorCanje("o"))
+        m.canjear("o", 100, 10.0) {}
+        assertTrue(m.cobroBloqueadoPorCanje("o"))
+        // Sin red, la copia no ofrece recibir efectivo con el saldo de antes (Codex r4 #1).
+        m.consultarSinRed("o")
+        assertEquals(
+            com.avoqado.pos.payment.domain.DecisionSinRed.Gris(com.avoqado.pos.payment.presentation.RECOMPENSAS_COBRO_ESPERA_AL_CANJE),
+            m.sinRed.value,
+        )
+        assertEquals(
+            com.avoqado.pos.payment.domain.DecisionSinRed.Gris(com.avoqado.pos.payment.presentation.RECOMPENSAS_COBRO_ESPERA_AL_CANJE),
+            m.pedirCobroSinRed("o"),
+        )
+    }
+
+    @Test fun `el reintento respeta lo que frena un canje - un cobro de esta caja sin subir`() = runTest {
+        coEvery { repo.getOrderDetail("v", "o") } returns Result.success(cuenta(version = 3))
+        coEvery { repo.getCustomerLoyalty("v", "ana", "o") } returns Result.success(saldo(200))
+        coEvery { repo.redeemLoyaltyPoints(any(), any(), any(), any(), any(), any(), any()) } returns Result.failure(java.io.IOException("sin red"))
+        m.ofertaParaCobrar("o")
+        m.leerLealtad("o")
+        m.canjear("o", 100, 10.0) {}
+        // Al volver, la cuenta tiene un cobro de esta caja que todavía no sube.
+        coEvery { locales.hayPendiente("v", "o") } returns true
+        m.ofertaParaCobrar("o")
+        m.reintentarCanje("o") {}
+        coVerify(exactly = 1) { repo.redeemLoyaltyPoints(any(), any(), any(), any(), any(), any(), any()) }
+        assertEquals(com.avoqado.pos.payment.presentation.RECOMPENSAS_CON_COBRO_SIN_SUBIR, m.avisoDeRecompensas.value)
+        assertEquals("o", m.canjeEnDuda.value)
+    }
+
+    @Test fun `r5 #2 - el reintento relee la oferta - un pendiente que ya subio no lo frena`() = runTest {
+        coEvery { repo.getOrderDetail("v", "o") } returns Result.success(cuenta(version = 3))
+        coEvery { repo.getCustomerLoyalty("v", "ana", "o") } returns Result.success(saldo(200))
+        coEvery { repo.redeemLoyaltyPoints(any(), any(), any(), any(), any(), any(), any()) } returns Result.failure(java.io.IOException("sin red"))
+        m.ofertaParaCobrar("o")
+        m.leerLealtad("o")
+        // La relectura de después del canje lee mal los cobros locales: la pantalla guarda «cobro sin subir» (frena de más).
+        var discoFalla = true
+        coEvery { locales.hayPendiente("v", "o") } answers { if (discoFalla) throw java.io.IOException("disco") else false }
+        m.canjear("o", 100, 10.0) {}
+        assertEquals(OfertaDeLaCuenta.COBRO_SIN_SINCRONIZAR, m.oferta.value)
+        // El disco vuelve y no hay nada pendiente: el reintento NO usa la oferta guardada, la relee (Codex r5 #2).
+        discoFalla = false
+        coEvery { repo.redeemLoyaltyPoints(any(), any(), any(), any(), any(), any(), any()) } returns Result.success(RedeemPointsData(100, 10.0, 100))
+        m.reintentarCanje("o") {}
+        coVerify(exactly = 2) { repo.redeemLoyaltyPoints("v", "o", "ana", 100, 10.0, 3, any()) }
+        assertNull(m.canjeEnDuda.value)
+    }
+
+    @Test fun `r5 #1 - un canje que si entro y la red cae antes de releer - la copia sin red no cobra el saldo de antes`() = runTest {
+        val marcas = marcasEnMemoria()
+        val vm = CobroDeCuentaViewModel(repo, storage, red, roles, mockk(relaxed = true), locales, cuentasAbiertasAqui = marcas)
+        coEvery { repo.getOrderDetail("v", "o") } returns Result.success(cuenta(version = 3))
+        coEvery { repo.getCustomerLoyalty("v", "ana", "o") } returns Result.success(saldo(200))
+        vm.ofertaParaCobrar("o")
+        vm.leerLealtad("o")
+        // La marca se guarda ANTES de mandar el canje: si la app muere a media petición, también queda.
+        coEvery { repo.redeemLoyaltyPoints(any(), any(), any(), any(), any(), any(), any()) } coAnswers {
+            assertTrue(marcas.tieneCanje("v", "o"))
+            Result.success(RedeemPointsData(100, 10.0, 100))
+        }
+        // La relectura no llega: se cayó la red.
+        coEvery { repo.getOrderDetail("v", "o") } returns Result.failure(java.io.IOException("sin red"))
+        vm.canjear("o", 100, 10.0) {}
+        assertFalse(vm.cobroBloqueadoPorCanje("o"))
+        val gris = com.avoqado.pos.payment.domain.DecisionSinRed.Gris(com.avoqado.pos.payment.presentation.RECOMPENSAS_SIN_RED_CON_PUNTOS)
+        vm.consultarSinRed("o")
+        assertEquals(gris, vm.sinRed.value)
+        assertEquals(gris, vm.pedirCobroSinRed("o"))
+        assertEquals(com.avoqado.pos.payment.presentation.RECOMPENSAS_SIN_RED_CON_PUNTOS, vm.revalidarCobroSinRed("o", 10_000))
+    }
+
+    @Test fun `r5 #1 - si la marca no se puede guardar, el canje no sale`() = runTest {
+        val marcas = marcasEnMemoria(falla = true)
+        val vm = CobroDeCuentaViewModel(repo, storage, red, roles, mockk(relaxed = true), locales, cuentasAbiertasAqui = marcas)
+        coEvery { repo.getOrderDetail("v", "o") } returns Result.success(cuenta(version = 3))
+        coEvery { repo.getCustomerLoyalty("v", "ana", "o") } returns Result.success(saldo(200))
+        vm.ofertaParaCobrar("o")
+        vm.leerLealtad("o")
+        vm.canjear("o", 100, 10.0) {}
+        coVerify(exactly = 0) { repo.redeemLoyaltyPoints(any(), any(), any(), any(), any(), any(), any()) }
+        assertEquals(com.avoqado.pos.payment.presentation.RECOMPENSAS_NO_SE_GUARDO, vm.avisoDeRecompensas.value)
+        assertFalse(vm.canjeEnVuelo.value)
+    }
+
+    @Test fun `r8 #2 y #3 - un canje intentado aqui deja la cuenta para cobrarse solo con conexion aunque el SERVIDOR lo rechace`() = runTest {
+        val marcas = marcasEnMemoria()
+        val vm = CobroDeCuentaViewModel(repo, storage, red, roles, mockk(relaxed = true), locales, cuentasAbiertasAqui = marcas)
+        coEvery { repo.getOrderDetail("v", "o") } returns Result.success(cuenta(version = 3))
+        coEvery { repo.getCustomerLoyalty("v", "ana", "o") } returns Result.success(saldo(200))
+        coEvery { repo.redeemLoyaltyPoints(any(), any(), any(), any(), any(), any(), any()) } returns
+            Result.failure(CanjeRechazado(LOYALTY_OFFER_CHANGED, "La cuenta cambió"))
+        vm.ofertaParaCobrar("o")
+        vm.leerLealtad("o")
+        vm.canjear("o", 100, 10.0) {}
+        // Un rechazo no prueba que el canje no entró (OkHttp reenvía el POST y el primero puede confirmar después): la marca se queda y,
+        // sin red, la cuenta sólo se cobra con conexión desde esta caja. Es el límite declarado (founder, «Sí, como Toast»).
+        assertTrue(marcas.tieneCanje("v", "o"))
+        assertEquals(com.avoqado.pos.payment.presentation.RECOMPENSAS_SIN_RED_CON_PUNTOS, vm.revalidarCobroSinRed("o", 10_000))
+    }
+
+    @Test fun `r7 #1 - el primer envio rechazado por un reenvio de OkHttp - la cuenta releida subio de version - la marca se queda`() = runTest {
+        val marcas = marcasEnMemoria()
+        val vm = CobroDeCuentaViewModel(repo, storage, red, roles, mockk(relaxed = true), locales, cuentasAbiertasAqui = marcas)
+        coEvery { repo.getOrderDetail("v", "o") } returns Result.success(cuenta(version = 3))
+        coEvery { repo.getCustomerLoyalty("v", "ana", "o") } returns Result.success(saldo(200))
+        vm.ofertaParaCobrar("o")
+        vm.leerLealtad("o")
+        // El primer POST sí entró (la versión pasó a 4); el reenvío automático choca con la versión y es lo único que llega.
+        coEvery { repo.redeemLoyaltyPoints(any(), any(), any(), any(), any(), any(), any()) } coAnswers {
+            coEvery { repo.getOrderDetail("v", "o") } returns Result.success(cuenta(version = 4, descuento = 10.0))
+            Result.failure(CanjeRechazado(LOYALTY_OFFER_CHANGED, "La cuenta cambió"))
+        }
+        vm.canjear("o", 100, 10.0) {}
+        assertTrue(marcas.tieneCanje("v", "o"))
+    }
+
+    @Test fun `r7 #1 - el primer envio rechazado y la relectura falla - la marca se queda`() = runTest {
+        val marcas = marcasEnMemoria()
+        val vm = CobroDeCuentaViewModel(repo, storage, red, roles, mockk(relaxed = true), locales, cuentasAbiertasAqui = marcas)
+        coEvery { repo.getOrderDetail("v", "o") } returns Result.success(cuenta(version = 3))
+        coEvery { repo.getCustomerLoyalty("v", "ana", "o") } returns Result.success(saldo(200))
+        vm.ofertaParaCobrar("o")
+        vm.leerLealtad("o")
+        coEvery { repo.redeemLoyaltyPoints(any(), any(), any(), any(), any(), any(), any()) } coAnswers {
+            coEvery { repo.getOrderDetail("v", "o") } returns Result.failure(java.io.IOException("sin red"))
+            Result.failure(CanjeRechazado(LOYALTY_OFFER_CHANGED, "La cuenta cambió"))
+        }
+        vm.canjear("o", 100, 10.0) {}
+        assertTrue(marcas.tieneCanje("v", "o"))
+    }
+
+    @Test fun `r6 #2 - si ya habia un canje de aqui, un segundo canje rechazado conserva la marca`() = runTest {
+        val marcas = marcasEnMemoria()
+        val vm = CobroDeCuentaViewModel(repo, storage, red, roles, mockk(relaxed = true), locales, cuentasAbiertasAqui = marcas)
+        coEvery { repo.getOrderDetail("v", "o") } returns Result.success(cuenta(version = 3))
+        coEvery { repo.getCustomerLoyalty("v", "ana", "o") } returns Result.success(saldo(200))
+        coEvery { repo.redeemLoyaltyPoints(any(), any(), any(), any(), any(), any(), any()) } returns Result.success(RedeemPointsData(100, 10.0, 100))
+        vm.ofertaParaCobrar("o")
+        vm.leerLealtad("o")
+        vm.canjear("o", 100, 10.0) {}
+        assertTrue(marcas.tieneCanje("v", "o"))
+        // El segundo canje se rechaza; el primero sí entró: la cuenta trae puntos y sin red no se cobra.
+        coEvery { repo.redeemLoyaltyPoints(any(), any(), any(), any(), any(), any(), any()) } returns
+            Result.failure(CanjeRechazado("X", "El programa de lealtad no está activo en esta sucursal"))
+        vm.ofertaParaCobrar("o")
+        vm.leerLealtad("o")
+        vm.canjear("o", 100, 10.0) {}
+        assertTrue(marcas.tieneCanje("v", "o"))
+    }
+
+    @Test fun `r9 #2 - unas marcas de canje ilegibles en el disco cuentan como canje - sin red la cuenta no se cobra`() = runTest {
+        val cache = mockk<com.avoqado.pos.core.data.local.PayloadCache> {
+            coEvery { load(any(), any()) } returns null
+            coEvery { loadDurable(com.avoqado.pos.core.data.local.PayloadCache.TYPE_CUENTAS_CON_CANJE_AQUI, "v") } returns
+                com.avoqado.pos.core.data.local.PayloadCache.Cached("{esto no es json", 0)
+            coEvery { loadDurable(com.avoqado.pos.core.data.local.PayloadCache.TYPE_CUENTAS_ABIERTAS_AQUI, "v") } returns null
+            coEvery { saveDurable(any(), any(), any()) } returns Unit
+        }
+        val copia = com.avoqado.pos.orders.data.CopiaDeCuentas(cache).also { it.io = kotlinx.coroutines.Dispatchers.Unconfined }
+        val marcas = com.avoqado.pos.orders.data.CuentasAbiertasAqui(cache, copia)
+        assertTrue(marcas.tieneCanje("v", "o"))
+        // Y no se escribe encima de lo ilegible (borraría las marcas de las demás cuentas): el canje no sale.
+        assertFalse(marcas.marcarCanje("v", "otra"))
+    }
+
+    private fun marcasEnMemoria(falla: Boolean = false): com.avoqado.pos.orders.data.CuentasAbiertasAqui {
+        val disco = mutableMapOf<String, com.avoqado.pos.core.data.local.PayloadCache.Cached>()
+        val cache = mockk<com.avoqado.pos.core.data.local.PayloadCache> {
+            coEvery { load(any(), any()) } answers { disco["${firstArg<String>()}|${secondArg<String>()}"] }
+            coEvery { loadDurable(any(), any()) } answers { disco["${firstArg<String>()}|${secondArg<String>()}"] }
+            coEvery { saveDurable(any(), any(), any()) } answers {
+                if (falla) throw IllegalStateException("disco lleno")
+                disco["${firstArg<String>()}|${secondArg<String>()}"] = com.avoqado.pos.core.data.local.PayloadCache.Cached(thirdArg(), 0)
+            }
+        }
+        val copia = com.avoqado.pos.orders.data.CopiaDeCuentas(cache).also { it.io = kotlinx.coroutines.Dispatchers.Unconfined }
+        return com.avoqado.pos.orders.data.CuentasAbiertasAqui(cache, copia)
+    }
+
+    @Test fun `un rechazo del SERVIDOR no es duda - dice su motivo`() = runTest {
+        coEvery { repo.getOrderDetail("v", "o") } returns Result.success(cuenta(version = 3))
+        coEvery { repo.getCustomerLoyalty("v", "ana", "o") } returns Result.success(saldo(200))
+        coEvery { repo.redeemLoyaltyPoints(any(), any(), any(), any(), any(), any(), any()) } returns
+            Result.failure(CanjeRechazado("ORDER_CANCEL_BLOCKED_BY_TERMINAL_CHARGE", "Hay un cobro con tarjeta en curso en la terminal"))
+        m.ofertaParaCobrar("o")
+        m.leerLealtad("o")
+        m.canjear("o", 100, 10.0) {}
+        assertEquals("Hay un cobro con tarjeta en curso en la terminal", m.avisoDeRecompensas.value)
+    }
+
+    @Test fun `sin red, la cuenta de la copia de «Pagar despues» ofrece Recompensas (gris) y una sin la marca no`() {
+        val deLaCopia = com.avoqado.pos.orders.data.model.OrderSummary("o", esDeMesa = false, customerName = "Ana", payLater = true).comoDetalle()
+        assertTrue(com.avoqado.pos.payment.presentation.ofreceRecompensas(deLaCopia, detalle = null, conCopia = true, elegible = false, cents = null))
+        // Una cuenta separada puede no traer el nombre: igual se ve (gris), Codex r3 #3.
+        assertTrue(com.avoqado.pos.payment.presentation.ofreceRecompensas(deLaCopia.copy(customerName = null), detalle = null, conCopia = true, elegible = false, cents = null))
+        val importada = deLaCopia.copy(payLater = null)
+        assertFalse(com.avoqado.pos.payment.presentation.ofreceRecompensas(importada, detalle = null, conCopia = true, elegible = false, cents = null))
+        assertEquals(RECOMPENSAS_SIN_RED, motivoSinRecompensasDeCuenta(null, null, enLinea = false, consultando = false, oferta = OfertaDeLaCuenta.NADA))
+    }
+
+    @Test fun `r10 - «Cerrar cuenta (0)» sale en una cuenta abierta con productos que quedó en cero, y en nada más`() {
+        val item = com.avoqado.pos.tables.data.OrderDetailItem("i1", productName = "Café", quantity = 1, unitPrice = 10.0, total = 10.0)
+        val enCero = cuenta(version = 4, subtotal = 10.0, descuento = 10.0).copy(items = listOf(item))
+        assertTrue(com.avoqado.pos.payment.presentation.cierraEnCero(enCero))
+        // Con algo por cobrar, sin productos, ya pagada, cancelada o de tarjetas de regalo: no.
+        assertFalse(com.avoqado.pos.payment.presentation.cierraEnCero(cuenta(version = 4, subtotal = 10.0).copy(items = listOf(item))))
+        assertFalse(com.avoqado.pos.payment.presentation.cierraEnCero(enCero.copy(items = emptyList())))
+        assertFalse(com.avoqado.pos.payment.presentation.cierraEnCero(enCero.copy(paymentStatus = "PAID")))
+        assertFalse(com.avoqado.pos.payment.presentation.cierraEnCero(enCero.copy(status = "CANCELLED")))
+        assertFalse(com.avoqado.pos.payment.presentation.cierraEnCero(enCero.copy(esCuentaDeTarjetas = true)))
+        // Sin saber cuánto falta (abonos sin el saldo del SERVIDOR): no.
+        assertFalse(com.avoqado.pos.payment.presentation.cierraEnCero(enCero.copy(preBillBalance = null,
+            payments = listOf(com.avoqado.pos.tables.data.OrderDetailPayment("p1", status = "COMPLETED")))))
+    }
+
+    @Test fun `r11 - Codex r10 #1 - una cuenta que quedó en cero con productos se ofrece cobrar (cerrar), no NADA`() = runTest {
+        val item = com.avoqado.pos.tables.data.OrderDetailItem("i1", productName = "Café", quantity = 1, unitPrice = 10.0, total = 10.0)
+        coEvery { repo.getOrderDetail("v", "o") } returns Result.success(cuenta(version = 4, subtotal = 10.0, descuento = 10.0).copy(items = listOf(item)))
+        assertEquals(OfertaDeLaCuenta.OFRECER, m.ofertaParaCobrar("o"))
+        // Sin productos sigue sin ofrecerse.
+        coEvery { repo.getOrderDetail("v", "o") } returns Result.success(cuenta(version = 4, subtotal = 10.0, descuento = 10.0))
+        assertEquals(OfertaDeLaCuenta.NADA, m.ofertaParaCobrar("o"))
+    }
+
+    @Test fun `r11 - Codex r10 #2 - el canje total que se queda sin respuesta se puede reintentar aunque la relectura traiga cero`() = runTest {
+        val item = com.avoqado.pos.tables.data.OrderDetailItem("i1", productName = "Café", quantity = 1, unitPrice = 10.0, total = 10.0)
+        coEvery { repo.getOrderDetail("v", "o") } returnsMany listOf(
+            Result.success(cuenta(version = 3, subtotal = 10.0).copy(items = listOf(item))),
+            Result.success(cuenta(version = 4, subtotal = 10.0, descuento = 10.0).copy(items = listOf(item))),
+        )
+        coEvery { repo.getCustomerLoyalty("v", "ana", "o") } returns Result.success(saldo(500).copy(maxRedeemablePoints = 100, maxRedeemableValue = 10.0))
+        val llaves = mutableListOf<String?>()
+        coEvery { repo.redeemLoyaltyPoints(any(), any(), any(), any(), any(), any(), captureNullable(llaves)) } returns
+            Result.failure(java.io.IOException("se perdió la respuesta"))
+        m.ofertaParaCobrar("o")
+        m.leerLealtad("o")
+        m.canjear("o", 100, 10.0) {}
+        assertEquals("o", m.canjeEnDuda.value)
+        coEvery { repo.redeemLoyaltyPoints(any(), any(), any(), any(), any(), any(), captureNullable(llaves)) } returns Result.success(RedeemPointsData(100, 10.0, 400))
+        m.reintentarCanje("o") {}
+        assertEquals(2, llaves.size)
+        assertEquals(llaves[0], llaves[1])
+        assertNull(m.canjeEnDuda.value)
+    }
+
+    @Test fun `r11 - Codex r10 sobra - con llave, un rechazo con recibo al reintentar dice su motivo, no «si el anterior entró»`() = runTest {
+        coEvery { repo.getOrderDetail("v", "o") } returns Result.success(cuenta(version = 3))
+        coEvery { repo.getCustomerLoyalty("v", "ana", "o") } returns Result.success(saldo(200))
+        coEvery { repo.redeemLoyaltyPoints(any(), any(), any(), any(), any(), any(), any()) } returns Result.failure(java.io.IOException("sin red"))
+        m.ofertaParaCobrar("o")
+        m.leerLealtad("o")
+        m.canjear("o", 100, 10.0) {}
+        coEvery { repo.redeemLoyaltyPoints(any(), any(), any(), any(), any(), any(), any()) } returns
+            Result.failure(CanjeRechazado(null, "Puntos insuficientes", definitivo = true, conLlave = true))
+        m.reintentarCanje("o") {}
+        assertEquals("Puntos insuficientes", m.avisoDeRecompensas.value)
+        assertNull(m.canjeEnDuda.value)
+    }
+
+    // D39 fase 1, aparato (D3, 26-nov): la relectura de «Recompensas» vacía la cuenta un momento; el botón sale de la pantalla y su
+    // `rememberCoroutineScope` se cancela. La relectura tiene que vivir en el ViewModel (como Mesas), no en el botón.
+    @Test fun `aparato - abrir Recompensas termina su relectura aunque el boton salga de la pantalla`() = runTest {
+        var llamadas = 0
+        val respuesta = CompletableDeferred<Result<OrderDetail>>()
+        coEvery { repo.getOrderDetail("v", "o") } coAnswers { if (++llamadas == 1) Result.success(cuenta(version = 3)) else respuesta.await() }
+        coEvery { repo.getCustomerLoyalty("v", "ana", "o") } returns Result.success(saldo(200))
+        m.ofertaParaCobrar("o")
+        m.leerLealtad("o")
+        val boton = kotlinx.coroutines.CoroutineScope(coroutineContext + kotlinx.coroutines.Job())
+        boton.launch { m.abrirRecompensas("o") }
+        testScheduler.runCurrent()
+        assertNull(m.detalle.value) // la relectura vació la cuenta: el botón ya no se dibuja
+        boton.cancel()             // y se lleva su scope
+        respuesta.complete(Result.success(cuenta(version = 3)))
+        testScheduler.advanceUntilIdle()
+        assertEquals(3, m.detalle.value?.version)
+        assertEquals(200, m.lealtadDeLaCuenta()?.lealtad?.balance)
+        assertTrue(m.recompensasAbiertas.value)
+    }
+}

@@ -109,4 +109,34 @@ class ValorDelCanjeTest {
         assertEquals(false, canjeRechazadoDe(null).ofertaCambio)
         assertEquals(false, canjeRechazadoDe("<html>").ofertaCambio)
     }
+
+    @Test
+    fun `D39 r10 - con llave, sólo un rechazo con su recibo del SERVIDOR (httpOperation REJECTED) es definitivo - sin llave, todo 4xx lo es`() {
+        val conRecibo = """{"success":false,"code":"LOYALTY_OFFER_CHANGED","message":"x","httpOperation":{"version":1,"id":"a","deviceId":"b","outcome":"REJECTED"}}"""
+        assertEquals(true, canjeRechazadoDe(conRecibo, conLlave = true).definitivo)
+        assertEquals(true, canjeRechazadoDe(conRecibo, conLlave = true).ofertaCambio)
+        // El reenvío que rebota en la puerta (permiso, plan) antes de llegar a la llave: no dice nada del primer envío.
+        assertEquals(false, canjeRechazadoDe("""{"success":false,"message":"Sin permiso"}""", conLlave = true).definitivo)
+        assertEquals(false, canjeRechazadoDe("""{"httpOperation":{"outcome":"RETRY"}}""", conLlave = true).definitivo)
+        assertEquals(false, canjeRechazadoDe(null, conLlave = true).definitivo)
+        // Sin llave (Mesas, o un aparato sin identidad UUID): como siempre.
+        assertEquals(true, canjeRechazadoDe("""{"message":"Sin permiso"}""").definitivo)
+    }
+
+    @Test
+    fun `D39 r10 - la llave del canje viaja sólo si existe - sin ella la llave no se manda (el SERVIDOR rechaza un null)`() {
+        val json = com.avoqado.pos.core.di.NetworkModule.provideJson()
+        val sin = json.encodeToString(RedeemPointsRequest.serializer(), RedeemPointsRequest("c", 100, 10.0, 3))
+        assertEquals(false, sin.contains("httpOperation"))
+        val con = json.encodeToString(RedeemPointsRequest.serializer(), RedeemPointsRequest("c", 100, 10.0, 3,
+            HttpOperationToken(id = "7f1f2a6e-3c1b-4f53-9c8a-1d2e3f4a5b6c", deviceId = "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d")))
+        assertEquals(true, con.contains(""""httpOperation":{"version":1,"id":"7f1f2a6e-3c1b-4f53-9c8a-1d2e3f4a5b6c","deviceId":"0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d"}"""))
+    }
+
+    @Test
+    fun `D39 r10 - la llave sólo se arma con un aparato con identidad UUID (si no, el SERVIDOR contestaría 400 sin recibo siempre)`() {
+        assertEquals("op", llaveDelCanje("op", "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d")?.id)
+        assertEquals(null, llaveDelCanje("op", "no-es-uuid"))
+        assertEquals(null, llaveDelCanje(null, "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d"))
+    }
 }
