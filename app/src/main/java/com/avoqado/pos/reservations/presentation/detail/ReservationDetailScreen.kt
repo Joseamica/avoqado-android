@@ -46,6 +46,7 @@ import com.avoqado.pos.reservations.presentation.undo.PendingPanel
 import com.avoqado.pos.reservations.presentation.undo.SiLlegoButton
 import com.avoqado.pos.reservations.presentation.undo.UndoNoShowOverlays
 import com.avoqado.pos.reservations.presentation.components.ReservationStatusBadge
+import com.avoqado.pos.tables.domain.etiquetaDeMesa
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -145,7 +146,7 @@ fun ReservationDetailScreen(
                             InfoRow("Duración", "${r.duration} min")
                             InfoRow("Personas", r.partySize.toString())
                             InfoRow("Servicio", r.displayServiceName)
-                            InfoRow("Mesa", r.table?.let { "Mesa ${it.number}" })
+                            InfoRow("Mesa", r.table?.let { etiquetaDeMesa(it.number) })
                             InfoRow("Personal", r.assignedStaff?.displayName)
                         }
                         InfoSection("Cliente") {

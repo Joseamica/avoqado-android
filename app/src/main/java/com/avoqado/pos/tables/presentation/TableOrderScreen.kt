@@ -72,6 +72,7 @@ import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.lifecycle.repeatOnLifecycle
+import com.avoqado.pos.tables.domain.etiquetaDeMesa
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
@@ -1118,7 +1119,7 @@ fun TableOrderScreen(
             items = listOf(
                 com.avoqado.pos.pos.data.model.CartItem(
                     type = com.avoqado.pos.pos.data.model.CartItemType.CustomAmount,
-                    name = "Cuenta Mesa ${session?.tableNumber ?: ""}",
+                    name = "Cuenta ${etiquetaDeMesa(session?.tableNumber ?: "")}",
                     unitPrice = paymentSeedCents,
                 ),
             ),
@@ -1159,7 +1160,7 @@ fun TableOrderScreen(
                 items = listOf(
                     com.avoqado.pos.pos.data.model.CartItem(
                         type = com.avoqado.pos.pos.data.model.CartItemType.CustomAmount,
-                        name = "Cuenta Mesa ${session?.tableNumber ?: ""}",
+                        name = "Cuenta ${etiquetaDeMesa(session?.tableNumber ?: "")}",
                         unitPrice = subtotal,
                     ),
                 ),
@@ -3015,7 +3016,7 @@ private fun MoveTableDialog(
                                 onClick = { selectedId = table.id },
                             )
                             Text(
-                                "Mesa ${table.number}" + (table.areaName?.let { " · $it" } ?: ""),
+                                etiquetaDeMesa(table.number) + (table.areaName?.let { " · $it" } ?: ""),
                                 style = MaterialTheme.typography.bodyMedium,
                             )
                         }
@@ -3430,7 +3431,7 @@ private fun MergeOrdersDialog(
                                 fontWeight = FontWeight.SemiBold,
                             )
                             Text(
-                                text = "Mesa ${mesa.number} · ${cuenta.itemCount} artículo(s)",
+                                text = "${etiquetaDeMesa(mesa.number)} · ${cuenta.itemCount} artículo(s)",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )

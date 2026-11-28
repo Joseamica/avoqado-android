@@ -52,6 +52,7 @@ import com.avoqado.pos.referrals.domain.repository.ReferralValidationException
 import com.avoqado.pos.referrals.domain.usecase.CaptureReferralUseCase
 import com.avoqado.pos.referrals.domain.usecase.ValidateReferralUseCase
 import com.avoqado.pos.referrals.presentation.ReferralCaptureUiState
+import com.avoqado.pos.tables.domain.etiquetaDeMesa
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
@@ -1656,7 +1657,7 @@ class CartViewModel @Inject constructor(
         if (cobroLoImpide(avisar = false)) return
         val session = tableSession.current() ?: return
         if (session.mode != com.avoqado.pos.tables.data.TableSession.Mode.PAYING) return
-        val label = "Cuenta Mesa ${session.tableNumber}"
+        val label = "Cuenta ${etiquetaDeMesa(session.tableNumber)}"
         val items = _cartState.value.items
         if (items.any { it.name == label }) return
         // Mid-split re-entry: the cart already carries the live remainder line

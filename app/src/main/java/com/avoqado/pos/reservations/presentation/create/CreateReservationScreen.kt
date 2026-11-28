@@ -55,6 +55,7 @@ import com.avoqado.pos.reservations.presentation.create.sections.CustomerSection
 import com.avoqado.pos.reservations.presentation.create.sections.DateTimeSection
 import com.avoqado.pos.reservations.presentation.create.sections.DetailsSection
 import com.avoqado.pos.reservations.presentation.create.sections.ServiceSection
+import com.avoqado.pos.tables.domain.etiquetaDeMesa
 import kotlinx.coroutines.launch
 import java.time.format.DateTimeFormatter
 import java.util.Locale
@@ -431,7 +432,7 @@ private fun detailsSummary(draft: CreateReservationDraft): String {
 
 private fun detailsSecondary(draft: CreateReservationDraft): String? {
     val parts = buildList {
-        draft.tableNumber?.let { add("Mesa $it") }
+        draft.tableNumber?.let { add(etiquetaDeMesa(it)) }
         draft.assignedStaffName?.let { add(it) }
         if (!draft.specialRequests.isNullOrBlank() || !draft.internalNotes.isNullOrBlank()) {
             add("Con notas")

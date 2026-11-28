@@ -27,6 +27,7 @@ import com.avoqado.pos.tables.data.RondaConLlave
 import com.avoqado.pos.tables.data.TableServiceRepository
 import com.avoqado.pos.tables.data.TableSession
 import com.avoqado.pos.tables.data.paraLaCuenta
+import com.avoqado.pos.tables.domain.etiquetaDeMesa
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -1286,7 +1287,7 @@ class TableOrderViewModel @Inject constructor(
                 sacarDePendientes(lines) // D16: ya está en el servidor, aunque el disco no deje guardar
                 _isSending.value = false
                 onDone(true, if (lines.any { it.item.serviceCourse?.preparationVersion == 1 })
-                    "Comanda registrada — Mesa ${session.tableNumber}" else "Ronda enviada a cocina — Mesa ${session.tableNumber}")
+                    "Comanda registrada — ${etiquetaDeMesa(session.tableNumber)}" else "Ronda enviada a cocina — ${etiquetaDeMesa(session.tableNumber)}")
                 loadCheck()
                 printRoundComandas(vId, session, lines, refreshFloor = true, servidorLaTiene = true, roundKey = roundKey)
             }
@@ -1752,7 +1753,7 @@ class TableOrderViewModel @Inject constructor(
                     repository.refresh(vId)
                     tableSession.finalizar(vId, session.idsDeLaOrden, contextoDeSesion)
                     val target = repository.tables.value.firstOrNull { it.id == targetTableId }
-                    onDone(true, "Cuenta movida a Mesa ${target?.number ?: ""}".trim())
+                    onDone(true, "Cuenta movida a ${etiquetaDeMesa(target?.number ?: "")}".trim())
                 },
                 onFailure = { e -> onDone(false, com.avoqado.pos.core.data.network.ServerErrorText.humanize(e, "No se pudo mover la cuenta")) },
             )
@@ -2366,7 +2367,7 @@ class TableOrderViewModel @Inject constructor(
                     mutarCuenta(vId, session) { mutar { repository.clearTable(vId, session.tableId, session.orderId)  }}
                     repository.refresh(vId)
                     tableSession.finalizar(vId, session.idsDeLaOrden, contextoDeSesion)
-                    onDone(true, "Cuenta anulada — Mesa ${session.tableNumber} liberada")
+                    onDone(true, "Cuenta anulada — ${etiquetaDeMesa(session.tableNumber)} liberada")
                 },
                 onFailure = { e ->
                     repository.refresh(vId)
@@ -2554,7 +2555,7 @@ class TableOrderViewModel @Inject constructor(
                         if (rondaDelGrupo != null && rondaConfirmada(rondaDelGrupo)) { confirmadasAMedias++; continue }
                         val planes = tanda
                         if (planes.isEmpty()) continue
-                        val tipo = "Mesa $mesaAhora" + (course?.let { " · $it" } ?: "") + " · REIMPRESIÓN"
+                        val tipo = etiquetaDeMesa(mesaAhora) + (course?.let { " · $it" } ?: "") + " · REIMPRESIÓN"
                         if (rondaDelGrupo == null) {
                             val r = comandaPrinter.printComandas(plans = planes, config = config, orderNumber = session.orderNumber, orderType = tipo)
                             intentadas += r.attempted
@@ -2681,7 +2682,7 @@ class TableOrderViewModel @Inject constructor(
                 plans = ruteo.plans,
                 config = config,
                 orderNumber = session.orderNumber,
-                orderType = "Mesa ${session.tableNumber} · ¡MARCHAR ${course ?: "Inmediato"}!",
+                orderType = "${etiquetaDeMesa(session.tableNumber)} · ¡MARCHAR ${course ?: "Inmediato"}!",
             )
             showMessage("¡Marchando ${course ?: "Inmediato"}!")
         }
@@ -2751,7 +2752,7 @@ class TableOrderViewModel @Inject constructor(
                 val balance = order.preBillBalance
                 val receipt = ReceiptData(
                     orderNumber = order.orderNumber,
-                    orderType = "Mesa ${session.tableNumber} - PRE-CUENTA",
+                    orderType = "${etiquetaDeMesa(session.tableNumber)} - PRE-CUENTA",
                     items = renglonesDePreCuenta(order.items),
                     subtotal = subtotal,
                     taxAmount = cents(order.addedTaxAmount),

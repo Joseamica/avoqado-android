@@ -5,6 +5,7 @@ import com.avoqado.pos.core.domain.printing.ComandaDispatcher
 import com.avoqado.pos.pos.data.model.CartItemType
 import com.avoqado.pos.printing.routing.PrintConfig
 import com.avoqado.pos.printing.routing.RoutableItem
+import com.avoqado.pos.tables.domain.etiquetaDeMesa
 import com.avoqado.pos.tables.presentation.TableOrderViewModel.PendingLine
 
 /** Un renglón de la ronda (ya con su llave `sync:<ronda>:<i>`) como lo rutea la cocina: el MISMO al enviar y al reimprimir. */
@@ -33,10 +34,10 @@ fun pedidosDeLaRonda(lines: List<PendingLine>, roundKey: String, tableNumber: St
         .map { (course, courseLines) ->
             ComandaDispatcher.Pedido(
                 lines = courseLines.map(::renglonDeCocinaDeRonda),
-                orderType = "Mesa $tableNumber" + (course?.let { " · $it" } ?: ""),
+                orderType = etiquetaDeMesa(tableNumber) + (course?.let { " · $it" } ?: ""),
                 // KDS 3.6: la pantalla junta los cursos en una tarjeta — «Mesa 8» arriba y el tiempo en cada platillo.
                 curso = course,
-                etiquetaPantalla = "Mesa $tableNumber",
+                etiquetaPantalla = etiquetaDeMesa(tableNumber),
                 configCongelada = configCongelada,
                 omitirSinComanda = true, // «No lleva comanda»: la ronda es una venta del POS.
             )

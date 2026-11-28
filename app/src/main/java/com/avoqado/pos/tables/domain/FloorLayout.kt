@@ -168,7 +168,7 @@ object FloorLayoutBuilder {
 
     /** «Mesa 7, ocupada, 12 minutos» — lo que dice un lector de pantalla al tocar una mesa (spec §4.2). */
     fun tableAccessibilityLabel(table: DiningTable, nowMs: Long): String {
-        val base = "Mesa ${table.number}"
+        val base = etiquetaDeMesa(table.number)
         return when {
             table.isOccupied -> {
                 val detalle = if (table.openOrders.size > 1) {
