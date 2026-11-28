@@ -1239,14 +1239,16 @@ private fun DoneInteractive(
                 national = input,
                 sending = receiptSend == CustomerDisplayState.ReceiptSend.Sending,
                 error = receiptSend == CustomerDisplayState.ReceiptSend.Error,
-                // E.164 mínimo/razonable: 8–15 dígitos nacionales (MX = 10).
-                canSend = input.length in 8..15,
+                // Lo que lleva su país, como el kiosco (México = 10 exactos; hz:nube0000:nae727f6): antes 8 a 15 con
+                // cualquier país y «+5212345678» salía a un número que no existe.
+                canSend = whatsAppDelClienteCompleto(input, country),
+                aviso = avisoDelWhatsAppDelCliente(input, country),
                 onPickCountry = { touched(); showCountryPicker = true },
-                onKey = { touched(); if (input.length < 15) input += it },
+                onKey = { touched(); if (input.length < digitosMaximosDelWhatsApp(country)) input += it },
                 onDelete = { touched(); input = input.dropLast(1) },
                 onBack = { touched(); mode = DoneMode.Options },
-                // Mismo formato que el cajero: "+{lada}{dígitos}".
-                onSend = { touched(); onWhatsApp("+${country.dialCode}$input") },
+                // Mismo formato que el cajero: "+{lada}{dígitos}", y sólo si está completo.
+                onSend = { touched(); whatsAppDelCliente(input, country)?.let(onWhatsApp) },
             )
             if (showCountryPicker) {
                 CountryPicker(
@@ -1437,6 +1439,7 @@ private fun PhoneEntryPad(
     sending: Boolean,
     error: Boolean,
     canSend: Boolean,
+    aviso: String?,
     onPickCountry: () -> Unit,
     onKey: (String) -> Unit,
     onDelete: () -> Unit,
@@ -1466,6 +1469,18 @@ private fun PhoneEntryPad(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f),
+            )
+        }
+        // Qué le falta al número, en su país («Falta 1 dígito: un número de México lleva 10»). Gris mientras falta, rojo
+        // si sobra o empieza mal: lo primero es teclear a medias, lo segundo hay que corregirlo.
+        if (aviso != null) {
+            Spacer(Modifier.height(AvoqadoTheme.spacing.xs))
+            Text(
+                text = aviso,
+                fontSize = CdBody,
+                color = if (aviso.startsWith("Falta")) MaterialTheme.colorScheme.onSurfaceVariant
+                        else MaterialTheme.colorScheme.error,
+                textAlign = TextAlign.Center,
             )
         }
         if (error) {
