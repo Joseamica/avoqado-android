@@ -712,11 +712,11 @@ private fun CartItemRow(
         confirmValueChange = { value ->
             if (value == SwipeToDismissBoxValue.EndToStart) {
                 onDelete()
-                // En una promoción el borrado abre un aviso ("se quitará el
-                // combo completo"), así que la fila NO se da por desaparecida:
-                // si el cajero cancela, se quedaría barrida fuera de pantalla
-                // con el producto todavía en el carrito.
-                !item.isPromotionLine
+                // En una promoción o un vale el borrado puede abrir un aviso
+                // ("se quitará el combo/vale completo"), así que la fila NO se
+                // da por desaparecida: si el cajero cancela, se quedaría barrida
+                // fuera de pantalla con el producto todavía en el carrito.
+                seDaPorQuitadaAlDeslizar(item)
             } else {
                 false
             }

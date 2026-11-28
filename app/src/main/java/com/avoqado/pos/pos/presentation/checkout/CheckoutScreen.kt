@@ -308,9 +308,16 @@ fun CheckoutScreen(
     // El `CartViewModel` lo garantiza igual venga de donde venga el borrado;
     // esto es el aviso, no la regla.
     var promocionAQuitar by remember { mutableStateOf<CartItem?>(null) }
+    // Lo mismo con un vale: quitar uno de sus renglones quita el vale completo (hz:7c75e287:D2).
+    var valeAQuitar by remember { mutableStateOf<com.avoqado.pos.pos.presentation.cart.ValeAQuitar?>(null) }
     val quitarLineaDelCarrito: (String) -> Unit = { itemId ->
         val linea = cartState.items.firstOrNull { it.id == itemId }
-        if (linea?.promotionInstanceId != null) promocionAQuitar = linea else cartViewModel.quitarPorElCajero(itemId)
+        val vale = com.avoqado.pos.pos.presentation.cart.valeAQuitar(cartState.items, itemId)
+        when {
+            linea?.promotionInstanceId != null -> promocionAQuitar = linea
+            vale != null -> valeAQuitar = vale
+            else -> cartViewModel.quitarPorElCajero(itemId)
+        }
     }
     LaunchedEffect(tableSessionActive?.orderId, tableSessionActive?.mode) {
         cartViewModel.consumePendingTableCobrar()
@@ -1287,6 +1294,27 @@ fun CheckoutScreen(
                     onClick = {
                         linea.promotionInstanceId?.let { cartViewModel.quitarPromocion(it) }
                         promocionAQuitar = null
+                        selectedCartItem = null
+                    },
+                )
+            },
+            content = {},
+        )
+    }
+
+    valeAQuitar?.let { vale ->
+        AvoqadoDialog(
+            title = "Quitar el vale completo",
+            description = vale.aviso,
+            onDismiss = { valeAQuitar = null },
+            actionButton = {
+                PrimaryButton(
+                    text = "Quitar vale",
+                    destructive = true,
+                    fullWidth = true,
+                    onClick = {
+                        cartViewModel.quitarPorElCajero(vale.itemId)
+                        valeAQuitar = null
                         selectedCartItem = null
                     },
                 )
