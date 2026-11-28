@@ -52,6 +52,33 @@ object FloorLayoutBuilder {
     const val SIN_AREA_KEY = "__sin_area__"
     const val SIN_AREA_TITLE = "Sin área"
 
+    private val porNombre: Collator get() = Collator.getInstance(Locale("es")).apply { strength = Collator.SECONDARY }
+
+    /**
+     * Orden natural de las mesas en la lista (sin plano) y en «sin acomodar»: «Mesa 2» antes que «Mesa 10». El SERVIDOR
+     * las manda por `number` como texto («1, 10, 2»). Los tramos de dígitos se comparan como números y el resto con el
+     * Collator español (sin mayúsculas ni acentos); empate por id. Con plano manda la posición: esto no lo toca.
+     */
+    private fun ordenNatural(): Comparator<DiningTable> {
+        val texto = porNombre
+        val tramos = Regex("\\d+|\\D+")
+        val numero = { a: String, b: String ->
+            val x = a.trimStart('0')
+            val y = b.trimStart('0')
+            if (x.length != y.length) x.length.compareTo(y.length) else x.compareTo(y)
+        }
+        return Comparator<DiningTable> { a, b ->
+            val ta = tramos.findAll(a.number).map { it.value }.toList()
+            val tb = tramos.findAll(b.number).map { it.value }.toList()
+            for (i in 0 until minOf(ta.size, tb.size)) {
+                val ambosNumeros = ta[i][0] in '0'..'9' && tb[i][0] in '0'..'9'
+                val c = if (ambosNumeros) numero(ta[i], tb[i]) else texto.compare(ta[i], tb[i])
+                if (c != 0) return@Comparator c
+            }
+            ta.size.compareTo(tb.size)
+        }.thenBy { it.id }
+    }
+
     private data class AreaInfo(val id: String, val name: String, val floorShape: String?, val sortOrder: Int)
 
     /**
@@ -65,7 +92,6 @@ object FloorLayoutBuilder {
             tables.mapNotNull { t -> t.areaId?.let { AreaInfo(it, t.areaName ?: "Área", t.areaFloorShape, t.areaSortOrder ?: 0) } }
                 .distinctBy { it.id }
         }
-        val porNombre = Collator.getInstance(Locale("es")).apply { strength = Collator.SECONDARY }
         return areas
             .sortedWith(compareBy<AreaInfo> { it.sortOrder }.thenBy(porNombre) { it.name }.thenBy { it.id })
             .map { FloorTab(it.id, it.name, it.floorShape) }
@@ -155,8 +181,8 @@ object FloorLayoutBuilder {
             listTabs = listTabs,
             placedByTab = placed,
             elementsByTab = elementsByTab,
-            listByTab = tables.groupBy(listKey),
-            unplaced = unplaced,
+            listByTab = tables.sortedWith(ordenNatural()).groupBy(listKey),
+            unplaced = unplaced.sortedWith(ordenNatural()),
             hasPlan = tables.any { it.hasPosition } || elements.isNotEmpty(),
             overLimit = plan?.overLimit == true,
         )

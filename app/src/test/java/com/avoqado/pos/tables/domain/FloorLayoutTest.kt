@@ -206,6 +206,35 @@ class FloorLayoutTest {
         assertEquals(listOf(t2, t4), layout.listByTab[SIN_AREA_KEY])
     }
 
+    // Sin plano la cuadrícula pinta `listByTab` (y la hoja «sin acomodar», `unplaced`). El SERVIDOR las manda por
+    // `number` como texto («1, 10, 2»): aquí van en orden natural, el texto con el Collator español y empate por id.
+    private fun conNumero(id: String, number: String, areaId: String? = "a1") =
+        DiningTable(id = id, number = number, areaId = areaId, areaName = "Sala Principal")
+
+    @Test
+    fun `sin plano las mesas van en orden natural y no por texto`() {
+        val delServidor = listOf("1", "10", "2", "3", "4", "5", "6", "7", "8", "9").map { conNumero("t$it", "Mesa $it") }
+        val layout = armar(delServidor, null)
+        assertEquals((1..10).map { "Mesa $it" }, layout.listByTab["a1"]!!.map { it.number })
+        assertEquals((1..10).map { "Mesa $it" }, layout.unplaced.map { it.number })
+    }
+
+    @Test
+    fun `el orden natural compara los numeros como numeros y el texto sin mayusculas ni acentos`() {
+        val nombres = listOf("Mesa 10", "bar 2", "Mesa 2", "Bar 10", "Mesa 1", "Bar 1", "11", "2", "10", "Área 3", "B2", "b10")
+        val layout = armar(nombres.mapIndexed { i, n -> conNumero("t$i", n) }, null)
+        assertEquals(
+            listOf("2", "10", "11", "Área 3", "B2", "b10", "Bar 1", "bar 2", "Bar 10", "Mesa 1", "Mesa 2", "Mesa 10"),
+            layout.listByTab["a1"]!!.map { it.number },
+        )
+    }
+
+    @Test
+    fun `dos mesas con el mismo nombre empatan por id`() {
+        val layout = armar(listOf(conNumero("tb", "Mesa 1"), conNumero("ta", "mesa 01")), null)
+        assertEquals(listOf("ta", "tb"), layout.listByTab["a1"]!!.map { it.id })
+    }
+
     @Test
     fun `la etiqueta para lectores de pantalla dice numero estado y tiempo`() {
         val inicio = "2026-10-09T12:00:00.000Z"
