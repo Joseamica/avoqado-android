@@ -23,8 +23,22 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.test.ComposeUiTest
 import androidx.compose.ui.test.ExperimentalTestApi
+import androidx.compose.material3.Button
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.test.SemanticsMatcher
+import androidx.compose.ui.test.SemanticsNodeInteraction
 import androidx.compose.ui.test.assertCountEquals
+import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.click
+import androidx.compose.ui.test.performKeyInput
+import androidx.compose.ui.test.performSemanticsAction
+import androidx.compose.ui.test.pressKey
+import com.avoqado.pos.areatickets.domain.PapelDelAparato
+import com.avoqado.pos.areatickets.presentation.HojaDelPapel
+import com.avoqado.pos.areatickets.presentation.PapelDelAparatoSheet
+import com.avoqado.pos.areatickets.presentation.tituloDeLaHoja
+import com.avoqado.pos.cashdrawer.presentation.PayInOutSheet
 import androidx.compose.ui.test.getBoundsInRoot
 import androidx.compose.ui.test.getUnclippedBoundsInRoot
 import androidx.compose.ui.test.onAllNodesWithContentDescription
@@ -208,4 +222,128 @@ class HojaConXEnLaEscenaTest {
     }
     @Test fun `sin pantalla completa la hoja sigue igual en Windows`() = hojaComun(enWindows = true)
     @Test fun `sin pantalla completa la hoja sigue igual en Android`() = hojaComun(enWindows = false)
+
+    // MARK: - hz:a5fa2439:D5: Esc (o «atrás») llega a la ventana de la hoja desde un botón suyo con el foco, no a los atajos.
+
+    private fun ComposeUiTest.escDesde(nodo: SemanticsNodeInteraction) {
+        nodo.performSemanticsAction(SemanticsActions.RequestFocus)
+        nodo.performKeyInput { pressKey(Key.Escape) }
+        waitForIdle()
+    }
+
+    /** Una hoja que sí se deja cerrar (el default) se sigue cerrando con Esc y avisa una vez. */
+    private fun escCierraLaHojaComun(enWindows: Boolean) = hoja(enWindows, aPantallaCompleta = false, contenido = {
+        Button(onClick = {}) { Text("Guardar impresora") }
+    }) {
+        escDesde(onNodeWithText("Guardar impresora"))
+        assertEquals(1, cierres, "Esc dejó de cerrar una hoja común")
+        onNodeWithText("Guardar impresora").assertDoesNotExist()
+    }
+    @Test fun `D5 Esc sigue cerrando una hoja comun en Windows`() = escCierraLaHojaComun(enWindows = true)
+    @Test fun `D5 atras sigue cerrando una hoja comun en Android`() = escCierraLaHojaComun(enWindows = false)
+
+    /**
+     * Las hojas con guardia («guardando») llevan el interruptor apagado FIJO: un valor que cambia con la hoja abierta puede no
+     * llegarle a la librería (Codex r1 #1). Esc/atrás no las cierra nunca, guarden o no; se cierran con su X o sus botones.
+     */
+    private fun ComposeUiTest.hojaConGuardia(enWindows: Boolean, hoja: @Composable (cerrar: () -> Unit) -> Unit): () -> Int {
+        var cierresDeLaHoja = 0
+        setContent {
+            CompositionLocalProvider(LocalEsEscritorio provides enWindows) {
+                MaterialTheme {
+                    var abierta by remember { mutableStateOf(true) }
+                    if (abierta) hoja { cierresDeLaHoja++; abierta = false }
+                }
+            }
+        }
+        waitForIdle()
+        return { cierresDeLaHoja }
+    }
+
+    /** Entrada/salida de efectivo (el retiro, que es el que guarda con PIN). */
+    private fun escEnElRetiro(enWindows: Boolean, ocupado: Boolean) = runDesktopComposeUiTest(1280, 800) {
+        val cierresDelRetiro = hojaConGuardia(enWindows) { cerrar ->
+            PayInOutSheet(isPayIn = false, onConfirm = { _, _ -> }, onDismiss = cerrar, ocupado = ocupado)
+        }
+        // Mientras registra, los campos van en sólo lectura y pierden la acción de escribir: se busca a quién se le puede dar el foco.
+        escDesde(onAllNodes(SemanticsMatcher.keyIsDefined(SemanticsActions.RequestFocus))[0])
+        assertEquals(0, cierresDelRetiro(), "Esc cerró el retiro (registrando: $ocupado)")
+        onNodeWithText("Registrar egreso").assertIsDisplayed()
+    }
+    @Test fun `P1 D5 Esc no cierra el retiro mientras se registra en Windows`() = escEnElRetiro(enWindows = true, ocupado = true)
+    @Test fun `P1 D5 atras no cierra el retiro mientras se registra en Android`() = escEnElRetiro(enWindows = false, ocupado = true)
+    @Test fun `D5 Esc tampoco cierra el retiro sin registrar en Windows`() = escEnElRetiro(enWindows = true, ocupado = false)
+    @Test fun `D5 atras tampoco cierra el retiro sin registrar en Android`() = escEnElRetiro(enWindows = false, ocupado = false)
+
+    private fun papel(guardando: Boolean) = HojaDelPapel(
+        primeraVez = false, venueId = "c123456789012345678901234", terminalId = "c223456789012345678901234",
+        areas = emptyList(), areasDeMas = 0, seleccion = PapelDelAparato.Cobra, puedeConfigurar = true, ventaAMedias = false,
+        guardando = guardando,
+    )
+
+    /** Papel del aparato: igual que el retiro. */
+    private fun escEnElPapel(enWindows: Boolean, guardando: Boolean) = runDesktopComposeUiTest(1280, 800) {
+        val cierresDelPapel = hojaConGuardia(enWindows) { cerrar ->
+            PapelDelAparatoSheet(estado = papel(guardando), hayRed = true, onElegir = {}, onGuardar = {}, onAhoraNo = null,
+                onCerrar = cerrar)
+        }
+        escDesde(onNodeWithText("Cobra (caja)"))
+        assertEquals(0, cierresDelPapel(), "Esc cerró el papel del aparato (guardando: $guardando)")
+        onNodeWithText(tituloDeLaHoja(enWindows)).assertIsDisplayed()
+    }
+    @Test fun `P1 D5 Esc no cierra el papel del aparato mientras guarda en Windows`() = escEnElPapel(enWindows = true, guardando = true)
+    @Test fun `P1 D5 atras no cierra el papel del aparato mientras guarda en Android`() = escEnElPapel(enWindows = false, guardando = true)
+    @Test fun `D5 Esc tampoco cierra el papel del aparato sin guardar en Windows`() = escEnElPapel(enWindows = true, guardando = false)
+    @Test fun `D5 atras tampoco cierra el papel del aparato sin guardar en Android`() = escEnElPapel(enWindows = false, guardando = false)
+
+    /**
+     * Codex r1 #2: la X de Windows baja la hoja ANTES de avisar, y mientras guarda el cierre se rechaza ⇒ hoja invisible
+     * encima. Mientras guarda no hay X (como el retiro); sin guardar, sí.
+     */
+    private fun xDelPapel(guardando: Boolean, equis: Int) = runDesktopComposeUiTest(1280, 800) {
+        hojaConGuardia(enWindows = true) { cerrar ->
+            PapelDelAparatoSheet(estado = papel(guardando), hayRed = true, onElegir = {}, onGuardar = {}, onAhoraNo = null,
+                onCerrar = cerrar)
+        }
+        onAllNodesWithContentDescription("Cerrar").assertCountEquals(equis)
+    }
+    @Test fun `P1 D5 en Windows el papel del aparato no lleva X mientras guarda`() = xDelPapel(guardando = true, equis = 0)
+    @Test fun `en Windows el papel del aparato lleva su X sin guardar`() = xDelPapel(guardando = false, equis = 1)
+
+    /**
+     * Codex r2 #1: el clic en «Guardar» y el de la X caen antes del siguiente cuadro ⇒ la X que todavía se ve ya no debe
+     * esconder: le pregunta a la hoja, y si la hoja dice «todavía no» (guardando), se queda a la vista. Aquí el cierre que
+     * se niega hace de ese «todavía no». Lo mismo en el retiro.
+     */
+    private fun xQueSeNiega(hoja: @Composable (cerrar: () -> Unit) -> Unit, titulo: String) = runDesktopComposeUiTest(1280, 800) {
+        var pedidos = 0
+        setContent {
+            CompositionLocalProvider(LocalEsEscritorio provides true) {
+                MaterialTheme { hoja { pedidos++ } }
+            }
+        }
+        waitForIdle()
+        onNodeWithContentDescription("Cerrar").performClick()
+        waitForIdle()
+        assertEquals(1, pedidos, "la X no le avisó a la hoja")
+        onNodeWithText(titulo).assertIsDisplayed()
+    }
+    @Test fun `P1 D5 la X del papel del aparato no lo esconde si la hoja no se deja cerrar`() = xQueSeNiega({ cerrar ->
+        PapelDelAparatoSheet(estado = papel(guardando = false), hayRed = true, onElegir = {}, onGuardar = {}, onAhoraNo = null,
+            onCerrar = cerrar)
+    }, tituloDeLaHoja(true))
+    @Test fun `P1 D5 la X del retiro no lo esconde si la hoja no se deja cerrar`() = xQueSeNiega({ cerrar ->
+        PayInOutSheet(isPayIn = false, onConfirm = { _, _ -> }, onDismiss = cerrar)
+    }, "Registrar egreso")
+
+    /** La X de una hoja con guardia que SÍ se deja cerrar la cierra y avisa una vez. */
+    @Test fun `D5 la X del retiro sin registrar lo cierra`() = runDesktopComposeUiTest(1280, 800) {
+        val cierresDelRetiro = hojaConGuardia(enWindows = true) { cerrar ->
+            PayInOutSheet(isPayIn = false, onConfirm = { _, _ -> }, onDismiss = cerrar)
+        }
+        onNodeWithContentDescription("Cerrar").performClick()
+        waitForIdle()
+        assertEquals(1, cierresDelRetiro())
+        onNodeWithText("Registrar egreso").assertDoesNotExist()
+    }
 }

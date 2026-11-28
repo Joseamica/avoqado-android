@@ -68,6 +68,10 @@ fun PapelDelAparatoSheet(
             skipPartiallyExpanded = true,
             confirmValueChange = { it != SheetValue.Hidden || !guardando },
         ),
+        // En Windows la X genérica baja la hoja ANTES de avisar y, al guardar, el cierre se rechaza: mientras guarda, sin X.
+        conXPropia = estado.guardando,
+        // Esc/atrás la esconden sin preguntar: apagado FIJO, no sólo al guardar (hz:a5fa2439:D5). Se cierra con su X.
+        seCierraConAtras = false,
     ) {
         Column(
             modifier = Modifier

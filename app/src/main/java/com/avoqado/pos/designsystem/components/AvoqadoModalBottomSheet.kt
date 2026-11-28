@@ -17,6 +17,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.ModalBottomSheetProperties
 import androidx.compose.material3.SheetState
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
@@ -71,8 +72,19 @@ fun AvoqadoModalBottomSheet(
      * `TableOrderScreen`).
      */
     aPantallaCompleta: Boolean = false,
+    /**
+     * Esc (Windows) o «atrás» (Android) la cierran. Material la esconde con esas teclas SIN consultar `confirmValueChange`
+     * y luego avisa a `onDismissRequest`: una hoja que se niega a esconderse (la Propina, o una que está guardando) quedaba
+     * escondida, la app no se enteraba y su ventana vacía se quedaba encima tragándose teclado y clics (hz:a5fa2439:D5).
+     * Esas hojas pasan `false` FIJO desde que abren: un valor que cambia con la hoja abierta puede no llegarle a la librería
+     * (su `equals()` ignora este campo). Arrastrar y tocar fuera sí consultan `confirmValueChange`. Con `false`, la X de
+     * Windows tampoco la baja antes de preguntar: avisa a `onDismissRequest` y la hoja se va sólo si quien la abrió la
+     * quita (si está guardando y se niega, se queda a la vista; Codex r2 #1: «Guardar» y la X en el mismo cuadro).
+     */
+    seCierraConAtras: Boolean = true,
     content: @Composable ColumnScope.() -> Unit,
 ) {
+    val propiedades = ModalBottomSheetProperties(shouldDismissOnBackPress = seCierraConAtras)
     BarreraDeAtajos()
     val anchoMaximo = if (aPantallaCompleta) Dp.Unspecified else BottomSheetDefaults.SheetMaxWidth
     val forma = if (aPantallaCompleta) RectangleShape else BottomSheetDefaults.ExpandedShape
@@ -86,6 +98,7 @@ fun AvoqadoModalBottomSheet(
             shape = forma,
             containerColor = containerColor,
             dragHandle = dragHandle,
+            properties = propiedades,
         ) {
             ImmersiveWindow()
             contenido()
@@ -103,7 +116,10 @@ fun AvoqadoModalBottomSheet(
         dragHandle = if (conXPropia) null else ({
             Box(Modifier.fillMaxWidth().padding(top = 8.dp, end = 8.dp), contentAlignment = Alignment.CenterEnd) {
                 IconButton(
-                    onClick = { scope.launch { sheetState.hide() }.invokeOnCompletion { onDismissRequest() } },
+                    onClick = {
+                        if (seCierraConAtras) scope.launch { sheetState.hide() }.invokeOnCompletion { onDismissRequest() }
+                        else onDismissRequest()
+                    },
                     modifier = Modifier.size(40.dp),
                 ) {
                     Icon(
@@ -114,6 +130,7 @@ fun AvoqadoModalBottomSheet(
                 }
             }
         }),
+        properties = propiedades,
         content = contenido,
     )
 }
