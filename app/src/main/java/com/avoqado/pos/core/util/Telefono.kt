@@ -41,10 +41,16 @@ fun digitosNacionales(texto: String, lada: String = LADA_MEXICO): String {
 fun filtrarTecleoDeTelefono(texto: String): String = normalizar(texto)
 
 /**
- * Lo que deja escribir el campo con bandera: lo normalizado, pero sólo dígitos, espacios, «+», paréntesis, guiones y
- * puntos. Una letra no aparece (como siempre en ese campo); lo que se ve es lo que se usa.
+ * Lo que deja escribir el campo con bandera: lo normalizado, sin borrar nada más. 🔴 Antes se borraban en silencio letras y
+ * signos desconocidos, y eso cambiaba el número: «+52 55 9187 392 ext. 2» pasaba como «5591873922» y «₊1 202…» con España
+ * salía a «+3412025550123» (Codex r3 y r4 del 24-nov). Ahora se quedan a la vista, el número no pasa ([digitosDelCampo]) y
+ * el campo dice qué quitar ([caracteresAjenos]), como el campo de las tarjetas de regalo.
  */
-fun filtrarTecleoDelCampoConBandera(texto: String): String = normalizar(texto).filter { it in '0'..'9' || it in " +()-." }
+fun filtrarTecleoDelCampoConBandera(texto: String): String = normalizar(texto)
+
+/** Lo escrito que no es parte de un teléfono (letras, «₊», «*»…), sin repetir y en orden, para decir qué quitar. */
+fun caracteresAjenos(escrito: String): String =
+    sinAdornos(escrito).filter { it !in '0'..'9' && it !in "+()." }.toList().distinct().joinToString("")
 
 /**
  * El texto que enseña el campo con bandera: lo que la persona escribió (con su «+», que dice la lada) mientras siga dando los
@@ -52,7 +58,7 @@ fun filtrarTecleoDelCampoConBandera(texto: String): String = normalizar(texto).f
  * Así pegar y teclear «+34 612 345 678» dan lo mismo (Codex r1 y r2).
  */
 fun textoVisibleDelCampo(escrito: String, digitos: String, lada: String): String =
-    if (digitosNacionales(escrito, lada) == digitos) escrito else digitos
+    if (digitosDelCampo(escrito, lada) == digitos) escrito else digitos
 
 /**
  * El celular de México listo para el SERVIDOR («+525591873922»), o null si no quedan 10 dígitos de México. Acepta espacios,
@@ -69,6 +75,71 @@ fun telefonoMx(texto: String): String? {
         .takeIf { it.length == 10 && it[0] !in "01" }
         ?.let { "+$LADA_MEXICO$it" }
 }
+
+/**
+ * Cuántos dígitos nacionales lleva un teléfono según su lada. Una sola regla para el kiosco y el campo con bandera.
+ *
+ * México (+52) y Norteamérica (+1): exactamente 10. Otra lada: de 8 en adelante, sin pasar de los 15 dígitos de E.164
+ * contando la lada, y lada + número suman AL MENOS 11: el SERVIDOR lee «+» + 10 dígitos como un celular mexicano mal
+ * guardado (`sinPrefijoMexicanoViejo`), así que «+49 20123456» caería en la ficha de «+52 4920123456» (kiosco, Codex r2 D3).
+ */
+fun digitosNacionalesValidos(lada: String): IntRange =
+    if (lada == LADA_MEXICO || lada == LADA_NORTEAMERICA) 10..10
+    else maxOf(8, 11 - lada.length)..(15 - lada.length)
+
+/**
+ * Lo que el campo con bandera le entrega a quien lo usa: los dígitos nacionales ([digitosNacionales]) cuando lo escrito ya
+ * es un número de ESTE país. Si no lo es, «+» y los dígitos escritos, para que [telefonoCompleto] no lo acepte y el campo
+ * diga por qué (hz:nube0000:na519219, Codex r1):
+ * - «+» con OTRA lada: la bandera sólo la cambia la persona. Antes esos dígitos se pegaban a la lada elegida: con México,
+ *   «+34 612 345 678» salía a «+5234612345678».
+ * - un «+» que no va al principio («.+7 912…»): antes se ignoraba y el número pasaba con la lada elegida.
+ * - la lada sola, sin número («+», «+52», «+52 1»): antes llegaba vacío y Reservas guardaba sin teléfono con «+52» a la vista.
+ * Y «?» y los dígitos si trae algo que no es de un teléfono («ext.», «₊», una letra) o sólo signos («()»).
+ */
+fun digitosDelCampo(escrito: String, lada: String): String {
+    val limpio = sinAdornos(escrito)
+    val digitos = limpio.filter { it in '0'..'9' }
+    // Algo que no es parte de un teléfono, o signos sin un solo dígito («()»): no se adivina, no pasa (Codex r4).
+    if (caracteresAjenos(escrito).isNotEmpty() || (digitos.isEmpty() && limpio.isNotEmpty() && '+' !in limpio)) return "?$digitos"
+    if ('+' !in limpio) return digitosNacionales(escrito, lada)
+    if (masFueraDeLugar(limpio) || !digitos.startsWith(lada)) return "+$digitos"
+    return digitosNacionales(escrito, lada).ifEmpty { "+$digitos" }
+}
+
+/** El «+» de lo escrito va al principio (también «(+52)») y es uno solo. */
+fun masBienPuesto(escrito: String): Boolean = !masFueraDeLugar(sinAdornos(escrito))
+
+/**
+ * Qué le falta al número del campo con bandera, en una línea para enseñarla junto al campo; null si está completo o vacío.
+ * [digitos] es lo que entrega el campo ([digitosDelCampo]); [pais] el nombre del país elegido («México»).
+ */
+fun avisoDelTelefono(digitos: String, lada: String, pais: String): String? {
+    if (digitos.isEmpty()) return null
+    if (digitos.any { it !in '0'..'9' }) return "Revisa el número"   // el campo lo dice con más detalle
+    val rango = digitosNacionalesValidos(lada)
+    val lleva = if (rango.first == rango.last) "${rango.first}" else "de ${rango.first} a ${rango.last}"
+    return when {
+        // Ni en México ni en Norteamérica un número empieza con 0 o 1 (el «1» de México es el prefijo viejo del celular). Va
+        // primero: «Falta 1 dígito» no arregla un «0» al principio (Codex r3 del 24-nov).
+        // Norteamérica: el «1» de larga distancia delante («1 202 555 0123») es válido con 11 dígitos; mientras se teclea
+        // no es error (Codex r4 del 24-nov).
+        // Sólo si lo que sigue al «1» puede ser un número (2-9): «+1 102 555 0123» es un error, no algo a medias (Codex r5).
+        lada == LADA_NORTEAMERICA && digitos[0] == '1' && digitos.length < 11 && (digitos.length == 1 || digitos[1] in '2'..'9') ->
+            conCuantos(11 - digitos.length, "Falta", "Faltan") + ": con el 1 delante, un número de $pais lleva 11"
+        (lada == LADA_MEXICO || lada == LADA_NORTEAMERICA) && digitos[0] in "01" -> "Un número de $pais no empieza con ${digitos[0]}"
+        digitos.length < rango.first -> conCuantos(rango.first - digitos.length, "Falta", "Faltan") + ": un número de $pais lleva $lleva"
+        digitos.length > rango.last -> conCuantos(digitos.length - rango.last, "Sobra", "Sobran") + ": un número de $pais lleva $lleva"
+        else -> null
+    }
+}
+
+/** El número del campo con bandera se puede mandar: no está vacío y [avisoDelTelefono] no tiene nada que decir. */
+fun telefonoCompleto(digitos: String, lada: String): Boolean =
+    digitos.isNotEmpty() && avisoDelTelefono(digitos, lada, "") == null
+
+private fun conCuantos(n: Int, uno: String, varios: String): String =
+    if (n == 1) "$uno 1 dígito" else "$varios $n dígitos"
 
 /** «+52 …» o «(+52) …»: la persona escribió la lada. */
 private fun conLadaEscrita(limpio: String): Boolean = limpio.trimStart('(').startsWith("+")
@@ -89,9 +160,11 @@ private fun normalizar(texto: String): String = buildString {
     for (c in texto) {
         val tipo = Character.getType(c)
         when {
-            tipo == Character.FORMAT.toInt() -> Unit
+            // Marcas invisibles de copiar y pegar: de formato (U+200E, U+202E…) y las que se pegan a otra letra sin verse
+            // (U+034F…). Ya no se borra nada más en el campo con bandera, así que éstas no pueden quedar como «Quita « »» (Codex r5).
+            tipo == Character.FORMAT.toInt() || tipo == Character.NON_SPACING_MARK.toInt() || tipo == Character.ENCLOSING_MARK.toInt() -> Unit
             Character.isDigit(c) -> Character.digit(c, 10).takeIf { it >= 0 }?.let { append('0' + it) } ?: append(c)
-            c == '＋' -> append('+')
+            c == '＋' || c == '﹢' || c == '⁺' -> append('+')   // también el «+» chico de copiar y pegar (Codex r3 del 24-nov)
             c == '（' -> append('(')
             c == '）' -> append(')')
             c == '．' -> append('.')

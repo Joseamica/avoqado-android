@@ -38,7 +38,10 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
-import com.avoqado.pos.core.util.digitosNacionales
+import com.avoqado.pos.core.util.avisoDelTelefono
+import com.avoqado.pos.core.util.caracteresAjenos
+import com.avoqado.pos.core.util.digitosDelCampo
+import com.avoqado.pos.core.util.masBienPuesto
 import com.avoqado.pos.core.util.filtrarTecleoDelCampoConBandera
 import com.avoqado.pos.core.util.textoVisibleDelCampo
 
@@ -48,6 +51,16 @@ import com.avoqado.pos.core.util.textoVisibleDelCampo
  * Emits the raw digits (not the dial code) — the caller composes E.164 as
  * `"+${country.dialCode}${digits}"` when submitting. [country] tracks the
  * selected country so the caller can read the dial code.
+ *
+ * 🔴 Antes de mandar, quien lo usa revisa `telefonoCompleto(digits, country.dialCode)` (hz:nube0000:na519219): el campo
+ * dejaba mandar «55918739221» con México. El campo dice debajo qué falta («Falta 1 dígito: un número de México lleva 10»).
+ * La bandera sólo la cambia la persona: si escribe o pega con «+» otra lada («+34 612…» con México), el número no pasa y el
+ * aviso dice «El número trae la lada +34 (España): elige ese país en la bandera o quítala». Tampoco pasan la lada sola ni un
+ * «+» fuera de lugar. Lo que se ve es lo que se manda. Reglas: [avisoDelCampo] y `digitosDelCampo`.
+ *
+ * 🔴 Que la bandera cambiara sola se probó y se quitó (Codex r1 y r2 del 24-nov, 5 → 8 huecos de la misma familia): al
+ * reabrir, al borrar, al pegar a media palabra o con el cursor en medio, la bandera quedaba en otro país sin que nadie lo
+ * viera y el recibo salía a «+345591873922». Detalle: docs/audit/2026-11-24-telefono-completo-con-bandera/ (workspace).
  *
  * Example:
  * ```
@@ -75,9 +88,11 @@ fun AvoqadoPhoneInput(
 ) {
     var showPicker by remember { mutableStateOf(false) }
     var escrito by remember { mutableStateOf(digits) }
+    val aviso = avisoDelCampo(textoVisibleDelCampo(escrito, digits, country.dialCode), country)
 
+    Column(modifier = modifier.fillMaxWidth()) {
     Row(
-        modifier = modifier
+        modifier = Modifier
             .fillMaxWidth()
             .heightIn(min = 48.dp),
         horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm),
@@ -148,7 +163,8 @@ fun AvoqadoPhoneInput(
                     value = visible,
                     onValueChange = { nuevo ->
                         escrito = filtrarTecleoDelCampoConBandera(nuevo)
-                        onDigitsChange(digitosNacionales(escrito, country.dialCode))
+                        // «+34 612…» con México elegido llega como «+34612…» y no pasa (antes salía a «+5234612…»).
+                        onDigitsChange(digitosDelCampo(escrito, country.dialCode))
                     },
                     singleLine = true,
                     enabled = enabled,
@@ -162,6 +178,16 @@ fun AvoqadoPhoneInput(
             }
         }
     }
+    if (aviso != null) {
+        Text(
+            text = aviso.texto,
+            style = MaterialTheme.typography.bodySmall,
+            // Mientras faltan dígitos o se escribe la lada es una guía; lo que sobra o la lada que no cuadra sí es un error.
+            color = if (aviso.esError) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(start = AvoqadoTheme.spacing.md, top = AvoqadoTheme.spacing.xxs),
+        )
+    }
+    }
 
     if (showPicker) {
         CountryPickerSheet(
@@ -172,12 +198,42 @@ fun AvoqadoPhoneInput(
                 val visible = textoVisibleDelCampo(escrito, digits, country.dialCode)
                 escrito = visible
                 onCountryChange(it)
-                onDigitsChange(digitosNacionales(visible, it.dialCode))
+                onDigitsChange(digitosDelCampo(visible, it.dialCode))
                 showPicker = false
             },
             onDismiss = { showPicker = false },
         )
     }
+}
+
+/** El aviso bajo el campo: qué le falta a lo escrito. [esError] = rojo; si no, gris de guía. */
+internal data class AvisoDelCampo(val texto: String, val esError: Boolean)
+
+internal fun avisoDelCampo(escrito: String, pais: Country): AvisoDelCampo? {
+    val digitos = digitosDelCampo(escrito, pais.dialCode)
+    if (digitos.isEmpty()) return null
+    val ajenos = caracteresAjenos(escrito)
+    if (ajenos.isNotEmpty()) return AvisoDelCampo("Quita «$ajenos» del número: sólo lleva dígitos", esError = true)
+    if (digitos.startsWith("?")) return AvisoDelCampo("Escribe el número", esError = false)
+    if (!digitos.startsWith("+")) {
+        val texto = avisoDelTelefono(digitos, pais.dialCode, pais.name) ?: return null
+        return AvisoDelCampo(texto, esError = !texto.startsWith("Falta"))
+    }
+    val escritos = digitos.drop(1)
+    if (!masBienPuesto(escrito)) return AvisoDelCampo("El «+» sólo va al principio, antes de la lada", esError = true)
+    if (escritos.isEmpty()) return AvisoDelCampo("Escribe la lada y el número", esError = false)
+    if (escritos.startsWith(pais.dialCode)) return AvisoDelCampo("Escribe el número después de la lada", esError = false)
+    // Primero la lada completa («+351» es Portugal, aunque también sea el principio de sí misma); ninguna lada de la lista es
+    // el principio de otra (prueba `PaisPorLadaEscritaTest`), así que la más larga que encaje es la única.
+    val otro = Countries.all.filter { escritos.startsWith(it.dialCode) }.maxByOrNull { it.dialCode.length }
+    if (otro != null) {
+        // Varias banderas comparten lada (+1: Estados Unidos, Canadá, Puerto Rico, República Dominicana): se nombran todas.
+        val nombres = Countries.all.filter { it.dialCode == otro.dialCode }.map { it.name }
+        val nombre = if (nombres.size == 1) nombres[0] else nombres.dropLast(1).joinToString(", ") + " o " + nombres.last()
+        return AvisoDelCampo("El número trae la lada +${otro.dialCode} ($nombre): elige ese país en la bandera o quítala", esError = true)
+    }
+    if (Countries.all.any { it.dialCode.startsWith(escritos) }) return AvisoDelCampo("Sigue escribiendo la lada", esError = false)
+    return AvisoDelCampo("La lada de ese número no está en la lista de países", esError = true)
 }
 
 @OptIn(ExperimentalMaterial3Api::class)

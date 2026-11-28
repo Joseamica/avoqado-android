@@ -69,7 +69,7 @@ class TelefonoTest {
         var digitos = ""
         for (tecla in texto) {
             escrito = filtrarTecleoDelCampoConBandera(textoVisibleDelCampo(escrito, digitos, lada) + tecla)
-            digitos = digitosNacionales(escrito, lada)
+            digitos = digitosDelCampo(escrito, lada)   // lo mismo que entrega el campo (Codex r1 del 24-nov)
         }
         return digitos
     }
@@ -108,10 +108,11 @@ class TelefonoTest {
         assertEquals("55 9187 3922", filtrarTecleoDeTelefono("55 9187 \u202E3922\u202C"))
         val largo = "\u202A+52  1  (55)  9187 - 3922\u202C"
         assertEquals("+525591873922", telefonoMx(filtrarTecleoDeTelefono(largo)))
-        // Una letra: en las tarjetas se queda a la vista y no pasa; en el campo con bandera no se deja escribir.
+        // Una letra: se queda a la vista y no pasa, en las tarjetas y (desde Codex r4 del 24-nov) en el campo con bandera.
         assertEquals("+52 55 9187 3922abc", filtrarTecleoDeTelefono("+52 55 9187 3922abc"))
         assertNull(telefonoMx(filtrarTecleoDeTelefono("+52 55 9187 3922abc")))
-        assertEquals("+52 55 9187 3922", filtrarTecleoDelCampoConBandera("+52 55 9187 3922abc"))
+        assertEquals("+52 55 9187 3922abc", filtrarTecleoDelCampoConBandera("+52 55 9187 3922abc"))
+        assertEquals("?525591873922", digitosDelCampo("+52 55 9187 3922abc", "52"))
     }
 
     @Test fun `P1 Codex r3 nada que cambie el numero se borra ni se corta en silencio`() {

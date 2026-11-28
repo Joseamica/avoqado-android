@@ -1,5 +1,6 @@
 package com.avoqado.pos.transactions.presentation
 
+import com.avoqado.pos.core.util.telefonoCompleto
 import com.avoqado.pos.pos.domain.juntarExtrasRepetidos
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -539,7 +540,7 @@ private fun LoadedDetailView(
             resultMessage = receiptResultMessage,
             onConfirm = {
                 val digits = whatsAppPhone.trim()
-                if (digits.isNotEmpty()) {
+                if (telefonoCompleto(digits, whatsAppCountry.dialCode)) {
                     viewModel.sendReceiptWhatsApp(transaction.id, "+${whatsAppCountry.dialCode}$digits")
                 }
             },
@@ -1044,7 +1045,8 @@ private fun PhoneReceiptDialog(
     dismissEnabled: Boolean,
 ) {
     val isSuccess = resultMessage == "Recibo enviado por WhatsApp"
-    val confirmEnabled = digits.trim().isNotEmpty() && !isSending && resultMessage == null
+    // Sólo un número completo de su país (hz:nube0000:na519219); el campo dice debajo qué le falta.
+    val confirmEnabled = telefonoCompleto(digits.trim(), country.dialCode) && !isSending && resultMessage == null
 
     AvoqadoDialog(
         title = "Enviar recibo por WhatsApp",

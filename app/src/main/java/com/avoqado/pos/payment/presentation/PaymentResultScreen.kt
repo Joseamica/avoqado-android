@@ -1,5 +1,6 @@
 package com.avoqado.pos.payment.presentation
 
+import com.avoqado.pos.core.util.telefonoCompleto
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -474,13 +475,14 @@ fun PaymentResultScreen(
             isSending = isSendingWhatsApp,
             onConfirm = {
                 val digits = whatsAppPhoneDigits.trim()
-                if (accionesDeRedHabilitadas && digits.isNotEmpty()) {
+                // Sólo un número completo de su país (hz:nube0000:na519219): antes «55918739221» salía a «+5255918739221».
+                if (accionesDeRedHabilitadas && telefonoCompleto(digits, whatsAppCountry.dialCode)) {
                     onSendWhatsApp?.invoke("+${whatsAppCountry.dialCode}$digits")
                     if (cerrarDialogoDeRecibo(true)) showWhatsAppInput = false
                 }
             },
             onDismiss = { if (!isSendingWhatsApp) showWhatsAppInput = false },
-            confirmEnabled = accionesDeRedHabilitadas && whatsAppPhoneDigits.trim().isNotEmpty() && !isSendingWhatsApp,
+            confirmEnabled = accionesDeRedHabilitadas && telefonoCompleto(whatsAppPhoneDigits.trim(), whatsAppCountry.dialCode) && !isSendingWhatsApp,
             dismissEnabled = !isSendingWhatsApp,
         )
     }
