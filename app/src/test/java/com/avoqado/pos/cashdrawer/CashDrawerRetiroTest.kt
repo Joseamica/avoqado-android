@@ -142,6 +142,14 @@ class CashDrawerRetiroTest {
         assertTrue("la cola debía quedar vacía: ${cola()}", cola().isEmpty())
     }
 
+    @Test fun `al confirmarse, el papel del retiro queda ligado al id del servidor para reimprimirlo`() = runBlocking {
+        repo(servidor { 201 to retiroDelServidor() })
+            .addPayOut(5_000, "Proveedor", localId = "loc-1", autorizacion = "tok-1", comprobante = comprobante())
+
+        assertEquals("srv-ev-1", retiros().single().id)
+        assertEquals("Daniel Pérez", store.buscar(VENUE_ID, "srv-ev-1")?.autorizadoPor)
+    }
+
     @Test fun `con autorizacion, la peticion lleva X-Permission-Override y la marca de error local`() = runBlocking {
         repo(servidor { 201 to retiroDelServidor() }).addPayOut(5_000, "Proveedor", localId = "loc-1", autorizacion = "tok-1")
 
@@ -279,7 +287,8 @@ class CashDrawerRetiroTest {
         }).addPayOut(5_000, "Proveedor", localId = "loc-1", autorizacion = "tok-1", comprobante = comprobante())
 
         assertEquals("al llegar el POST: (fila, cola, comprobante)", Triple(true, true, true), alLlegar)
-        assertEquals("el papel sigue pendiente hasta imprimirse", listOf(comprobante()), store.pendientes(VENUE_ID))
+        // Sigue pendiente, ya con el id que le dio el servidor (para que «Reimprimir» lo encuentre en la fila confirmada).
+        assertEquals("el papel sigue pendiente hasta imprimirse", listOf(comprobante().copy(idDelServidor = "srv-ev-1")), store.pendientes(VENUE_ID))
     }
 
     @Test fun `un rechazo al momento tambien quita el comprobante`() = runBlocking {

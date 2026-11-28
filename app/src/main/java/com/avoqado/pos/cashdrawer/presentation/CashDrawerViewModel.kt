@@ -506,7 +506,7 @@ class CashDrawerViewModel @Inject constructor(
                         is ResultadoDelRetiro.Hecho -> {
                             _retiro.value = RetiroUi.Cerrado
                             loadCurrentSession()
-                            val fallo = candadoDelPapel.withLock { imprimirYQuitar(c, reimpresion = false) }
+                            val fallo = candadoDelPapel.withLock { imprimirYGuardar(c, reimpresion = false) }
                             _avisoDelRetiro.value = listOfNotNull(RETIRO_SIN_CONFIRMAR.takeUnless { r.confirmado }, fallo)
                                 .joinToString("\n\n").ifEmpty { null }
                         }
@@ -540,12 +540,21 @@ class CashDrawerViewModel @Inject constructor(
     }
 
     /**
-     * Imprime el comprobante y lo quita SÓLO si el papel salió (H10). Sin impresora o con error, se queda: sale en la siguiente entrada
+     * Imprime el comprobante y, SÓLO si el papel salió (H10), deja de estar pendiente y se guarda para «Reimprimir». Sin impresora o con error, se queda: sale en la siguiente entrada
      * a Caja como REIMPRESIÓN. Devuelve el aviso si no salió. Va bajo [candadoDelPapel]. La impresora es la de recibos o, si no hay,
      * la integrada del aparato, como los demás recibos.
      */
-    private suspend fun imprimirYQuitar(c: ComprobanteDeRetiro, reimpresion: Boolean): String? {
-        val fallo = try {
+    private suspend fun imprimirYGuardar(c: ComprobanteDeRetiro, reimpresion: Boolean): String? {
+        val fallo = imprimir(c, reimpresion)
+        if (fallo == null) {
+            runCatching { comprobantes.marcarImpreso(c) }.onFailure { Log.e(TAG, "❌ No se pudo marcar impreso el comprobante: ${it.message}") }
+        }
+        return fallo
+    }
+
+    /** Sólo el papel: `null` si salió, o el aviso si no. Va bajo [candadoDelPapel]. */
+    private suspend fun imprimir(c: ComprobanteDeRetiro, reimpresion: Boolean): String? =
+        try {
             val printer = printerService.getDefaultPrinterWithHardwareFallback(PrinterRole.RECEIPT)
             if (printer == null) {
                 RETIRO_SIN_IMPRESORA
@@ -566,10 +575,65 @@ class CashDrawerViewModel @Inject constructor(
             Log.e(TAG, "❌ No se pudo imprimir el comprobante del retiro: ${e.message}", e)
             RETIRO_NO_SE_IMPRIMIO
         }
-        if (fallo == null) {
-            runCatching { comprobantes.quitar(c.venueId, c.localId) }.onFailure { Log.e(TAG, "❌ No se pudo quitar el comprobante: ${it.message}") }
+
+    /** Hay una reimpresión en curso: el botón «Reimprimir» se apaga para que un doble toque no saque dos papeles. */
+    private val _reimprimiendoRetiro = MutableStateFlow(false)
+    val reimprimiendoRetiro: StateFlow<Boolean> = _reimprimiendoRetiro.asStateFlow()
+
+    /** El papel de la reimpresión salió: la pantalla lo celebra y lo apaga con [descartarRetiroReimpreso]. */
+    private val _retiroReimpreso = MutableStateFlow(false)
+    val retiroReimpreso: StateFlow<Boolean> = _retiroReimpreso.asStateFlow()
+
+    fun descartarRetiroReimpreso() {
+        _retiroReimpreso.value = false
+    }
+
+    /**
+     * «Reimprimir» de un retiro en Movimientos (La Galeterie, 27-nov: firmaban una copia y no había cómo sacar otra, y repetían el
+     * retiro). Sale el MISMO papel guardado al imprimirlo (con quién lo autorizó) y la leyenda REIMPRESIÓN. Si este aparato no lo
+     * tiene (lo hizo otra caja, o es de antes de esta versión), se arma con el movimiento y sin «Autorizado por»: no se inventa.
+     * Sin red funciona igual: todo es del aparato. No registra nada ni toca el dinero.
+     */
+    fun reimprimirRetiro(evento: CashDrawerEventEntity) {
+        if (evento.type != CashDrawerEventType.PAY_OUT.name || _reimprimiendoRetiro.value) return
+        val venueId = secureStorage.venueId ?: return
+        _reimprimiendoRetiro.value = true
+        viewModelScope.launch {
+            withContext(NonCancellable) {
+                try {
+                    val guardado = runCatching { comprobantes.buscar(venueId, evento.id) }.getOrNull()
+                    val c = guardado ?: comprobanteDelMovimiento(evento, venueId)
+                    val fallo = candadoDelPapel.withLock {
+                        if (guardado != null) imprimirYGuardar(c, reimpresion = true) else imprimir(c, reimpresion = true)
+                    }
+                    when (fallo) {
+                        null -> _retiroReimpreso.value = true
+                        RETIRO_SIN_IMPRESORA -> _avisoDelRetiro.value = REIMPRESION_SIN_IMPRESORA
+                        else -> _avisoDelRetiro.value = REIMPRESION_NO_SALIO
+                    }
+                } finally {
+                    _reimprimiendoRetiro.value = false
+                }
+            }
         }
-        return fallo
+    }
+
+    /** El papel de un retiro sin comprobante guardado en este aparato, con lo que dice su fila de Caja. */
+    private fun comprobanteDelMovimiento(e: CashDrawerEventEntity, venueId: String): ComprobanteDeRetiro {
+        val cuando = VenueTimeZone.at(java.time.Instant.ofEpochMilli(e.createdAt))
+        return ComprobanteDeRetiro(
+            venueId = venueId,
+            localId = e.id,
+            venueName = repository.venueName,
+            nombreDelAparato = null, // pudo hacerlo otra caja
+            fechaTexto = cuando.format(DateTimeFormatter.ofPattern("dd/MM/yyyy")),
+            horaTexto = cuando.format(DateTimeFormatter.ofPattern("HH:mm")),
+            concepto = e.note?.takeIf { it.isNotBlank() } ?: "Retiro",
+            amountCents = e.amountCents,
+            hizo = e.staffName,
+            rolDeQuienHizo = null,
+            autorizadoPor = null,
+        )
     }
 
     /**
@@ -589,7 +653,7 @@ class CashDrawerViewModel @Inject constructor(
             // Para en el primer papel que no sale: cada intento espera su tiempo bajo este candado (y el papel de un retiro nuevo, detrás).
             // Los demás se quedan para la siguiente entrada a Caja.
             for (c in porImprimir.filter { it.localId !in rechazados }) {
-                val fallo = imprimirYQuitar(c, reimpresion = true) ?: continue
+                val fallo = imprimirYGuardar(c, reimpresion = true) ?: continue
                 _avisoDelRetiro.value = fallo
                 break
             }
@@ -825,3 +889,5 @@ private const val RETIRO_SOLO_GERENTE =
 private const val RETIRO_SIN_CONFIRMAR = "Retiro registrado. Se subirá al servidor cuando vuelva la conexión."
 private const val RETIRO_NO_SE_IMPRIMIO = "El retiro quedó registrado, pero no se imprimió el comprobante."
 private const val RETIRO_SIN_IMPRESORA = "El retiro quedó registrado, pero no hay impresora de recibos en esta caja."
+private const val REIMPRESION_NO_SALIO = "No se pudo reimprimir el retiro. Revisa la impresora y vuelve a intentarlo."
+private const val REIMPRESION_SIN_IMPRESORA = "No se pudo reimprimir el retiro: no hay impresora de recibos en esta caja."
