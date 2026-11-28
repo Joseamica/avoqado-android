@@ -436,12 +436,36 @@ internal fun renglonDelVale(ticket: com.avoqado.pos.areatickets.data.AreaTicket,
         quantity = 1,
         areaTicketId = ticket.id,
         areaTicketLineId = line.id,
+        areaTicketCode = ticket.code,
         locked = true,
         itemDiscountType = "FIXED_AMOUNT".takeIf { descuentoCents > 0 },
         itemDiscountValue = (descuentoCents / 100.0).takeIf { descuentoCents > 0 },
         itemDiscountName = "Descuento del vale".takeIf { descuentoCents > 0 },
     )
 }
+
+/**
+ * Quitar un renglón de un vale quita el vale COMPLETO ([CartViewModel.removeItem]); la pantalla lo avisa antes, como el combo.
+ * null = no es de un vale, o el vale sólo trae ese renglón (no hay sorpresa).
+ */
+internal data class ValeAQuitar(val itemId: String, val valeId: String, val codigo: String?, val productos: Int) {
+    val aviso: String
+        get() = "Este producto es del vale ${codigo ?: ""}".trimEnd() +
+            ". Se quitarán los $productos productos del vale; si el cliente sí se lleva alguno, agrégalo a mano."
+}
+
+internal fun valeAQuitar(items: List<CartItem>, itemId: String): ValeAQuitar? {
+    val valeId = items.firstOrNull { it.id == itemId }?.areaTicketId ?: return null
+    val delVale = items.filter { it.areaTicketId == valeId }
+    if (delVale.size < 2) return null
+    return ValeAQuitar(itemId, valeId, delVale.firstNotNullOfOrNull { it.areaTicketCode }, delVale.size)
+}
+
+/** «Anular artículos»: el primer vale del que se marcaron algunos renglones y no todos (los demás se irían sin avisar). */
+internal fun valeQueSeVaCompleto(items: List<CartItem>, seleccion: Set<String>): ValeAQuitar? =
+    seleccion.firstNotNullOfOrNull { id ->
+        valeAQuitar(items, id)?.takeIf { vale -> items.any { it.areaTicketId == vale.valeId && it.id !in seleccion } }
+    }
 
 internal const val AVISO_CARRITO_SIN_IMPUESTO =
     "Este carrito guardado sumaba impuesto aparte. Ya no se suma: el precio ya incluye el IVA."

@@ -1054,6 +1054,31 @@ private fun VoidItemsSubView(
     val cartState by cartViewModel.cartState.collectAsState()
     var selectedItemIds by remember { mutableStateOf<Set<String>>(emptySet()) }
     var voidReason by remember { mutableStateOf("") }
+    var valeAQuitar by remember { mutableStateOf<com.avoqado.pos.pos.presentation.cart.ValeAQuitar?>(null) }
+    val anular = {
+        selectedItemIds.forEach { id -> cartViewModel.quitarPorElCajero(id) }
+        onBack()
+    }
+
+    valeAQuitar?.let { vale ->
+        com.avoqado.pos.designsystem.components.AvoqadoDialog(
+            title = "Quitar el vale completo",
+            description = vale.aviso,
+            onDismiss = { valeAQuitar = null },
+            actionButton = {
+                PrimaryButton(
+                    text = "Quitar vale",
+                    destructive = true,
+                    fullWidth = true,
+                    onClick = {
+                        valeAQuitar = null
+                        anular()
+                    },
+                )
+            },
+            content = {},
+        )
+    }
 
     Column(modifier = Modifier.fillMaxSize()) {
         BreadcrumbHeader(title = "Anular artículos", onBack = onBack)
@@ -1106,10 +1131,9 @@ private fun VoidItemsSubView(
                     text = "Anular ${selectedItemIds.size} artículo${if (selectedItemIds.size == 1) "" else "s"}",
                     onClick = {
                         if (voidReason.isNotBlank()) {
-                            selectedItemIds.forEach { id ->
-                                cartViewModel.quitarPorElCajero(id)
-                            }
-                            onBack()
+                            // Un renglón de vale se lleva el vale completo: si quedan renglones suyos sin marcar, se avisa antes.
+                            valeAQuitar = com.avoqado.pos.pos.presentation.cart.valeQueSeVaCompleto(cartState.items, selectedItemIds)
+                            if (valeAQuitar == null) anular()
                         }
                     },
                     modifier = Modifier.fillMaxWidth(),

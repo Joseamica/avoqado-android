@@ -35,6 +35,8 @@ data class CartItem(
     /** Snapshot line from an area ticket. These rows are server-priced and immutable in caja. */
     val areaTicketId: String? = null,
     val areaTicketLineId: String? = null,
+    /** Código impreso del vale, para el aviso «Quitar el vale completo». */
+    val areaTicketCode: String? = null,
     val locked: Boolean = false,
 
     // Promociones (combos, paquetes, 2x1) — mismo patrón que areaTicketId:
