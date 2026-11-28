@@ -33,6 +33,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Inventory2
+import androidx.compose.material.icons.filled.Print
 import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -40,6 +41,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.VerticalDivider
@@ -52,6 +54,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import com.avoqado.pos.designsystem.components.PrimaryButton
 import com.avoqado.pos.designsystem.components.AvoqadoDialog
+import com.avoqado.pos.designsystem.components.AvoqadoSuccessToast
 import com.avoqado.pos.designsystem.components.ManagerOverrideSheet
 import com.avoqado.pos.core.data.network.ManagerOverrideCoordinator
 import kotlinx.coroutines.launch
@@ -412,6 +415,11 @@ private fun RetiroDeCaja(viewModel: CashDrawerViewModel) {
             content = {},
         )
     }
+
+    val reimpreso by viewModel.retiroReimpreso.collectAsState()
+    if (reimpreso) {
+        AvoqadoSuccessToast(message = "¡Retiro reimpreso!", onDismiss = { viewModel.descartarRetiroReimpreso() })
+    }
 }
 
 // MARK: - Phone Layout
@@ -738,6 +746,7 @@ private fun CurrentDrawerContent(
     val events by viewModel.events.collectAsState()
     val expectedCents by viewModel.expectedAmountCents.collectAsState()
     val isPrintingCorte by viewModel.isPrintingCorte.collectAsState()
+    val reimprimiendoRetiro by viewModel.reimprimiendoRetiro.collectAsState()
     val rechazadas by viewModel.rechazadas.collectAsState()
     val cajasAdoptadas by viewModel.cajasAdoptadas.collectAsState()
     val estadoDeLaApertura by viewModel.estadoDeLaApertura.collectAsState()
@@ -830,6 +839,8 @@ private fun CurrentDrawerContent(
             isPrintingCorte = isPrintingCorte,
             onPrintPartial = { showPartialReport = true },
             showExpected = viewModel.puedeVerEsperado,
+            onReimprimirRetiro = viewModel::reimprimirRetiro,
+            reimprimiendoRetiro = reimprimiendoRetiro,
         )
     }
     }
@@ -922,6 +933,8 @@ private fun OpenDrawerContent(
     isPrintingCorte: Boolean = false,
     onPrintPartial: () -> Unit = {},
     showExpected: Boolean = true,
+    onReimprimirRetiro: (CashDrawerEventEntity) -> Unit = {},
+    reimprimiendoRetiro: Boolean = false,
 ) {
     Column(
         modifier = Modifier
@@ -1154,7 +1167,12 @@ private fun OpenDrawerContent(
             }
 
             displayEvents.forEach { event ->
-                EventRow(event = event)
+                EventRow(
+                    event = event,
+                    // Sólo los retiros llevan papel (para las firmas): se reimprime el mismo, sin registrar nada.
+                    onReimprimir = if (event.type == CashDrawerEventType.PAY_OUT.name) { { onReimprimirRetiro(event) } } else null,
+                    reimprimiendo = reimprimiendoRetiro,
+                )
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
             }
         }
@@ -1198,7 +1216,7 @@ private fun SummaryCard(
 // MARK: - Event Row
 
 @Composable
-private fun EventRow(event: CashDrawerEventEntity) {
+private fun EventRow(event: CashDrawerEventEntity, onReimprimir: (() -> Unit)? = null, reimprimiendo: Boolean = false) {
     val timeText = remember(event.createdAt) {
         java.time.Instant.ofEpochMilli(event.createdAt)
             .let { com.avoqado.pos.core.util.VenueTimeZone.at(it) }
@@ -1244,6 +1262,11 @@ private fun EventRow(event: CashDrawerEventEntity) {
             fontWeight = FontWeight.SemiBold,
             color = color,
         )
+        if (onReimprimir != null) {
+            IconButton(onClick = onReimprimir, enabled = !reimprimiendo) {
+                Icon(imageVector = Icons.Filled.Print, contentDescription = "Reimprimir retiro")
+            }
+        }
     }
 }
 

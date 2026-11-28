@@ -7,6 +7,8 @@ import com.avoqado.pos.cashdrawer.data.CashDrawerRepository
 import com.avoqado.pos.cashdrawer.data.ComprobanteDeRetiro
 import com.avoqado.pos.cashdrawer.data.ComprobantesDeRetiroPorImprimir
 import com.avoqado.pos.cashdrawer.data.ResultadoDelRetiro
+import com.avoqado.pos.cashdrawer.data.model.CashDrawerEventEntity
+import com.avoqado.pos.cashdrawer.data.model.CashDrawerEventType
 import com.avoqado.pos.cashdrawer.esperarSuTrabajo
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.data.network.OverrideResult
@@ -367,7 +369,7 @@ class CashDrawerRetiroFlujoTest {
         assertEquals("Retiro registrado. Se subirá al servidor cuando vuelva la conexión.", vm.avisoDelRetiro.value)
         assertEquals(1, papeles.size)
         assertTrue("el nombre del teclado, aunque el servidor no contestó", papeles[0].contains("Daniel"))
-        coVerify { store.quitar(VENUE_ID, h.localId) }
+        coVerify { store.marcarImpreso(match { it.localId == h.localId }, any()) }
         vm.descartarAvisoDelRetiro()
         assertNull(vm.avisoDelRetiro.value)
     }
@@ -390,6 +392,7 @@ class CashDrawerRetiroFlujoTest {
         assertFalse("el texto técnico del servidor no llega a la pantalla: $error", error.contains("Permission '"))
         assertTrue(papeles.isEmpty())
         coVerify(exactly = 0) { store.quitar(any(), any()) }
+        coVerify(exactly = 0) { store.marcarImpreso(any(), any()) }
     }
 
     @Test
@@ -413,7 +416,7 @@ class CashDrawerRetiroFlujoTest {
 
     /** H10: el comprobante sólo se quita cuando el papel salió. Sin impresora o con error, se queda para la siguiente entrada a Caja. */
     @Test
-    fun `se quita el comprobante sólo si salió el papel`() {
+    fun `el comprobante deja de estar pendiente sólo si salió el papel`() {
         gerente()
         val vm = vm()
         vm.tocarRetiro()
@@ -421,7 +424,7 @@ class CashDrawerRetiroFlujoTest {
         vm.confirmarRetiro(500_000, "Bajada")
         coVerifyOrder {
             printer.sendPrintData(any(), any())
-            store.quitar(VENUE_ID, bien)
+            store.marcarImpreso(match { it.localId == bien }, any())
         }
         assertNull(vm.avisoDelRetiro.value)
 
@@ -429,7 +432,7 @@ class CashDrawerRetiroFlujoTest {
         vm.tocarRetiro()
         val falla = hoja(vm).localId
         vm.confirmarRetiro(500_000, "Bajada")
-        coVerify(exactly = 0) { store.quitar(VENUE_ID, falla) }
+        coVerify(exactly = 0) { store.marcarImpreso(match { it.localId == falla }, any()) }
         assertEquals("El retiro quedó registrado, pero no se imprimió el comprobante.", vm.avisoDelRetiro.value)
         vm.descartarAvisoDelRetiro()
 
@@ -437,7 +440,7 @@ class CashDrawerRetiroFlujoTest {
         vm.tocarRetiro()
         val sinImpresora = hoja(vm).localId
         vm.confirmarRetiro(500_000, "Bajada")
-        coVerify(exactly = 0) { store.quitar(VENUE_ID, sinImpresora) }
+        coVerify(exactly = 0) { store.marcarImpreso(match { it.localId == sinImpresora }, any()) }
         assertEquals("El retiro quedó registrado, pero no hay impresora de recibos en esta caja.", vm.avisoDelRetiro.value)
     }
 
@@ -487,7 +490,7 @@ class CashDrawerRetiroFlujoTest {
 
         assertEquals(1, papeles.size)
         assertNull(vm.avisoDelRetiro.value)
-        coVerify { store.quitar(VENUE_ID, id) }
+        coVerify { store.marcarImpreso(match { it.localId == id }, any()) }
     }
 
     /** H9: un comprobante cuyo retiro quedó RECHAZADO en la cola no se imprime al entrar a Caja: se quita. */
@@ -634,5 +637,105 @@ class CashDrawerRetiroFlujoTest {
             assertTrue(real.pendientes(VENUE_ID).isEmpty())
             assertEquals("el de otro negocio se queda", 1, real.pendientes("venue-otro").size)
         }
+    }
+
+    // MARK: - Reimprimir un retiro (La Galeterie, 27-nov)
+
+    private fun movimiento(id: String, tipo: CashDrawerEventType = CashDrawerEventType.PAY_OUT) = CashDrawerEventEntity(
+        id = id, sessionId = "caja-1", venueId = VENUE_ID, type = tipo.name, amountCents = 300_000, note = "Bajada",
+        staffId = "staff-luis", staffName = "Luis Garcia", createdAt = 1_795_000_000_000L,
+    )
+
+    /** Un retiro hecho aquí: imprime su papel y lo deja guardado en el almacén real. Devuelve su id local. */
+    private fun retiroImpreso(real: ComprobantesDeRetiroPorImprimir): Pair<CashDrawerViewModel, String> {
+        coEvery { repo.addPayOut(any(), any(), any(), any(), capture(comprobanteEnviado)) } coAnswers {
+            real.anotar(comprobanteEnviado.captured)
+            resultado
+        }
+        gerente()
+        val vm = vm(real)
+        vm.tocarRetiro()
+        val id = hoja(vm).localId
+        vm.confirmarRetiro(300_000, "Bajada")
+        vm.esperarSuTrabajo()
+        assertEquals(1, papeles.size)
+        return vm to id
+    }
+
+    @Test
+    fun `reimprimir saca el mismo papel guardado, con quien lo autorizo y la leyenda REIMPRESION`() {
+        val real = almacenReal()
+        val (vm, id) = retiroImpreso(real)
+
+        vm.reimprimirRetiro(movimiento(id))
+        esperar("no salió la reimpresión") { papeles.size == 2 }
+        vm.esperarSuTrabajo()
+
+        val papel = papeles[1]
+        assertTrue(papel.contains("REIMPRESI"))
+        assertTrue("el autorizador guardado", papel.contains("Autorizado por") && papel.contains("Daniel Ruiz"))
+        assertTrue("la caja donde se hizo", papel.contains("Caja 1"))
+        assertTrue(vm.retiroReimpreso.value)
+        assertNull(vm.avisoDelRetiro.value)
+        runBlocking { assertTrue("no vuelve a salir solo al entrar a Caja", real.pendientes(VENUE_ID).isEmpty()) }
+    }
+
+    @Test
+    fun `reimprimir encuentra el papel con el id que le dio el servidor`() {
+        val real = almacenReal()
+        val (vm, id) = retiroImpreso(real)
+        runBlocking { real.ligarAlServidor(VENUE_ID, id, "srv-retiro-1") } // la fila de Caja ya se llama como en el servidor
+
+        vm.reimprimirRetiro(movimiento("srv-retiro-1"))
+        esperar("no salió la reimpresión") { papeles.size == 2 }
+
+        assertTrue("usó el papel guardado", papeles[1].contains("Caja 1") && papeles[1].contains("Daniel Ruiz"))
+    }
+
+    @Test
+    fun `sin papel guardado se arma con el movimiento y no inventa quien lo autorizo`() {
+        val real = almacenReal()
+        val vm = vm(real)
+
+        vm.reimprimirRetiro(movimiento("srv-de-otra-caja"))
+        esperar("no salió la reimpresión") { papeles.size == 1 }
+
+        val papel = papeles[0]
+        assertTrue(papel.contains("REIMPRESI"))
+        assertTrue(papel.contains("Luis Garcia") && papel.contains("Bajada") && papel.contains("3,000.00"))
+        assertFalse("no se inventa", papel.contains("Autorizado por"))
+        runBlocking { assertTrue("no deja nada pendiente", real.pendientes(VENUE_ID).isEmpty()) }
+    }
+
+    @Test
+    fun `doble toque en Reimprimir saca un solo papel, y sólo los retiros se reimprimen`() {
+        val real = almacenReal()
+        val vm = vm(real)
+
+        vm.reimprimirRetiro(movimiento("srv-1"))
+        vm.reimprimirRetiro(movimiento("srv-1"))
+        vm.reimprimirRetiro(movimiento("srv-2", CashDrawerEventType.PAY_IN))
+        esperar("no salió la reimpresión") { papeles.isNotEmpty() }
+        vm.esperarSuTrabajo()
+
+        assertEquals(1, papeles.size)
+        assertFalse(vm.reimprimiendoRetiro.value)
+    }
+
+    @Test
+    fun `si la reimpresion no sale se dice, sin festejar`() {
+        val vm = vm(almacenReal())
+        impresora = null
+        vm.reimprimirRetiro(movimiento("srv-1"))
+        esperar("sin aviso") { vm.avisoDelRetiro.value != null }
+        assertEquals("No se pudo reimprimir el retiro: no hay impresora de recibos en esta caja.", vm.avisoDelRetiro.value)
+
+        vm.descartarAvisoDelRetiro()
+        impresora = SavedPrinter(name = "Recibos", connectionType = "wifi", address = "10.0.0.9", port = 9100)
+        impresoraFalla = true
+        vm.reimprimirRetiro(movimiento("srv-1"))
+        esperar("sin aviso") { vm.avisoDelRetiro.value != null }
+        assertEquals("No se pudo reimprimir el retiro. Revisa la impresora y vuelve a intentarlo.", vm.avisoDelRetiro.value)
+        assertFalse(vm.retiroReimpreso.value)
     }
 }

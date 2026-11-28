@@ -52,7 +52,7 @@ object RetiroTicketBuilder {
         p.printLine()
         val rol = RoleDisplay.label(null, c.rolDeQuienHizo)
         fila("Lo hizo:", if (rol != null) "${c.hizo} ($rol)" else c.hizo)
-        fila("Autorizado por:", c.autorizadoPor)
+        c.autorizadoPor?.let { fila("Autorizado por:", it) } // sin papel guardado no se sabe: no se inventa
         p.printDivider()
         p.setAlignment(ESCPOSPrinter.TextAlignment.CENTER)
         p.feedLines(2)

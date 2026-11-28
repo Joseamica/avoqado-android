@@ -1728,6 +1728,11 @@ class CashDrawerRepository @Inject constructor(
         val promoted = local.copy(id = serverId).let { if (cuerpo == null) it else it.comoLoRegistro(cuerpo) }
         dao.promoverEvento(localId, promoted) // una transacción: nunca dos filas del mismo movimiento
         Log.d(TAG, "⬆️ Movimiento confirmado $localId → $serverId")
+        // El papel del retiro sigue a su fila, para que «Reimprimir» lo encuentre con el id nuevo. Nunca tumba la confirmación.
+        if (local.type == CashDrawerEventType.PAY_OUT.name) {
+            runCatching { comprobantes?.ligarAlServidor(local.venueId, localId, serverId) }
+                .onFailure { Log.e(TAG, "❌ No se pudo ligar el comprobante del retiro: ${it.message}") }
+        }
         return promoted
     }
 
