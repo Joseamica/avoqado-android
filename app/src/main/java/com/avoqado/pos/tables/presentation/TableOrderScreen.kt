@@ -72,6 +72,7 @@ import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.lifecycle.repeatOnLifecycle
+import com.avoqado.pos.tables.domain.FloorLayoutBuilder
 import com.avoqado.pos.tables.domain.etiquetaDeMesa
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -928,7 +929,7 @@ fun TableOrderScreen(
     }
 
     if (showMoveDialog) {
-        val freeTables = floorTables.filter { it.isAvailable && it.id != active.tableId }
+        val freeTables = floorTables.filter { it.isAvailable && it.id != active.tableId }.sortedWith(FloorLayoutBuilder.ordenNatural())
         MoveTableDialog(
             tables = freeTables,
             onDismiss = { showMoveDialog = false },
@@ -1307,7 +1308,7 @@ fun TableOrderScreen(
     }
 
     if (showMerge) {
-        val otras = floorTables.flatMap { t -> t.openOrders.map { t to it } }
+        val otras = floorTables.sortedWith(FloorLayoutBuilder.ordenNatural()).flatMap { t -> t.openOrders.map { t to it } }
             .filter { (_, cuenta) -> cuenta.id != session?.orderId }
         MergeOrdersDialog(
             otras = otras,

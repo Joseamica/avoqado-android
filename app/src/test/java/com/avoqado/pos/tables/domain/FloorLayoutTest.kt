@@ -329,4 +329,11 @@ class FloorLayoutTest {
         assertEquals(20.0, p.cx, 1e-9)
         assertEquals(12.5, p.cy, 1e-9)
     }
+
+    @Test
+    fun `las listas para elegir otra mesa usan el mismo orden natural (D7)`() {
+        val delServidor = listOf("M1", "M10", "M11", "M2", "Bar 10", "Bar 2").map { DiningTable(id = it, number = it) }
+        val ordenadas = delServidor.sortedWith(FloorLayoutBuilder.ordenNatural()).map { it.number }
+        assertEquals(listOf("Bar 2", "Bar 10", "M1", "M2", "M10", "M11"), ordenadas)
+    }
 }

@@ -434,7 +434,7 @@ fun TablesScreen(
 
     if (showBulkMover) {
         val source = selectedOccupied.firstOrNull()
-        val freeTables = tables.filter { it.isAvailable }
+        val freeTables = tables.filter { it.isAvailable }.sortedWith(FloorLayoutBuilder.ordenNatural())
         if (source != null) {
             AvoqadoDialog(
                 title = "Mover cuenta — ${etiquetaDeMesa(source.number)}",
