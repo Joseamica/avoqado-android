@@ -710,6 +710,10 @@ class OrderRepository @Inject constructor(
                                         if (displayed != null && horaDelCatalogo != null) {
                                             put("displayedUnitPrice", displayed)
                                             put("catalogAt", horaDelCatalogo)
+                                            // Encargo 65076b: y el de cada extra (sin red, la cola guarda este mismo cuerpo).
+                                            item.displayedModifierPrices?.filterKeys { it in modifierIds }?.takeIf { it.isNotEmpty() }?.let { precios ->
+                                                put("displayedModifierPrices", buildJsonObject { precios.forEach { (id, cents) -> put(id, cents) } })
+                                            }
                                         }
                                         // D12: el «Ajuste de precio» (la cola sin red arma el pedido por aquí también).
                                         item.adjustedUnitPrice?.takeIf { !item.isCortesia }?.let { put("adjustedUnitPrice", it) }

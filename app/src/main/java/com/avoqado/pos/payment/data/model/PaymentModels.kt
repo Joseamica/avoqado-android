@@ -347,6 +347,11 @@ data class OrderItemRequest(
     val displayedUnitPrice: Int? = null,
     /** El `catalogAt` del catálogo con que se agregó ESTA línea. Viaja sólo junto con [displayedUnitPrice]. */
     val catalogAt: String? = null,
+    /**
+     * Encargo 65076b: el precio de cada extra de la línea que mostró la caja, `{ modifierId: centavos }` por unidad (una entrada por
+     * extra aunque se elija varias veces). Sólo con [catalogAt]: el SERVIDOR decide cada extra con la misma regla que el producto.
+     */
+    val displayedModifierPrices: Map<String, Int>? = null,
     val cortesiaReason: String? = null,
     /**
      * D12: el «Ajuste de precio» del cajero, en centavos por unidad (por kg en venta por peso), SIN extras. El servidor

@@ -926,7 +926,7 @@ class PaymentFlowViewModel @Inject constructor(
 
     /** El aviso de lo acumulado en esta venta; el «Total nuevo» sólo cuenta si hubo un 409. null limpia uno que ya no aplica. */
     private fun publicarAvisoDePrecio(totalNuevoCents: Int, cambioDeMasCents: Int = 0) {
-        val aviso = avisoDePrecioDeLaCreacion(cambiosDeEstaVenta, totalNuevoCents, totalAntesDelRechazoDePrecio, cambioDeMasCents)
+        val aviso = avisoDePrecioDeLaCreacion(cambiosDeEstaVenta, totalNuevoCents, totalAntesDelRechazoDePrecio, cambioDeMasCents, cartState?.items.orEmpty())
         if (aviso == ultimoAvisoDePrecio) return
         ultimoAvisoDePrecio = aviso
         _avisoDePrecio.value = aviso
