@@ -124,6 +124,12 @@ interface FormatterEntryPoint {
     fun vigilanteDeReparto(): com.avoqado.pos.kds.data.VigilanteDeReparto
 }
 
+/**
+ * f7529d (Codex r2): la edición de la navegación montada. Cobrar la manda al declarar su carrito como la «venta a medias»;
+ * al rehacerse la navegación nace otra y el carrito de la anterior deja de contar. null fuera de la navegación principal.
+ */
+internal val LocalEdicionDeLaNavegacion = androidx.compose.runtime.staticCompositionLocalOf<String?> { null }
+
 @Composable
 fun AvoqadoNavGraph(
     windowSizeClass: WindowSizeClass,
@@ -172,27 +178,36 @@ fun AvoqadoNavGraph(
                 // montan de cero y recargan datos del contexto NUEVO. Antes las
                 // pantallas ya montadas seguían con los datos del venue anterior.
                 key(mainNavigation.contentKey) {
+                    // f7529d (Codex r2/r3): una edición por cada navegación montada; girar la pantalla la conserva (saveable).
+                    // La que está al frente (al montarse y cada vez que su ventana vuelve al frente) manda la «venta a medias».
+                    val edicionDeLaNavegacion = androidx.compose.runtime.saveable.rememberSaveable { java.util.UUID.randomUUID().toString() }
+                    androidx.lifecycle.compose.LifecycleResumeEffect(edicionDeLaNavegacion) {
+                        appState.navegacionMontada(edicionDeLaNavegacion)
+                        onPauseOrDispose { }
+                    }
                     val payLaterReviewCount by appState.payLaterReviewCount.collectAsState(initial = 0)
-                    MainScaffold(
-                        isTablet = isTablet,
-                        onLogout = { appState.onLogout() },
-                        timeEntryRepository = appState.timeEntryRepository,
-                        visibleTabs = visibleTabs,
-                        initialTab = mainNavigation.startTab,
-                        roleManager = appState.roleManager,
-                        pendingPaymentCount = pendingPaymentCount,
-                        showOfflineBanner = showOfflineBanner,
-                        offlinePendingCount = offlinePendingCount,
-                        avisoDeCobrosRetenidos = avisoDeCobrosRetenidos,
-                        avisoDeCocinaSinRed = avisoDeCocinaSinRed,
-                        avisoDeRacha = avisoDeRacha,
-                        avisoDePantallas = avisoDePantallas,
-                        syncIssueCount = reconciliationCount,
-                        payLaterReviewCount = payLaterReviewCount,
-                        reservationIssueCount = reservationIssueCount,
-                        q15HistoryUnavailable = q15HistoryUnavailable,
-                        onTabsShouldRefresh = { appState.refreshTabs() },
-                    )
+                    CompositionLocalProvider(LocalEdicionDeLaNavegacion provides edicionDeLaNavegacion) {
+                        MainScaffold(
+                            isTablet = isTablet,
+                            onLogout = { appState.onLogout() },
+                            timeEntryRepository = appState.timeEntryRepository,
+                            visibleTabs = visibleTabs,
+                            initialTab = mainNavigation.startTab,
+                            roleManager = appState.roleManager,
+                            pendingPaymentCount = pendingPaymentCount,
+                            showOfflineBanner = showOfflineBanner,
+                            offlinePendingCount = offlinePendingCount,
+                            avisoDeCobrosRetenidos = avisoDeCobrosRetenidos,
+                            avisoDeCocinaSinRed = avisoDeCocinaSinRed,
+                            avisoDeRacha = avisoDeRacha,
+                            avisoDePantallas = avisoDePantallas,
+                            syncIssueCount = reconciliationCount,
+                            payLaterReviewCount = payLaterReviewCount,
+                            reservationIssueCount = reservationIssueCount,
+                            q15HistoryUnavailable = q15HistoryUnavailable,
+                            onTabsShouldRefresh = { appState.refreshTabs() },
+                        )
+                    }
                 }
             }
         } else {
@@ -571,6 +586,8 @@ private fun MainScaffold(
                     composable(MainTab.CHECKOUT.route) {
                         val carrito: com.avoqado.pos.pos.presentation.cart.CartViewModel = hiltViewModel()
                         SideEffect { carritoVivo = carrito }
+                        val edicion = LocalEdicionDeLaNavegacion.current
+                        LaunchedEffect(carrito, edicion) { carrito.esElCarritoDeCobrar(edicion) }   // f7529d: su carrito es la «venta a medias»
                         CheckoutScreen(isTablet = true, cartViewModel = carrito, roleManager = roleManager, onResultadoDeTarjetas = ::abrirResultadoDeTarjetas)
                     }
                     composable(MainTab.TABLES.route) {
@@ -905,6 +922,8 @@ private fun MainScaffold(
                     composable(MainTab.CHECKOUT.route) {
                         val carrito: com.avoqado.pos.pos.presentation.cart.CartViewModel = hiltViewModel()
                         SideEffect { carritoVivo = carrito }
+                        val edicion = LocalEdicionDeLaNavegacion.current
+                        LaunchedEffect(carrito, edicion) { carrito.esElCarritoDeCobrar(edicion) }   // f7529d: su carrito es la «venta a medias»
                         CheckoutScreen(isTablet = false, cartViewModel = carrito, roleManager = roleManager, onResultadoDeTarjetas = ::abrirResultadoDeTarjetas)
                     }
                     composable(MainTab.TABLES.route) {

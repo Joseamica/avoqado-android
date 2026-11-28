@@ -722,6 +722,28 @@ class CartViewModel @Inject constructor(
 ) : ViewModel() {
 
     private val _cartState = MutableStateFlow(defaultCartState())
+
+    /**
+     * La llave de ESTE carrito en la señal «hay venta a medias» ([ActiveCartState]). Una llave propia (no el ViewModel)
+     * para que la señal, que es de todo el aparato, no retenga al carrito. Sólo publica si la pantalla de Cobrar lo
+     * declaró ([esElCarritoDeCobrar]); se suelta en [onCleared].
+     */
+    private val duenoDeLaVentaAMedias = Any()
+
+    /**
+     * Encargo f7529d: la pantalla de Cobrar declara que éste es SU carrito; desde ahí su número es la señal «venta a
+     * medias» del aparato. El catálogo de la cuenta de una mesa y el de «Asignar» no la llaman y ya no la pisan.
+     * [edicionDeLaNavegacion]: la navegación donde se montó (`LocalEdicionDeLaNavegacion`); una nueva lo releva.
+     */
+    fun esElCarritoDeCobrar(edicionDeLaNavegacion: Any?) {
+        val estado = _cartState.value
+        activeCartState.tomar(duenoDeLaVentaAMedias, edicionDeLaNavegacion, estado.itemCount, estado.totalDisplay)
+    }
+
+    override fun onCleared() {
+        activeCartState.soltar(duenoDeLaVentaAMedias)
+        super.onCleared()
+    }
     val cartState: StateFlow<CartState> = _cartState.asStateFlow()
 
     /**
@@ -1443,10 +1465,11 @@ class CartViewModel @Inject constructor(
             }
         }
 
-        // Keep ActiveCartState in sync so other screens can check if cart has items
+        // Keep ActiveCartState in sync so other screens can check if cart has items.
+        // Con dueño (encargo f7529d): sólo cuenta si este carrito es el de Cobrar vigente (esElCarritoDeCobrar).
         viewModelScope.launch {
             _cartState.collect { state ->
-                activeCartState.update(state.itemCount, state.totalDisplay)
+                activeCartState.update(duenoDeLaVentaAMedias, state.itemCount, state.totalDisplay)
                 // Espejo a la pantalla del cliente (POS de doble pantalla): el
                 // cliente ve su carrito en vivo mientras el cajero teclea.
                 // No-op en equipos de una sola pantalla.

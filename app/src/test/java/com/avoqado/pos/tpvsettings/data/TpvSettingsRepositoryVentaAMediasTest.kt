@@ -39,6 +39,8 @@ import java.util.concurrent.atomic.AtomicInteger
 class TpvSettingsRepositoryVentaAMediasTest {
 
     private val carrito = ActiveCartState()
+    /** El carrito de Cobrar: sólo el que la pantalla de Cobrar declara publica la señal (encargo f7529d). */
+    private val carritoDeCobrar = Any()
     private val llamadas = AtomicInteger(0)
     private var respuestas: List<Pair<Int, String>> = emptyList()
 
@@ -50,7 +52,7 @@ class TpvSettingsRepositoryVentaAMediasTest {
         repo.refreshIfFingerprintChanged(VENUE, "h1")
         val antes = llave(repo)
 
-        carrito.update(itemCount = 2, totalDisplay = "$80.00")
+        carrito.tomar(dueno = carritoDeCobrar, edicion = null, itemCount = 2, totalDisplay = "$80.00")
         repo.refreshIfFingerprintChanged(VENUE, "h2")
 
         assertEquals("la venta a medias se rehízo", antes, llave(repo))
@@ -66,10 +68,10 @@ class TpvSettingsRepositoryVentaAMediasTest {
         val repo = repositorio(cobrador(huella = "h1"), emisor(huella = "h2"), emisor(huella = "h2"))
         repo.refreshIfFingerprintChanged(VENUE, "h1")
         val antes = llave(repo)
-        carrito.update(itemCount = 1, totalDisplay = "$40.00")
+        carrito.tomar(dueno = carritoDeCobrar, edicion = null, itemCount = 1, totalDisplay = "$40.00")
         repo.refreshIfFingerprintChanged(VENUE, "h2")
 
-        carrito.clear()
+        carrito.tomar(dueno = carritoDeCobrar, edicion = null, itemCount = 0, totalDisplay = "$0.00")
         repo.refreshIfFingerprintChanged(VENUE, "h2")
 
         assertNotEquals(antes, llave(repo))
@@ -98,7 +100,7 @@ class TpvSettingsRepositoryVentaAMediasTest {
     fun `con venta a medias y sin cambio en la llave la huella si queda aplicada`() = runTest {
         val repo = repositorio(cobrador(huella = "h1"), cobrador(huella = "h2", propina = false))
         repo.refreshIfFingerprintChanged(VENUE, "h1")
-        carrito.update(itemCount = 1, totalDisplay = "$40.00")
+        carrito.tomar(dueno = carritoDeCobrar, edicion = null, itemCount = 1, totalDisplay = "$40.00")
 
         repo.refreshIfFingerprintChanged(VENUE, "h2")
         repo.refreshIfFingerprintChanged(VENUE, "h2")
@@ -112,7 +114,7 @@ class TpvSettingsRepositoryVentaAMediasTest {
         val conMenu = emisor(huella = "h2").replace("\"fulfillmentAreaId\": \"area-cremeria\"", "\"fulfillmentAreaId\": \"area-cafe\", \"visibleMenuIds\": [\"menu-1\"]")
         val repo = repositorio(emisor(huella = "h1"), conMenu)
         repo.refreshIfFingerprintChanged(VENUE, "h1")
-        carrito.update(itemCount = 1, totalDisplay = "$40.00")
+        carrito.tomar(dueno = carritoDeCobrar, edicion = null, itemCount = 1, totalDisplay = "$40.00")
 
         repo.refreshIfFingerprintChanged(VENUE, "h2")
 
@@ -127,13 +129,13 @@ class TpvSettingsRepositoryVentaAMediasTest {
         val repo = repositorio(emisor(huella = "h1"), sinTerminal(huella = "h2"), sinTerminal(huella = "h2"))
         repo.refreshIfFingerprintChanged(VENUE, "h1")
         val antes = llave(repo)
-        carrito.update(itemCount = 3, totalDisplay = "$120.00")
+        carrito.tomar(dueno = carritoDeCobrar, edicion = null, itemCount = 3, totalDisplay = "$120.00")
 
         repo.refreshIfFingerprintChanged(VENUE, "h2")
         assertEquals(antes, llave(repo))
         assertEquals("terminal-1", repo.terminalNavigation.value.terminalId)
 
-        carrito.clear()
+        carrito.tomar(dueno = carritoDeCobrar, edicion = null, itemCount = 0, totalDisplay = "$0.00")
         repo.refreshIfFingerprintChanged(VENUE, "h2")
         assertEquals(TerminalNavigationSettings.DEFAULT.terminalId, repo.terminalNavigation.value.terminalId)
         assertEquals(TerminalNavigationSettings.STANDARD_POS, repo.terminalNavigation.value.defaultWorkspace)
@@ -145,12 +147,12 @@ class TpvSettingsRepositoryVentaAMediasTest {
         val repo = repositorio()
         repo.refreshIfFingerprintChanged(VENUE, "h1")
         val antes = llave(repo)
-        carrito.update(itemCount = 1, totalDisplay = "$40.00")
+        carrito.tomar(dueno = carritoDeCobrar, edicion = null, itemCount = 1, totalDisplay = "$40.00")
 
         repo.refreshIfFingerprintChanged(VENUE, "h2")
         assertEquals(antes, llave(repo))
 
-        carrito.clear()
+        carrito.tomar(dueno = carritoDeCobrar, edicion = null, itemCount = 0, totalDisplay = "$0.00")
         repo.refreshIfFingerprintChanged(VENUE, "h2")
         assertEquals(TerminalNavigationSettings.DEFAULT, repo.terminalNavigation.value)
     }
@@ -171,7 +173,7 @@ class TpvSettingsRepositoryVentaAMediasTest {
         val disco = mutableMapOf<String, String>()
         val repo = repositorio(cobrador(huella = "h1"), emisor(huella = "h2"), disco = disco)
         repo.refreshIfFingerprintChanged(VENUE, "h1")
-        carrito.update(itemCount = 1, totalDisplay = "$40.00")
+        carrito.tomar(dueno = carritoDeCobrar, edicion = null, itemCount = 1, totalDisplay = "$40.00")
         repo.refreshIfFingerprintChanged(VENUE, "h2")
 
         val guardada = disco.entries.first { it.key.startsWith("terminal_navigation") }.value
