@@ -92,4 +92,10 @@ class AvisoQuitarValeTest {
         assertTrue(atajos.contains("valeQueSeVaCompleto(cartState.items, selectedItemIds)"))
         assertTrue(atajos.contains("if (valeAQuitar == null) anular()"))
     }
+
+    @Test
+    fun `al deslizar un renglon de vale no se da por quitado para que la X no lo deje barrido`() {
+        assertEquals(false, seDaPorQuitadaAlDeslizar(siete[0]))
+        assertEquals(true, seDaPorQuitadaAlDeslizar(normal))
+    }
 }

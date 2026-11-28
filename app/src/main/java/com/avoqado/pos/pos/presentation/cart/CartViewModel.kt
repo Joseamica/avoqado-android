@@ -461,6 +461,9 @@ internal fun valeAQuitar(items: List<CartItem>, itemId: String): ValeAQuitar? {
     return ValeAQuitar(itemId, valeId, delVale.firstNotNullOfOrNull { it.areaTicketCode }, delVale.size)
 }
 
+/** Deslizar: la fila sólo se da por quitada si no puede abrir un aviso (combo o vale); si no, queda barrida al cancelar (D5). */
+internal fun seDaPorQuitadaAlDeslizar(item: CartItem): Boolean = !item.isPromotionLine && item.areaTicketId == null
+
 /** «Anular artículos»: el primer vale del que se marcaron algunos renglones y no todos (los demás se irían sin avisar). */
 internal fun valeQueSeVaCompleto(items: List<CartItem>, seleccion: Set<String>): ValeAQuitar? =
     seleccion.firstNotNullOfOrNull { id ->
