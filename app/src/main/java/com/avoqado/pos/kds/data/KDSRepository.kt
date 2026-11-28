@@ -10,6 +10,7 @@ import com.avoqado.pos.kds.domain.ImpresionReparto
 import com.avoqado.pos.kds.domain.KDSOrder
 import com.avoqado.pos.kds.domain.KDSOrderItem
 import com.avoqado.pos.kds.domain.KDSOrderStatus
+import com.avoqado.pos.tables.domain.etiquetaDeMesa
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -290,7 +291,7 @@ class KDSRepository @Inject constructor(
             // KDS 3.6: la comanda de una mesa dice cuál («Mesa 8»), no «En tienda». Servidor viejo = sin el campo.
             val mesa = json.optString("tableNumber", "").takeIf { it.isNotBlank() && it != "null" }
             val displayType = if (mesa != null) {
-                "Mesa $mesa"
+                etiquetaDeMesa(mesa)
             } else {
                 when (orderType) {
                     "DINE_IN" -> "En tienda"

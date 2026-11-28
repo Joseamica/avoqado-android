@@ -16,6 +16,7 @@ import com.avoqado.pos.tables.data.TableSession
 import com.avoqado.pos.tables.data.TablesVersionPoller
 import com.avoqado.pos.tables.domain.FloorLayout
 import com.avoqado.pos.tables.domain.FloorLayoutBuilder
+import com.avoqado.pos.tables.domain.etiquetaDeMesa
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -513,7 +514,7 @@ class TablesViewModel @Inject constructor(
         }
         onActivated(opened)
         mutar { repository.markTableOccupiedLocally(table.id, covers, vId) }
-        android.util.Log.w("TablesViewModel", "📴 Mesa ${table.number} abierta OFFLINE (folio $folio)")
+        android.util.Log.w("TablesViewModel", "📴 ${etiquetaDeMesa(table.number)} abierta OFFLINE (folio $folio)")
         return opened
     }
 
@@ -697,7 +698,7 @@ class TablesViewModel @Inject constructor(
                     // The cancelled order must never keep steering a session.
                     tableSession.finalizar(vId, setOf(order.id), sessionEpoch)
                     lanHub.release(table.id)
-                    _actionState.value = TableActionState.Success("Cuenta anulada — Mesa ${table.number} liberada")
+                    _actionState.value = TableActionState.Success("Cuenta anulada — ${etiquetaDeMesa(table.number)} liberada")
                     _selectedTableId.value = null
                 },
                 onFailure = { e ->
@@ -984,7 +985,7 @@ class TablesViewModel @Inject constructor(
                 val balance = order.preBillBalance
                 val receipt = ReceiptData(
                     orderNumber = order.orderNumber,
-                    orderType = "Mesa ${table.number} - PRE-CUENTA",
+                    orderType = "${etiquetaDeMesa(table.number)} - PRE-CUENTA",
                     items = renglonesDePreCuenta(order.items),
                     subtotal = subtotal,
                     taxAmount = cents(order.addedTaxAmount),

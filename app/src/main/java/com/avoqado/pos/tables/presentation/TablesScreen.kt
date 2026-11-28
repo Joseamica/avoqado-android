@@ -77,6 +77,7 @@ import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.SnackbarHost
 import com.avoqado.pos.designsystem.components.AvoqadoModalBottomSheet
+import com.avoqado.pos.tables.domain.etiquetaDeMesa
 
 // Status palette (floor plan), Square-style: occupied = solid dark block with
 // light text + elapsed h:mm timer; free = flat light gray; reserved = amber.
@@ -371,7 +372,7 @@ fun TablesScreen(
                             }
                         },
                         modifier = Modifier.fillMaxWidth(),
-                    ) { Text("Mesa ${table.number}", modifier = Modifier.fillMaxWidth()) }
+                    ) { Text(etiquetaDeMesa(table.number), modifier = Modifier.fillMaxWidth()) }
                 }
             }
         }
@@ -436,7 +437,7 @@ fun TablesScreen(
         val freeTables = tables.filter { it.isAvailable }
         if (source != null) {
             AvoqadoDialog(
-                title = "Mover cuenta — Mesa ${source.number}",
+                title = "Mover cuenta — ${etiquetaDeMesa(source.number)}",
                 onDismiss = { showBulkMover = false },
             ) {
                 Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
@@ -454,7 +455,7 @@ fun TablesScreen(
                                 .padding(vertical = AvoqadoTheme.spacing.sm),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            Text("Mesa ${t.number}" + (t.areaName?.let { " · $it" } ?: ""))
+                            Text(etiquetaDeMesa(t.number) + (t.areaName?.let { " · $it" } ?: ""))
                         }
                     }
                     if (freeTables.isEmpty()) Text("No hay mesas libres.")
@@ -681,7 +682,7 @@ internal fun TableCard(table: DiningTable, onTap: () -> Unit, onLongPress: () ->
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Text(
-            text = "Mesa ${table.number}",
+            text = etiquetaDeMesa(table.number),
             style = MaterialTheme.typography.titleSmall,
             fontWeight = FontWeight.SemiBold,
             color = content,
@@ -724,7 +725,7 @@ private fun TableCheckSheet(
         // Header
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
-                text = "Mesa ${table.number}",
+                text = etiquetaDeMesa(table.number),
                 style = MaterialTheme.typography.headlineSmall,
                 fontWeight = FontWeight.Bold,
                 modifier = Modifier.weight(1f),
@@ -1114,7 +1115,7 @@ internal fun AnularCuentaDialog(
     var selected by remember { mutableStateOf<String?>(null) }
 
     AvoqadoDialog(
-        title = "Anular cuenta — Mesa $tableNumber",
+        title = "Anular cuenta — ${etiquetaDeMesa(tableNumber)}",
         description = "Se eliminarán todos los artículos y se cerrará la cuenta inmediatamente.",
         onDismiss = onDismiss,
         // Destructivo e irreversible: fuera del click al vacío. Se sale por la X

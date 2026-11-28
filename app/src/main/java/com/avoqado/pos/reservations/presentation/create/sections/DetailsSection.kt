@@ -41,6 +41,7 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.reservations.presentation.create.CreateReservationViewModel
+import com.avoqado.pos.tables.domain.etiquetaDeMesa
 
 /**
  * DetailsSection — embedded picker for party size, optional table, optional
@@ -134,7 +135,7 @@ fun DetailsSection(viewModel: CreateReservationViewModel) {
                                         it.copy(tableId = table.id, tableNumber = table.number)
                                     }
                                 },
-                                label = { Text("Mesa ${table.number}") },
+                                label = { Text(etiquetaDeMesa(table.number)) },
                             )
                         }
                     }

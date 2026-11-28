@@ -1,5 +1,6 @@
 package com.avoqado.pos.tables.data
 
+import com.avoqado.pos.tables.domain.etiquetaDeMesa
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -64,7 +65,7 @@ class TableSession @Inject constructor() {
          */
         val cobroSinRed: Boolean = false,
     ) {
-        val label: String get() = "Mesa $tableNumber" + (areaName?.let { " · $it" } ?: "")
+        val label: String get() = etiquetaDeMesa(tableNumber) + (areaName?.let { " · $it" } ?: "")
         val idsDeLaOrden: Set<String> get() = setOfNotNull(orderId, localOrderId)
     }
 

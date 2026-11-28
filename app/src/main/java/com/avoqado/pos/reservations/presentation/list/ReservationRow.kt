@@ -23,6 +23,7 @@ import androidx.compose.ui.unit.dp
 import com.avoqado.pos.core.util.VenueDateTimeFormatter
 import com.avoqado.pos.reservations.data.model.Reservation
 import com.avoqado.pos.reservations.presentation.components.ReservationStatusBadge
+import com.avoqado.pos.tables.domain.etiquetaDeMesa
 
 @Composable
 fun ReservationRow(
@@ -58,7 +59,7 @@ fun ReservationRow(
                 maxLines = 1,
             )
             val service = reservation.displayServiceName
-                ?: reservation.table?.let { "Mesa ${it.number}" }
+                ?: reservation.table?.let { etiquetaDeMesa(it.number) }
             Text(
                 service ?: "Sin servicio",
                 style = MaterialTheme.typography.bodySmall,
