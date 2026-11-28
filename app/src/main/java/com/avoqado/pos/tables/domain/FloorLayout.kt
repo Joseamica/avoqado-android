@@ -59,7 +59,8 @@ object FloorLayoutBuilder {
      * las manda por `number` como texto («1, 10, 2»). Los tramos de dígitos se comparan como números y el resto con el
      * Collator español (sin mayúsculas ni acentos); empate por id. Con plano manda la posición: esto no lo toca.
      */
-    private fun ordenNatural(): Comparator<DiningTable> {
+    /** «Mesa 2» antes que «Mesa 10». También lo usan las listas que eligen otra mesa (mover, fusionar: D7, 27-nov). */
+    fun ordenNatural(): Comparator<DiningTable> {
         val texto = porNombre
         val tramos = Regex("\\d+|\\D+")
         val numero = { a: String, b: String ->
