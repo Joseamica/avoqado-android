@@ -49,7 +49,7 @@ fun PayInOutSheet(
     var noteText by remember { mutableStateOf("") }
     val ocupadoAhora by rememberUpdatedState(ocupado)
 
-    val title = if (isPayIn) "Registrar ingreso" else "Registrar egreso"
+    val title = if (isPayIn) "Registrar ingreso" else "Registrar retiro"
     val subtitle = when {
         isPayIn -> "Ingresa el monto y una nota opcional para el ingreso de efectivo."
         conPin -> "Ingresa el monto y el concepto. Al confirmar, un gerente lo autoriza con su PIN."

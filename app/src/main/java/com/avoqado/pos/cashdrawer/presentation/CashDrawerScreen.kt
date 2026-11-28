@@ -2,6 +2,7 @@ package com.avoqado.pos.cashdrawer.presentation
 
 import com.avoqado.pos.cashdrawer.data.CashDrawerRepository
 import com.avoqado.pos.cashdrawer.data.ConteoSospechoso
+import com.avoqado.pos.cashdrawer.data.CorteTicketBuilder
 import com.avoqado.pos.cashdrawer.data.EstadoDeLaApertura
 import com.avoqado.pos.cashdrawer.data.textoDeAdopcion
 import androidx.compose.material3.TextButton
@@ -389,7 +390,7 @@ private fun RetiroDeCaja(viewModel: CashDrawerViewModel) {
             onSubmit = { pin -> viewModel.teclearPinDelRetiro(pin) },
             onDismiss = { viewModel.cancelarPin() },
             title = "Autorizar retiro",
-            description = "${p.etiqueta}. Pide a un encargado su código.",
+            description = "${p.etiqueta}. Pide a un gerente su PIN.",
         )
     }
 
@@ -1055,7 +1056,8 @@ private fun OpenDrawerContent(
                 )
                 Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.xxs))
                 Text(
-                    text = "Egreso",
+                    // D38: «Retiro», como lo nombran la hoja, el teclado del PIN de gerente y los avisos.
+                    text = "Retiro",
                     style = MaterialTheme.typography.bodyMedium,
                     fontWeight = FontWeight.SemiBold,
                     maxLines = 1,
@@ -1143,9 +1145,9 @@ private fun OpenDrawerContent(
                 Text(
                     text = if (showExpected) {
                         "Todavía no hay movimientos. Los cobros en efectivo, " +
-                            "ingresos y egresos aparecerán aquí."
+                            "ingresos y retiros aparecerán aquí."
                     } else {
-                        "Todavía no hay ingresos ni egresos. Aparecerán aquí."
+                        "Todavía no hay ingresos ni retiros. Aparecerán aquí."
                     },
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -1197,6 +1199,14 @@ private fun SummaryCard(
 
 // MARK: - Event Row
 
+/**
+ * D38: el nombre de un egreso en la lista de movimientos. El que hace la cajera con el botón es un «Retiro»; el que escribe el
+ * SERVIDOR al reembolsar en efectivo llega con la nota «Reembolso: …» ([CorteTicketBuilder.PREFIJO_REEMBOLSO]) y no es un retiro.
+ * La tarjeta «Egresos» y el corte siguen sumando los dos.
+ */
+internal fun nombreDelEgreso(note: String?): String =
+    if (note?.startsWith(CorteTicketBuilder.PREFIJO_REEMBOLSO) == true) "Reembolso en efectivo" else "Retiro"
+
 @Composable
 private fun EventRow(event: CashDrawerEventEntity) {
     val timeText = remember(event.createdAt) {
@@ -1208,7 +1218,7 @@ private fun EventRow(event: CashDrawerEventEntity) {
     val (label, color, sign) = when (event.type) {
         CashDrawerEventType.CASH_SALE.name -> Triple("Venta en efectivo", Success, "+")
         CashDrawerEventType.PAY_IN.name -> Triple("Ingreso", Success, "+")
-        CashDrawerEventType.PAY_OUT.name -> Triple("Egreso", Error, "-")
+        CashDrawerEventType.PAY_OUT.name -> Triple(nombreDelEgreso(event.note), Error, "-")
         CashDrawerEventType.CLOSE.name -> Triple("Cierre de caja", MaterialTheme.colorScheme.onSurface, "")
         else -> Triple("Apertura", MaterialTheme.colorScheme.onSurface, "")
     }

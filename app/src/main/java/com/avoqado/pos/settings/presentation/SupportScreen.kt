@@ -377,7 +377,7 @@ private val faqItems = listOf(
     ),
     FaqItem(
         question = "¿Cómo abro la caja?",
-        answer = "Ve a Más > Caja. Desde ahí puedes registrar ingresos y egresos de efectivo, y ver el balance actual de tu caja.",
+        answer = "Ve a Más > Caja. Desde ahí puedes registrar ingresos y retiros de efectivo, y ver el balance actual de tu caja.",
     ),
     FaqItem(
         question = "¿Cómo cambio de sucursal?",

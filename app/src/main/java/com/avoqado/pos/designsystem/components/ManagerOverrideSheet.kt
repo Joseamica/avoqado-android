@@ -44,8 +44,9 @@ fun ManagerOverrideSheet(
      */
     title: String = "Se necesita autorización",
     /** El texto bajo el título. Por omisión, «Para <acción>…»; el retiro pasa el suyo («Retiro de $X · concepto…»). */
-    description: String = prompt.contexto?.let { "$it. Pide a un encargado su código." }
-        ?: "Para ${prompt.actionLabel}. Pide a un encargado su código.",
+    // D38: «PIN de gerente», como el interruptor del DASHBOARD y los avisos de la app (antes «código de un encargado»).
+    description: String = prompt.contexto?.let { "$it. Pide a un gerente su PIN." }
+        ?: "Para ${prompt.actionLabel}. Pide a un gerente su PIN.",
 ) {
     // 🔴 Keyed por el teclado, no por el slot de composición.
     //
@@ -89,11 +90,11 @@ fun ManagerOverrideSheet(
                             // que el encargado nunca vio.
                             is OverrideResult.Granted -> pin = ""
                             OverrideResult.WrongPin -> {
-                                error = "Código incorrecto"
+                                error = "PIN incorrecto"
                                 pin = ""
                             }
                             OverrideResult.Insufficient -> {
-                                error = "Ese código tampoco tiene este permiso"
+                                error = "Ese PIN tampoco tiene este permiso"
                                 pin = ""
                             }
                             OverrideResult.TooManyAttempts -> {
